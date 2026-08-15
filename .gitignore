@@ -1,0 +1,14 @@
+# Timestamped hand-rolled backups -- superseded by git history itself
+archive/
+
+# Runtime state, not source
+persist.txt
+spawn_ledger.txt
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Stray dev artifacts
+*.bak_check

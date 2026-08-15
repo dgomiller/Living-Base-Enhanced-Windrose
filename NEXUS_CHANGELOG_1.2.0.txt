@@ -1,0 +1,17 @@
+Living Base Enhanced v1.2.0 (previous version: v1.1.2)
+
+- Fixed a bug that let quest NPCs (Letty, Francois Arno) keep their live quest dialogue and interact prompt when placed with this mod, instead of becoming plain ambient set-dressing like intended.
+
+- Added 5 new named NPCs to the standing statue roster: Benjamin Hornigold, Henri Boucher, Marita Suares, Long Ben, and Charlie Sharp.
+
+- Added 15 more standing, seated, and interactive statue poses that shipped with the game but were never wired into the mod, including the "Drunk Canoneer".
+
+- Crew (Num 1) now cycles through 13 different looks per press instead of always spawning the same pawn: the original crew look, plus 12 walking faction-visitor re-skins covering Buccaneers, Smugglers, People of Tortuga, and Brethren of the Coast (Musketeer, Sailor, and Sergeant each, plus a Brethren of the Coast woman). These are real crew pawns and walk/patrol normally.
+  * Known limitation: their uniform colors are currently generic rather than faction-colored.
+  * Known limitation: the Brethren of the Coast "woman" look currently has a male body under the female clothing.
+
+- Senkamati (Num 7) now includes the Healer alongside the Warrior, Hunter, and Caster.
+
+- Farm animals (Num 8) expanded from 5 to 14 entries: added Goat Mega, Sow, Charging Boar, Boar Mega, Wolf, Alpha Wolf, Crocodile, and a corrupted "Plague" Crocodile. All are tamed/friendly the same way as the existing animals.
+
+- The statue/decoration pose-cycle key changed from a single, forward-only Numpad + press to a pair: ] cycles forward, [ cycles backward. Numpad + is free again for other uses.

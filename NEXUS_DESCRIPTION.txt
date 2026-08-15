@@ -1,0 +1,157 @@
+[size=5][b]Living Base Enhanced[/b][/size]
+[color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place with reticle-accurate targeting, and have it all persist across reloads.[/color]
+
+[size=4][b]Built on[/b][/size]
+[color=#D4D4D8]This is an enhanced fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — full credit to them for the original concept and toolkit. Their permissions are public domain ("no credit needed, no permission needed... do whatever you want with it"), so this fork carries that same open spirit forward: everything below is offered under the same no-rights-reserved terms. See Permissions/License at the bottom.[/color]
+
+[color=#D4D4D8]Like the original, the changes in this fork were built with AI assistance — I'm not a developer either. Same deal as before: if anyone wants to fix something, improve something, or take it in a different direction, all the files are in the download and you don't need to ask. This mod, and this fork of it, are both meant to stay completely open.[/color]
+
+[size=4][b]What's new in Enhanced[/b][/size]
+[color=#D4D4D8]The original's placement toolkit, whistle escort, invulnerable structures, and hidden build-piece unlock are all still here, untouched. On top of that:[/color]
+
+[color=#D4D4D8]
+[b]Real Undo (Num 0)[/b] — the original's Num 9 was labeled "Undo" but only despawned; there was no way to bring something back. Num 0 now actually restores the last despawned object (or an entire Delete wipe, as one batch) at its exact spot, including AI/composite-look appearance where recorded. Steps back through your last 20 actions.
+
+[b]Cycle statues AND decorations (] and [)[/b] — swap the targeted statue or decoration for the next (or previous) entry in its own roster (pose roster for statues, category for decorations), in place, without re-placing it from scratch. One key pair auto-detects which kind you're targeting. Undo-able with Num 0, which now names what it restored on-screen instead of just a count.
+
+[b]Generalized quest NPCs[/b] — fixed a bug that let named quest NPCs (Letty, Francois Arno, and more) keep their live quest dialogue and interact prompt when placed with this mod. They now become plain ambient set-dressing like every other statue, as intended.
+
+[b]Faction leaders & walking faction visitors[/b] — added 5 new named NPCs to the standing statue roster (Benjamin Hornigold, Henri Boucher, Marita Suares, Long Ben, Charlie Sharp), plus 15 more standing/seated/interactive poses that shipped with the game but were never wired in. Crew (Num 1) now also cycles through 14 looks per press: the original crew look, plus 12 walking re-skins covering all four factions (Buccaneers, Smugglers, People of Tortuga, Brethren of the Coast) in Musketeer/Sailor/Sergeant variants, plus a Brethren of the Coast woman look — real crew pawns with working walk AI, not statues.
+
+[b]Normal-posture Senkamati and bigger animal roster[/b] — the Senkamati Hunter and Caster (Num 7) now walk with normal human posture instead of their native mob's lumbering gait, matching the Warrior. Num 7 cycles through 15 looks total so you can compare: original mob body vs. re-skinned, with or without the tribal helmet, plus each one's untouched "as original" corrupted appearance — the female Caster's re-skin comes in two different base bodies (Gatherer and Herbalist), each with its own distinct figure/hair-color/palette. Farm animals (Num 8) expanded from 5 to 13 entries: Goat Mega, Sow, Charging Boar, Boar Mega, Wolf, Alpha Wolf, Crocodile, and a corrupted "Plague" Crocodile join the original boar/goat/dodo set, all tamed and friendly the same way.
+
+[b]Walking Women (new: Numpad . key)[/b] — a real, walking female NPC that can be re-skinned to look like Letty, Marita Suares, or the Buccaneers Merchant, instead of only being available as a frozen statue. Two extra plain looks, "Woman With Hat" and "Woman With Hair", round out the roster for general crowd variety. Every one of the five looks now comes in TWO different base bodies (Base 1/Base 2, using two different underlying NPC classes for genuinely different figures and hair color, not just a different outfit — each character's own outfit/hair-style stays the same either way), for 10 stops total. Every placement also rolls a random skin tone (and, for the plain looks, a random hairstyle) for extra variety — this re-rolls each time you reload your save on purpose, rather than being locked in permanently. Repeated presses cycle through all ten looks in order, and reloading correctly restores which look/character/base each placed NPC was.
+
+[b]Reticle-accurate targeting[/b] — despawn, live-edit, and pose-cycle now pick the object your camera is actually pointed at (including up/down — you can target two things stacked vertically), instead of a wide "anything vaguely in front of your character's body" guess. Much less mis-picking the wrong nearby object.
+
+[b]Camera-relative placement[/b] — new spawns appear in the direction your camera is looking (horizontally), not just where your character's body happens to be facing, so free-looking in third person actually matters.
+
+[b]Fixed 45°/180° rotate (Num / and Num *), a 5-level precision cycle (Num -: full / 1/2 / 1/4 / 1/8 / 2x), and a target lock (Num +)[/b] — finer live-edit control without needing to spam the regular rotate keys, plus a way to pin despawn/cycle/live-edit to one object so you can walk around it or look away without losing your target.
+
+[b]One key freezes the whole mod (Insert)[/b] — toggles every key this mod binds (numpad, ;/', Delete, backslash, live-edit) on/off at runtime, so they're free for other uses — or for another mod that wants the same key — without editing config files. Added specifically after a real conflict with another installed mod. Starting state (on/off) is configurable too, for players who'd rather opt in each session than remember to opt out.
+
+[b]Real on-screen toast feedback[/b] — despawn, undo, cycle, and spawn actions confirm on-screen now, not just in the log, by reusing the game's own native notification widget (not a custom overlay). World load shows staged progress too: waiting for you to move, restoring your base, and a final summary once it's done. Deliberately quiet where a toast would just be spam — live-edit nudges and "nothing there" misses stay log-only.
+
+[b]No more duplicate spawns on load[/b] — every mod key is now locked from the moment a world load starts until your base finishes restoring. Previously, placing something manually in that window got saved immediately and then restored a SECOND time once the real restore ran, leaving a duplicate.
+
+[b]Assorted reliability fixes[/b] — a render desync where moved objects didn't visually update until you walked away and back; a bug where undoing a pose-cycle stacked a duplicate statue instead of replacing it; tighter, more consistent despawn reach.
+
+[b]Decorations off the F-row (new: ; and ')[/b] — to ensure compatibility with other mods that use F-Keys, decoration placement has been moved off F1-F6 entirely. ' cycles which decoration category is active (with an on-screen message telling you which one), and ; places from whichever category that is.
+
+[b]Per-world saves[/b] — if you play more than one Windrose world, each one now keeps its own separate base save. Previously every world shared a single save file, so loading a different world would restore the wrong crew into it. Upgrading from an older version: the first world you load automatically keeps your existing save, and every other world starts clean — no setup needed.
+[/color]
+
+[size=4][b]Installation[/b][/size]
+[color=#D4D4D8]1. Install UE4SS (latest experimental / RE-UE4SS build) into Windrose. In ue4ss\UE4SS-settings.ini, under [EngineVersionOverride], set MajorVersion=5 and MinorVersion=6. The mod will not load without this override.
+
+2. Extract the download so the LivingBase folder sits at:
+...\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\
+(you should have ...\Mods\LivingBase\Scripts\... and config.txt inside it).
+
+3. Enable it: open ...\ue4ss\Mods\mods.txt and add the line:
+LivingBase : 1
+
+4. Launch the game, load into a world, and use the keys below.
+
+Optional: edit LivingBase\config.txt (plain text, no coding) to toggle features.
+Back up your saves before first use — standard caution for an Early Access game with unofficial mods.[/color]
+
+[size=4][b]Main Features[/b][/size]
+[color=#D4D4D8]
+[b]Placement toolkit[/b] — drop one actor or prop per keypress, ~3m ahead in the direction you're looking:
+- Numpad 1-9: crew (cycles 14 looks, including faction-visitor re-skins), townsfolk, four kinds of posed statue, friendly Senkamati tribals, friendly wildlife, and despawn.
+- Numpad . (decimal): a walking female NPC, cycling through Letty, Marita, the Buccaneers Merchant, and two plain looks.
+- ' (apostrophe): change the active decoration category (nature, boats, wrecks, tents, storage, furniture). ; (semicolon): place from the active category.
+- Num 0: undo the last despawn/wipe/pose-cycle. ] and [: cycle a statue or decoration's pose forward/backward. Backslash: flip statue facing for future spawns.
+
+[b]Live-edit[/b] — nudge the nearest placed piece and the change persists: PageUp/PageDown height, comma/period rotate, arrow keys slide, Num / and Num * for fixed 45°/180° rotation, Num - cycles precision, Num + toggles a target lock. Targeting tracks your camera, not just your body facing.
+
+[b]Persistence[/b] — everything you place is saved and restored on the next world load (the game doesn't save modded actors, so LivingBase does it itself), separately per world if you play more than one. Delete (pressed twice) clears everything in the current world.
+
+[b]Master toggle[/b] — Insert freezes every key this mod uses, all at once, so the numpad/;/'/etc. are free for other mods or other uses when you're not actively placing.
+
+[b]Whistle crew escort[/b] — use the boar whistle to summon a small crew squad that follows you and fights at your side.
+
+[b]Invulnerable structures[/b] — your building blocks are made damage-proof so raiders can't wreck the base.
+
+[b]Unlock hidden build pieces[/b] — surfaces build-menu pieces hidden from standard play, while leaving recipe-locked progression intact.
+
+Every feature is individually toggleable in config.txt.
+[/color]
+
+[size=4][b]Requirements[/b][/size]
+[color=#D4D4D8]
+- Windrose (Kraken Express) — single-player. Built against the current Early Access build.
+- UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise.
+- No other mods required.
+- Note: this is an unofficial mod, so a game patch may change internal class paths (all centralized in config.lua for quick fixing). Keep save backups.
+[/color]
+
+[size=4][b]Controls[/b][/size]
+[color=#D4D4D8]NumLock must be ON for the numpad keys to register.[/color]
+
+[color=#D4D4D8][b]Numpad[/b] — place NPCs, statues & animals (one per press, ~3m ahead in your camera direction; statues face you):
+Num 1 — Crew pawn (wanders; fights hostiles as a combat ally; cycles 14 looks — default crew, plus 12 walking faction-visitor re-skins across Buccaneers/Smugglers/People of Tortuga/Brethren of the Coast, plus a Brethren of the Coast woman)
+Num 2 — Townsman (wanders; sits on chairs/benches/beds)
+Num 3 — Standing statue (merchants, chatting, cross-arms, women, quest folk, named faction leaders — cycles)
+Num 4 — Floor sitter (cycles)
+Num 5 — Chair/stool sitter: place your own stool (cycles)
+Num 6 — Interactive statue: rummaging a chest/table, warming by a fire (cycles)
+Num 7 — Friendly Senkamati tribal human: Warrior, Hunter, and female Caster — 30 looks total (with/without helmet, original mob body vs. re-skinned where applicable — the female Caster's re-skin has two base bodies with distinct figure/palette — plus each one's original corrupted look. Every look also has a frozen/idle counterpart — cycles)
+Num 8 — Friendly wildlife: boar family / goats / dodos / wolves / crocodile (cycles)
+Num 9 — Despawn the object in front of you, on your floor
+Num 0 — Undo: restore the last despawn (or a whole Delete wipe) at its exact spot, appearance included; names what it restored
+Num . (decimal) — Walking female NPC: cycles Woman With Hat, Woman With Hair, the Buccaneers Merchant, Letty, and Marita — each with a randomized skin tone (and, for the two plain looks, hairstyle) on every placement
+Backslash (\) — Flip statue facing 180° for future spawns only[/color]
+
+[color=#D4D4D8][b]Cycle a placed statue/decoration[/b] (not numpad — reticle-targeted, same as despawn):
+] — Cycle the targeted statue or decoration forward through its own roster, in place (undo-able)
+[ — Cycle it backward instead[/color]
+
+[color=#D4D4D8][b]Decorations[/b]:
+' (apostrophe) — Change the active decoration category: nature, boats, wrecks, tents, storage, furniture (announces which one on-screen; doesn't place anything)
+; (semicolon) — Place one decoration from the active category (cycles its own list, same as the other placement keys)[/color]
+
+[color=#D4D4D8][b]Live-edit[/b] — tunes the nearest placed piece; persists:
+PageUp / PageDown — Raise / lower
+Comma / Period — Rotate left / right
+Num / — Rotate a fixed 45°
+Num * — Rotate a fixed 180° (flip in place)
+Arrow keys — Slide forward / back / left / right
+Num - — Cycle precision for the slide/height keys: full / 1/2 / 1/4 / 1/8 / 2x
+Num + — Toggle target lock: pin despawn (Num 9), ]/[ cycle, and every live-edit key above to the object in front of you, so they keep hitting it even after you walk away or look elsewhere. Press again to release; auto-releases if the locked object gets despawned, or if you walk more than ~15m away from it.[/color]
+
+[color=#D4D4D8][b]Housekeeping[/b]:
+Delete (x2) — Clean house: despawn everything (press twice within a few seconds to confirm)
+Insert — Toggle every key this mod uses on/off, so they're free for other uses (starting state configurable in config.txt)[/color]
+
+[color=#D4D4D8]Remap anything by editing Config.KEYS in Scripts\config.lua.[/color]
+
+[size=4][b]Optional: Windrose Mod Settings Support[/b][/size]
+[color=#D4D4D8]If you also have [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url] by [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] installed, Living Base Enhanced registers itself with it automatically — no setup needed. Every key this mod binds, plus several feature toggles, become editable from the game's native Settings > Mods screen instead of hand-editing config.lua/config.txt.[/color]
+
+[color=#D4D4D8]Entirely optional both directions: Living Base Enhanced works exactly the same without Windrose Mod Settings installed, and Windrose Mod Settings works fine without this mod. See Known Limitations below for a stability note.[/color]
+
+[size=4][b]Known Limitations[/b][/size]
+[color=#D4D4D8]
+- Because it's an unofficial mod, a game patch can change internal class paths and temporarily break a feature. Everything version-dependent lives in config.lua, so fixes are quick once paths are updated.
+- The posed statue keys (Num 3-6) place static actors on purpose — that's the feature, not a bug.
+- Arrows, PageUp/PageDown, and the numpad operator keys (/ * -) aren't in this UE4SS build's normal key table and only work via a raw-key-code fallback — the engine drops most rapid repeat presses for these specific keys before UE4SS ever sees them. Individual, deliberate taps land reliably; holding/mashing won't give smooth continuous movement. This is an engine-level limitation, not a mod bug.
+- The Brethren of the Coast "woman" crew re-skin (Num 1) currently has a male body under the female clothing — known, not yet fixed.
+- Outfit and hair COLOR can't be changed on any NPC placed by this mod, for any feature — this covers the walking faction-visitor re-skins' uniform colors too (generic rather than faction-matched). Confirmed to be a hard engine limitation (the game only sets color once, when a character is first created behind the scenes) rather than something not yet implemented, so it's not on the to-do list. Skin tone and hairstyle are unaffected and both work fine.
+- ] and [ (the statue/decoration cycle keys) share a bind with the game's own "Change Target" combat key. Low-risk in practice — you're not usually cycling statues mid-fight — and Insert disables every key this mod uses instantly if it ever gets in the way.
+- If using the optional Windrose Mod Settings integration: keybind changes made there need a game restart to fully take effect (a few toggles apply immediately — each one says so in its own description). Separately, moving the mouse cursor quickly over its settings list has been observed to crash the game — this is a Windrose Mod Settings issue, not this mod. Move the cursor slowly there for now.
+[/color]
+
+[size=4][b]Note: Blackbeard Raid Removed[/b][/size]
+[color=#D4D4D8]The original mod's Blackbeard raid feature (drop a flag, trigger a pirate wave) has been removed from this fork due to lack of interest and the difficulty of maintaining it going forward.[/color]
+
+[size=4][b]Permissions / License[/b][/size]
+[color=#D4D4D8]Same terms as the original: no rights reserved. I don't claim ownership of, or any license over, this mod's own code — treat it as public domain. Do whatever you want with it: use it, modify it, redistribute it, re-upload it, fork it, bundle it into something else. No credit needed, no permission needed. If you make it better, that's great.
+
+This waiver covers this mod's own code only. Windrose and its game assets, class names, and IP belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
+
+[size=4][b]Credits[/b][/size]
+[color=#D4D4D8]All credit to [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] for creating the original [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] and open-sourcing it into the public domain. This fork wouldn't exist without that toolkit already doing the hard part.
+
+Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.[/color]

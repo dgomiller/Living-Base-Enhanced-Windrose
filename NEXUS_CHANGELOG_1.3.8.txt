@@ -1,0 +1,9 @@
+Living Base Enhanced v1.3.8 (previous version on Nexus: v1.3.7)
+
+===== NEW IN v1.3.8 =====
+
+- Fixed a bug affecting anyone who plays more than one Windrose world/save: LivingBase used to save everyone's placed crew and decorations to a single shared file no matter which world was actually loaded. That meant loading a different world would restore the wrong crew into it, and saving there could overwrite the save the other world depended on. Each world now gets its own separate save automatically — no setup needed.
+
+- If you're upgrading from an older version, the first world you load after updating will automatically inherit your existing save (you won't lose anything), and every other world you load after that will start with a clean, empty base of its own, exactly like a fresh install.
+
+- Caster (Num 7): fixed a visible seam/gap that could show at the hips on her re-skinned human body, using an improved body mesh bundled with the mod (used with permission).

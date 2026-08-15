@@ -1,0 +1,5 @@
+Living Base Enhanced v1.3.10 (previous version on Nexus: v1.3.9)
+
+===== NEW IN v1.3.10 =====
+
+- Senkamati Tribals (Num 7): every existing look now has a frozen "idle" counterpart too — stays in place instead of wandering. Roster grew from 15 to 30 looks.

@@ -1,0 +1,11 @@
+Living Base Enhanced v1.3.9 (previous version on Nexus: v1.3.8)
+
+===== NEW IN v1.3.9 =====
+
+- Live-edit: Numpad + now toggles a target lock. While locked, despawn (Num 9), the ']'/'[' cycle keys, and every live-edit key (raise/lower/rotate/slide) all keep acting on that one object even after you walk away or look elsewhere — press Numpad + again to release it. Auto-releases (with a toast) if the locked object gets despawned, or if you walk more than ~15m away from it. Requires Live-Edit mode on.
+
+- Live-edit: the precision cycle (Numpad -) gained a 5th step — full, half, quarter, eighth, and now 2x — for quickly making larger adjustments.
+
+- Walking Women (Numpad .): every look — Woman With Hat, Woman With Hair, Merchant, Letty, and Marita — now comes in two base bodies, "Base 1" (the original) and "Base 2" (the Herbalist), for 10 stops total. Each character's outfit/hair-style rules stay the same on either base (Letty keeps her ponytail, etc.); only the underlying figure, hair color, and palette differ. A pawn's color can't be changed after it's built in this game, so a different base body is the only way to get real palette variety.
+
+- Senkamati (Num 7): the female Caster's crew re-skin (no mask and masked) now also comes in both base bodies, growing the comparison roster from 13 to 15 looks.

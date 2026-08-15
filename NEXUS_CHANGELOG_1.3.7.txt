@@ -1,0 +1,9 @@
+Living Base Enhanced v1.3.7 (previous version on Nexus: v1.3.5)
+
+===== NEW IN v1.3.7 =====
+
+- Decoration placement no longer uses the F1-F6 keys at all. Instead there are just two keys: ' (apostrophe) changes which decoration category is currently "active" (cycling through Nature, Boats, Wrecks, Tents, Storage, and Furniture, with an on-screen message telling you which one you just switched to), and ; (semicolon) places one decoration from whichever category is active. This was done because another popular mod also uses the F-row, and the two could end up fighting over the same key — moving off the F-row avoids that entirely, for this or any other F-row-using mod you might have installed.
+
+- Found and fixed a bug that's been there since decorations were first added: when your base reloads, decorations were being treated the same as AI-controlled NPCs for restore purposes — meaning they came back slower than necessary and got lumped into a "post-processing movers" message that didn't really apply to them. Decorations now come back instantly like statues do, and that message only counts actual NPCs.
+
+- The Blackbeard raid feature (dropping a raid flag and calling in a pirate wave) is now OFF by default. It's still fully there in the mod and easy to turn back on if you want it — just edit config.txt (or config.lua) and flip BBRAID_ENABLED back to true — but new installs won't have it active until you choose to enable it.

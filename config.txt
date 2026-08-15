@@ -1,0 +1,19 @@
+# LivingBase config. Edit values after "=", then restart (or run the `lbreload` console
+# command to hot-reload without restarting -- UE4SS's own Ctrl+R doesn't work in this game).
+# true / false for switches, numbers for amounts. '#' starts a comment.
+# This is the only file you need to edit — config.lua holds the defaults, this overrides them.
+
+# --- Features ---
+WHISTLE_CREW           = true    # boar whistle summons 2 crew instead of a boar
+BBRAID_ENABLED         = false   # force-disabled 2026-08-13 -- feature kept in code, not active. Flip
+                                 # to true here AND in config.lua (Config.BBRAID_ENABLED) to revive it;
+                                 # it's also been pulled from the R5ModSettings panel (modsettings.lua).
+UNLOCK_HIDDEN_BUILDING = true    # surface build pieces hidden from standard play (keeps progression)
+PROTECT_STRUCTURES     = true    # make building blocks invulnerable so raids can't wreck the base
+KEYS_ENABLED_ONSTART   = true    # true = mod keys ready to use immediately on launch (default).
+                                 # false = starts OFF; press the toggle key (Insert by default) to turn on
+
+# --- Dev / tuning tools ---
+LIVE_EDIT            = true    # PageUp/PageDown = height, ',' '.' = rotate the prop in front
+WHISTLE_FOLLOW_DEBUG = false   # extra follow logging
+

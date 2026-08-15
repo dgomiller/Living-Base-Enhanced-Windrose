@@ -1,0 +1,266 @@
+LivingBase Enhanced -- Changelog
+
+======================================================================
+v1.3.10 (2026-08-14) -- previous version: v1.3.9
+======================================================================
+
+SENKAMATI TRIBALS (Num7) -- frozen "idle" looks added
+- Every existing Num7 look (Warrior, Hunter, and female Caster -- crew re-skin, mob body,
+  and original corrupted, each with/without helmet) now has a frozen counterpart that
+  stays in place instead of wandering. Roster grew from 15 to 30 looks.
+
+======================================================================
+v1.3.9 (2026-08-14) -- previous version: v1.3.8
+======================================================================
+
+LIVE-EDIT -- target lock + a 2x precision step
+- New: Numpad + toggles a target lock. While locked, Num9 despawn, the
+  ']'/'[' cycle keys, and every live-edit key (raise/lower/rotate/slide)
+  all act on that ONE object instead of re-picking "nearest in front" on
+  every press -- so you can back away, turn around, or work at an angle
+  without losing your target. Toast-confirms on/off, naming the target;
+  auto-releases (with its own toast and reason) if the locked object gets
+  despawned, or if you walk more than ~15m away from it (tunable via
+  Config.TARGET_LOCK_MAX_DIST). Requires LIVE_EDIT on, same as the rest
+  of the live-edit key set.
+- The precision cycle (Numpad -) gained a 5th stop: full -> 1/2 -> 1/4 ->
+  1/8 -> 2x -> back to full, for fast coarse repositioning.
+
+WALKING WOMEN + SENKAMATI -- a second base body (the Herbalist)
+- A pawn's color/palette can't be changed after it's built in this game
+  (confirmed a while back) -- so the only real way to get figure/hair-
+  color/palette variety is a different underlying NPC class. Added the
+  Herbalist (a walking female NPC, same family as the existing Gatherer
+  base) as a second option.
+- Every Walking Woman look (Numpad .) -- Woman With Hat, Woman With Hair,
+  Merchant, Letty, and Marita -- now comes in TWO base bodies, "Base 1"
+  (Gatherer) and "Base 2" (Herbalist), for 10 stops total. Same outfit/
+  hair-style rules either way (Letty keeps her ponytail on both, etc.);
+  only the underlying figure/hair-color/palette differs.
+- Senkamati (Num 7): the female Caster's crew re-skin now has a Herbalist-
+  base pair alongside the existing Gatherer-base pair (with/without
+  helmet each), so the roster grows from 13 to 15 looks.
+
+======================================================================
+v1.3.8 (2026-08-13) -- previous version: v1.3.7
+======================================================================
+
+PER-WORLD SAVES -- multiple worlds no longer share one base
+- Fixed a real bug: Windrose lets you keep several separate named-save
+  worlds, but LivingBase was saving everyone's placed crew/decor to ONE
+  shared persist.txt/spawn_ledger.txt regardless of which world was
+  loaded. Loading a different world restored the WRONG crew into it, and
+  saving there overwrote the file the other world depended on.
+- Each world now gets its own save file, keyed off that world's own
+  internal island ID (read from the game's own world state -- not
+  something you need to do anything with; it's automatic).
+- Upgrading from an older version: whichever world you load FIRST after
+  updating automatically inherits your existing save (nothing lost), and
+  that old shared file is then renamed to persist.bak/spawn_ledger.bak so
+  no OTHER world can also pick it up. Every world after that starts
+  clean, exactly as if it had always had its own save.
+
+CASTER -- improved body fit (used with permission)
+- Replaced the previous underwear-mesh patch (used to cover a visible
+  pelvis-area gap on the re-skinned human body) with a proper body-mesh
+  fix instead, bundled directly with the mod. Removes a seam/gap that
+  could show at the hips -- no other behavior changes.
+
+======================================================================
+v1.3.7 (2026-08-13) -- previous version: v1.3.5
+======================================================================
+
+DECORATIONS -- off the F-row entirely
+- Replaced the six individual F1-F6 decoration-category keys with a 2-key
+  "active category" system: ';' places one decoration from whichever
+  category is currently active, ''' advances which category is active
+  (nature -> boats -> wrecks -> tents -> storage -> furniture -> back to
+  nature), announced with an on-screen toast/log line so you always know
+  what ';' will place next. Changing category doesn't spawn anything by
+  itself.
+- Motivation: another installed mod (WeatherControl) also binds plain
+  F-row keys, and this UE4SS build doesn't reliably distinguish a
+  Shift-modified F-key press from a plain one, so two mods bound to the
+  same physical F-key both fired on every press. Moving decor placement
+  off the F-row entirely avoids this whole class of conflict by
+  construction, for any current or future F-row-binding mod, not just
+  this one.
+- Decor key bindings and category data were pulled into their own file,
+  Scripts/fkeys.lua, isolated from config.lua.
+- Fixed a real, longstanding restore bug found while validating this:
+  decorations were never recognized by the save-restore classifier
+  (isStaticLine in spawner.lua), which only checked for posed-statue
+  class names. Every decoration has therefore always been silently
+  routed into the AI-mover restore path instead of the fast static-actor
+  path -- staggered at the slower per-mover interval, and counted in the
+  "post-processing N mover(s)..." toast even though decorations never
+  needed post-processing at all. Decorations now restore instantly like
+  statues, and mover counts/toasts only reflect genuine AI-driven spawns.
+
+BLACKBEARD RAID -- disabled by default
+- Config.BBRAID_ENABLED is now false out of the box (was true). The
+  feature (raidflag/bbraid keys, the raid trigger itself) is untouched
+  in the code and easy to re-enable (Config.BBRAID_ENABLED = true in
+  config.lua AND config.txt), but ships off. Removed from the
+  R5ModSettings Settings > Mods panel while disabled -- re-add its
+  entries in modsettings.lua's M.TOGGLE_DEFS/M.KEYBIND_DEFS if reviving it.
+
+======================================================================
+v1.3.5 (2026-08-11) -- previous version: v1.3.0
+======================================================================
+
+WALKING WOMEN (Numpad Decimal key)
+- New: a walking female NPC that can be re-skinned to look like Letty,
+  Marita Suares, or the Buccaneers Merchant -- previously these characters
+  could only be placed as frozen, posed statues; there was no way to have
+  them wander your base like a normal crew member. Also includes two plain
+  looks for general ambient crowd variety, "Woman With Hat" and "Woman With
+  Hair". Repeated presses cycle through: Woman With Hat, Woman With Hair,
+  Merchant, Letty, Marita, in that order.
+- Skin tone and hair now vary too: the two generic looks randomize both on
+  every placement, and Letty/Marita/Merchant now randomize skin tone on top
+  of their own fixed outfit and hairstyle. Re-rolls fresh on every reload by
+  design -- this isn't meant to lock in one permanent appearance.
+- Outfit/hair COLOR was investigated and is not possible to change on any
+  NPC in this game -- confirmed a build-time-only engine input; forcing it
+  earlier crashes. Not pursued further.
+- Fixed several real clipping/appearance bugs found through live testing:
+  hats not hiding correctly under several different headwear naming
+  patterns, a rare case of a forced hat overwriting a torso piece instead
+  (toplessness), and "hat hair" persisting with no hat actually placed
+  (baldness).
+- Placing several of these NPCs and reloading now correctly restores every
+  one of them, not just the first of each look -- a queuing bug was
+  silently dropping the rest. The "base restored" notification now also
+  correctly waits for this restore work to finish before appearing.
+
+SENKAMATI (Numpad 7) roster fixes
+- Reloading now correctly restores which of the 14 comparison rows a
+  Senkamati actor was (including its helmet on/off state) instead of
+  always falling back to one fixed look -- previously undocumented as a
+  known gap.
+- Fixed a bug where a masked and unmasked Senkamati of the same type,
+  placed at the same time, could fight over each other's headdress state
+  after a reload, and a separate bug where the saved helmet state wasn't
+  being read back correctly at all. Both are now fixed.
+
+======================================================================
+v1.3.0 (2026-08-10) -- previous version: v1.2.0
+======================================================================
+
+SENKAMATI (Numpad 7) -- normal posture for Hunter and Caster
+- The Hunter and Caster now walk with a normal human posture instead of their
+  native mob's lumbering gait -- the same fix already used for the Warrior,
+  applied to the other two for the first time. Under the hood: both are now
+  re-skinned onto a walking human-body pawn instead of spawning as the mob
+  itself, using the same composite-armor system as the Warrior. The Caster's
+  new base is a genuine walking female NPC, found by probing a real townsfolk
+  woman already wandering the world (crew pawns are male-only).
+- Removed the Healer from the roster -- visually identical to the Caster, not
+  worth the extra placements.
+- Fixed a real bug found along the way: a de-corrupt rule copied from the
+  Caster's mob form was unintentionally HIDING her own Hands/Legs/Feet armor
+  the instant it attached, on the new human-body version. Only affected the
+  new re-skinned Caster; the original mob form was never affected.
+- Fixed a second issue specific to the re-skinned bodies: a visible gap at the
+  pelvis where the tribal "fringe" armor piece (designed to show the mob's own
+  skin through its gaps) had nothing to show through on a human body. Closed
+  with a substitute garment piece for the Hunter and Caster's new re-skinned
+  looks. Left off the Warrior at his own request -- barely noticeable under
+  his own armor's longer fringe, and he's otherwise spawned exactly as before
+  this update (no other changes to his look).
+- The Hunter and Warrior can now optionally keep their tribal helmet/headdress
+  visible instead of it being hidden by default.
+- De-corrupting the Hunter/Caster's ORIGINAL mob-body look (as opposed to the
+  new re-skinned one above) is now lighter-touch: it only cleans up skin tone,
+  eyes, and hair color. Armor pieces and facial hair that used to be hidden
+  are now left visible.
+- The re-skinned Caster no longer randomly speaks a townsfolk NPC's idle voice
+  lines (a side effect of her new human-body base).
+- Num7 now cycles through 14 placements instead of 4, covering every look
+  above side by side for comparison: 2 Warrior looks (with/without helmet), 4
+  Hunter looks (original mob body vs. re-skinned, each with/without helmet), 4
+  Caster looks (same pattern), and 3 "original corrupted" looks (Warrior,
+  Hunter, Caster in their native, undiluted corrupted appearance -- still
+  peaceful and safe to stand next to, just not visually cleaned up).
+
+======================================================================
+v1.2.0 (2026-08-07) -- previous version: v1.1.2
+======================================================================
+
+BUG FIXES
+- Fixed a bug where StripInteraction and StripQuestScenario silently failed on
+  every single spawn: bracket-indexing a UE4SS TArray of components returned an
+  unusable wrapper object instead of the component itself, so no interaction
+  prompt or quest-scenario component was ever actually being destroyed. Root
+  cause found and fixed. Named quest NPCs placed via the mod (Letty, Francois
+  Arno, and the new roster entries below) now correctly lose their nameplate,
+  interact prompt, and quest dialogue.
+- Fixed several diagnostic log messages (spawn failures, composite-look
+  resolution) being silently hidden behind the VERBOSE toggle, which made real
+  failures impossible to diagnose from the log.
+
+NEW: WALKING FACTION VISITORS
+- Crew (Numpad 1) now cycles through 13 looks per press instead of always
+  spawning the same default crew pawn: the original look, plus 12 faction-visitor
+  re-skins -- Buccaneers, Smugglers, People of Tortuga, and Brethren of the Coast,
+  each with a Musketeer, Sailor, and Sergeant look, plus a Brethren of the Coast
+  woman.
+- These are real crew pawns with their own working AI, so they walk/patrol
+  normally -- re-skinned via the game's own composite-mesh system.
+- Known limitation: uniform colors are currently generic, not faction-matched.
+  An attempt to fix this triggered a fatal native crash on world load and was
+  reverted.
+- Known limitation: the Brethren of the Coast "woman" look currently presents a
+  male body under the female gear. A fix attempt made this worse (broken walk
+  animation, still male-presenting) and was reverted.
+
+STANDING STATUES (Numpad 3) -- 15 new entries
+- Added 5 confirmed faction leaders / prominent NPCs, all with quest dialogue
+  automatically stripped by the bug fix above: Benjamin Hornigold (Brethren of
+  the Coast), Henri Boucher (Buccaneers), Marita Suares (Smugglers), and Long Ben
+  and Charlie Sharp (People of Tortuga).
+- Added 10 more entries found via a full roster audit against the game's own
+  asset manifest: DrunkCanoneer, plus missing Merchant and LeanOnWall pose
+  variants across all four factions.
+
+SEATED STATUES (Numpad 4) -- 1 new entry
+- Added a missing ground-sitter pose variant (People of Tortuga).
+
+INTERACTIVE STATUES (Numpad 6) -- 4 new entries
+- Added missing "rummaging a table" and "warming by a fire" pose variants across
+  Brethren of the Coast and People of Tortuga.
+
+CHAIR/STOOL STATUES (Numpad 5) -- audited against the game's asset manifest, no
+  gaps found.
+
+TOWNSMAN (Numpad 2) -- audited, no gaps found (all 6 Handyman professions were
+  already present).
+
+SENKAMATI (Numpad 7) -- 1 new entry
+- Added the Healer, joining the Warrior, Hunter, and Caster in the cycle.
+- Investigated the Giant Shaker (a boss-tier enemy) but deliberately left it out
+  of the roster.
+
+LIVESTOCK / ANIMALS (Numpad 8) -- expanded from 5 to 14 entries
+- Added Goat Mega (the path already existed in the mod but was never enabled).
+- Added the Sow, Charging Boar, and Boar Mega to the boar family.
+- Added the Wolf and Alpha Wolf.
+- Added the Crocodile and a corrupted "Plague" Crocodile variant.
+- All new animals are tamed/pacified the same way as the existing ones (copy
+  your crew's faction, made invincible). Only the original Boar has a
+  fully-proven passive-AI override; the rest rely on the faction copy alone and
+  have not all been exhaustively tested for lingering aggression.
+
+KEYBINDS
+- The "cycle look" action (previously a single, forward-only Numpad + press) is
+  now a bidirectional pair: ']' cycles forward, '[' cycles backward. Numpad + is
+  free again as a result.
+- ']'/'[' collide with the game's own "Change Target" combat bind. The Insert
+  toggle can disable every LivingBase key at once if that's ever an issue.
+
+CLEANUP
+- Removed a dead, never-correct guess at "walking faction visitor" crew classes
+  that never actually resolved to a real game asset.
+- Cleaned a stale leftover keybind entry from the R5ModSettings saved-settings
+  file (left over from before the cycle key was split in two).

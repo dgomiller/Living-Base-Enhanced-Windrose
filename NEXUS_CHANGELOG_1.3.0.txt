@@ -1,0 +1,17 @@
+Living Base Enhanced v1.3.0 (previous version: v1.2.0)
+
+- Senkamati Hunter and Caster (Num 7) now walk with normal human posture instead of their native mob's lumbering gait -- the same fix already used for the Warrior, now applied to the other two as well.
+
+- Removed the Healer from the Senkamati roster -- she looked identical to the Caster.
+
+- Fixed a bug where the re-skinned Caster's own Hands/Legs/Feet armor was being hidden the instant it attached, instead of staying visible.
+
+- Fixed a visible gap at the pelvis on the re-skinned Hunter and Caster (the tribal armor's fringe design relies on skin showing through its gaps, which a human body doesn't have there) by adding a covering garment underneath. Left off the Warrior at his own request -- barely noticeable under his own armor, and he's spawned exactly as before this update otherwise.
+
+- The Hunter and Warrior can now optionally keep their tribal helmet/headdress visible instead of it being hidden by default.
+
+- De-corrupting the Hunter/Caster's original mob-body look is now lighter-touch: only skin tone, eyes, and hair color are cleaned up. Armor pieces and facial hair are left visible instead of hidden.
+
+- The re-skinned Caster no longer randomly speaks a townsfolk NPC's idle voice lines.
+
+- Num 7 now cycles through 14 placements instead of 4, covering every look side by side for comparison: 2 Warrior looks, 4 Hunter looks, 4 Caster looks, and 3 "original corrupted" looks (still peaceful, just not visually cleaned up).

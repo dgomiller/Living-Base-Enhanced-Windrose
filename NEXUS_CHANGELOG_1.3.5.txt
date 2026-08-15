@@ -1,0 +1,37 @@
+Living Base Enhanced v1.3.5 (previous version on Nexus: v1.2.0)
+
+Note: v1.3.0 was never posted here, so this update includes everything from both v1.3.0 and v1.3.5 in one go.
+
+===== NEW IN v1.3.5 =====
+
+- New "Walking Women" feature (Numpad . key) — place a real, walking female NPC that can look like Letty, Marita Suares, or the Buccaneers Merchant, instead of only being available as a frozen statue. Two extra plain looks ("Woman With Hat" and "Woman With Hair") round out the roster for general crowd variety. Repeated presses cycle through all five in order.
+
+- These NPCs also get a random skin tone (and, for the two plain looks, a random hairstyle) each time you place one. This re-rolls every time you reload your save on purpose — it's meant to add variety, not lock in one fixed appearance.
+
+- Fixed several appearance glitches with hats and hair clipping through each other, found through testing — including a rare case where a forced hat could accidentally remove a piece of clothing instead, and hair styled for a hat with no hat actually there.
+
+- Fixed a bug where placing several of the new Walking Women NPCs and then reloading your save would only correctly bring back the first one of each look, leaving the rest looking wrong.
+
+- Fixed two separate bugs where reloading your save could mess up the "helmet on/off" comparison rows in the Senkamati roster (Numpad 7) — a masked version could lose its mask after a reload, or interfere with a nearby unmasked one. Both are now fixed.
+
+- The "your base has been restored" message after loading a save now correctly waits until all of the above finishes before it appears, instead of showing up too early.
+
+- (Investigated but not possible: changing outfit or hair COLOR on any NPC in this mod. The game only sets that once, when a character is first created behind the scenes, and there's no safe way to force it to happen again without crashing. Not pursued further — skin tone and hairSTYLE both work fine and are unaffected by this.)
+
+===== NEW IN v1.3.0 (bundled in, see note above) =====
+
+- The Senkamati Hunter and Caster (Numpad 7) now walk with a normal human posture instead of their monstrous native shamble, matching the Warrior.
+
+- Removed the Healer from the Senkamati roster — she looked identical to the Caster.
+
+- Fixed a bug where the re-skinned Caster's hand, leg, and foot armor was invisible instead of showing.
+
+- Fixed a visible gap near the waist on the re-skinned Hunter and Caster.
+
+- The Hunter and Warrior can now optionally keep their tribal helmet/headdress visible instead of it always being hidden.
+
+- Cleaning up the Hunter/Caster's original monster-form look is now lighter-touch: only skin tone, eyes, and hair color get adjusted, and their armor and facial hair stay visible instead of being stripped.
+
+- The re-skinned Caster no longer randomly speaks generic townsfolk voice lines.
+
+- Numpad 7 now cycles through 14 placements instead of 4, so every look (helmet on/off, re-skinned vs. original) can be compared side by side.

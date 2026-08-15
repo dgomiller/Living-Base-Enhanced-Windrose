@@ -1,13 +1,13 @@
 # Timestamped hand-rolled backups -- superseded by git history itself
-Binaries/Win64/ue4ss/Mods/LivingBase/archive/
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/archive/
 
 # Runtime state, not source
-Binaries/Win64/ue4ss/Mods/LivingBase/persist.txt
-Binaries/Win64/ue4ss/Mods/LivingBase/spawn_ledger.txt
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/persist.txt
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/spawn_ledger.txt
 *.log
 
 # Python cache
-Binaries/Win64/ue4ss/Mods/LivingBase/__pycache__/
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/__pycache__/
 *.pyc
 
 # Stray dev artifacts

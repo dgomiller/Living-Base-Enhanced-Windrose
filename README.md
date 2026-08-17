@@ -16,7 +16,7 @@ scheme. This top-level README is about the *codebase*, for anyone browsing the r
 
 ## Companion GUI mod
 
-As of 2.0.0, LivingBase has a companion: **LivingBaseSpawnMenu** *(repo link TBD)* — a separately
+As of 2.0.0, LivingBase has a companion: **[LivingBaseSpawnMenu](https://github.com/dgomiller/Living-Base-Spawn-Menu-Windrose)** — a separately
 built, compiled C++ UE4SS mod that adds a real clickable window (categorized spawn tree, a move/edit panel,
 a precise coordinate editor) instead of the keyboard-only cycling system. It lives in its **own repo** (a
 different language/toolchain entirely — CMake + a UE4SS C++ mod template, not Lua) and talks to this mod

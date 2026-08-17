@@ -193,7 +193,7 @@ confirmations still show on-screen.)
 > seconds) between presses actually registering. This is an engine-level limitation, not a
 > mod bug. **The GUI's move panel buttons don't have this problem** — they're real held-repeat
 > UI buttons, not raw key hooks — so if held-to-repeat movement matters to you, that's the
-> more reliable path. See `WINDROSE_MODDING_NOTES.md` §9 (in the optional `LivingBaseDevInfo.zip`
+> more reliable path. See `WINDROSE_MODDING_NOTES.md` §9 (in the optional `LivingBaseEnhancedDevInfo.zip`
 > download, alongside this one) for the full investigation.
 
 ### Housekeeping
@@ -427,5 +427,5 @@ intellectual property belong to Kraken Express — this is an unofficial, unaffi
 ---
 
 *Built iteratively with Claude. See `CLAUDE.md` and `WINDROSE_MODDING_NOTES.md` (bundled
-separately in the optional `LivingBaseDevInfo.zip` download) for the full technical history
+separately in the optional `LivingBaseEnhancedDevInfo.zip` download) for the full technical history
 and engine findings, and `ASSET_CATALOG.md` for the spawnable-asset database.*

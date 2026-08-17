@@ -21,13 +21,15 @@ Config.DECOR_COLLISION = true
 -- loaded data assets, which reset each launch, so it never affects the save. See unlockbuild.lua.
 Config.UNLOCK_HIDDEN_BUILDING = false
 
--- Whether every key this mod binds (numpad, F-row, DEL, '\', live-edit) starts ON or OFF when the
--- game launches. true (default) = ready to use immediately, same as always. false = starts OFF, so
--- the mod's keys don't interfere with anything until you explicitly press the toggle key
--- (Config.KEYS.toggleMod, "INS" by default) to turn them on -- for players who'd rather opt in each
--- session than remember to opt out. Purely a starting state; the toggle key still flips it either way
--- at runtime regardless of this setting.
-Config.KEYS_ENABLED_ONSTART = true
+-- Whether every key this mod binds (numpad, F-row, DEL, '\', live-edit -- collectively "In-Game
+-- Keys") starts ON or OFF when the game launches. false (default, 2026-08-16) = starts OFF, so the
+-- mod's keys don't interfere with anything until you explicitly press the toggle key
+-- (Config.KEYS.toggleMod, "INS" by default) to turn them on -- now that the LivingBaseSpawnMenu
+-- window is reachable at any time via '-' (Config.KEYS.toggleWindow, itself always active
+-- regardless of this setting), there's less reason to have every in-game key live by default; opt
+-- in each session instead. true = ready to use immediately, the old default. Purely a starting
+-- state; the toggle key still flips it either way at runtime regardless of this setting.
+Config.KEYS_ENABLED_ONSTART = false
 
 -- Auto-restore the saved crowd on world load?
 --   true  = your placed base repopulates automatically when you load in (default).
@@ -232,6 +234,19 @@ Config.KEYS = {
   -- cycling isn't happening mid-combat anyway).
   cycleNext = "OEM_RIGHT_BRACKET", -- ']'  cycle forward
   cyclePrev = "OEM_LEFT_BRACKET",  -- '['  cycle backward
+  -- Steals OS focus for the LivingBaseSpawnMenu window (SetForegroundWindow, C++ side --
+  -- StandaloneWindow.cpp). SIMPLIFIED (2026-08-16, RedFalcon: "just have it steal focus on = press
+  -- and that's it") -- an earlier version also toggled the player controller's mouse cursor/
+  -- camera-look via bShowMouseCursor/SetIgnoreLookInput; dropped entirely, this key now does exactly
+  -- one thing. Only takes effect if the window is already visible (see main.lua's own
+  -- publishSpawnMenuStatusIfChanged / StandaloneWindow.cpp's FocusStealSeq() check).
+  releaseMouse = "OEM_EQUALS", -- '='  steal focus for the spawn menu window
+  -- Opens/closes the LivingBaseSpawnMenu window (starts CLOSED by default, 2026-08-16). Always
+  -- active, same as Insert and '=' -- works regardless of In-Game Keys being on/off, since you need
+  -- a way to get the window open even with everything else toggled off. Reaching the window's own
+  -- buttons still requires actually opening it, but the buttons' disabled state is unaffected by
+  -- whether the window itself is open -- see MoveMenu.cpp's own In-Game Keys checkbox.
+  toggleWindow = "OEM_MINUS", -- '-'  open/close the spawn menu window
   toggleMod = "INS", -- toggle EVERY key this mod binds (numpad, F-row, DEL, '\', live-edit) on/off at
                       -- runtime, so any of them is free for other uses when you're not actively using
                       -- the mod. Always active itself (not gated by the toggle it controls). Off the
@@ -703,9 +718,9 @@ Config.SENKAMATI_LOOKS = {
   -- that function's own comment), so this deliberately doesn't touch it.
   { name = "Caster-F", kind = "crew", helmet = true,  baseClass = Config.SENKA_FEMALE_BASE_CLASS_HERBALIST, forceArchetype = false, params = CASTER_PARAMS, baseLabel = "Herbalist" },
   { name = "Caster-F", kind = "crew", helmet = false, baseClass = Config.SENKA_FEMALE_BASE_CLASS_HERBALIST, forceArchetype = false, params = CASTER_PARAMS, baseLabel = "Herbalist" },
-  -- CASTER -- idle (frozen) crew + mob (4 rows) -- Gatherer base only (idle rows aren't split by
-  -- baseLabel the way the walking Herbalist pair is; not worth doubling to 8 rows for a body-base
-  -- difference that's orthogonal to the actual idle/NSFW-safety ask).
+  -- CASTER -- idle (frozen) crew + mob (4 rows) -- Gatherer base only here; the Herbalist-base
+  -- frozen pair is appended at the very END of this whole table instead (see the comment down
+  -- there for why), not inserted here alongside it.
   { name = "Caster-F", kind = "crew", helmet = true,  idle = true, baseClass = Config.SENKA_FEMALE_BASE_CLASS, forceArchetype = false, params = CASTER_PARAMS },
   { name = "Caster-F", kind = "crew", helmet = false, idle = true, baseClass = Config.SENKA_FEMALE_BASE_CLASS, forceArchetype = false, params = CASTER_PARAMS },
   { name = "Caster-F", kind = "mob",  helmet = true,  idle = true, mob = CASTER_MOB },
@@ -728,6 +743,19 @@ Config.SENKAMATI_LOOKS = {
   { name = "Warrior",  kind = "corrupted", idle = true, mob = WARRIOR_MOB },
   { name = "Hunter",   kind = "corrupted", idle = true, mob = HUNTER_MOB },
   { name = "Caster-F", kind = "corrupted", idle = true, mob = CASTER_MOB },
+
+  -- CASTER, Herbalist base -- frozen (idle) crew reskin pair (2026-08-16, RedFalcon's request:
+  -- "add frozen versions of the herbalist crew caster"). Mirrors the Herbalist non-idle pair
+  -- (helmet true/false, baseClass = SENKA_FEMALE_BASE_CLASS_HERBALIST, baseLabel = "Herbalist")
+  -- further up, just idle = true. Originally scoped out of that pair's own idle block ("not worth
+  -- doubling to 8 rows for a body-base difference orthogonal to the idle/NSFW-safety ask") --
+  -- reversed on request. APPENDED HERE AT THE VERY END rather than inserted next to the Gatherer
+  -- idle pair above: spawnmenu_manifest.lua/main.lua's SPAWN_MENU_HANDLERS address every
+  -- SENKAMATI_LOOKS row by its plain array INDEX, and spawn_menu.ini already has live entries
+  -- pointing at specific indices from a previous run -- inserting anywhere but the end would shift
+  -- every later row's index and silently repoint those existing tree entries at the wrong look.
+  { name = "Caster-F", kind = "crew", helmet = true,  idle = true, baseClass = Config.SENKA_FEMALE_BASE_CLASS_HERBALIST, forceArchetype = false, params = CASTER_PARAMS, baseLabel = "Herbalist" },
+  { name = "Caster-F", kind = "crew", helmet = false, idle = true, baseClass = Config.SENKA_FEMALE_BASE_CLASS_HERBALIST, forceArchetype = false, params = CASTER_PARAMS, baseLabel = "Herbalist" },
 }
 -- NOTE: the Villager moved OFF this cycle to its own key (Config.KEYS.villager)
 -- while we iterate on it, so testing doesn't mean cycling past the other three.
@@ -1584,6 +1612,24 @@ Config.FEMALE_WALKER_OVERLAYS = {
   -- skeleton. Question answered, nothing left to check for.
 }
 
+-- Config.FEMALE_RESKIN_TARGETS -- the walking-women name roster (testbed.lua's
+-- Testbed.TestFemaleWalkerReskin/SpawnFemaleWalkerByName cycle/look up these exact strings against
+-- Config.FEMALE_WALKER_OVERLAYS above). MOVED HERE from a local table in testbed.lua (2026-08-16,
+-- RedFalcon's request -- "get the women back in the list") so spawnmenu_manifest.lua can enumerate
+-- it into the LivingBaseSpawnMenu tree without a circular require (that generator runs from THIS
+-- file's own tail and can only see Config, never require("testbed") -- see spawnmenu_manifest.lua's
+-- own header for the full story). Every character x Base 1/Base 2 (2026-08-14) -- Base 1 = the
+-- original Gatherer body, Base 2 = the Herbalist, see testbed.lua's femaleBaseClassFor for how the
+-- suffix picks the body. Deliberately does NOT include "Female_Barbie" -- that one's lblook-only by
+-- design (Testbed.SpawnBarbieByName's own comment), not part of this rotation.
+Config.FEMALE_RESKIN_TARGETS = {
+    "Woman With Hat Base 1",  "Woman With Hat Base 2",
+    "Woman With Hair Base 1", "Woman With Hair Base 2",
+    "Merchant Base 1",        "Merchant Base 2",
+    "Letty Base 1",           "Letty Base 2",
+    "Marita Base 1",          "Marita Base 2",
+}
+
 ------------------------------------------------------------
 -- WALKING WOMEN — NOT VIABLE (concluded 2026-07-06). The only dressed
 -- walking women are UNIQUE story NPCs, all unusable as ambient spawns:
@@ -2026,6 +2072,18 @@ do
   local ok, ModSettings = pcall(require, "modsettings")
   if ok and ModSettings then
     pcall(function() ModSettings.ApplyOnce(Config) end)
+  end
+end
+
+------------------------------------------------------------------
+-- OPTIONAL: LivingBaseSpawnMenu companion mod manifest. Generates spawn_menu.ini (add-only, never
+-- overwrites hand-curated entries) so that mod's category tree has something to read -- see
+-- spawnmenu_manifest.lua for the full explanation.
+------------------------------------------------------------------
+do
+  local ok, SpawnMenuManifest = pcall(require, "spawnmenu_manifest")
+  if ok and SpawnMenuManifest then
+    pcall(function() SpawnMenuManifest.GenerateOnce(Config) end)
   end
 end
 

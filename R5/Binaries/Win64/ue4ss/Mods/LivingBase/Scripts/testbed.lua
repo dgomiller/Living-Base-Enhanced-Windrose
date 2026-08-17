@@ -573,7 +573,18 @@ end
 -- actor, decorrupt skipped/disabled). Callers route this through Spawner.RunSerialized so no two
 -- actors' composites are ever touched concurrently (see that function's own comment for why).
 local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, onDone)
-    local function finish() if onDone then pcall(onDone) end end
+    -- Idempotent (2026-08-16): the ExecuteWithDelay/ExecuteInGameThread nesting fix below can
+    -- occasionally fire one redundant final retry tick (see that fix's own comment for why --
+    -- the retry-continuation state it checks is a tick stale by design), which could otherwise
+    -- call finish() a second time -- this codebase's own contract elsewhere promises onDone
+    -- "called exactly once", so guard it here rather than trust every caller's onDone to already
+    -- be safe to invoke twice.
+    local finished = false
+    local function finish()
+        if finished then return end
+        finished = true
+        if onDone then pcall(onDone) end
+    end
     if not (actor and actor:IsValid()) then finish(); return end
     -- Passivity comes from the FRIENDLY FACTION (a humanoid Senkamati treats crew/player as
     -- allies), plus MakePassive as backup. The faction copy needs a live crew to source
@@ -607,20 +618,41 @@ local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, on
         local rules = rulesWithHelmet((name == "Hunter") and Config.DECORRUPT_HUNTER or Config.DECORRUPT_MOB, showHelmet)
         local gen = Spawner.generation
         local tries, quiet = 0, 0
-        local function tryFix()
+        -- Reflects the PREVIOUS completed attempt, not the one in flight -- doFixWork's own
+        -- ExecuteInGameThread callback is async, so this is necessarily one tick stale by the
+        -- time tryFix reads it (worst case: one extra retry beyond the ideal stopping point).
+        local shouldContinue = true
+        local function doFixWork()
             ExecuteInGameThread(function()
-                if Spawner.generation ~= gen then finish(); return end
+                if Spawner.generation ~= gen then
+                    shouldContinue = false
+                    finish()
+                    return
+                end
                 local changed, comps = 0, 0
                 pcall(function() changed, comps = Spawner.DeCorruptByClass(shortName, rules, actor) end)
                 quiet = (changed == 0) and (quiet + 1) or 0
                 tries = tries + 1
                 local converged = ((comps or 0) >= 4) and quiet >= 2
-                if not converged and tries < 12 and ExecuteWithDelay then
-                    ExecuteWithDelay(800, tryFix)
+                if not converged and tries < 12 then
+                    shouldContinue = true
                 else
+                    shouldContinue = false
                     finish()
                 end
             end)
+        end
+        -- CONFIRMED (2026-08-16): calling ExecuteWithDelay NESTED inside an ExecuteInGameThread
+        -- callback throws "No overload found for function 'ExecuteWithDelay'" in this UE4SS build
+        -- -- found investigating a launch crash in an unrelated feature (UnlockBuild's own retry
+        -- timer, see main.lua's unlockTick/doWork fix), then audited across the whole codebase and
+        -- found here too. doFixWork's ExecuteInGameThread call and tryFix's own ExecuteWithDelay
+        -- call are siblings now, never nested.
+        local function tryFix()
+            doFixWork()
+            if shouldContinue then
+                ExecuteWithDelay(800, tryFix)
+            end
         end
         -- Wait for the mob's composite to FINISH building before touching its meshes. At
         -- 1.2s the de-corrupt hit a still-building Caster/Hunter composite and crashed
@@ -642,7 +674,18 @@ end
 -- once when this actor's de-corrupt + post-fix (leg-nudge, Warrior's shield) work is genuinely
 -- done. Callers route this through Spawner.RunSerialized.
 local function senkaCrewFix(actor, name, showHelmet, onDone)
-    local function finish() if onDone then pcall(onDone) end end
+    -- Idempotent (2026-08-16): the ExecuteWithDelay/ExecuteInGameThread nesting fix below can
+    -- occasionally fire one redundant final retry tick (see that fix's own comment for why --
+    -- the retry-continuation state it checks is a tick stale by design), which could otherwise
+    -- call finish() a second time -- this codebase's own contract elsewhere promises onDone
+    -- "called exactly once", so guard it here rather than trust every caller's onDone to already
+    -- be safe to invoke twice.
+    local finished = false
+    local function finish()
+        if finished then return end
+        finished = true
+        if onDone then pcall(onDone) end
+    end
     if not (actor and actor:IsValid()) then finish(); return end
     if Config.CREW_PASSIVE then disarmRepeated(actor) end
     local rulesName = "DECORRUPT_CREW"
@@ -665,7 +708,12 @@ local function senkaCrewFix(actor, name, showHelmet, onDone)
     if Config.DECORRUPT and ExecuteWithDelay then
         local gen = Spawner.generation
         local tries, quiet = 0, 0
-        local function tryFix()
+        -- Outcome of the LAST completed iteration -- "continue" (keep retrying), "warrior_postfix"
+        -- (converged, needs the shield-attach step scheduled), or "done" (finished, nothing left).
+        -- One tick stale relative to the iteration in flight, same reasoning as every other fix in
+        -- this pass -- see main.lua's unlockTick/doWork for the fuller explanation.
+        local outcome = "continue"
+        local function doFixWork()
             ExecuteInGameThread(function()
                 local changed = 0
                 pcall(function()
@@ -675,45 +723,60 @@ local function senkaCrewFix(actor, name, showHelmet, onDone)
                     tostring(name), tries + 1, changed))
                 quiet = (changed == 0) and (quiet + 1) or 0
                 tries = tries + 1
-                if quiet < 2 and tries < 10 and ExecuteWithDelay then
-                    ExecuteWithDelay(800, tryFix)
-                elseif ExecuteWithDelay then
-                    -- Settled. The de-corrupt already replaced hair (dreadlocks/mohawk) and swapped
-                    -- MI_Hair -> black. We no longer read the colour back and hide the hair when it
-                    -- didn't take (RedFalcon: "don't try to force baldness, it doesn't work"). A spawn
-                    -- who rolls light hair just gets respawned.
-                    --
-                    -- PELVIS GAP experiment (2026-08-10): see Spawner.NudgeComponentTransform's own
-                    -- comment. Runs once settled, on all four (not just the one currently being
-                    -- tested), so a config change applies uniformly next time any of them spawn.
-                    pcall(function()
-                        Spawner.NudgeComponentTransform(actor, legPattern,
-                            Config.SENKA_LEGS_NUDGE_SCALE, Config.SENKA_LEGS_NUDGE_OFFSET_Z)
-                    end)
-                    --
-                    -- SHIELD: Warrior only -- Hunter/Caster/Healer never carried one to attach.
-                    if name == "Warrior" then
-                        ExecuteWithDelay(Config.WARRIOR_POSTFIX_MS or 1500, function()
-                            ExecuteInGameThread(function()
-                                if not stillAlive(actor, gen) then
-                                    print("[LivingBase] Warrior post-fix skipped: actor gone or untracked.\n")
-                                    finish()
-                                    return
-                                end
-                                local okShield, errShield = pcall(Spawner.AttachShield, actor)
-                                if not okShield then
-                                    print("[LivingBase] AttachShield failed: " .. tostring(errShield) .. "\n")
-                                end
-                                finish()
-                            end)
-                        end)
-                    else
-                        finish()
-                    end
+                if quiet < 2 and tries < 10 then
+                    outcome = "continue"
+                    return
+                end
+                -- Settled. The de-corrupt already replaced hair (dreadlocks/mohawk) and swapped
+                -- MI_Hair -> black. We no longer read the colour back and hide the hair when it
+                -- didn't take (RedFalcon: "don't try to force baldness, it doesn't work"). A spawn
+                -- who rolls light hair just gets respawned.
+                --
+                -- PELVIS GAP experiment (2026-08-10): see Spawner.NudgeComponentTransform's own
+                -- comment. Runs once settled, on all four (not just the one currently being
+                -- tested), so a config change applies uniformly next time any of them spawn.
+                pcall(function()
+                    Spawner.NudgeComponentTransform(actor, legPattern,
+                        Config.SENKA_LEGS_NUDGE_SCALE, Config.SENKA_LEGS_NUDGE_OFFSET_Z)
+                end)
+                -- SHIELD: Warrior only -- Hunter/Caster/Healer never carried one to attach.
+                if name == "Warrior" then
+                    outcome = "warrior_postfix"
                 else
+                    outcome = "done"
                     finish()
                 end
             end)
+        end
+        local function doWarriorPostFix()
+            ExecuteInGameThread(function()
+                if not stillAlive(actor, gen) then
+                    print("[LivingBase] Warrior post-fix skipped: actor gone or untracked.\n")
+                    finish()
+                    return
+                end
+                local okShield, errShield = pcall(Spawner.AttachShield, actor)
+                if not okShield then
+                    print("[LivingBase] AttachShield failed: " .. tostring(errShield) .. "\n")
+                end
+                finish()
+            end)
+        end
+        -- CONFIRMED (2026-08-16): calling ExecuteWithDelay NESTED inside an ExecuteInGameThread
+        -- callback throws "No overload found for function 'ExecuteWithDelay'" in this UE4SS build
+        -- (found investigating a launch crash in an unrelated feature, then audited across the
+        -- whole codebase -- see main.lua's own unlockTick/doWork fix for the fuller writeup). This
+        -- function used to nest TWO such violations (the retry itself, and the Warrior post-fix's
+        -- own ExecuteWithDelay) -- doFixWork/doWarriorPostFix's ExecuteInGameThread calls and
+        -- tryFix's own ExecuteWithDelay calls are all siblings now, never nested.
+        local function tryFix()
+            doFixWork()
+            if outcome == "continue" then
+                ExecuteWithDelay(800, tryFix)
+            elseif outcome == "warrior_postfix" then
+                ExecuteWithDelay(Config.WARRIOR_POSTFIX_MS or 1500, doWarriorPostFix)
+            end
+            -- outcome == "done": finish() already ran inside doFixWork's own callback.
         end
         -- Wait for the composite to FINISH building before touching its meshes. De-corrupting
         -- at 1.2s hit a half-built composite and crashed natively (~1.2s after spawn, no
@@ -915,23 +978,54 @@ end
 -- NOTE: no `local` here -- forward-declared above (near spawnSenkaEntry) so both share the SAME
 -- variable instead of spawnSenkaEntry silently resolving an undeclared global.
 function freezeSenkaStatue(actor, onDone, tries)
-    local function finish() if onDone then pcall(onDone) end end
+    -- Idempotent (2026-08-16): the ExecuteWithDelay/ExecuteInGameThread nesting fix below can
+    -- occasionally fire one redundant final retry tick (see that fix's own comment for why --
+    -- the retry-continuation state it checks is a tick stale by design), which could otherwise
+    -- call finish() a second time -- this codebase's own contract elsewhere promises onDone
+    -- "called exactly once", so guard it here rather than trust every caller's onDone to already
+    -- be safe to invoke twice.
+    local finished = false
+    local function finish()
+        if finished then return end
+        finished = true
+        if onDone then pcall(onDone) end
+    end
     if not (actor and actor:IsValid()) then finish(); return end
     tries = tries or 0
     local gen = Spawner.generation
-    ExecuteInGameThread(function()
-        if not stillAlive(actor, gen) then finish(); return end
-        local ok = false
-        pcall(function() ok = Spawner.SetAILogic(actor, false) end)
-        if ok then
-            finish()
-        elseif tries < 6 and ExecuteWithDelay then
-            ExecuteWithDelay(300, function() freezeSenkaStatue(actor, onDone, tries + 1) end)
-        else
-            print("[LivingBase] freezeSenkaStatue: SetAILogic call failed after retries -- no AIController on this class? -- statue may still wander.\n")
-            finish()
+    -- Reflects the PREVIOUS completed attempt, not the one in flight -- see main.lua's
+    -- unlockTick/doWork for why this is split this way (ExecuteWithDelay nested inside
+    -- ExecuteInGameThread throws "No overload found" in this UE4SS build, confirmed 2026-08-16).
+    local shouldRetry = true
+    local function attempt()
+        ExecuteInGameThread(function()
+            if not stillAlive(actor, gen) then
+                shouldRetry = false
+                finish()
+                return
+            end
+            local ok = false
+            pcall(function() ok = Spawner.SetAILogic(actor, false) end)
+            if ok then
+                shouldRetry = false
+                finish()
+            elseif tries < 6 then
+                shouldRetry = true
+                tries = tries + 1
+            else
+                shouldRetry = false
+                print("[LivingBase] freezeSenkaStatue: SetAILogic call failed after retries -- no AIController on this class? -- statue may still wander.\n")
+                finish()
+            end
+        end)
+    end
+    local function tick()
+        attempt()
+        if shouldRetry and ExecuteWithDelay then
+            ExecuteWithDelay(300, tick)
         end
-    end)
+    end
+    tick()
 end
 
 -- applyStatueBodySwapTest/currentBodyMeshName/statueArchetypeTally/tallyAndLogArchetype/
@@ -1265,13 +1359,10 @@ function Testbed.SpawnInteractiveByName(name) return statueByName(Config.INTERAC
 -- give ANY of these looks genuine figure/hair-color/palette variety, since each class comes with its
 -- own fixed default archetype baked in at construction. Room for a "Base 3" etc. later if another
 -- suitable walking-female NPC class turns up -- femaleBaseClassFor would need a 3rd branch then.
-local FEMALE_RESKIN_TARGETS = {
-    "Woman With Hat Base 1",  "Woman With Hat Base 2",
-    "Woman With Hair Base 1", "Woman With Hair Base 2",
-    "Merchant Base 1",        "Merchant Base 2",
-    "Letty Base 1",           "Letty Base 2",
-    "Marita Base 1",          "Marita Base 2",
-}
+-- MOVED to Config.FEMALE_RESKIN_TARGETS (2026-08-16) so spawnmenu_manifest.lua can enumerate it
+-- into the LivingBaseSpawnMenu tree without a circular require -- see that Config entry's own
+-- comment (config.lua, right after Config.FEMALE_WALKER_OVERLAYS) for the full story.
+local FEMALE_RESKIN_TARGETS = Config.FEMALE_RESKIN_TARGETS
 -- Exposed (2026-08-13) so main.lua's "lblook list" can read the real roster instead of a
 -- hand-copied duplicate that could drift if this list ever changes.
 Testbed.FEMALE_RESKIN_TARGETS = FEMALE_RESKIN_TARGETS
@@ -1474,7 +1565,19 @@ function Testbed.ApplyFemaleReskinTarget(actor, targetName, retriesLeft, onSettl
     reskinTargetBusy[characterKey] = true
     local gen = Spawner.generation
     local tries = 0
-    local function tryOverlay()
+    -- Reflects the PREVIOUS completed pass, not the one in flight -- see main.lua's
+    -- unlockTick/doWork for why this whole function is split this way (ExecuteWithDelay nested
+    -- inside ExecuteInGameThread throws "No overload found" in this UE4SS build, confirmed
+    -- 2026-08-16). Three possible outcomes each pass: "continue" (keep looping the overlay
+    -- pass), "done" (settled, onSettled already fired inside doWork), or "respawn" (the
+    -- settle-check below wants a despawn+respawn retry -- the new actor/remaining retry count
+    -- land in pendingRetryActor/pendingRetryRetries, and the recursive
+    -- Testbed.ApplyFemaleReskinTarget call that owns firing onSettled happens from tick() below,
+    -- OUTSIDE ExecuteInGameThread, not from inside doWork's own callback the way the original
+    -- code called it directly).
+    local outcome = "continue"
+    local pendingRetryActor, pendingRetryRetries = nil, nil
+    local function doWork()
         ExecuteInGameThread(function()
             pcall(function()
                 if stillAlive(actor, gen) then Spawner.DeCorrupt(actor, overlay) end
@@ -1494,99 +1597,116 @@ function Testbed.ApplyFemaleReskinTarget(actor, targetName, retriesLeft, onSettl
             -- and quit BEFORE a late-attaching hat/headband had even shown up to be hidden
             -- -- the same class of late-attachment timing issue already documented for
             -- Senkamati armor elsewhere in this codebase. Always run the full budget.
-            if tries < 10 and ExecuteWithDelay then
-                ExecuteWithDelay(800, tryOverlay)
-            else
-                releaseAndDrainTarget(characterKey)
-                -- SETTLE-CHECK RETRY (2026-08-11, RedFalcon's requests): covers TWO ways a
-                -- composite's random build can leave a spawn looking wrong, neither of
-                -- which Spawner.DeCorrupt can ever fix directly (it can only replace/hide
-                -- EXISTING components, never create one): (1) the Torso slot is entirely
-                -- absent -- topless; (2) an overlay wanted a hat (`forceHat` set) but no
-                -- headwear-ish component ever showed up to content-match OR for the
-                -- (now-hardened) Spawner.ForceHeadwear to safely grab -- the hair is still
-                -- styled FOR a hat but nothing's covering it, reading as bald. Once settled,
-                -- check for both; if either is wrong, despawn and respawn the SAME target at
-                -- the SAME spot, up to a few attempts, hoping the next roll fixes it.
-                -- Recurses through this same function so a re-rolled actor gets the full
-                -- overlay + its own settle-check too, not just a bare respawn.
-                pcall(function()
-                    -- DIAGNOSTIC (2026-08-11): unconditional, not VERBOSE-gated -- a log()-
-                    -- gated version of this exact check gave zero signal on a real "still
-                    -- topless" report (VERBOSE defaults off), so there was no way to tell
-                    -- whether the check ever even ran. This line fires every time, torso
-                    -- found or not.
-                    local hasTorso = false
-                    pcall(function() hasTorso = Spawner.HasMeshMatching(actor, "Female_Torso") end)
-                    -- "HAT HAIR BUT NO HAT" (2026-08-11, RedFalcon's report: baldness spreading
-                    -- after the ForceHeadwear hardening). Any overlay with `forceHat` set
-                    -- pairs a hat-STYLED hair (SuspendHat/SuspendedHat/SuspendedBandana --
-                    -- geometry built assuming a hat covers the top) with an intended hat --
-                    -- if the content-matched replace found nothing to convert AND the now-
-                    -- hardened Spawner.ForceHeadwear had no safe fallback component either
-                    -- (see its own comment), the hat silently never lands, but the hair is
-                    -- STILL the hat-styled variant -- reads as bald/thin on top with nothing
-                    -- covering it. Only checked for overlays that actually wanted a hat.
-                    local needsHat = overlay.forceHat ~= nil
-                    local hasHat = false
-                    if needsHat then
-                        pcall(function()
-                            hasHat = Spawner.HasMeshMatching(actor, "^SK_Armor_.*Hat")
-                                or Spawner.HasMeshMatching(actor, "^SK_Armor_.*Headband")
-                                or Spawner.HasMeshMatching(actor, "^SK_Armor_.*Bandana")
-                        end)
-                    end
-                    print(string.format(
-                        "[LivingBase] ApplyFemaleReskinTarget: '%s' settle check -> hasTorso=%s needsHat=%s hasHat=%s retriesLeft=%d stillAlive=%s\n",
-                        tostring(targetName), tostring(hasTorso), tostring(needsHat), tostring(hasHat),
-                        retriesLeft, tostring(stillAlive(actor, gen))))
-                    -- settled: tracks whether THIS call resolved things itself (success, or
-                    -- gave up, or the actor died) vs. handed off to a recursive retry call
-                    -- that owns firing onSettled instead. Exactly one of the branches below
-                    -- ends up calling onSettled -- never zero, never twice.
-                    local settled = true
-                    local problem = (not hasTorso) or (needsHat and not hasHat)
-                    if stillAlive(actor, gen) and problem then
-                        if retriesLeft > 1 then
-                            print(string.format(
-                                "[LivingBase] ApplyFemaleReskinTarget: '%s' rolled %s -- despawning and retrying (%d attempt(s) left).\n",
-                                targetName,
-                                (not hasTorso) and "without a Torso" or "hat-styled hair with no hat",
-                                retriesLeft - 1))
-                            local info = Spawner.DespawnActor(actor)
-                            print("[LivingBase] ApplyFemaleReskinTarget: DespawnActor -> " ..
-                                (info and "ok" or "FAILED (actor not tracked?)") .. "\n")
-                            if info then
-                                local entry = nil
-                                for _, e in ipairs(Config.FACTION_VISITOR_LOOKS or {}) do
-                                    if e.name == "Brethren Woman" then entry = e; break end
-                                end
-                                if entry then
-                                    local newActor = Spawner.Spawn(info.class, targetName,
-                                        info.home, nil, nil, info.yaw, false,
-                                        { params = entry.params, reskinTarget = targetName })
-                                    if newActor and newActor:IsValid() then
-                                        settled = false  -- the recursive call now owns onSettled
-                                        Testbed.ApplyFemaleReskinTarget(newActor, targetName, retriesLeft - 1, onSettled)
-                                    else
-                                        print("[LivingBase] ApplyFemaleReskinTarget: retry respawn FAILED.\n")
-                                    end
-                                else
-                                    print("[LivingBase] ApplyFemaleReskinTarget: retry aborted -- no 'Brethren Woman' entry found.\n")
-                                end
-                            end
-                        else
-                            print(string.format(
-                                "[LivingBase] ApplyFemaleReskinTarget: '%s' still %s after retries -- giving up, leaving as-is.\n",
-                                targetName, (not hasTorso) and "topless" or "hat-styled hair with no hat"))
-                        end
-                    end
-                    if settled and onSettled then pcall(onSettled) end
-                end)
+            if tries < 10 then
+                outcome = "continue"
+                return
             end
+            outcome = "done" -- overwritten below if a respawn retry gets queued instead
+            releaseAndDrainTarget(characterKey)
+            -- SETTLE-CHECK RETRY (2026-08-11, RedFalcon's requests): covers TWO ways a
+            -- composite's random build can leave a spawn looking wrong, neither of
+            -- which Spawner.DeCorrupt can ever fix directly (it can only replace/hide
+            -- EXISTING components, never create one): (1) the Torso slot is entirely
+            -- absent -- topless; (2) an overlay wanted a hat (`forceHat` set) but no
+            -- headwear-ish component ever showed up to content-match OR for the
+            -- (now-hardened) Spawner.ForceHeadwear to safely grab -- the hair is still
+            -- styled FOR a hat but nothing's covering it, reading as bald. Once settled,
+            -- check for both; if either is wrong, despawn and respawn the SAME target at
+            -- the SAME spot, up to a few attempts, hoping the next roll fixes it.
+            pcall(function()
+                -- DIAGNOSTIC (2026-08-11): unconditional, not VERBOSE-gated -- a log()-
+                -- gated version of this exact check gave zero signal on a real "still
+                -- topless" report (VERBOSE defaults off), so there was no way to tell
+                -- whether the check ever even ran. This line fires every time, torso
+                -- found or not.
+                local hasTorso = false
+                pcall(function() hasTorso = Spawner.HasMeshMatching(actor, "Female_Torso") end)
+                -- "HAT HAIR BUT NO HAT" (2026-08-11, RedFalcon's report: baldness spreading
+                -- after the ForceHeadwear hardening). Any overlay with `forceHat` set
+                -- pairs a hat-STYLED hair (SuspendHat/SuspendedHat/SuspendedBandana --
+                -- geometry built assuming a hat covers the top) with an intended hat --
+                -- if the content-matched replace found nothing to convert AND the now-
+                -- hardened Spawner.ForceHeadwear had no safe fallback component either
+                -- (see its own comment), the hat silently never lands, but the hair is
+                -- STILL the hat-styled variant -- reads as bald/thin on top with nothing
+                -- covering it. Only checked for overlays that actually wanted a hat.
+                local needsHat = overlay.forceHat ~= nil
+                local hasHat = false
+                if needsHat then
+                    pcall(function()
+                        hasHat = Spawner.HasMeshMatching(actor, "^SK_Armor_.*Hat")
+                            or Spawner.HasMeshMatching(actor, "^SK_Armor_.*Headband")
+                            or Spawner.HasMeshMatching(actor, "^SK_Armor_.*Bandana")
+                    end)
+                end
+                print(string.format(
+                    "[LivingBase] ApplyFemaleReskinTarget: '%s' settle check -> hasTorso=%s needsHat=%s hasHat=%s retriesLeft=%d stillAlive=%s\n",
+                    tostring(targetName), tostring(hasTorso), tostring(needsHat), tostring(hasHat),
+                    retriesLeft, tostring(stillAlive(actor, gen))))
+                -- settled: tracks whether THIS call resolved things itself (success, or
+                -- gave up, or the actor died) vs. handed off to a recursive retry call
+                -- that owns firing onSettled instead. Exactly one of the branches below
+                -- ends up calling onSettled -- never zero, never twice.
+                local settled = true
+                local problem = (not hasTorso) or (needsHat and not hasHat)
+                if stillAlive(actor, gen) and problem then
+                    if retriesLeft > 1 then
+                        print(string.format(
+                            "[LivingBase] ApplyFemaleReskinTarget: '%s' rolled %s -- despawning and retrying (%d attempt(s) left).\n",
+                            targetName,
+                            (not hasTorso) and "without a Torso" or "hat-styled hair with no hat",
+                            retriesLeft - 1))
+                        local info = Spawner.DespawnActor(actor)
+                        print("[LivingBase] ApplyFemaleReskinTarget: DespawnActor -> " ..
+                            (info and "ok" or "FAILED (actor not tracked?)") .. "\n")
+                        if info then
+                            local entry = nil
+                            for _, e in ipairs(Config.FACTION_VISITOR_LOOKS or {}) do
+                                if e.name == "Brethren Woman" then entry = e; break end
+                            end
+                            if entry then
+                                local newActor = Spawner.Spawn(info.class, targetName,
+                                    info.home, nil, nil, info.yaw, false,
+                                    { params = entry.params, reskinTarget = targetName })
+                                if newActor and newActor:IsValid() then
+                                    settled = false  -- the recursive call now owns onSettled
+                                    pendingRetryActor, pendingRetryRetries = newActor, retriesLeft - 1
+                                    outcome = "respawn"
+                                else
+                                    print("[LivingBase] ApplyFemaleReskinTarget: retry respawn FAILED.\n")
+                                end
+                            else
+                                print("[LivingBase] ApplyFemaleReskinTarget: retry aborted -- no 'Brethren Woman' entry found.\n")
+                            end
+                        end
+                    else
+                        print(string.format(
+                            "[LivingBase] ApplyFemaleReskinTarget: '%s' still %s after retries -- giving up, leaving as-is.\n",
+                            targetName, (not hasTorso) and "topless" or "hat-styled hair with no hat"))
+                    end
+                end
+                if settled and onSettled then pcall(onSettled) end
+            end)
         end)
     end
-    ExecuteWithDelay(Config.MOB_DECORRUPT_DELAY_MS or 4000, tryOverlay)
+    local function tick()
+        doWork()
+        if outcome == "continue" then
+            ExecuteWithDelay(800, tick)
+        elseif outcome == "respawn" then
+            -- Recurses through this same function so a re-rolled actor gets the full overlay +
+            -- its own settle-check too, not just a bare respawn. Dispatched via a short
+            -- ExecuteWithDelay (never 0 -- see this fix's own header comment) rather than a
+            -- direct call, since we're still dynamically inside doWork's ExecuteInGameThread
+            -- callback at this point in a naive implementation; a real delay guarantees this
+            -- fires from a genuinely separate, safe context.
+            ExecuteWithDelay(10, function()
+                Testbed.ApplyFemaleReskinTarget(pendingRetryActor, targetName, pendingRetryRetries, onSettled)
+            end)
+        end
+        -- outcome == "done": onSettled already fired inside doWork's own callback.
+    end
+    ExecuteWithDelay(Config.MOB_DECORRUPT_DELAY_MS or 4000, tick)
 end
 
 -- Testbed.ApplyRandomFemaleLook(actor, onSettled) -- fallback for a restored actor whose
@@ -1717,7 +1837,12 @@ function Testbed.SpawnBarbieByName(name)
     end
     local gen = Spawner.generation
     local tries = 0
-    local function stripPass()
+    -- Split into doWork()/tick() -- see main.lua's unlockTick for why: ExecuteWithDelay called
+    -- from directly inside an ExecuteInGameThread callback throws "No overload found" in this
+    -- UE4SS build (confirmed 2026-08-16). tick() is only ever invoked from outside that callback
+    -- (the initial call below, or ExecuteWithDelay's own timer callback), never nested within it.
+    local shouldContinue = true
+    local function doWork()
         ExecuteInGameThread(function()
             pcall(function()
                 if stillAlive(actor, gen) then
@@ -1726,12 +1851,16 @@ function Testbed.SpawnBarbieByName(name)
                 end
             end)
             tries = tries + 1
-            if tries < 10 and ExecuteWithDelay then
-                ExecuteWithDelay(800, stripPass)
-            end
+            shouldContinue = tries < 10
         end)
     end
-    stripPass()
+    local function tick()
+        doWork()
+        if shouldContinue and ExecuteWithDelay then
+            ExecuteWithDelay(800, tick)
+        end
+    end
+    tick()
     return actor
 end
 

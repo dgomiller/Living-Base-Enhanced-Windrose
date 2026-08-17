@@ -1,0 +1,11 @@
+Living Base Enhanced v2.0.0 (previous version on Nexus: v1.3.10)
+
+===== NEW IN v2.0.0 =====
+
+- A real GUI: the download now bundles LivingBaseSpawnMenu, a second, compiled companion mod that adds a clickable, always-on-top window instead of keyboard-only cycling — a categorized spawn tree covering every roster, a held-repeat move/edit panel (hold Forward/Back/Left/Right/Up/Down/rotate buttons for continuous movement, sidestepping this UE4SS build's dropped-repeat-keypress limitation on the equivalent keyboard keys), and a precise typed X/Y/Z/Rotation coordinate editor with Preview/Apply/Reset/Cancel. Press '-' in-game to open/close it (starts closed each session); '=' steals OS focus for it once it's open. In-window Instructions and History tabs cover the rest. Every keyboard control from earlier versions still works exactly as before — the GUI is an additional, faster path to the same rosters, not a replacement.
+
+- "In-Game Keys" (Insert) narrowed in scope: it now controls ONLY LivingBase's own keyboard keys (placement/live-edit/cycle/clear); the GUI's own buttons are independent of it by design, since the GUI is the primary workflow now. Also now starts OFF by default each session (was ON) — configurable in config.txt as before.
+
+- Unique per-placement names: every object you place now gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the same look sharing one identical label. Stored in your save, so names stay stable across reloads — an older save gets names assigned automatically the first time it restores.
+
+- Senkamati (Num 7): the Herbalist-base female Caster crew re-skin now also has a frozen/idle counterpart, matching the already-existing Gatherer-base frozen pair.

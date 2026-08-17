@@ -31,6 +31,15 @@ Spawner.spawned = {}
 -- honored.
 Spawner.lockedTarget = nil
 
+-- Set true while the LivingBaseSpawnMenu companion mod's Coords window is open (2026-08-16) --
+-- suspends ONLY the distance-based half of Spawner.TargetLockDistanceCheck below, not the
+-- existence check. Typing a coordinate is a real typo risk (an extra digit sends the object far
+-- enough that the normal "walked too far, release the lock" rule would fire and silently kick you
+-- out of the very edit you're mid-typo-recovering from); the Coords window explicitly sets this
+-- around its own open/close lifetime so that can't happen while you're actively editing. See
+-- main.lua's ACTION:COORDS_OPEN/COORDS_CLOSE handling.
+Spawner.suspendTargetLockDistanceCheck = false
+
 -- Set true while restoring persisted spawns so we don't re-record them.
 Spawner.restoring = false
 
@@ -601,6 +610,35 @@ function Spawner.ShortArchetypeLabel(meshName)
     return meshName:match("^SK_(%a+)_Female") or meshName
 end
 
+-- Per-instance display naming (2026-08-16, RedFalcon's request): every spawn used to be labeled by
+-- its LOOK CATEGORY alone ("Brethren Woman", "SENKA_Warrior_crew", ...), so target-locking two of the
+-- same look showed the identical name -- and every restored entity showed the single generic
+-- "RESTORED" placeholder, since persist.txt never recorded what it actually was. Spawner.Spawn now
+-- resolves every spawn's caller-supplied `label` into a unique "<label> N" instance label via
+-- NextInstanceLabel below (unless the caller/restore already knows the exact label to reuse -- see
+-- Spawn's own presetInstanceLabel parameter), and persists the RESOLVED label as persist.txt's new
+-- field 13 so it survives a reload instead of being reassigned. See restoreOne for the read-back +
+-- old-format migration side of this.
+Spawner.instanceLabelCounts = Spawner.instanceLabelCounts or {}
+-- Returns a fresh, session-unique "<baseLabel> N" string, incrementing a per-base-label counter.
+function Spawner.NextInstanceLabel(baseLabel)
+    baseLabel = tostring(baseLabel or "Object")
+    local n = (Spawner.instanceLabelCounts[baseLabel] or 0) + 1
+    Spawner.instanceLabelCounts[baseLabel] = n
+    return baseLabel .. " " .. n
+end
+-- Given an ALREADY-RESOLVED "<base> N" label (e.g. read back from persist.txt on restore), bumps
+-- the SAME counter table so a LATER NextInstanceLabel() call for that base can never reissue a
+-- number already in use. No-op if `resolvedLabel` doesn't match the "<base> N" shape.
+function Spawner.NoteInstanceLabelUsed(resolvedLabel)
+    local base, numStr = tostring(resolvedLabel or ""):match("^(.*) (%d+)$")
+    if not base then return end
+    local n = tonumber(numStr)
+    if n and (not Spawner.instanceLabelCounts[base] or Spawner.instanceLabelCounts[base] < n) then
+        Spawner.instanceLabelCounts[base] = n
+    end
+end
+
 --------------------------------------------------------------------
 -- Spawner.Spawn(classPath, label [, atLocation])
 -- Returns the actor or nil. Logs every step so failures are visible.
@@ -608,7 +646,11 @@ end
 -- yaw (degrees): facing to spawn with. nil = face TOWARD the player.
 -- makeFriendly: copy a live crew's faction onto the spawn (friendly to you+crew);
 -- recorded so it re-applies on restore. Both passed explicitly on restore.
-function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook)
+-- presetInstanceLabel: when given, used VERBATIM as the final display/persisted label instead of
+-- auto-numbering `label` -- restoreOne is the only caller that passes this (the label it read back
+-- from, or just migrated into, persist.txt). Every existing call site leaves this nil and gets a
+-- freshly auto-numbered label as before, no changes needed at those call sites.
+function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook, presetInstanceLabel)
     local cls = resolveClass(classPath)
     if not cls then
         always("SPAWN FAILED (class unresolved): " .. classPath)
@@ -696,7 +738,10 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         end
     end
 
-    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, label, effPreFinish, aiClass)
+    -- Resolve the FINAL, unique, persisted display label -- see the comment above this function.
+    local finalLabel = presetInstanceLabel or Spawner.NextInstanceLabel(label)
+
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, finalLabel, effPreFinish, aiClass)
     if not actor or not actor:IsValid() then
         return nil
     end
@@ -715,12 +760,12 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     if Config.STATUE_IGNORE_FURNITURE and classPath and classPath:find("AnimatedActor") then
         Spawner.LetFurniturePass(actor)
     end
-    table.insert(Spawner.spawned, { actor = actor, label = label, class = classPath,
+    table.insert(Spawner.spawned, { actor = actor, label = finalLabel, class = classPath,
         home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed })
     ledgerAppend(actor)
-    persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook)
+    persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
-        tostring(label), classPath, loc.X, loc.Y, loc.Z))
+        tostring(finalLabel), classPath, loc.X, loc.Y, loc.Z))
     -- Only for live placements, not the dozens of Spawn calls RestoreFromPersist fires on world load,
     -- and not when the caller (Undo, pose-cycle) already shows its own more specific toast.
     if not Spawner.restoring and not Spawner._suppressSpawnToast then
@@ -736,9 +781,9 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
                     if Spawner.generation ~= gen or not (actor and actor:IsValid()) then return end
                     local bodyLabel = Spawner.ShortArchetypeLabel(Spawner.CurrentBodyMeshName(actor))
                     if bodyLabel then
-                        Spawner.Toast(string.format("Spawned: %s (%s)", tostring(label), bodyLabel), 2.0)
+                        Spawner.Toast(string.format("Spawned: %s (%s)", tostring(finalLabel), bodyLabel), 2.0)
                     else
-                        Spawner.Toast(string.format("Spawned: %s", tostring(label)), 2.0)
+                        Spawner.Toast(string.format("Spawned: %s", tostring(finalLabel)), 2.0)
                     end
                 end)
             end)
@@ -746,9 +791,9 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
             pcall(function()
                 local bodyLabel = Spawner.ShortArchetypeLabel(Spawner.CurrentBodyMeshName(actor))
                 if bodyLabel then
-                    Spawner.Toast(string.format("Spawned: %s (%s)", tostring(label), bodyLabel), 2.0)
+                    Spawner.Toast(string.format("Spawned: %s (%s)", tostring(finalLabel), bodyLabel), 2.0)
                 else
-                    Spawner.Toast(string.format("Spawned: %s", tostring(label)), 2.0)
+                    Spawner.Toast(string.format("Spawned: %s", tostring(finalLabel)), 2.0)
                 end
             end)
         end
@@ -2143,15 +2188,33 @@ function Spawner.StartShieldWatcher()
     if not (Spawner.shieldComps and #Spawner.shieldComps > 0) then return end
     if not ExecuteWithDelay then pcall(Spawner.ReassertShields); return end   -- no timer: one-shot
     Spawner.shieldWatcherRunning = true
-    local function tick()
+    -- shouldContinue reflects the PREVIOUS completed check, not the one in flight -- doWork's own
+    -- ExecuteInGameThread callback is async (queued for a later game tick), so this is
+    -- necessarily one tick stale by the time tick() reads it. Fine here: worst case is one extra
+    -- poll after the last warrior is already gone.
+    local shouldContinue = true
+    local function doWork()
         ExecuteInGameThread(function()
             pcall(Spawner.ReassertShields)   -- re-attaches on combat-exit AND prunes shieldComps
             if Spawner.shieldComps and #Spawner.shieldComps > 0 then
-                ExecuteWithDelay(Config.SHIELD_REASSERT_MS or 2000, tick)
+                shouldContinue = true
             else
+                shouldContinue = false
                 Spawner.shieldWatcherRunning = false   -- last warrior gone -> stop entirely
             end
         end)
+    end
+    -- CONFIRMED (2026-08-16): calling ExecuteWithDelay NESTED inside an ExecuteInGameThread
+    -- callback throws "No overload found for function 'ExecuteWithDelay'" in this UE4SS build --
+    -- found investigating a launch crash in an unrelated feature (UnlockBuild's own retry timer,
+    -- see main.lua's unlockTick/doWork fix), then audited across the whole codebase and found
+    -- here too. doWork's ExecuteInGameThread call and tick's own ExecuteWithDelay call are
+    -- siblings now, never nested.
+    local function tick()
+        doWork()
+        if shouldContinue then
+            ExecuteWithDelay(Config.SHIELD_REASSERT_MS or 2000, tick)
+        end
     end
     ExecuteWithDelay(Config.SHIELD_REASSERT_MS or 2000, tick)
 end
@@ -3479,7 +3542,7 @@ end
 -- Save/restore: record class+position+AI per spawn so we can re-create the
 -- crowd on world load (the game doesn't persist our runtime-spawned actors).
 --------------------------------------------------------------------
-function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look)
+function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instanceLabel)
     if Spawner.restoring then return end
     -- TRANSIENT spawns (night raiders) are never saved. The game doesn't persist our actors
     -- anyway, so writing them here would resurrect a finished raid into the base on reload.
@@ -3501,13 +3564,18 @@ function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look)
     -- which target it was in the first place, so there's no lost data to recover — this
     -- only changes what gets written for NEW spawns from here on.
     local lr = (look and look.reskinTarget) or ""
+    -- Field 13 = the resolved per-instance display label (2026-08-16, e.g. "Brethren Woman 3") --
+    -- see Spawner.NextInstanceLabel's own comment. Same "append at the end, old lines just won't
+    -- have it" contract as field 12 above -- restoreOne treats a missing field 13 as an old-format
+    -- line to migrate, not an error.
+    local ll = tostring(instanceLabel or "")
     migrateIfNeeded("persist.txt", OLD_PERSIST_PATHS)
     for _, p in ipairs(PERSIST_PATHS()) do
         local f = io.open(p, "a")
         if f then
-            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s\n",
+            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s\n",
                 classPath, loc.X, loc.Y, loc.Z, aiPath or "", yaw or 0.0,
-                makeFriendly and "1" or "0", lp, la, ls, lb, lr))
+                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll))
             f:close(); return
         end
     end
@@ -3538,10 +3606,10 @@ local function persistWriteLines(lines)
 end
 
 -- Parse one persist.txt line into its fields. Field order is fixed by persistAppend() above:
--- classPath|X|Y|Z|aiPath|yaw|makeFriendly|look.params|look.archetype|look.sex|look.bodyTypes|look.reskinTarget
--- Field 12 (reskinTarget) is a 2026-08-11 addition -- on a pre-1.3.5 line, gmatch simply
--- never produces a 12th part, so parts[12] is nil here and look.reskinTarget comes out nil
--- too. Callers must treat that as "unknown", not an error.
+-- classPath|X|Y|Z|aiPath|yaw|makeFriendly|look.params|look.archetype|look.sex|look.bodyTypes|look.reskinTarget|instanceLabel
+-- Field 12 (reskinTarget) is a 2026-08-11 addition, field 13 (instanceLabel) a 2026-08-16 one --
+-- on an older line, gmatch simply never produces that part, so it comes out nil here. Callers
+-- must treat that as "unknown", not an error.
 local function parsePersistLine(line)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
@@ -3558,6 +3626,7 @@ local function parsePersistLine(line)
         yaw = tonumber(parts[6]) or 0.0,
         makeFriendly = (parts[7] == "1"),
         look = look,
+        instanceLabel = (parts[13] and parts[13] ~= "" and parts[13]) or nil,
     }
 end
 
@@ -3651,13 +3720,14 @@ end
 -- Re-spawn one persisted line. Returns (actor, classPath, look) or nil. Does NOT run the
 -- restore hook — post-processing is deferred until the world is stable (see below).
 local function restoreOne(line)
-    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget
-    -- (reskinTarget is a 2026-08-11 addition, field 12 -- absent/nil on a pre-1.3.5 line,
-    -- same graceful-degradation contract as parsePersistLine above.)
+    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel
+    -- (reskinTarget is a 2026-08-11 addition/field 12, instanceLabel a 2026-08-16 one/field 13 --
+    -- either can be absent/nil on an older line, same graceful-degradation contract as
+    -- parsePersistLine above.)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
     local cls, x, y, z, ai, yw, fr = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
-    local lp, la, ls, lb, lr = parts[8], parts[9], parts[10], parts[11], parts[12]
+    local lp, la, ls, lb, lr, storedLabel = parts[8], parts[9], parts[10], parts[11], parts[12], parts[13]
     if not (cls and x and y and z) then return end
     local loc = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) }
     local aiPath = (ai and ai ~= "") and ai or nil
@@ -3671,10 +3741,34 @@ local function restoreOne(line)
                  bodyTypes = (lb and lb ~= "" and lb) or nil,
                  reskinTarget = (lr and lr ~= "" and lr) or nil }
     end
+
+    -- Instance label (2026-08-16): reuse the stored one verbatim if this line has it (stable across
+    -- reloads), bumping the in-memory counter so a FRESH placement later this session can't reissue
+    -- the same number. An older line (no field 13) gets migrated here: derive the best available
+    -- base name (the reskinTarget if this was a female-walker reskin, else a short class name, else
+    -- plain "Restored"), mint a fresh number for it via the SAME counter every live spawn uses, and
+    -- mark it to be written back below so the NEXT restore reads this SAME resolved label instead of
+    -- silently re-migrating (and potentially re-numbering) it every single reload.
+    local resolvedLabel, needsMigration
+    if storedLabel and storedLabel ~= "" then
+        resolvedLabel = storedLabel
+        Spawner.NoteInstanceLabelUsed(storedLabel)
+    else
+        local baseName = lr
+        if not baseName or baseName == "" then
+            baseName = tostring(cls):match("([%w_]+)%.[%w_]+$") or tostring(cls):match("([%w_]+)$") or "Restored"
+        end
+        resolvedLabel = Spawner.NextInstanceLabel(baseName)
+        needsMigration = true
+    end
+
     local ok, a = pcall(function()
-        return Spawner.Spawn(cls, "RESTORED", loc, nil, aiPath, yaw, friendly, look)
+        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel)
     end)
     if ok and a and a:IsValid() then
+        if needsMigration then
+            pcall(function() Spawner.PersistUpdateLabel(cls, loc, resolvedLabel) end)
+        end
         -- DECORATIONS restore as scenery: freeze physics + enable collision RIGHT NOW (same frame as the
         -- spawn, before the first physics tick). Otherwise a prop whose mesh grazes the terrain gets
         -- shoved upward by depenetration during the ~14s before the delayed SolidifyDecor pass runs, and
@@ -4047,7 +4141,12 @@ end
 -- reach" still tracks how close you're standing, not how far the camera boom is pulled out. If
 -- camera-based picking still feels off after this, the next lever is Config.TARGET_MIN_VIEW_DOT, not
 -- reverting to pawn yaw for the cone, and NOT reverting to pawn-origin for the angle test.
-local function findNearestSpawnInFront(maxDist)
+-- ignoreLock (2026-08-16, added for Spawner.ToggleTargetLock's "retarget in one press" feature):
+-- when true, skips the target-lock short-circuit below entirely and always does the normal fresh
+-- cone/range pick, even while a lock is active. Every existing caller passes nothing (nil =
+-- false), so this is purely additive -- the lock still transparently wins for despawn/cycle/
+-- live-edit exactly as before.
+local function findNearestSpawnInFront(maxDist, ignoreLock)
     if #Spawner.spawned == 0 then pcall(Spawner.RetrackOrphans) end   -- Ctrl+R recovery
     local MIN_STABLE_DIST = 40.0
     local minViewDot = Config.TARGET_MIN_VIEW_DOT or 0.90
@@ -4113,7 +4212,7 @@ local function findNearestSpawnInFront(maxDist)
     -- walking away and never pressing another mod key left a stale lock sitting there indefinitely).
     -- px/py/pz are passed through since this call already has them, sparing the checker its own
     -- (otherwise-needed) player-pawn lookup.
-    if Spawner.lockedTarget then
+    if Spawner.lockedTarget and not ignoreLock then
         if Spawner.TargetLockDistanceCheck(px, py, pz) then
             local lt = Spawner.lockedTarget
             for i, entry in ipairs(Spawner.spawned) do
@@ -4176,14 +4275,31 @@ end
 -- action goes back to picking fresh each press, same as before this feature existed.
 function Spawner.ToggleTargetLock()
     print("[LivingBase] target-lock key received.\n")
+    local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
     if Spawner.lockedTarget then
+        -- Already locked: RedFalcon asked (2026-08-16) for pressing + on a DIFFERENT object to just
+        -- retarget in one press, instead of needing unlock-then-relock (two presses). ignoreLock=true
+        -- bypasses findNearestSpawnInFront's own lock short-circuit, so this is a genuinely fresh
+        -- cone/range pick, not just the same locked actor being handed back again.
+        local bestI, e = findNearestSpawnInFront(maxDist, true)
+        if bestI and e.actor ~= Spawner.lockedTarget.actor then
+            local oldLabel = Spawner.lockedTarget.label
+            Spawner.lockedTarget = { actor = e.actor, label = e.label, class = e.class }
+            print("[LivingBase] Target lock moved: " .. tostring(oldLabel) .. " -> " .. tostring(e.label) .. ".\n")
+            pcall(function() Spawner.Toast("Target lock moved to: " .. tostring(e.label), 2.5) end)
+            -- _targetLockTickRunning is already true from the original lock (never released here) --
+            -- no need to call Spawner.StartTargetLockTick() again, its next tick reads
+            -- Spawner.lockedTarget fresh and will already see the new actor.
+            return
+        end
+        -- Aiming at the SAME object still, or nothing new to switch to: falls through to the
+        -- original "any press while locked just unlocks" behavior.
         local label = Spawner.lockedTarget.label
         Spawner.lockedTarget = nil
         print("[LivingBase] Target lock OFF (was: " .. tostring(label) .. ").\n")
         pcall(function() Spawner.Toast("Target lock OFF: " .. tostring(label), 2.5) end)
         return
     end
-    local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then
         print(string.format("[LivingBase] Target lock: nothing within %.0fuu ahead — walk closer / face it.\n", maxDist))
@@ -4221,6 +4337,7 @@ function Spawner.TargetLockDistanceCheck(px, py, pz)
             end)
         end
         if not px then return true end   -- no pawn right now (loading/menu) -- don't release on a transient miss
+        if Spawner.suspendTargetLockDistanceCheck then return true end   -- Coords window open -- see its own flag comment above
         local dist = 0.0
         pcall(function()
             local l = lt.actor:K2_GetActorLocation()
@@ -4237,6 +4354,44 @@ function Spawner.TargetLockDistanceCheck(px, py, pz)
     print("[LivingBase] Target lock: released -- " .. releaseReason .. ".\n")
     pcall(function() Spawner.Toast("Target lock released (" .. releaseReason .. ").", 2.5) end)
     return false
+end
+
+-- Spawner.SetLockedTargetTransform(x, y, z, yaw) -- writes an ABSOLUTE transform to the currently
+-- locked target, for the LivingBaseSpawnMenu Coords window's Preview/Apply/Reset/Cancel (2026-08-16;
+-- all four end up calling this, just with different X/Y/Z/Yaw -- Preview/Apply send whatever's
+-- typed, Reset/Cancel send the opening snapshot back). Deliberately separate from
+-- Spawner.EditNearestInFront -- that one applies a RELATIVE delta to whatever's targeted/in-front
+-- (keyboard/move-panel nudging); this one sets an absolute position on the LOCKED target
+-- specifically (Coords editing only makes sense against an explicit lock, never an ad-hoc "nearest
+-- in front" pick that could silently change between typing and pressing Apply).
+-- No SetActorHiddenInGame visibility-toggle here -- CONFIRMED (2026-08-16, see that function's own
+-- comment) that toggle was the actual cause of a real crash under sustained rapid calls, and
+-- Spawner.MakeMovable alone is sufficient for the mesh to visually update.
+function Spawner.SetLockedTargetTransform(x, y, z, yaw)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then
+        return false, "no locked target"
+    end
+    pcall(function() Spawner.MakeMovable(lt.actor) end)
+    local ok = pcall(function()
+        lt.actor:K2_SetActorLocation({ X = x, Y = y, Z = z }, false, {}, true)
+        lt.actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false)
+    end)
+    if not ok then
+        return false, "transform write failed"
+    end
+    -- Persist sync, same pattern as Spawner.EditNearestInFront: find this actor's own tracked
+    -- entry, correct persist.txt's record of it, then update our own copy of its home/yaw so the
+    -- NEXT edit (Cycle/Replace/Edit/another Coords apply) starts from the right place.
+    for _, entry in ipairs(Spawner.spawned) do
+        if entry.actor == lt.actor then
+            pcall(function() Spawner.PersistUpdatePose(entry.class, entry.home, { X = x, Y = y, Z = z }, yaw) end)
+            entry.home = { X = x, Y = y, Z = z }
+            entry.yaw = yaw
+            break
+        end
+    end
+    return true
 end
 
 -- Periodic distance check while a lock is active (2026-08-13, added after RedFalcon found the LAZY check
@@ -4393,6 +4548,36 @@ function Spawner.PersistUpdatePose(classPath, loc, newLoc, newYaw)
         bestParts[4] = string.format("%.1f", newLoc)    -- Z only (keeps X/Y)
     end
     bestParts[6] = string.format("%.1f", newYaw)   -- yaw
+    lines[bestI] = table.concat(bestParts, "|")
+    persistWriteLines(lines)
+    return true
+end
+
+--- Spawner.PersistUpdateLabel(classPath, loc, newLabel) — rewrite (or add) field 13 of the persisted
+--- line nearest `loc` to newLabel, keeping every other field intact. Used ONLY by restoreOne to
+--- migrate a pre-1.3.11 persist.txt line that never recorded an instance label (see
+--- Spawner.NextInstanceLabel's own comment) -- once migrated, the SAME resolved label sticks on the
+--- next reload instead of being re-derived (and potentially re-numbered) every time.
+function Spawner.PersistUpdateLabel(classPath, loc, newLabel)
+    if not (classPath and loc and newLabel) then return false end
+    local lines = persistReadLines()
+    local bestI, bestD, bestParts
+    for i, line in ipairs(lines) do
+        local parts = {}
+        for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
+        if parts[1] == classPath and tonumber(parts[2]) then
+            local x, y, z = tonumber(parts[2]), tonumber(parts[3]), tonumber(parts[4])
+            local d = (x - loc.X) ^ 2 + (y - loc.Y) ^ 2 + (z - loc.Z) ^ 2
+            if not bestD or d < bestD then bestI, bestD, bestParts = i, d, parts end
+        end
+    end
+    if not bestI then return false end
+    -- Fields 8-12 (composite look) may not exist at all on a very old line -- pad with empty
+    -- strings first so setting field 13 directly after never leaves a gap table.concat can't handle.
+    for f = 8, 12 do
+        if bestParts[f] == nil then bestParts[f] = "" end
+    end
+    bestParts[13] = newLabel
     lines[bestI] = table.concat(bestParts, "|")
     persistWriteLines(lines)
     return true
@@ -4564,6 +4749,14 @@ end
 -- grab something other than what you're standing next to, and a close-range floor (in the shared
 -- findNearestSpawnInFront helper above) for stability right up close.
 
+-- ⚠ OPEN ISSUE (2026-08-16): holding ROTATE for an extended period via the LivingBaseSpawnMenu
+-- move panel crashed the game AFTER the SetActorHiddenInGame fix below was deployed and had
+-- separately held up under heavy slide/height nudging -- so whatever this is, it's specific to
+-- sustained dYaw (rotation), not this whole function. Not yet investigated. Next step: reproduce
+-- with JUST rotate held (isolated from slide/height), check whether the log stops mid-stream with
+-- zero trapped error (same "uncatchable crash" signature as the toggle bug was), and look at
+-- whether K2_SetActorRotation behaves differently under sustained rapid calls than
+-- K2_SetActorLocation does. See memory/project_livingbase_spawn_menu.md for the full history.
 function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
     -- Fires FIRST, before any lookup — so the log proves the keypress reached us even when there's
     -- nothing in front to edit. If you press a live-edit key and DON'T see this line, that key is
@@ -4617,13 +4810,25 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
         newYaw = (r.Yaw + (dYaw or 0.0)) % 360.0
         e.actor:K2_SetActorLocation({ X = newX, Y = newY, Z = newZ }, false, {}, true)
         e.actor:K2_SetActorRotation({ Pitch = r.Pitch, Yaw = newYaw, Roll = r.Roll }, false)
-        -- The transform updates correctly (confirmed via log — offsets accumulate right, press to
-        -- press), but the rendered mesh apparently only picks that up when the actor streams out/in —
-        -- which is exactly what walking away and back does, and why that "refreshes" it. Force the same
-        -- effect here by briefly toggling visibility, which makes the engine re-register the actor's
-        -- render state at its current (correct) transform instead of waiting for a real streaming event.
-        pcall(function() e.actor:SetActorHiddenInGame(true) end)
-        pcall(function() e.actor:SetActorHiddenInGame(false) end)
+        -- SetActorHiddenInGame(true)/(false) toggle DISABLED (2026-08-16, RedFalcon) -- originally
+        -- added because the rendered mesh apparently only picked up a moved actor's new transform
+        -- when it streamed out/in (walking away and back "refreshed" it), so this forced the same
+        -- effect by briefly toggling visibility to make the engine re-register render state. Turned
+        -- out unnecessary -- Spawner.MakeMovable (above) is sufficient on its own for a Movable
+        -- component to pick up transform changes on the render thread every frame; this toggle was a
+        -- leftover from before that was understood, not a real requirement.
+        -- CONFIRMED root cause of a crash reproduced by the LivingBaseSpawnMenu move panel
+        -- (2026-08-16): holding a nudge button fires this repeatedly in quick succession -- a volume
+        -- of render-state toggling keyboard-driven edits never came close to (this UE4SS build drops
+        -- most keydown repeats, so the effective keyboard rate was always far lower). The crash log
+        -- showed no trapped error either time (same "uncatchable native crash" signature as other
+        -- component-surgery-class crashes in this codebase, see WINDROSE_MODDING_NOTES.md §3).
+        -- Isolated by controlled test: throttling the CALL RATE alone (down to 2/sec) did NOT stop
+        -- the crash; disabling just this toggle (at 4/sec, unthrottled relative to that test) DID --
+        -- confirms this toggle itself was the cause, not raw call frequency. Live-tested afterward:
+        -- the mesh still visually updates on every nudge with this off, so it stays off for good.
+        -- pcall(function() e.actor:SetActorHiddenInGame(true) end)
+        -- pcall(function() e.actor:SetActorHiddenInGame(false) end)
     end)
     if not newZ then return end
     -- Persist the FULL new pose (X/Y/Z/yaw) matching the OLD home, then update our record so the next
@@ -4937,9 +5142,13 @@ function Spawner.CycleNearestInFront(direction)
     -- Spawner.lockedTarget would be pointing at if this spot was locked, so re-point the lock at
     -- newActor rather than letting it fall through to "locked target no longer exists". Lets you lock
     -- once, cycle through several looks in place, and keep nudging with live-edit the whole time without
-    -- re-locking after every cycle press.
+    -- re-locking after every cycle press. label reads back from Spawner.spawned (its just-inserted
+    -- LAST entry) rather than the raw `newLabel` passed to Spawn above -- Spawn resolves that into a
+    -- unique numbered instance label internally (2026-08-16), so the raw value here is stale/wrong,
+    -- same fix ReplaceNearestInFront already applies below via its own `newEntry.label` read.
     if Spawner.lockedTarget and Spawner.lockedTarget.actor == e.actor then
-        Spawner.lockedTarget = { actor = newActor, label = newLabel, class = nextEntry.path }
+        local resolvedLabel = Spawner.spawned[#Spawner.spawned] and Spawner.spawned[#Spawner.spawned].label or newLabel
+        Spawner.lockedTarget = { actor = newActor, label = resolvedLabel, class = nextEntry.path }
     end
 
     if kind == "statue" then
@@ -4969,6 +5178,99 @@ function Spawner.CycleNearestInFront(direction)
 
     print(string.format("[LivingBase] Cycle: now showing %s (%d/%d in %s).\n", nextName, nextIdx, #roster, label))
     pcall(function() Spawner.Toast(string.format("%s: %d/%d (%s)", label, nextIdx, #roster, nextName), 2.5) end)
+end
+
+-- Spawner.ReplaceNearestInFront(spawnFn, newLabelHint) -- generalizes CycleNearestInFront above to
+-- ANY roster kind, not just statues/decor. Cycle can get away with spawning the replacement
+-- directly via a raw Spawner.Spawn(path, label, {X,Y,Z}, ..., yaw) call because statue/decor
+-- entries need nothing beyond a class + position. Crew/Senkamati/townsfolk/livestock entries need
+-- their FULL recipe (composite look, AI overrides, faction, post-build de-corrupt fixes) which
+-- only the existing Testbed.SpawnXByName functions know how to build -- and none of those accept a
+-- caller-supplied position (they always spawn in front of the player). So instead of threading a
+-- position parameter through every one of those functions, this spawns normally via the caller's
+-- `spawnFn` (any zero-arg function matching the SpawnXByName true/false contract, e.g. one of
+-- main.lua's SPAWN_MENU_HANDLERS entries) and then RELOCATES the fresh actor to the old target's
+-- exact transform afterward -- the same "spawn now, correct the position after" idea Cycle already
+-- uses for a statue's floor-relevel, just generalized to the full transform. Built 2026-08-16 for
+-- LivingBaseSpawnMenu's tree "Replace" button (see that mod's SpawnMenu.cpp).
+function Spawner.ReplaceNearestInFront(spawnFn, newLabelHint)
+    print("[LivingBase] replace key received.\n")
+    local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format("[LivingBase] Replace: nothing within %.0fuu ahead — walk closer / face it.\n", maxDist))
+        pcall(function() Spawner.Toast("Replace: nothing in front to replace.", 2.5) end)
+        return false, "nothing in front"
+    end
+
+    local oldX, oldY, oldZ, oldYaw
+    pcall(function()
+        local l = e.actor:K2_GetActorLocation()
+        local r = e.actor:K2_GetActorRotation()
+        oldX, oldY, oldZ, oldYaw = l.X, l.Y, l.Z, r.Yaw
+    end)
+    if not oldX then
+        print("[LivingBase] Replace: couldn't read the current actor's transform.\n")
+        return false, "transform read failed"
+    end
+
+    -- Same undo shape as Cycle/despawn: capture the OLD actor's info BEFORE removing it, so Num0
+    -- can bring it back if the replacement turns out wrong. replaceActor/replaceClass/replacePos
+    -- get filled in below once the new actor exists (Num0 needs to destroy THAT first).
+    local persisted = Spawner.PersistFindMatching(e.class, e.home)
+    local undoItem = {
+        class = e.class, label = e.label, pos = { X = oldX, Y = oldY, Z = oldZ }, yaw = oldYaw,
+        aiPath = persisted and persisted.aiPath, makeFriendly = persisted and persisted.makeFriendly,
+        look = persisted and persisted.look,
+    }
+    Spawner.PushUndo({ undoItem })
+
+    local oldActor, oldClass = e.actor, e.class
+    pcall(function() oldActor:K2_DestroyActor() end)
+    table.remove(Spawner.spawned, bestI)
+    Spawner.PersistRemoveMatching(oldClass, e.home)
+
+    -- Carry a target lock forward, same as Cycle -- do this BEFORE spawning the replacement so a
+    -- lock pointing at the just-destroyed actor doesn't release itself in the gap.
+    local wasLocked = Spawner.lockedTarget and Spawner.lockedTarget.actor == oldActor
+
+    local countBefore = #Spawner.spawned
+    Spawner._suppressSpawnToast = true
+    local spawnOk = pcall(spawnFn)
+    Spawner._suppressSpawnToast = false
+    if not (spawnOk and #Spawner.spawned > countBefore) then
+        print("[LivingBase] Replace: replacement spawn failed -- the old one is gone; Num0 can restore it.\n")
+        pcall(function() Spawner.Toast("Replace failed to spawn -- Num0 to restore.", 3.0) end)
+        return false, "spawn failed"
+    end
+
+    local newEntry = Spawner.spawned[#Spawner.spawned]
+    local newActor = newEntry.actor
+    -- newEntry.home right now is the FRESH frontSpot(player) location Spawner.Spawn just recorded --
+    -- correct persist.txt's record of it to the OLD position before overwriting our own copy of
+    -- newEntry.home, or PersistUpdatePose's own class+position lookup won't find the row it just wrote.
+    pcall(function()
+        Spawner.PersistUpdatePose(newEntry.class, newEntry.home, { X = oldX, Y = oldY, Z = oldZ }, oldYaw)
+    end)
+    pcall(function()
+        newActor:K2_SetActorLocation({ X = oldX, Y = oldY, Z = oldZ }, false, {}, true)
+        newActor:K2_SetActorRotation({ Pitch = 0.0, Yaw = oldYaw, Roll = 0.0 }, false)
+    end)
+    newEntry.home = { X = oldX, Y = oldY, Z = oldZ }
+    newEntry.yaw = oldYaw
+
+    undoItem.replaceActor = newActor
+    undoItem.replaceClass = newEntry.class
+    undoItem.replacePos = { X = oldX, Y = oldY, Z = oldZ }
+
+    if wasLocked then
+        Spawner.lockedTarget = { actor = newActor, label = newEntry.label, class = newEntry.class }
+    end
+
+    local shownLabel = newLabelHint or newEntry.label
+    print(string.format("[LivingBase] Replace: %s -> %s.\n", tostring(oldClass), tostring(newEntry.class)))
+    pcall(function() Spawner.Toast("Replaced with: " .. tostring(shownLabel), 2.5) end)
+    return true
 end
 
 return Spawner

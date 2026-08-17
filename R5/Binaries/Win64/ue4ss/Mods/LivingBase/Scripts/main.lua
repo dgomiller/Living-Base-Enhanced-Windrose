@@ -34,6 +34,34 @@ end
 -- reloaded Caster returns corrupted + hostile.
 Spawner.restoreHook = Testbed.RestoreHook
 
+------------------------------------------------------------
+-- SPAWN MENU TOAST HISTORY: wraps Spawner.Toast once here at load so every toast message this
+-- session (spawns, despawns, undo, restore progress, target-lock, etc.) gets appended to a small
+-- log file the LivingBaseSpawnMenu window's History tab can read -- built 2026-08-16. Wrapping the
+-- ONE function every toast already funnels through is far simpler than touching every call site
+-- individually (there are dozens across this file/spawner.lua/testbed.lua). Truncated fresh here
+-- at mod load, so "this session" means exactly that -- a stale history from a previous session (or
+-- before an lbreload) never lingers.
+------------------------------------------------------------
+local SPAWN_MENU_HISTORY_PATH = "ue4ss/Mods/LivingBase/spawn_menu_history.txt"
+do
+    local f = io.open(SPAWN_MENU_HISTORY_PATH, "w")
+    if f then f:close() end
+end
+do
+    local originalToast = Spawner.Toast
+    Spawner.Toast = function(msg, seconds)
+        pcall(function()
+            local hf = io.open(SPAWN_MENU_HISTORY_PATH, "a")
+            if hf then
+                hf:write(tostring(msg), "\n")
+                hf:close()
+            end
+        end)
+        return originalToast(msg, seconds)
+    end
+end
+
 local MOD_NAME = "[LivingBase]"
 local function log(msg)
     if Config.VERBOSE then print(string.format("%s %s\n", MOD_NAME, tostring(msg))) end
@@ -69,9 +97,23 @@ local function keyStatusText()
     local keyName = (Config.KEYS and Config.KEYS.toggleMod) or "INS"
     local status = modEnabled and "ENABLED" or "DISABLED"
     local verb = modEnabled and "disable" or "enable"
-    return string.format("LivingBase keys are currently %s — press %s to %s them.", status, keyName, verb)
+    return string.format("In-Game Keys are currently %s — press %s to %s them.", status, keyName, verb)
 end
 print("[LivingBase] " .. keyStatusText() .. "\n")
+
+-- Bumped by the '-' key (see Config.KEYS.toggleWindow) each time the LivingBaseSpawnMenu window
+-- should open/close -- published in the SPAWN MENU STATUS block further down as WINDOW_TOGGLE=<seq>.
+-- A monotonic counter rather than an explicit open/closed flag since C++ owns the actual visibility
+-- state outright (this side has no way to query it back) -- see MenuStatus::WindowToggleSeq()'s own
+-- comment on the C++ side for why "something changed" is all that needs to cross the bridge.
+local windowToggleSeq = 0
+
+-- Bumped by the '=' key (see Config.KEYS.releaseMouse) every press -- published as FOCUS_STEAL=<seq>,
+-- same bridge shape as windowToggleSeq above. SIMPLIFIED (2026-08-16, RedFalcon: "just have it steal
+-- focus on = press and that's it") from an earlier version that also toggled bShowMouseCursor/
+-- SetIgnoreLookInput on the player controller -- dropped entirely, this key now does exactly one
+-- thing: tell the C++ window to SetForegroundWindow() on itself.
+local focusStealSeq = 0
 
 -- Locked from the moment a world load is detected until Spawner.RestoreFromPersist actually finishes
 -- (or determines there's nothing to restore) -- placing something manually in that window got written
@@ -81,13 +123,28 @@ print("[LivingBase] " .. keyStatusText() .. "\n")
 -- cosmetic one (user-reported 2026-08-06). Separate from modEnabled (the user's own on/off toggle) so
 -- they don't fight each other; Insert still works normally once unlocked.
 local restoreLockActive = false
-local function modGate(name)
+-- restoreGate: the world-load restore lock alone, no In-Game Keys check -- this is the ONE gate
+-- NOTHING touching real game state is exempt from, regardless of In-Game Keys (RedFalcon,
+-- 2026-08-16: "ALL things should still be unavailable until the base is loaded"). Used directly by
+-- the GUI window's own action handlers (spawn menu bridge, move menu bridge below) and by target
+-- lock's keyboard registration -- all of these are meant to keep working with In-Game Keys OFF
+-- (the GUI is the primary intended workflow now), but none of them are exempt from THIS.
+local function restoreGate(name)
     if restoreLockActive then
         print("[LivingBase] '" .. tostring(name) .. "' ignored — still loading/restoring your base.\n")
         return false
     end
+    return true
+end
+-- modGate: restoreGate PLUS the In-Game Keys toggle -- used only by the literal KEYBOARD actions
+-- registered below (placement/live-edit/cycle/clear/etc, via gatedAction/directAction). NOT used by
+-- the GUI window's own action handlers anymore (2026-08-16 split, RedFalcon: "disabling in-game keys
+-- should disable ONLY the keys in the game... everything else [GUI buttons] should [stay independent]") --
+-- see restoreGate above for what those use instead.
+local function modGate(name)
+    if not restoreGate(name) then return false end
     if modEnabled then return true end
-    print("[LivingBase] '" .. tostring(name) .. "' ignored — LivingBase keys are OFF (toggle key to re-enable).\n")
+    print("[LivingBase] '" .. tostring(name) .. "' ignored — In-Game Keys are OFF (toggle key to re-enable).\n")
     return false
 end
 
@@ -204,6 +261,31 @@ local function directAction(fn, name)
         end)
     end
 end
+local function alwaysAction(fn, name)
+    -- Like directAction, but bypasses BOTH gates entirely (not even restoreGate) -- for the three
+    -- pure meta/UI keys that never touch game state at all: Insert (toggleMod, registered separately
+    -- below since it's the one that flips modGate's own flag), '=' (window focus-steal), and '-'
+    -- (window open/close toggle).
+    return function()
+        ExecuteInGameThread(function()
+            local ok, err = pcall(fn)
+            if not ok then log(name .. " FAILED: " .. tostring(err)) end
+        end)
+    end
+end
+local function restoreGatedAction(fn, name)
+    -- Like directAction, but checks ONLY restoreGate, not the full modGate -- for actions that must
+    -- stay reachable with In-Game Keys OFF (the GUI depends on them) but that DO touch real game
+    -- state, so the world-load restore lock must still apply. Currently just target lock (Num+) --
+    -- see its own registration comment below for why it's exempt from In-Game Keys specifically.
+    return function()
+        if not restoreGate(name) then return end
+        ExecuteInGameThread(function()
+            local ok, err = pcall(fn)
+            if not ok then log(name .. " FAILED: " .. tostring(err)) end
+        end)
+    end
+end
 
 print("[LivingBase] ']'/'[' = cycle the targeted statue (Num3-6 lists) or decoration (its own category's list) forward/backward through its own roster; Num0 undoes it if the new pick isn't better.\n")
 
@@ -256,6 +338,24 @@ register("restoreLast", directAction(function() Spawner.UndoDespawn() end, "undo
 register("cycleNext", directAction(function() Spawner.CycleNearestInFront(1) end, "cycleNext"))
 register("cyclePrev", directAction(function() Spawner.CycleNearestInFront(-1) end, "cyclePrev"))
 
+-- Focus-steal for the LivingBaseSpawnMenu window ('=') -- see Config.KEYS.releaseMouse's own comment.
+-- Always active (bypasses modGate), one of the three "usual suspects" alongside Insert and '-'. Only
+-- bumps a counter; the actual SetForegroundWindow() happens on the C++ side (StandaloneWindow.cpp)
+-- once it notices FOCUS_STEAL changed in spawn_menu_status.txt (published below in the SPAWN MENU
+-- STATUS block), same shape as the '-' window-toggle right below.
+register("releaseMouse", alwaysAction(function()
+    focusStealSeq = focusStealSeq + 1
+end, "releaseMouse"))
+
+-- LivingBaseSpawnMenu window open/close toggle ('-') -- see Config.KEYS.toggleWindow's own comment.
+-- Always active (bypasses modGate), same as Insert and '='. Only bumps a counter; the actual
+-- show/hide happens on the C++ side (StandaloneWindow.cpp) once it notices WINDOW_TOGGLE changed
+-- in spawn_menu_status.txt (published below in the SPAWN MENU STATUS block).
+register("toggleWindow", alwaysAction(function()
+    windowToggleSeq = windowToggleSeq + 1
+    print("[LivingBase] Spawn menu window: toggle requested (seq " .. windowToggleSeq .. ").\n")
+end, "toggleWindow"))
+
 -- DECORATION: ';' places from the active category (shares the spawn-debounce with every other
 -- placement key); ''' just advances which category is active, no spawn -- same "fast repeated tap"
 -- class as cycleNext/cyclePrev/undo below, so it skips the spawn-debounce via directAction.
@@ -301,7 +401,7 @@ register("facing", gatedAction(Testbed.ToggleStatueFacing, "flip statue facing")
 -- as every other keybind.
 local function toggleModAction()
     modEnabled = not modEnabled
-    local msg = "LivingBase keys: " .. (modEnabled and "ON" or "OFF (numpad/F-row/DEL/live-edit free for other uses)")
+    local msg = "In-Game Keys: " .. (modEnabled and "ON" or "OFF (numpad/F-row/DEL/live-edit free for other uses)")
     print("[LivingBase] " .. msg .. "\n")
     pcall(function() Spawner.Toast(msg, 2.5) end)
 end
@@ -363,19 +463,25 @@ if Config.LIVE_EDIT then
     register("editLeft",  editAction("editLeft", 0, 0, 0, -ms))
     register("editRight", editAction("editRight",0, 0, 0,  ms))
 
-    -- Precision-mode cycle (Num-): steps Spawner.editPrecisionScale through full -> 1/2 -> 1/4 ->
-    -- 1/8 -> 2x -> back to full, which editAction's callback reads live on every press (see above).
-    -- 2x added at the end (2026-08-13, RedFalcon's request) as a "go big" step for coarse repositioning --
-    -- placed after the finest step rather than right after full, so the cycle still reads as
-    -- fine-to-coarse in one direction before wrapping, instead of bouncing 1 -> 2x -> 1/2 mid-sequence.
+    -- Precision-mode cycle (Num-): steps Spawner.editPrecisionScale through 1/8 -> 1/4 -> 1/2 -> 1x
+    -- -> 2x -> 4x -> back to 1/8, which editAction's callback reads live on every press (see above).
+    -- REBASED (2026-08-16, RedFalcon's request): what used to be the "1/4" step turned out to be the
+    -- everyday-useful one in practice, so it's now the "1x (normal)" baseline instead -- every value
+    -- below is a fraction/multiple of the OLD quarter-step, not the old full step. A "4x" level was
+    -- added at the top of the new range specifically so the OLD full step (1.0) is still reachable
+    -- (as 4x), nothing lost, just rebased and given two extra fine steps at the bottom (the old
+    -- range had nothing finer than 1/8 of the OLD full step -- new 1/8 is 1/32 of that same
+    -- original unit). Same 6 levels drive the LivingBaseSpawnMenu window's precision slider
+    -- (main.lua's own handleMoveMenuPrecision) -- keep both in sync if this ever changes again.
     local PRECISION_LEVELS = {
-        { scale = 1.0,   label = "full-step (normal)" },
-        { scale = 0.5,   label = "HALF-step (1/2)" },
-        { scale = 0.25,  label = "QUARTER-step (1/4)" },
-        { scale = 0.125, label = "EIGHTH-step (1/8)" },
-        { scale = 2.0,   label = "DOUBLE-step (2x)" },
+        { scale = 0.03125, label = "1/8-step" },
+        { scale = 0.0625,  label = "1/4-step" },
+        { scale = 0.125,   label = "1/2-step" },
+        { scale = 0.25,    label = "1x (normal)" },
+        { scale = 0.5,     label = "2x-step" },
+        { scale = 1.0,     label = "4x-step" },
     }
-    local precisionIdx = 1
+    local precisionIdx = 4 -- start at "1x (normal)" (0.25 -- the old quarter-step)
     Spawner.editPrecisionScale = PRECISION_LEVELS[precisionIdx].scale
     register("editPrecisionToggle", directAction(function()
         precisionIdx = (precisionIdx % #PRECISION_LEVELS) + 1
@@ -393,9 +499,14 @@ if Config.LIVE_EDIT then
     -- Num9/undo/cycle: it only ever matters in combination with live-edit, and while it also affects
     -- despawn/cycle, those simply behave exactly as before (unlocked) when LIVE_EDIT is off, since the
     -- lock can never be set without this key to set it.
-    register("targetLock", directAction(function() Spawner.ToggleTargetLock() end, "targetLock"))
+    -- restoreGatedAction, NOT directAction (2026-08-16, RedFalcon: "+ for targeting as its needed for
+    -- the GUI") -- the GUI window's own Despawn/Replace/Coords/D-pad actions all require a locked
+    -- target first, and there's no GUI button to CREATE a lock, only this key -- so it stays exempt
+    -- from the In-Game Keys toggle (joining Insert/'='/'-'), but still respects the restore lock
+    -- since it does touch real game state (unlike those three).
+    register("targetLock", restoreGatedAction(function() Spawner.ToggleTargetLock() end, "targetLock"))
 
-    print("[LivingBase] Live edit ON: PageUp/PageDown = height | ',' '.' = rotate | Num/ = rotate 45\194\176 | Num* = rotate 180\194\176 | arrows = slide fwd/back/left/right | Num- = cycle precision (full/half/quarter/eighth/2x) | Num+ = toggle target lock (pins despawn/cycle/live-edit to one object)  (object in front, persists).\n")
+    print("[LivingBase] Live edit ON: PageUp/PageDown = height | ',' '.' = rotate | Num/ = rotate 45\194\176 | Num* = rotate 180\194\176 | arrows = slide fwd/back/left/right | Num- = cycle precision (1/8, 1/4, 1/2, 1x normal, 2x, 4x) | Num+ = toggle target lock (pins despawn/cycle/live-edit to one object)  (object in front, persists).\n")
 end
 
 -- Without a console, a silently-skipped bind just looks like "the key does nothing" with no clue
@@ -448,6 +559,566 @@ if ModSettings and ModSettings.IsInstalled() and ExecuteWithDelay then
     print("[LivingBase] R5ModSettings detected — a handful of toggles apply live (see Settings > Mods); keybind changes need a game restart to take effect.\n")
 end
 
+------------------------------------------------------------
+-- SPAWN MENU BRIDGE: the LivingBaseSpawnMenu companion C++ mod (a separate compiled UE4SS mod,
+-- its own standalone ImGui window) writes "SPAWN:ROSTER:INDEX\n" or "REPLACE:ROSTER:INDEX\n" to
+-- spawn_request.txt. Clicking a tree leaf only SELECTS it (2026-08-16 rework -- clicking used to
+-- spawn immediately); the window's own "Spawn"/"Replace" buttons send the verb once the user
+-- actually acts on the selection. Poll for that file here and turn it into a REAL spawn through
+-- the exact same by-name entry point the keyboard/console already use (Testbed.SpawnSenkaByKey,
+-- etc., via SPAWN_MENU_HANDLERS below) -- never a separate spawn path that could drift from what
+-- pressing the key does. SPAWN places a new one; REPLACE swaps whatever's currently targeted/
+-- locked for the selected entry IN PLACE via Spawner.ReplaceNearestInFront (spawner.lua) -- a
+-- generalization of Spawner.CycleNearestInFront to jump to an arbitrary tree pick across ANY
+-- roster, not just step forward/backward through a statue/decor list, which is why the tree's
+-- own `]`/`[`-equivalent buttons were dropped in favor of this. Same "add a candidate path, never
+-- trust a bare relative filename" lesson spawnmenu_manifest.lua already learned the hard way (its
+-- own header comment has the story); same "process and delete" shape a request-queue file always
+-- needs, so a stale leftover from a previous session (or the mod not loaded that tick) can't get
+-- replayed later.
+------------------------------------------------------------
+local SPAWN_REQUEST_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/spawn_request.txt",
+    "Mods/LivingBase/spawn_request.txt",
+    "spawn_request.txt",
+}
+local function findSpawnRequestPath()
+    for _, p in ipairs(SPAWN_REQUEST_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); return p end
+    end
+    return nil
+end
+
+-- One entry per `roster =` value spawnmenu_manifest.lua can emit. Add a new entry here each
+-- time that generator's roster_descriptors() grows to cover another roster (statues, decor,
+-- etc.) -- see that file's own comment.
+local SPAWN_MENU_HANDLERS = {
+    SENKAMATI_LOOKS = function(index)
+        local row = Config.SENKAMATI_LOOKS and Config.SENKAMATI_LOOKS[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        return Testbed.SpawnSenkaByKey(Testbed.SenkaShortKey(row))
+    end,
+    TOWNSFOLK_CLASSES = function(index)
+        local row = Config.TOWNSFOLK_CLASSES and Config.TOWNSFOLK_CLASSES[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        return Testbed.SpawnWalkerByName(row.name)
+    end,
+    FACTION_VISITOR_LOOKS = function(index)
+        local row = Config.FACTION_VISITOR_LOOKS and Config.FACTION_VISITOR_LOOKS[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        return Testbed.SpawnCrewByName(row.name)
+    end,
+    -- Walking women: Config.FEMALE_RESKIN_TARGETS is a flat list of plain name strings (not rows
+    -- with their own sub-fields), so the index points directly at the name to look up.
+    FEMALE_RESKIN_TARGETS = function(index)
+        local name = Config.FEMALE_RESKIN_TARGETS and Config.FEMALE_RESKIN_TARGETS[index]
+        if not name then return false, "index " .. tostring(index) .. " out of range" end
+        return Testbed.SpawnFemaleWalkerByName(name)
+    end,
+}
+
+-- Statue rosters (STANDING/SEATED/CHAIR/INTERACTIVE): each row is {faction, path}, and the
+-- by-name entry points (Testbed.SpawnStandingByName/etc.) match on the SHORT CLASS NAME parsed
+-- out of `path` -- the exact same pattern this file's own "lblook" section already computes
+-- independently as `statueShortName` (see below), duplicated here in miniature rather than
+-- depending on that later definition's position in the file (Lua locals are only visible from
+-- their declaration point onward).
+local function spawnMenuStatueShortName(path)
+    return tostring(path):match("([%w_]+)%.[%w_]+$") or tostring(path)
+end
+local SPAWN_MENU_STATUE_ROSTERS = {
+    STANDING_STATUES    = { list = Config.STANDING_STATUES,    fn = Testbed.SpawnStandingByName },
+    SEATED_STATUES      = { list = Config.SEATED_STATUES,      fn = Testbed.SpawnSeatedByName },
+    CHAIR_STATUES        = { list = Config.CHAIR_STATUES,       fn = Testbed.SpawnChairByName },
+    INTERACTIVE_STATUES = { list = Config.INTERACTIVE_STATUES, fn = Testbed.SpawnInteractiveByName },
+}
+for roster, def in pairs(SPAWN_MENU_STATUE_ROSTERS) do
+    SPAWN_MENU_HANDLERS[roster] = function(index)
+        local row = def.list and def.list[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        return def.fn(spawnMenuStatueShortName(row.path))
+    end
+end
+
+-- DECOR / LIVESTOCK: spawnmenu_manifest.lua flattens these (decor: DECOR_ORDER then each
+-- category's own item order; livestock: BOARS/GOATS/DODOS/WOLVES/CROCODILES concatenated in that
+-- order) into one array, since both are spread across several separate Config tables rather than
+-- living in one flat roster like everything else here. Rebuild the IDENTICAL flattening here so
+-- an index written into spawn_menu.ini means the same entry on both sides -- keep these two
+-- functions in sync with that file's own decorRows/livestockRows if either ordering ever changes.
+local function flattenSpawnMenuDecor()
+    local rows = {}
+    for _, catKey in ipairs(Config.DECOR_ORDER or {}) do
+        for _, d in ipairs((Config.DECOR_CATEGORIES or {})[catKey] or {}) do
+            rows[#rows + 1] = d
+        end
+    end
+    return rows
+end
+local SPAWN_MENU_DECOR_ROWS = flattenSpawnMenuDecor()
+SPAWN_MENU_HANDLERS.DECOR = function(index)
+    local row = SPAWN_MENU_DECOR_ROWS[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnDecorByName(row.name)
+end
+
+local function flattenSpawnMenuLivestock()
+    local rows = {}
+    for _, t in ipairs({ Config.BOARS, Config.GOATS, Config.DODOS, Config.WOLVES, Config.CROCODILES }) do
+        for _, e in ipairs(t or {}) do rows[#rows + 1] = e end
+    end
+    return rows
+end
+local SPAWN_MENU_LIVESTOCK_ROWS = flattenSpawnMenuLivestock()
+SPAWN_MENU_HANDLERS.LIVESTOCK = function(index)
+    local row = SPAWN_MENU_LIVESTOCK_ROWS[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnLivestockByName(row.name)
+end
+
+local function pollSpawnMenuRequest()
+    local path = findSpawnRequestPath()
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+
+    local verb, roster, indexStr = content:match("(%u+)%s*:%s*(%u[%u_]*)%s*:%s*(%d+)")
+    local index = indexStr and tonumber(indexStr)
+    if not verb or not roster or not index then
+        print("[LivingBase] spawn menu: malformed spawn_request.txt (" .. tostring(content) .. ")\n")
+        return
+    end
+    if verb ~= "SPAWN" and verb ~= "REPLACE" then
+        print("[LivingBase] spawn menu: unknown verb '" .. verb .. "' (expected SPAWN or REPLACE).\n")
+        return
+    end
+    local handler = SPAWN_MENU_HANDLERS[roster]
+    if not handler then
+        print("[LivingBase] spawn menu: no handler for roster '" .. roster .. "' yet.\n")
+        return
+    end
+    -- restoreGate only, NOT modGate (2026-08-16 split) -- GUI window actions stay reachable with
+    -- In-Game Keys off (see restoreGate's own comment), still blocked during world-load restore.
+    if not restoreGate("spawn menu: " .. verb .. " " .. roster) then return end
+    if spawnBusy then
+        print("[LivingBase] spawn menu: '" .. roster .. "' ignored — shared spawn-debounce still active.\n")
+        return
+    end
+    spawnBusy = true
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            if verb == "REPLACE" then
+                return Spawner.ReplaceNearestInFront(function() return handler(index) end)
+            end
+            return handler(index)
+        end)
+        if not ok then log("spawn menu " .. verb .. " " .. roster .. " FAILED: " .. tostring(err)) end
+    end)
+    if ExecuteWithDelay then
+        ExecuteWithDelay(Config.SPAWN_DEBOUNCE_MS or 300, function() spawnBusy = false end)
+    else
+        spawnBusy = false
+    end
+end
+
+if ExecuteWithDelay then
+    local function spawnMenuPollLoop()
+        ExecuteWithDelay(400, function()
+            pollSpawnMenuRequest()
+            spawnMenuPollLoop()
+        end)
+    end
+    spawnMenuPollLoop()
+    print("[LivingBase] Spawn menu bridge armed — watching for spawn_request.txt from LivingBaseSpawnMenu.\n")
+end
+
+------------------------------------------------------------
+-- MOVE MENU BRIDGE: LivingBaseSpawnMenu's held-repeat buttons (MoveMenu.cpp, a side panel next
+-- to the spawn tree) APPEND one "MOVE:<ACTION>\n" line to move_request.txt per repeat-tick while
+-- a button is held -- appended, not overwritten, so ticks that land between two of our reads
+-- never get lost to a last-write-wins overwrite. Uses the SAME step sizes and precision scale the
+-- keyboard live-edit keys already use (Config.LIVE_EDIT_*_STEP / Spawner.editPrecisionScale, see
+-- the LIVE_EDIT block above) so the window's buttons and the keyboard stay in perfect sync --
+-- this file is the only place either one's step size is defined. Gated on Config.LIVE_EDIT
+-- exactly like the keyboard keys are; the queue is still drained (read + deleted) when LIVE_EDIT
+-- is off so it can never silently pile up unread, it just isn't acted on.
+--
+-- DRAIN vs FLUSH are deliberately two separate loops at two separate rates, not one:
+-- Spawner.EditNearestInFront (spawner.lua) does TWO full persist.txt reads (PersistFindMatching,
+-- then PersistUpdatePose's own internal read) plus one full persist.txt REWRITE, every single
+-- call. That's fine at the rate a real held key produces -- this codebase's own comments elsewhere
+-- note many keydown events are silently dropped by this UE4SS build, so the EFFECTIVE call rate
+-- from a held keyboard key has always been much lower than its nominal repeat rate. A window
+-- button has no such drop rate: draining+applying on every 100ms poll delivered a full,
+-- undropped ~10 calls/sec for as long as the button was held -- confirmed live (2026-08-16):
+-- holding one for an extended period crashed/hung the game with nothing trapped in the log,
+-- consistent with persist.txt thrashing under sustained synchronous file I/O on the game thread,
+-- a load this path had never actually been tested against before. Fix: drain the queue file
+-- often (cheap, just file read + delete) but only ever CALL EditNearestInFront on the much slower
+-- flush timer below, applying one ACCUMULATED delta instead of one call per tick.
+------------------------------------------------------------
+local MOVE_REQUEST_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/move_request.txt",
+    "Mods/LivingBase/move_request.txt",
+    "move_request.txt",
+}
+local function findMoveRequestPath()
+    for _, p in ipairs(MOVE_REQUEST_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); return p end
+    end
+    return nil
+end
+
+-- One entry per SPATIAL action MoveMenu.cpp can send -- UNIT (dZ, dYaw, dFwd, dRight) deltas,
+-- matching the sign/axis convention the editUp/editDown/editRotL/editRotR/editFwd/editBack/
+-- editLeft/editRight key actions already use above. Multiplied by the real step sizes +
+-- precision scale at flush time below, never baked into the C++ side (see MoveMenu.cpp's own
+-- header comment). ROT_180 is a fixed-180-degree flip in one shot, matching the keyboard's own
+-- Num* -- dYaw here is a literal degree value, not a unit multiplied by LIVE_EDIT_ROTATE_STEP
+-- like ROT_L/ROT_R, so it's applied separately at flush time below.
+local MOVE_MENU_ACTIONS = {
+    UP    = {1, 0, 0, 0},
+    DOWN  = {-1, 0, 0, 0},
+    ROT_L = {0, -1, 0, 0},
+    ROT_R = {0, 1, 0, 0},
+    FWD   = {0, 0, 1, 0},
+    BACK  = {0, 0, -1, 0},
+    LEFT  = {0, 0, 0, -1},
+    RIGHT = {0, 0, 0, 1},
+}
+-- ROT_180 gets its own table (not folded into MOVE_MENU_ACTIONS above) since its dYaw is a literal
+-- 180, not a unit scaled by LIVE_EDIT_ROTATE_STEP -- see flush-time handling below.
+local MOVE_MENU_ROT180_ACTION = "ROT_180"
+
+-- ACTION:<NAME> one-shot commands (distinct from MOVE:<ACTION> spatial nudges above) -- these
+-- come from single clicks (toggle/clear/lock buttons, or the in-window +/NUM_ADD keyboard
+-- shortcut), never held-repeat, so they're handled IMMEDIATELY at drain time rather than queued
+-- into the flush accumulator -- no reason to wait out the flush timer for a one-shot click, and
+-- nothing here calls the expensive EditNearestInFront path the flush throttle exists to protect.
+local function handleMoveMenuToggleEnable()
+    -- Mirrors the in-game Insert key exactly -- toggleModAction() is the SAME function that key
+    -- calls, defined earlier in this file (KEY REGISTRATION section). Deliberately NOT gated by
+    -- modGate: the toggle key always works regardless of enabled state, or there'd be no way to
+    -- turn keys back on once off.
+    toggleModAction()
+end
+local function handleMoveMenuClearAll()
+    -- The window's own confirmation popup (SpawnMenu.cpp side) is what gates sending this at all --
+    -- unlike the keyboard DEL key, this file doesn't re-implement its own arm/confirm dance, the
+    -- window already did that before this line ever got written. restoreGate only, NOT modGate
+    -- (2026-08-16 split) -- see restoreGate's own comment.
+    if not restoreGate("move menu: clear all") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Testbed.Cleanup() end)
+        if not ok then log("move menu clear-all FAILED: " .. tostring(err)) end
+    end)
+end
+local function handleMoveMenuTargetLock()
+    -- restoreGate only, NOT modGate -- matches the keyboard Num+ registration's own exemption (see
+    -- its comment) since this is the SAME action reached via the '+' shortcut while this window has
+    -- focus instead of the game.
+    if not restoreGate("move menu: target lock") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Spawner.ToggleTargetLock() end)
+        if not ok then log("move menu target-lock FAILED: " .. tostring(err)) end
+    end)
+end
+-- Despawn (matches Num9/Testbed.DespawnInFront): gated + shares the spawn debounce, same as
+-- register("undo", gatedAction(...)) above -- despawn-in-front has always shared that debounce
+-- with placement, not the "fast repeated tap" class undo/cycle get. restoreGate only, NOT modGate
+-- (2026-08-16 split) -- see restoreGate's own comment.
+local function handleMoveMenuDespawn()
+    if not restoreGate("move menu: despawn") then return end
+    if spawnBusy then
+        print("[LivingBase] move menu: despawn ignored — shared spawn-debounce still active.\n")
+        return
+    end
+    spawnBusy = true
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Testbed.DespawnInFront() end)
+        if not ok then log("move menu despawn FAILED: " .. tostring(err)) end
+    end)
+    if ExecuteWithDelay then
+        ExecuteWithDelay(Config.SPAWN_DEBOUNCE_MS or 300, function() spawnBusy = false end)
+    else
+        spawnBusy = false
+    end
+end
+-- Undo (matches Num0/Spawner.UndoDespawn): no shared debounce, same "fast repeated tap" class
+-- directAction gives the keyboard key. restoreGate only, NOT modGate (2026-08-16 split) -- see
+-- restoreGate's own comment.
+local function handleMoveMenuUndo()
+    if not restoreGate("move menu: undo") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Spawner.UndoDespawn() end)
+        if not ok then log("move menu undo FAILED: " .. tostring(err)) end
+    end)
+end
+-- Coords window (2026-08-16) open/close: suspends/resumes the target-lock distance check for as
+-- long as the window is open -- see Spawner.suspendTargetLockDistanceCheck's own comment in
+-- spawner.lua for why. Deliberately NOT gated by modGate/spawnBusy -- this only flips a flag, it
+-- never touches game state, so there's nothing for those gates to protect against.
+local function handleMoveMenuCoordsOpen()
+    Spawner.suspendTargetLockDistanceCheck = true
+end
+local function handleMoveMenuCoordsClose()
+    Spawner.suspendTargetLockDistanceCheck = false
+end
+-- COORDS_MOVE:x:y:z:yaw -- Preview/Apply/Reset/Cancel in the Coords window all funnel through this
+-- SAME line shape, just with different values (Preview/Apply send whatever's typed; Reset/Cancel
+-- send the window's own remembered opening snapshot back) -- see Spawner.SetLockedTargetTransform's
+-- own comment for why this writes an ABSOLUTE transform rather than reusing the relative-delta
+-- EditNearestInFront path every other nudge control here uses.
+local function handleMoveMenuCoordsMove(x, y, z, yaw)
+    -- restoreGate only, NOT modGate (2026-08-16 split) -- see restoreGate's own comment.
+    if not restoreGate("move menu: coords") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() return Spawner.SetLockedTargetTransform(x, y, z, yaw) end)
+        if not ok then log("move menu coords FAILED: " .. tostring(err)) end
+    end)
+end
+local function handleMoveMenuPrecision(scale)
+    if type(scale) ~= "number" or scale <= 0 then return end
+    -- Shared state with the keyboard's own Num- precision cycle (Spawner.editPrecisionScale,
+    -- LIVE_EDIT block above) -- whichever set it last wins, same as any other shared setting. The
+    -- keyboard cycle's own on-screen index/label can drift out of sync with a value set here from
+    -- the window's slider (cosmetic only: the keyboard's NEXT Num- press still cycles correctly
+    -- from wherever its own index already was, just not from this value) -- acceptable, not worth
+    -- cross-syncing two separate UI's own cursor state for a display label.
+    Spawner.editPrecisionScale = scale
+end
+
+-- Hard ceiling on how many queued actions ONE drain will ever fold into the pending accumulator,
+-- regardless of how many are actually sitting in the file. MoveMenu.cpp appends and this file
+-- deletes the SAME file from two different threads with no shared lock between them (C++'s
+-- std::ofstream and Lua's os.remove); if a delete ever loses that race (Windows denies removing a
+-- file another handle briefly has open), the file survives un-cleared and the NEXT drain re-reads
+-- its old content on top of everything newly appended since. This cap bounds that worst case to a
+-- sane number of steps regardless of how large the file grew, instead of chasing down the exact
+-- Windows file-locking behavior that would let it happen.
+local MOVE_MENU_MAX_ACTIONS_PER_DRAIN = 20
+
+-- Pending accumulator: drainMoveMenuQueue() (fast, 100ms) adds to this; flushMoveMenuQueue()
+-- (slow, 250ms -- see its own comment) is the ONLY thing that ever reads it and calls
+-- Spawner.EditNearestInFront, then resets it to zero.
+local movePendingZ, movePendingYaw, movePendingFwd, movePendingRight = 0.0, 0.0, 0.0, 0.0
+local movePendingCount = 0
+
+local function drainMoveMenuQueue()
+    local path = findMoveRequestPath()
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    local removedOk = os.remove(path)
+    if not removedOk then
+        -- Delete lost the race with a concurrent C++ append (see MOVE_MENU_MAX_ACTIONS_PER_DRAIN's
+        -- comment) -- force-truncate as a fallback so this content can't also be re-read next
+        -- drain. Whatever landed in the file in the gap between the read above and this truncate
+        -- is lost, which is fine (a dropped tick or two), unlike the alternative (silently
+        -- reprocessing old content forever).
+        local tf = io.open(path, "w")
+        if tf then tf:close() end
+        print("[LivingBase] move menu: move_request.txt delete lost a race with a concurrent write -- truncated instead.\n")
+    end
+
+    local hs = Config.LIVE_EDIT_HEIGHT_STEP or 10.0
+    local rs = Config.LIVE_EDIT_ROTATE_STEP or 15.0
+    local ms = Config.LIVE_EDIT_MOVE_STEP or 10.0
+    local scale = Spawner.editPrecisionScale or 1.0
+    local count, skipped = 0, 0
+    -- Line-by-line, not one gmatch over the whole file: MoveMenu.cpp can now send THREE distinct
+    -- line shapes in the same file (spatial "MOVE:<ACTION>", one-shot "ACTION:<NAME>", and
+    -- "PRECISION:<value>") -- see this block's own header comment for why one-shot commands are
+    -- handled immediately here rather than queued into the spatial accumulator below.
+    for line in content:gmatch("[^\r\n]+") do
+        -- %u_ alone does NOT match digits in Lua patterns -- "ROT_180" silently failed to match
+        -- here until this was widened to %u%d_ (confirmed live 2026-08-16: Flip 180 did nothing).
+        local spatialAction = line:match("^MOVE:([%u%d_]+)$")
+        if spatialAction then
+            if count >= MOVE_MENU_MAX_ACTIONS_PER_DRAIN then
+                skipped = skipped + 1
+            elseif spatialAction == MOVE_MENU_ROT180_ACTION then
+                movePendingYaw = movePendingYaw + 180.0
+                movePendingCount = movePendingCount + 1
+                count = count + 1
+            else
+                local d = MOVE_MENU_ACTIONS[spatialAction]
+                if d then
+                    movePendingZ     = movePendingZ     + d[1] * hs * scale
+                    movePendingYaw   = movePendingYaw   + d[2] * rs
+                    movePendingFwd   = movePendingFwd   + d[3] * ms * scale
+                    movePendingRight = movePendingRight + d[4] * ms * scale
+                    movePendingCount = movePendingCount + 1
+                    count = count + 1
+                end
+            end
+        else
+            local precisionStr = line:match("^PRECISION:([%d%.]+)$")
+            if precisionStr then
+                handleMoveMenuPrecision(tonumber(precisionStr))
+            elseif line == "ACTION:TOGGLE_ENABLE" then
+                handleMoveMenuToggleEnable()
+            elseif line == "ACTION:CLEAR_ALL" then
+                handleMoveMenuClearAll()
+            elseif line == "ACTION:TARGET_LOCK" then
+                handleMoveMenuTargetLock()
+            elseif line == "ACTION:DESPAWN" then
+                handleMoveMenuDespawn()
+            elseif line == "ACTION:UNDO" then
+                handleMoveMenuUndo()
+            elseif line == "ACTION:COORDS_OPEN" then
+                handleMoveMenuCoordsOpen()
+            elseif line == "ACTION:COORDS_CLOSE" then
+                handleMoveMenuCoordsClose()
+            else
+                local cx, cy, cz, cyaw = line:match("^COORDS_MOVE:(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
+                if cx then
+                    handleMoveMenuCoordsMove(tonumber(cx), tonumber(cy), tonumber(cz), tonumber(cyaw))
+                end
+            end
+        end
+    end
+    if skipped > 0 then
+        print(string.format("[LivingBase] move menu: capped at %d actions this drain, dropped %d queued -- move_request.txt is growing faster than expected (see the cap's own comment).\n",
+            MOVE_MENU_MAX_ACTIONS_PER_DRAIN, skipped))
+    end
+end
+
+local function flushMoveMenuQueue()
+    if movePendingCount == 0 then return end
+    local z, yaw, fwd, right = movePendingZ, movePendingYaw, movePendingFwd, movePendingRight
+    movePendingZ, movePendingYaw, movePendingFwd, movePendingRight, movePendingCount = 0.0, 0.0, 0.0, 0.0, 0
+    if not Config.LIVE_EDIT then return end -- reset above either way; just don't act on it
+    -- No shared spawnBusy debounce -- same "fast repeated tap" treatment directAction gives the
+    -- keyboard live-edit keys. The throttle here is the flush RATE (250ms), not a busy-flag.
+    -- restoreGate only, NOT modGate (2026-08-16 split) -- see restoreGate's own comment.
+    if not restoreGate("move menu") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Spawner.EditNearestInFront(z, yaw, fwd, right) end)
+        if not ok then log("move menu FAILED: " .. tostring(err)) end
+    end)
+end
+
+if ExecuteWithDelay then
+    local function moveMenuDrainLoop()
+        ExecuteWithDelay(100, function()
+            drainMoveMenuQueue()
+            moveMenuDrainLoop()
+        end)
+    end
+    moveMenuDrainLoop()
+    -- 100ms (matches the drain rate above, so there's no artificial lag beyond it) = at most 10
+    -- Spawner.EditNearestInFront calls/sec. CONFIRMED (2026-08-16) the crash's real cause was
+    -- EditNearestInFront's per-edit SetActorHiddenInGame toggle (spawner.lua, now disabled, see
+    -- that function's own comment), not raw call rate -- a controlled test held up at 250ms with
+    -- only the toggle disabled, after a stricter 500ms throttle alone had NOT been enough. persist.txt
+    -- itself (the other per-call cost, two reads + one rewrite) is only ~50 entries / ~11KB on this
+    -- base -- negligible even at high frequency -- so there's no remaining reason to throttle this
+    -- hard; kept at 100ms rather than removed entirely purely as cheap insurance against
+    -- MOVE_MENU_MAX_ACTIONS_PER_DRAIN's own race-window worst case (see that constant's comment).
+    -- If persist.txt ever grows dramatically (hundreds+ entries) and nudging starts to feel
+    -- hitchy, that's the first thing to revisit.
+    local function moveMenuFlushLoop()
+        ExecuteWithDelay(100, function()
+            flushMoveMenuQueue()
+            moveMenuFlushLoop()
+        end)
+    end
+    moveMenuFlushLoop()
+    print("[LivingBase] Move menu bridge armed — watching for move_request.txt from LivingBaseSpawnMenu.\n")
+end
+
+------------------------------------------------------------
+-- SPAWN MENU STATUS: the mirror of the two request channels above -- those only ever go
+-- C++ -> Lua (a click/button becomes a real spawn/edit); this one goes Lua -> C++, so the window
+-- can show live state it has no other way to know: whether keys are currently enabled
+-- (`modEnabled`), whether the world-load restore lock is active (`restoreLockActive` -- see the
+-- "Restore: ..." block above; every keyboard key is gated on this exact flag today, and
+-- RedFalcon asked for the window's buttons to be gated the same way), and what's currently
+-- target-locked (Spawner.lockedTarget, Num+). Overwrites one small file each time any of the
+-- three actually changes -- POLLED AND DIFFED here rather than published eagerly at each
+-- mutation site, since those sites are scattered across two files (toggleModAction/
+-- restoreLockActive here in main.lua, Spawner.lockedTarget's several set/clear points in
+-- spawner.lua) and this state only ever changes on an explicit user action or a restore
+-- starting/ending, never on a held-repeat -- a short poll is simple, correct, and imperceptible.
+------------------------------------------------------------
+local SPAWN_MENU_STATUS_PATH = "ue4ss/Mods/LivingBase/spawn_menu_status.txt"
+local lastPublishedEnabled, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = nil, nil, nil, nil
+local lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = nil, nil, nil, nil
+-- Also reads the locked target's live transform (2026-08-16, for the Coords window's "populate
+-- from wherever the target currently is" snapshot-on-open) -- empty label/zeroed transform when
+-- nothing's locked, same as before.
+--
+-- id (2026-08-16): the DISPLAY label alone isn't a reliable identity check -- two different actors
+-- can share the exact same label (two identically-dressed Senkamati, two identical decor props),
+-- so retargeting from one to the other via the "+ on a different thing" feature could leave
+-- `target` looking unchanged even though the underlying actor is a completely different one.
+-- CONFIRMED live (2026-08-16): this let the Coords window fail to notice a retarget onto a
+-- same-labeled object -- it neither closed nor refreshed. GetFullName() (already used elsewhere in
+-- this codebase for exactly this "need a real per-instance identity" reason) includes UE's own
+-- auto-assigned per-instance discriminator, so it stays unique even when the label collides.
+local function currentLockedTargetInfo()
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then
+        return "", "", 0.0, 0.0, 0.0, 0.0
+    end
+    local id = ""
+    pcall(function() id = lt.actor:GetFullName() end)
+    local x, y, z, yaw = 0.0, 0.0, 0.0, 0.0
+    pcall(function()
+        local l = lt.actor:K2_GetActorLocation()
+        local r = lt.actor:K2_GetActorRotation()
+        x, y, z, yaw = l.X, l.Y, l.Z, r.Yaw
+    end)
+    return tostring(lt.label), tostring(id), x, y, z, yaw
+end
+local lastPublishedWindowToggle = nil
+local lastPublishedFocusSteal = nil
+local function publishSpawnMenuStatusIfChanged()
+    local enabled, restoring = modEnabled, restoreLockActive
+    local target, id, x, y, z, yaw = currentLockedTargetInfo()
+    if enabled == lastPublishedEnabled and restoring == lastPublishedRestoring and target == lastPublishedTarget
+        and id == lastPublishedId
+        and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
+        and windowToggleSeq == lastPublishedWindowToggle
+        and focusStealSeq == lastPublishedFocusSteal then
+        return
+    end
+    lastPublishedEnabled, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = enabled, restoring, target, id
+    lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = x, y, z, yaw
+    lastPublishedWindowToggle = windowToggleSeq
+    lastPublishedFocusSteal = focusStealSeq
+    local f = io.open(SPAWN_MENU_STATUS_PATH, "w")
+    if not f then return end
+    f:write("ENABLED=", enabled and "1" or "0", "\n")
+    f:write("RESTORING=", restoring and "1" or "0", "\n")
+    f:write("TARGET=", target, "\n")
+    f:write("TARGET_ID=", id, "\n")
+    f:write("TARGET_X=", string.format("%.2f", x), "\n")
+    f:write("TARGET_Y=", string.format("%.2f", y), "\n")
+    f:write("TARGET_Z=", string.format("%.2f", z), "\n")
+    f:write("TARGET_YAW=", string.format("%.2f", yaw), "\n")
+    f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
+    f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
+    f:close()
+end
+if ExecuteWithDelay then
+    local function statusPublishLoop()
+        ExecuteWithDelay(300, function()
+            pcall(publishSpawnMenuStatusIfChanged)
+            statusPublishLoop()
+        end)
+    end
+    statusPublishLoop()
+end
+
 -- Whistle -> crew escort (anchor method) and the Caster's totem killer. Both use
 -- NotifyOnNewObject, which fires the instant the object is constructed -- no polling.
 -- Installed at mod load; the hooks are global, so there is nothing to re-apply per world.
@@ -465,16 +1136,36 @@ end
 if Config.UNLOCK_HIDDEN_BUILDING and ExecuteWithDelay then
     local UnlockBuild = require("unlockbuild")
     local tries = 0
-    local function unlockTick()
+    -- shouldContinue reflects the PREVIOUS completed attempt's result, not the one currently in
+    -- flight -- doWork()'s own ExecuteInGameThread callback is async (queued for a later game
+    -- tick, doesn't block), so by the time unlockTick checks this it's necessarily one tick
+    -- stale. That's fine for a "retry up to ~10 times" heuristic (worst case: one extra retry
+    -- beyond the ideal stopping point) and it's the price of the actual fix below.
+    local shouldContinue = true
+    local function doWork()
         ExecuteInGameThread(function()
             local n = 0
             pcall(function() n = UnlockBuild.Run(tries == 0) or 0 end)
             tries = tries + 1
             -- keep retrying while the catalog is empty (max ~10 tries), then a couple of top-ups
-            if (n == 0 and tries < 10) or tries < 3 then
-                ExecuteWithDelay(15000, unlockTick)
-            end
+            shouldContinue = (n == 0 and tries < 10) or tries < 3
         end)
+    end
+    -- CONFIRMED live (2026-08-16): calling ExecuteWithDelay NESTED inside an ExecuteInGameThread
+    -- callback throws "No overload found for function 'ExecuteWithDelay'" in this UE4SS build --
+    -- this was happening on every single launch (Config.UNLOCK_HIDDEN_BUILDING's first retry
+    -- fires ~15s after mod load, right on schedule with the observed crash timing), well before
+    -- the player had any chance to interact with anything. Fix: doWork()'s ExecuteInGameThread
+    -- call and unlockTick's own ExecuteWithDelay call are siblings now, never nested -- every
+    -- other ExecuteWithDelay-recursion in this codebase (e.g. this file's own move-menu poll
+    -- loops) already follows exactly this "call it from the SAME level as its own callback, never
+    -- from inside a nested ExecuteInGameThread" shape, which is presumably why none of those ever
+    -- hit this.
+    local function unlockTick()
+        doWork()
+        if shouldContinue then
+            ExecuteWithDelay(15000, unlockTick)
+        end
     end
     ExecuteWithDelay(15000, unlockTick)
 end

@@ -126,7 +126,16 @@ It returns nil for `R5AbilitySystemComponent` (which made `MakePassive` a silent
 but `R5MarkerComponent`, `R5CommonInteractionTargetComponent`, `R5PrimitiveInteractionTargetComponent`
 **all resolve fine.** Measure each path; don't generalise. Reach ASC-family components by PROPERTY.
 
-### 3g. A function existing in the object dump doesn't mean it's safe to call (2026-08-15)
+### 3g. `RegisterKeyBind` is only safe during the initial mod-load pass
+Calling `RegisterKeyBind` again LATER — e.g. from a runtime poll loop, to apply a remapped key
+live without a restart — reliably crashes the game itself
+(`EXCEPTION_ACCESS_VIOLATION` inside the game's own executable, confirmed via crash dump — not a
+Lua error, not something `pcall` can catch). The exact same remap works fine (just doesn't take
+effect until a restart) when the call happens only once, synchronously, during the mod's initial
+load. Bind every key exactly once at startup; treat a "live keybind rebind" feature as needing a
+full game restart to apply, not a runtime `RegisterKeyBind` call.
+
+### 3h. A function existing in the object dump doesn't mean it's safe to call (2026-08-15)
 Found a real, dedicated setter function for changing a body-type-style property live (see 2a for
 why this looked promising — a genuine function, not a build-time-only property write). Called it
 with correctly-typed arguments, matching the parameter list read straight from the object dump.
@@ -140,6 +149,39 @@ function EXISTS and tells you its signature; it proves nothing about whether cal
 Treat any first live call to a newly-discovered engine function as a real crash risk regardless of
 how reasonable the theory behind it is, especially for anything that mutates a live pawn's
 customization/composite state — save first, or accept the game may need a hard restart.
+
+### 3i. `SetActorLocation`/`SetActorRotation` on a Static-mobility component silently no-ops visually (2026-08-16)
+A runtime transform call **succeeds** (returns fine, the actor's own logged position updates
+correctly) but the RENDERED MESH stays exactly where it was — because the component's mobility is
+still `Static`, and Static components don't get re-evaluated by the render thread after their
+initial placement. The transform is genuinely correct in game state; only the on-screen mesh is
+stale. Symptom that gives this away: walking away and back (forcing the actor to stream out/in)
+"fixes" it, because streaming rebuilds the render proxy from scratch. Fix: call the engine's own
+`SetMobility(Movable)` equivalent on the component ONCE before the first runtime move — once
+Movable, every subsequent `SetActorLocation`/`SetActorRotation` updates the render thread every
+frame, no special handling needed after that.
+
+### 3j. A function "safe" at keyboard-driven call rates isn't necessarily safe at UI-driven rates (2026-08-16)
+A visibility-toggle hack (`SetActorHiddenInGame(true)` immediately followed by `(false)`, meant to
+force the render thread to re-register an actor's state) had been living in a live-edit/"nudge"
+function for a long time with zero problems — because it only ever fired at the rate a human
+holding a keyboard key produces — and this UE4SS build silently drops most keydown-repeat events
+for a held key (confirmed by comparing accumulated-offset logs to actual press count elsewhere in
+this codebase), so the *effective* call rate from even an actively-held key has always been much
+lower than the key's nominal OS repeat rate.
+Wiring the SAME function to a UI element with a real, undropped repeat rate (a held button/key in
+a separate ImGui window, ~10 calls/sec sustained) crashed the engine natively within seconds, with
+**nothing trapped in the log** — same "uncatchable, no trace" signature as 3h above. **Isolated by
+a controlled A/B test, not by guessing**: throttling the call RATE alone (down to ~2 calls/sec)
+did NOT stop the crash; disabling just the suspect call (`SetActorHiddenInGame`) — while leaving
+the rate LESS throttled (~4-10 calls/sec) — DID. This confirmed the specific call was the actual
+cause, not raw frequency; a plausible-looking cost center found first (in this case, a same-function
+full-file read/rewrite for persistence) turned out to be a real but much smaller concern, not the
+crash. **Lesson**: before wiring any UI element with a natural high, undropped repeat rate to an
+existing function, audit everything that function does per call — a component/render-state mutation
+that was fine at human-keypress frequency is not proven fine at 10x that, sustained, and the way to
+find out which specific line is the problem is to disable/throttle candidates ONE AT A TIME and
+retest, not to fix the first plausible-looking cost and declare victory.
 
 ---
 
@@ -560,3 +602,178 @@ while evaluating a third-party body-mesh replacer for compatibility with this mo
   at the very end of an otherwise-clean parse is a meaningfully different signal than failing
   immediately — treat it as likely-intentional, not likely-corrupt, and don't expect a different
   tool or a re-download to fix it.
+
+---
+
+## 12. Compiled C++ UE4SS mods (not Lua): rendering an interactive overlay safely (2026-08-16)
+
+Built while adding a second, compiled C++ companion mod (a category-tree spawn menu) alongside
+this project's Lua mod. Two other closed-source mods in this ecosystem prove real, fully
+interactive, mouse/keyboard-capable overlay windows ARE achievable in this game — this section
+is what it actually took to get there without crashing.
+
+### 12a. A relative path resolves against the GAME's working directory, in C++ too
+Same trap as Lua's `io.open` (nothing about this is Lua-specific): a bare relative path/filename
+opened from a C++ mod's DLL resolves against the game process's actual CWD
+(`R5/Binaries/Win64/`), NOT the mod's own folder, NOT the calling DLL's location. Confirmed live
+— a first attempt at a mod-to-mod file bridge landed its output file one level too high before
+this was caught. Prefix every path explicitly from the known process root (e.g.
+`"ue4ss/Mods/<YourModName>/..."`) rather than trusting a bare filename, on both sides of any
+cross-mod or cross-language file bridge.
+
+### 12b. Hooking a DXGI/D3D vtable function: `x64Detour`, never a raw vtable swap
+A raw vtable-pointer swap hook (swapping the function pointer directly in the vtable, e.g.
+PolyHook2's `VFuncSwapHook`) on `IDXGISwapChain::Present` causes **infinite recursion with
+Steam's own overlay hook** (`gameoverlayrenderer64.dll`) — confirmed via a live debugger catch
+showing a stack overflow inside Steam's own overlay hook function. Steam's overlay ALSO hooks
+`Present`, and the two raw-swap approaches step on each other. An inline/trampoline-style detour
+(PolyHook2's `x64Detour`, or equivalent) composes correctly with other hookers (Steam's overlay
+included) and does not have this problem. If a DXGI/D3D function needs hooking at all, use a
+trampoline detour, not a vtable swap.
+
+### 12c. Capture the REAL command queue by hooking swapchain creation, not by guessing
+For D3D12 specifically, the officially-documented way to get the exact `ID3D12CommandQueue*`
+paired with a given swapchain is to hook `IDXGIFactory2::CreateSwapChainForHwnd` (vtable index
+15) — for D3D12, its `pDevice` parameter IS the command queue pointer, by the API's own contract.
+A heuristic guess instead ("the first DIRECT-type queue seen via `ExecuteCommandLists`") captured
+the WRONG queue and caused an unrecoverable hang (the game had to be force-closed — not a clean
+crash, a deadlock). Don't guess; hook the creation call. Separately: any fence/event wait tied to
+frame presentation should use a bounded timeout, never `INFINITE` — a wrong or stale queue/fence
+pairing turns an `INFINITE` wait into a permanent hang instead of a recoverable skipped frame.
+
+### 12d. This game's DLSS-G (NVIDIA Streamline) frame generation breaks a naive swapchain-Present
+overlay
+Windrose has NVIDIA Streamline's DLSS Frame Generation active, which wraps/proxies the real
+swapchain (`FStreamlineD3D12DXGISwapchainProvider`). A hook that writes ImGui draw data directly
+onto the raw back buffer via the captured `Present`/command-queue — even with the correct queue
+(12c) and a safe hook style (12b) — still produced genuine GPU device removal
+(`DXGI_ERROR_DEVICE_REMOVED`), confirmed via live debugging across multiple iterations, including
+one run where disabling Streamline's swapchain-provider wrapping (`-slnoswapchainprovider`)
+changed the crash's failure signature but did not eliminate it. Root cause not fully closed out —
+last theory was a deeper Streamline-side hook or interaction, not simply "wrong buffer state."
+Streamline does document its own official overlay integration point (`kFeatureImGUI`) meant to
+coexist with Frame Generation, but it isn't bundled in this game and wasn't pursued this round.
+**Practical takeaway: don't build a raw Present/back-buffer overlay for a game running DLSS-G (or
+likely FSR/AMD frame interpolation, also present here) without first confirming the engine's own
+supported overlay-injection path — assume a naive approach will eventually device-remove.**
+
+### 12e. A standalone window on its own thread is a safe, working alternative to hooking Present
+Instead of drawing into the game's own swapchain, create an entirely separate OS window
+(`CreateWindowW`) with its own D3D11 device/swapchain and its own independent ImGui context —
+running on its own `std::thread`, with its own Win32 message pump. This has zero interaction
+with the game's D3D12 rendering pipeline or Streamline's swapchain wrapping, since it never
+touches either. Confirmed safe and fully interactive via live testing — no crashes, real
+mouse/keyboard input, movable/resizable. Tradeoff: it's a genuinely separate window (alt-tab
+target, own taskbar entry), not an in-game overlay drawn over the 3D view — for a
+control-panel-style tool (as opposed to a HUD/reticle-style overlay) this is a fully acceptable,
+much lower-risk trade. `WM_CLOSE` should hide the window (`ShowWindow(..., SW_HIDE)`) rather than
+destroy it, if the intent is a toggleable panel rather than a one-shot dialog.
+
+### 12g. `GImGui` is a single global — two ImGui contexts/threads in one DLL is not safe by default
+Adding a SECOND standalone window (own thread, own D3D11 device, own ImGui context — the pattern
+12e calls "confirmed safe") alongside an already-working first one does **not** inherit that
+safety automatically. Dear ImGui's current-context pointer (`GImGui`) is a single **global**
+variable, not thread-local, shared across the whole process no matter how many independent
+`ImGui::CreateContext()` calls exist. Two threads each calling `ImGui::` functions against their
+OWN context, concurrently, race on that shared global — whichever context isn't "current" at the
+moment gets corrupted. Confirmed live: **100% reproducible crash on every single launch** once a
+second window/thread/context was added (unlike most races in this file, which are intermittent),
+with visible secondary symptoms (buttons in the FIRST window randomly failing to disable) proving
+real cross-context state corruption, not just a clean crash.
+**The fix is architectural, not a bigger mutex** (see 12i for why a mutex alone wasn't enough
+anyway): don't run two ImGui contexts/threads in one process if it can be avoided. Collapse to a
+single ImGui window/thread/context and present what would have been separate windows as
+`ImGui::BeginTabBar` tabs of the ONE window instead. For a compiled UE4SS mod's own auxiliary
+tool UI (as opposed to something that genuinely needs to be two independent OS windows), this is
+strictly safer and sidesteps the whole class of `GImGui` races rather than chasing each one.
+
+### 12h. Minidump analysis without a full debugger install: extract `cdb.exe` from the WinDbg Store package
+Windows ships a real crash-dump debugger (`cdb.exe`, part of the WinDbg package), but the
+Microsoft Store install of WinDbg lives under `C:\Program Files\WindowsApps\...`, which is
+ACL-locked — even just reading/copying its own exe out is blocked for a process launched outside
+the Store's own execution alias.
+**Workaround**: locate the WinDbg package folder
+(`C:\Program Files\WindowsApps\Microsoft.WinDbg_...\amd64\`), copy `cdb.exe` plus its companion
+DLLs into a writable scratch folder, and run it from there. Point it at BOTH the crash dump and
+the LOCAL PDB your own mod's build already produces alongside its DLL (an ordinary MSVC/CMake
+debug-info build), so symbols resolve for your own frames, not just system DLLs.
+**Command**: `cdb -z <dumpfile> -y <symbol-search-path> -c ".ecxr; kb 20; q"` —
+`.ecxr` switches to the actual exception context record (without it you're looking at cdb's own
+entry state, not the crash site), `kb 20` prints a 20-frame backtrace with arguments, `q` quits
+after. This turns "it's crashed on every launch" into an exact function/line in minutes, instead
+of guessing from symptoms.
+
+### 12i. A mutex around one race can hide a second, independent race behind it
+After fixing the `GImGui` cross-thread race (12g) with a mutex serializing ImGui calls between
+the two windows' threads, the crash appeared to be gone — then came back under the same
+"every launch" reproducibility, but with a **completely different root cause**: a null D3D11
+constant buffer, traced via a second minidump (12h) to the two windows' D3D11 device-creation
+calls racing each other at startup (both windows created near-simultaneously on mod load, both
+independently calling `D3D11CreateDeviceAndSwapChain` with no ordering guarantee between them).
+**Lesson**: when a fix for one identified race doesn't fully resolve an "every time" crash,
+don't assume the fix itself was wrong before checking whether a SECOND, independent race shares
+the same trigger window (here: "two things happening near-simultaneously at mod startup") and
+was simply masked by whichever one hit first. A fresh minidump with a genuinely different call
+stack (D3D11 device creation vs. ImGui internals) is what actually proved these were two separate
+bugs, not one incompletely-fixed one. Both were ultimately made moot by the SAME architectural fix
+as 12g (collapse to one window/thread) rather than patched individually — worth checking whether
+an architectural simplification kills a whole CLASS of races before chasing each one to its own
+targeted fix.
+
+### 12j. `RegisterKeyBind` only fires while the GAME window has OS focus — stealing focus programmatically can break a "press again to undo" key
+A key bound via `RegisterKeyBind` is a GAME-input hook: it only fires while the actual game window
+holds OS keyboard focus, not system-wide. This matters the moment a mod also owns its OWN separate
+window (e.g. an ImGui companion tool, 12e/12g) that can end up holding OS focus instead.
+Concretely: a toggle key meant to open AND close an auxiliary window (open on press while playing,
+close on a SECOND press while playing) broke specifically for the "close" direction whenever the
+window's own open-path called `SetForegroundWindow()` on itself — once the tool window had OS
+focus, the GAME window no longer did, so the toggle key's second press never reached
+`RegisterKeyBind`'s hook at all (Windows routed it to the tool window instead, which wasn't
+listening for it as a hotkey).
+**Fix pattern**: don't call `SetForegroundWindow` on an auxiliary window's OPEN path if a
+game-side keybind needs to be able to close it again later while the game still has OS focus —
+closing must be reachable without the user manually re-focusing the game window first. If
+focus-stealing on open is still wanted for convenience (so a click lands in the tool immediately),
+pair it with a LOCAL input check inside the tool's own render loop (`ImGui::IsKeyPressed(...)`)
+so the tool can ALSO close itself while it has focus — two independent paths to the same close
+action: one for "still playing" (the native keybind, fires while the game has focus) and one for
+"focused on the tool" (the local key poll, fires while the tool has focus).
+**Separately confirmed: `SetForegroundWindow` (or any direct Win32 focus-stealing call) is not
+reachable from UE4SS Lua at all** — no exposed binding exists in UE4SS's Lua API (checked against
+UE4SS's own Lua API docs). Any "make my own window take focus" behavior triggered from Lua has to
+cross a file-based bridge to a companion C++ mod that calls the real Win32 API itself (see 12a's
+bridge-file pattern) — it cannot be done Lua-side directly, at all.
+
+### 12k. Not every `UGameViewportClient` property is reachable from Lua reflection, even when it visibly exists on the class
+`MouseCaptureMode` and `MouseLockMode` (properties that would let a script control OS cursor
+confinement to the game window, matching what several native menus already do) resolve through
+UE4SS's Lua `__index` metamethod to a technically-non-nil UObject wrapper — but one that reports
+`IsValid() == false` on EVERY access, confirmed via purpose-built diagnostic instrumentation (read
+the property, call `:IsValid()`/`:type()` on the result, log both). This is a genuinely different
+failure mode from "property doesn't exist" (which returns Lua `nil`) or "property exists and
+works" — it's a placeholder object that LOOKS reachable but isn't functionally usable.
+Two heavier alternatives exist but weren't pursued here: (1) UE4SS's own hardcoded byte-offset
+accessor system for specific known-problematic properties, which needs UE4SS's own SDK-generation
+tooling run against this specific game build first (C++-only, no Lua equivalent); (2) constructing
+the engine's real input-mode struct (`FInputModeGameAndUI` or similar) and passing it to
+`SetInputMode` — but that struct is polymorphic (has a vtable), and Lua's reflection layer only
+knows how to marshal plain-old-data structs by value; constructing one from Lua risks the same
+"uncatchable native crash" class §3 documents for any mismatched-ABI native call.
+**When a property looks present but every read comes back invalid/unusable, stop retrying
+different Lua access patterns** — that's a signal the property genuinely isn't exposed at this
+layer. The fix, if there is one in scope, lives in C++, not in a cleverer Lua read.
+
+### 12l. Toolchain / project shape for a compiled UE4SS C++ mod
+- Clone `RE-UE4SS` as a git submodule; it itself submodules a private Epic-gated header-stub repo
+  (`UEPseudo`) that 404s until your GitHub account is linked to an Epic Games account with Unreal
+  Engine source access (epicgames.com account settings / github.com/settings/connections) — a
+  manual, one-time, per-developer step with no code-side workaround.
+- Build configurations are NOT the CMake defaults (`Debug`/`Release`) — RE-UE4SS defines its own
+  custom named configs (pattern: `{Game|CasePreserving|LessEqual421}__{Debug|Dev|Shipping|Test}__Win64`).
+  Passing a standard config name to `cmake --build` fails with MSB8013 ("doesn't contain
+  Configuration and Platform combination..."); always pass one of the real custom names (e.g.
+  `--config "Game__Shipping__Win64"`).
+- A mod project is `RC::CppUserModBase` subclass + `extern "C" start_mod()`/`uninstall_mod()`
+  exports, same shape regardless of what the mod actually renders. Deploys as
+  `.../ue4ss/Mods/<ModName>/dlls/main.dll` (+ `enabled.txt`), same folder convention as this
+  project's own Lua mod.

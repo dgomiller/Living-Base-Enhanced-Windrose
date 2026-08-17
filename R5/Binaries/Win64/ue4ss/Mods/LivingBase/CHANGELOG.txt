@@ -1,6 +1,38 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v2.0.0 (2026-08-16) -- previous version: v1.3.10
+======================================================================
+
+A NEW GUI -- LivingBaseSpawnMenu, a second, compiled companion mod
+- The download now bundles LivingBaseSpawnMenu, a real clickable window:
+  a categorized spawn tree covering every roster, a held-repeat move/
+  edit panel (Forward/Back/Left/Right/Up/Down/rotate as buttons you can
+  hold, sidestepping the engine's dropped-repeat-keypress limitation on
+  the equivalent keyboard keys), and a precise typed X/Y/Z/Rotation
+  coordinate editor with Preview/Apply/Reset/Cancel. In-window
+  Instructions and History tabs too.
+- Press '-' in-game to open/close it (starts closed each session); '='
+  steals OS focus for it once it's open. Every existing keyboard control
+  still works exactly as before -- the GUI is an additional, faster path
+  to the same rosters, not a replacement.
+- The "In-Game Keys" toggle (Insert) is narrowed in scope: it now
+  controls ONLY LivingBase's own keyboard keys; the GUI's buttons are
+  independent of it by design, since the GUI is the primary workflow
+  now. Starts OFF by default each session (was ON).
+
+UNIQUE PER-PLACEMENT NAMES
+- Every placed object now gets its own distinguishable name (e.g.
+  "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the
+  same look sharing one identical label. Stored in persist.txt, so
+  names stay stable across reloads; older saves get names assigned
+  automatically the first time each entry restores.
+
+SENKAMATI
+- Added a frozen/idle counterpart for the Herbalist-base female Caster
+  crew re-skin, matching the already-existing Gatherer-base frozen pair.
+
+======================================================================
 v1.3.10 (2026-08-14) -- previous version: v1.3.9
 ======================================================================
 

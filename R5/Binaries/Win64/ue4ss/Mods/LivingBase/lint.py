@@ -19,7 +19,7 @@ import sys
 
 import lupa
 
-SCRIPTS = ["main", "spawner", "testbed", "whistle", "unlockbuild", "bbraid"]
+SCRIPTS = ["main", "spawner", "testbed", "whistle", "unlockbuild"]
 
 KNOWN = {
     # lua stdlib

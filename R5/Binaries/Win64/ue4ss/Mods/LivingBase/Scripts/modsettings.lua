@@ -131,9 +131,6 @@ M.KEYBIND_DEFS = {
   { key = "cyclePrev", title = "Cycle Targeted Look Backward", description = "Cycle the targeted statue or decoration to the previous look in its own roster." },
   { key = "decorSpawn",    title = "Place Decor (Active Category)", description = "Place one decoration from whichever category is currently active." },
   { key = "decorCategory", title = "Change Decor Category",         description = "Advance which decor category is active (nature/boats/wrecks/tents/storage/furniture). Doesn't spawn anything itself." },
-  -- raidflag/bbraid (Blackbeard raid) intentionally REMOVED from this list (2026-08-13) along with
-  -- the feature being force-disabled (Config.BBRAID_ENABLED = false in config.lua/config.txt) --
-  -- re-add both entries here if that feature is ever revived.
   { key = "editUp",    title = "Live-Edit: Raise",        description = "Raise the targeted object." },
   { key = "editDown",  title = "Live-Edit: Lower",        description = "Lower the targeted object." },
   { key = "editRotL",  title = "Live-Edit: Rotate Left",  description = "Rotate the targeted object left." },
@@ -158,8 +155,8 @@ M.KEYBIND_DEFS = {
 -- ~1.5s, no restart. `live` omitted/false means the setting is only read ONCE at mod load (same
 -- as config.txt always worked) -- either because the setting decides a STARTUP-only state
 -- (KEYS_ENABLED_ONSTART), or because turning it OFF can't be cleanly undone at runtime: none of
--- WHISTLE_CREW / UNLOCK_HIDDEN_BUILDING / PROTECT_STRUCTURES have a reverse
--- operation anywhere in the codebase (no "unshield structures", no "re-hide build items", no way
+-- WHISTLE_CREW / UNLOCK_HIDDEN_BUILDING have a reverse
+-- operation anywhere in the codebase (no "re-hide build items", no way
 -- to dismiss an active whistle escort) -- turning one off mid-session would silently do nothing to
 -- what's already active, which is worse than just requiring a restart. LIVE_EDIT additionally
 -- claims a whole key cluster (PageUp/PageDown/comma/period/etc) that needs to stay free for other
@@ -178,9 +175,6 @@ M.TOGGLE_DEFS = {
   { key = "DECOR_COLLISION",      title = "Solid Decorations",         description = "Spawn decorations SOLID (you collide with them) instead of pass-through. Applies to future spawns immediately; decorations already placed keep their current collision until the world reloads.", live = true },
   { key = "LEASH_ENABLED",        title = "Leash Wanderers",           description = "Keep wandering crew/townsfolk near where you placed them.", live = true },
   { key = "LIVE_EDIT",            title = "Enable Live-Edit Keys",     description = "Bind the live-edit key set (raise/lower/rotate/slide/precision) for fine-tuning placed objects. (Restart required to take effect either direction.)" },
-  { key = "PROTECT_STRUCTURES",      title = "Protect Structures",         description = "Make building blocks invulnerable so raids can't wreck them. (Restart required to take effect either direction.)" },
-  -- BBRAID_ENABLED intentionally REMOVED (2026-08-13) -- the Blackbeard raid feature is force-
-  -- disabled (see config.lua); re-add this entry if it's ever revived.
 }
 
 local function is_identifier(s)

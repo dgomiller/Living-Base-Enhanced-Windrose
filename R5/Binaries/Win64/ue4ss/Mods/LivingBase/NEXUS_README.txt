@@ -142,9 +142,6 @@ Windrose doesn't save mod-spawned actors, so LivingBase records every placement 
 [color=#D4D4D8][b]Whistle crew escort (WHISTLE_CREW)[/b]
 Use the boar whistle and instead of a boar you get a small crew escort that follows you and fights at your side. Transient (never persisted).[/color]
 
-[color=#D4D4D8][b]Invulnerable structures (PROTECT_STRUCTURES)[/b]
-Your building blocks are made invulnerable so raiders (and anything else) can't damage the base. Runtime-only — resets on reload, never touches your save, and never blocks your own deconstruct.[/color]
-
 [color=#D4D4D8][b]Unlock hidden build pieces (UNLOCK_HIDDEN_BUILDING)[/b]
 Surfaces build-menu pieces that are hidden from standard play (cut/dev content) while leaving normal progression intact — it never unlocks pieces you're meant to earn. Runtime-only; open the build menu once after loading so the catalog is present.[/color]
 

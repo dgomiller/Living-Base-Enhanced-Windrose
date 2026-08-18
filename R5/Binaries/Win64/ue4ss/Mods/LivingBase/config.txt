@@ -6,7 +6,6 @@
 # --- Features ---
 WHISTLE_CREW           = true    # boar whistle summons 2 crew instead of a boar
 UNLOCK_HIDDEN_BUILDING = true    # surface build pieces hidden from standard play (keeps progression)
-PROTECT_STRUCTURES     = true    # make building blocks invulnerable so raids can't wreck the base
 KEYS_ENABLED_ONSTART   = false   # false = starts OFF; press the toggle key (Insert by default) to turn on (the GUI is the primary workflow).
                                  # true = mod keys ready to use immediately on launch
 

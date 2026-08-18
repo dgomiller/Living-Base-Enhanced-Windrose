@@ -69,7 +69,7 @@ Fixed a visible seam/gap that could show at the hips on the Senkamati Caster's r
 
 ## Blackbeard raid — removed
 
-The original mod's Blackbeard raid (drop a flag, trigger a pirate wave) isn't part of this fork's supported feature set, due to lack of interest and the ongoing maintenance burden of keeping it stable. The code's still there for anyone who wants to re-enable it themselves.
+The original mod's Blackbeard raid (drop a flag, trigger a pirate wave) has been removed from this fork entirely, due to lack of interest and the ongoing maintenance burden of keeping it stable.
 
 ## Known limitations (being upfront about these)
 

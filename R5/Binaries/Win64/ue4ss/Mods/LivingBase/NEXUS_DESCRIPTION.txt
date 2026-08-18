@@ -94,8 +94,6 @@ Back up your saves before first use — standard caution for an Early Access gam
 
 [b]Whistle crew escort[/b] — use the boar whistle to summon a small crew squad that follows you and fights at your side.
 
-[b]Invulnerable structures[/b] — your building blocks are made damage-proof so raiders can't wreck the base.
-
 [b]Unlock hidden build pieces[/b] — surfaces build-menu pieces hidden from standard play, while leaving recipe-locked progression intact.
 
 Every feature is individually toggleable in config.txt.

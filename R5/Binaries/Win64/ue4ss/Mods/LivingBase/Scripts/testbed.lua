@@ -401,7 +401,7 @@ end
 local decorIdx = {}   -- per-category cursor
 -- Place ONE decoration entry {name, path, zoffset} ~3m in front: spawn, solidify, and pin its Z so it
 -- rests at floor + zoffset (live-edit nudges from there; the pose persists). Shared by the F-row category
--- cyclers (SpawnDecorCategory) and the dedicated raid-flag key (SpawnRaidFlag).
+-- cyclers (SpawnDecorCategory).
 -- Spawn label: `d.label` (2026-08-17, a "Proper Name" some entries now carry, e.g. "Bezoar") if
 -- present, else the raw `d.name` -- was unconditionally "DECOR_" .. d.name before; dropped the
 -- prefix since it made every toast/persisted label read like "DECOR_Loot_T02_Bezoar_01 1" instead
@@ -516,14 +516,6 @@ function Testbed.SpawnDecorByName(name)
         end
     end
     return nil, "no decoration named '" .. tostring(name) .. "'"
-end
-
--- F7: place the Blackbeard raid flag directly — the same prop (Config.BBRAID_FLAG_CLASS) the raid scans
--- for. A dedicated key so you don't have to cycle the furniture list to find it; F8 then launches the
--- raid at every placed flag. Persists + is retracked after reload like any decoration (raid matches it
--- by CLASS, not label).
-function Testbed.SpawnRaidFlag()
-    placeDecorEntry({ name = "Blackbeard_Raid_Flag", zoffset = 0.0, path = Config.BBRAID_FLAG_CLASS })
 end
 
 -- (Fixed per-category wrapper functions removed 2026-08-13, replaced by the active-category

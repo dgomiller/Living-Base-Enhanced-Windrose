@@ -19,15 +19,9 @@
 local FKeys = {}
 
 -- Which physical key each action binds.
--- raidflag/bbraid are listed here even though Config.BBRAID_ENABLED is force-disabled by default
--- (see config.lua) -- harmless while unregistered, and keeps this file the single place to look if
--- that feature is ever revived. (These two still sit on the F-row -- reviving Blackbeard means
--- accepting the same F-row collision risk this file's decor keys were moved off of.)
 FKeys.KEYS = {
   decorSpawn    = "OEM_SEMICOLON", -- ';'  place one from the ACTIVE category
   decorCategory = "OEM_QUOTE",     -- '''  advance the active category (no spawn)
-  raidflag      = "F7",  -- drop the BLACKBEARD RAID flag (Composition_70) where a raid should originate
-  bbraid        = "F8",  -- BLACKBEARD RAID: spawn a pirate wave at each placed flag and charge the bonfire
 }
 
 -- Cycle order for the active decor category (Testbed.CycleDecorCategory steps forward through
@@ -136,9 +130,9 @@ FKeys.DECOR_CATEGORIES = {
     { name = "Shared_Camp_PropsComposition_60", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_60.BP_Shared_Camp_PropsComposition_60_C" },
     { name = "Shared_Camp_PropsComposition_61", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_61.BP_Shared_Camp_PropsComposition_61_C" },
     { name = "Shared_Camp_PropsComposition_69", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_69.BP_Shared_Camp_PropsComposition_69_C" },
-    -- Composition_70 (the Blackbeard raid flag) is NOT in this list — it has its own dedicated key
-    -- (Config.BBRAID_FLAG_CLASS, raidflag). Placing it there keeps the "flag = raid origin" prop
-    -- out of the general furniture cycle.
+    -- Composition_70 (the old Blackbeard raid flag prop) is NOT in this list — it was reserved for
+    -- the now-removed raid feature's dedicated key. Currently unreachable in-game; add it here if it
+    -- should just become a normal furniture piece.
     { name = "Tortuga_Wardrobe_02", zoffset = 0.0, path = "/Game/Gameplay/POI/Tortuga/Tortuga_NPC_InteractionProps/BP_Tortuga_Wardrobe_02.BP_Tortuga_Wardrobe_02_C" },
     { name = "WardrobeAshlands_04", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_04.BP_Shared_DestructibleStructures_WardrobeAshlands_04_C" },
     { name = "WardrobeAshlands_06", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_06.BP_Shared_DestructibleStructures_WardrobeAshlands_06_C" },

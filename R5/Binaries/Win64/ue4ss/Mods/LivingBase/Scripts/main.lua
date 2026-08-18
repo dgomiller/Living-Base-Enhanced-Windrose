@@ -362,18 +362,6 @@ end, "toggleWindow"))
 register("decorSpawn",    gatedAction(Testbed.SpawnActiveDecorCategory, "decor: spawn active category"))
 register("decorCategory", directAction(function() Testbed.CycleDecorCategory() end, "decor: change category"))
 
--- Blackbeard flag raid: raidflag drops the flag (Composition_70) where a raid should start; bbraid
--- spawns a pirate wave at each placed flag and charges the bonfire. FORCE-DISABLED as of 2026-08-13
--- (Config.BBRAID_ENABLED hardcoded false in config.lua, config.txt, and pulled from the
--- R5ModSettings panel) -- code kept in place, easy to revive, see config.lua's own note. This
--- feature-flag gate is a STARTUP decision (unrelated to live keybind rebinding) — if BBRAID_ENABLED
--- is off, these two actions are simply never registered this session, exactly as before.
-if Config.BBRAID_ENABLED then
-    local BBRaid = require("bbraid")
-    register("raidflag", gatedAction(Testbed.SpawnRaidFlag, "place Blackbeard raid flag"))
-    register("bbraid",   gatedAction(BBRaid.Trigger,        "blackbeard raid"))
-end
-
 -- DEL wipes EVERYTHING, so it needs TWO presses to confirm: the first arms it, a second within the
 -- window fires; otherwise it disarms. Guards against an accidental full clear.
 local delArmed = false
@@ -1238,26 +1226,6 @@ if Config.DECOR_COLLISION ~= false and ExecuteWithDelay then
     end)
 end
 
--- Structure shield: make building blocks invulnerable so raiders can't wreck the base. A construction
--- hook (NotifyOnNewObject) shields each block the instant it exists — so pieces the player builds
--- mid-session are covered immediately (the old sweep left those unshielded until a raid), it also catches
--- blocks reconstructed on a world reload, and it never re-scans the whole UObject list. One delayed sweep
--- after the world settles mops up blocks already present at mod load, before the hook was installed.
-if Config.PROTECT_STRUCTURES ~= false then
-    pcall(function() Spawner.WatchNewStructures() end)
-    if ExecuteWithDelay then
-        ExecuteWithDelay((Config.RESTORE_SETTLE_MS or 6000) + 6000, function()
-            ExecuteInGameThread(function() pcall(function()
-                local n = Spawner.ShieldAllStructures()
-                if n and n > 0 then print(string.format("[LivingBase] Structure shield: %d building blocks made invulnerable.\n", n)) end
-            end) end)
-        end)
-    end
-end
-
--- Shield re-assert is now on-demand: Spawner.AttachShield starts a watcher when a warrior spawns and it
--- stops itself when the last warrior is gone (see Spawner.StartShieldWatcher). No perpetual tick here.
-
 -- Restore persisted spawns on WORLD LOAD (not on Ctrl+R). InitGameState fires
 -- when a map/game-state loads; Ctrl+R does not re-init it, so we don't double-
 -- spawn. After it fires, wait for the player pawn to exist, then re-spawn.
@@ -1309,9 +1277,6 @@ local function scheduleRestore()
     local function fire(why)
         local delay = Config.RESTORE_SETTLE_MS or 4000
         always(string.format("Restore: %s; settling %dms.", why, delay))
-        -- Drop any raiders/timers from a raid that was still live when this world was torn down, so their
-        -- now-dangling pointers are never touched (bbraid holds them in module state across the load).
-        if Config.BBRAID_ENABLED then pcall(function() require("bbraid").Reset() end) end
         if ExecuteWithDelay then
             ExecuteWithDelay(delay, function()
                 ExecuteInGameThread(function()

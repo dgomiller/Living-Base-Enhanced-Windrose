@@ -329,11 +329,6 @@ and re-spawns it on world load.
 Use the boar whistle and instead of a boar you get a small **crew escort** that follows
 you and fights at your side. Transient (never persisted).
 
-### Invulnerable structures (`PROTECT_STRUCTURES`)
-Your building blocks are made **invulnerable** so raiders (and anything else) can't damage
-the base. Applied just after load and again the instant a raid starts. Runtime-only —
-resets on reload, never touches your save, and never blocks your own deconstruct.
-
 ### Unlock hidden build pieces (`UNLOCK_HIDDEN_BUILDING`)
 Surfaces build-menu pieces that are **hidden from standard play** (cut/dev content) while
 leaving normal progression intact — it never unlocks pieces you're meant to earn. Runtime-

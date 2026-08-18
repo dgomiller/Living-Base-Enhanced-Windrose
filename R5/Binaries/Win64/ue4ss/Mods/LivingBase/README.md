@@ -421,12 +421,23 @@ There are two files:
 
 ## License / ownership
 
-Licensed under **[Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
-(CC BY-SA 4.0)**. Use, modify, and redistribute freely — including commercially — as long as you:
+**All rights reserved by default**, except for the specific permissions below — nothing here is
+implied beyond what's listed. See [`LICENSE`](../../../../../../LICENSE) for the full text.
 
-1. **Credit** the original author(s), and
-2. **Release your own version under this same license** (a modified/derivative version can't be
-   taken closed-source or relicensed under different terms).
+**Permitted, without needing to ask:**
+
+1. Modify this mod for your own personal use.
+2. Reuse this mod's code or assets in your own separate mod, **with credit**.
+3. Convert or port this mod to other games, **with credit**.
+
+**Not permitted:**
+
+1. Reuploading or rehosting this mod — modified or unmodified — anywhere other than the original
+   author's own page(s)/repo(s). If you build something on top of it, link back to the original
+   instead of rehosting it.
+2. Selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus Mods'
+   own Donation Points system is fine — that's Nexus's own charity-linked mechanism, not
+   third-party monetization.)
 
 This covers this fork's own code and content. The original *Living Base* toolkit this project
 builds on remains public domain under its own author's terms (see *Credits* below); **Windrose**

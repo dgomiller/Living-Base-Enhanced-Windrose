@@ -168,7 +168,11 @@ Note on townsfolk: the townsman key (Num 2) spawns a mixed-sex crowd of dressed,
 [/color]
 
 [size=4][b]Permissions / License[/b][/size]
-[color=#D4D4D8]Licensed under [url=https://creativecommons.org/licenses/by-sa/4.0/][b]Creative Commons Attribution-ShareAlike 4.0 International[/b][/url] (CC BY-SA 4.0). Use, modify, and redistribute freely — including commercially — as long as you (1) credit the original author(s), and (2) release your own version under this same license.
+[color=#D4D4D8]All rights reserved by default, except for the specific permissions below — nothing here is implied beyond what's listed.
+
+Permitted, without needing to ask: (1) modify this mod for your own personal use, (2) reuse this mod's code or assets in your own separate mod, with credit, (3) convert or port this mod to other games, with credit.
+
+Not permitted: reuploading or rehosting this mod — modified or unmodified — anywhere other than this page; selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus's own Donation Points system is fine — that's Nexus's own charity-linked mechanism, not third-party monetization.)
 
 This covers this fork's own code and content. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see Credits below). Windrose and its game assets, class names, and intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
 

@@ -8,7 +8,7 @@ Hey folks — sharing **Living Base Enhanced**, a base-population toolkit for Wi
 
 ## What it does
 
-Hand-drop ambient **NPCs, animals, posed statues, and decorations** anywhere around your base, fine-tune each one in place, and it all **persists across reloads**. Plus a few base-life extras: a summonable **crew escort**, **invulnerable structures**, and an **unlock for hidden build-menu pieces**.
+Hand-drop ambient **NPCs, animals, posed statues, and decorations** anywhere around your base, fine-tune each one in place, and it all **persists across reloads**. Plus a few base-life extras: a summonable **crew escort** and an **unlock for hidden build-menu pieces**.
 
 ## Placement — one key per press, numpad-driven
 
@@ -66,10 +66,6 @@ Fixed a visible seam/gap that could show at the hips on the Senkamati Caster's r
 - Senkamati Hunter and Caster (Num 7) walk with normal human posture, matching the Warrior.
 - Farm animals (Num 8) expanded from 5 to 13.
 - Walking Women (Num .) — a real walking NPC instead of a frozen statue, five looks.
-
-## Blackbeard raid — removed
-
-The original mod's Blackbeard raid (drop a flag, trigger a pirate wave) has been removed from this fork entirely, due to lack of interest and the ongoing maintenance burden of keeping it stable.
 
 ## Known limitations (being upfront about these)
 

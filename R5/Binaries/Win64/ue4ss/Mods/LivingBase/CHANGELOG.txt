@@ -25,6 +25,15 @@ DROPS -- a new decor category, browsable in the GUI and by cycling ' in-game
 - Every entry has a real display name (e.g. "Bezoar," not
   "Loot_T02_Bezoar_01") in both the GUI tree and on-screen toasts.
 
+REMOVED -- Blackbeard raid and structure invulnerability
+- The Blackbeard raid (drop a flag, trigger a pirate wave, disabled by
+  default since v1.3.7) and the PROTECT_STRUCTURES toggle it justified
+  are both fully removed from the code now, not just disabled -- lack
+  of interest and ongoing maintenance burden.
+- The prop that used to be reserved for the raid flag
+  (Shared_Camp_PropsComposition_70) is now a normal furniture piece,
+  spawnable like any other decoration.
+
 ======================================================================
 v2.0.0 (2026-08-16) -- previous version: v1.3.10
 ======================================================================

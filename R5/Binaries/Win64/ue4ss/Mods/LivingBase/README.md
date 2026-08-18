@@ -2,8 +2,8 @@
 
 A placement toolkit for your base. Hand-drop ambient **NPCs, animals, posed statues,
 and decorations** wherever you want them, fine-tune each piece in place, and let it all
-**persist across reloads**. Plus a few base-life extras: a summonable **crew escort**,
-**invulnerable structures**, and an **unlock for hidden build-menu pieces**.
+**persist across reloads**. Plus a few base-life extras: a summonable **crew escort**
+and an **unlock for hidden build-menu pieces**.
 
 **The primary way to use this mod is a real clickable GUI window** —
 **LivingBaseSpawnMenu**, a companion mod bundled with this download. Press **`-`** in-game to
@@ -343,7 +343,7 @@ There are two files:
 - **`config.txt`** — plain-text overrides you can edit without touching Lua. Lines are
   `NAME = value` (`true`/`false` or numbers). This is the one file you normally edit; it
   overrides the defaults. Current toggles include `WHISTLE_CREW`,
-  `UNLOCK_HIDDEN_BUILDING`, `PROTECT_STRUCTURES`, `KEYS_ENABLED_ONSTART` (default `false`),
+  `UNLOCK_HIDDEN_BUILDING`, `KEYS_ENABLED_ONSTART` (default `false`),
   `LIVE_EDIT`.
 - **`Scripts/config.lua`** — the shipped defaults and all class paths. Highlights:
   - `Config.KEYS` — the keymap, including `toggleWindow` (`-`, opens/closes the GUI),

@@ -337,6 +337,24 @@ Windrose navigates with **Mercuna**, a third-party system. Consequences:
   running, across many real play sessions, is itself the tell that the process name is wrong --
   worth a live `tasklist` (no filter) spot-check for the real name if that pattern ever repeats
   with a different game.
+- **To confirm a class path is a genuine vanilla Windrose asset (not something a mod added), check
+  `class_index.lua`.** It's generated straight from the game's own `Manifest_UFSFiles_Win64.txt`
+  (every `R5/Content/**/BP_*.uasset` entry) -- if the short name resolves there, it's a stock asset
+  by construction, not a guess from the path shape alone. Used this way 2026-08-18 to confirm
+  `BP_Shared_Camp_PropsComposition_70` (formerly repurposed as this mod's own raid-flag prop) is
+  just another entry in the same vanilla numbered prop family as several already-cataloged
+  furniture pieces (…67, 69, **70**, 71, 72…), not mod-created content.
+- **Fully removing a feature (vs. just disabling it) in this codebase means finding every one of
+  its wiring points, not just its implementation.** Confirmed 2026-08-18 removing the Blackbeard
+  raid + `PROTECT_STRUCTURES`: a feature toggle here is typically wired through *(1)* a
+  `Config.X` default in `config.lua` (+ matching line in `config.txt` if user-facing), *(2)* the
+  actual implementation functions (`spawner.lua`/a dedicated module like the old `bbraid.lua`),
+  *(3)* init-time wiring/registration in `main.lua`, *(4)* a keybind entry in `fkeys.lua` if it has
+  one, and *(5)* a `modsettings.lua` `TOGGLE_DEFS`/`KEYBIND_DEFS` entry if it's player-toggleable.
+  Docs need the same sweep: a removed feature can be described in as many as three separate
+  places per doc -- a top-of-file summary blurb, its own dedicated feature-heading section further
+  down, AND a `config.txt` toggle-list mention -- so grep the whole doc set for the feature's name
+  rather than trusting the first mention found.
 
 ---
 

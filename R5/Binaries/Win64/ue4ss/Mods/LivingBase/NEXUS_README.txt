@@ -1,5 +1,5 @@
 [size=5][b]Living Base Enhanced — Base Building & Population Mod for Windrose[/b][/size]
-[color=#D4D4D8]A placement toolkit for your base. Hand-drop ambient NPCs, animals, posed statues, and decorations wherever you want them, fine-tune each piece in place, and let it all persist across reloads. Plus a few base-life extras: a summonable crew escort, invulnerable structures, and an unlock for hidden build-menu pieces.[/color]
+[color=#D4D4D8]A placement toolkit for your base. Hand-drop ambient NPCs, animals, posed statues, and decorations wherever you want them, fine-tune each piece in place, and let it all persist across reloads. Plus a few base-life extras: a summonable crew escort and an unlock for hidden build-menu pieces.[/color]
 
 [color=#D4D4D8][b]The primary way to use this mod is a real clickable GUI window[/b] — LivingBaseSpawnMenu, a companion mod bundled with this download. Press '-' in-game to open it: a categorized spawn tree, held-repeat movement buttons with full X/Y/Z rotation, and a precise coordinate editor, instead of cycling numpad keys one press at a time. Every keyboard control still works exactly as before and is fully documented further down — the GUI doesn't replace anything, it's just the faster, easier way to reach the same rosters.[/color]
 
@@ -148,7 +148,7 @@ Surfaces build-menu pieces that are hidden from standard play (cut/dev content) 
 [size=4][b]Configuration[/b][/size]
 [color=#D4D4D8]There are two files:
 
-config.txt — plain-text overrides you can edit without touching Lua. Lines are NAME = value (true/false or numbers). This is the one file you normally edit; it overrides the defaults. Current toggles include WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, PROTECT_STRUCTURES, KEYS_ENABLED_ONSTART (off by default), LIVE_EDIT.
+config.txt — plain-text overrides you can edit without touching Lua. Lines are NAME = value (true/false or numbers). This is the one file you normally edit; it overrides the defaults. Current toggles include WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, KEYS_ENABLED_ONSTART (off by default), LIVE_EDIT.
 
 Scripts/config.lua — the shipped defaults and all class paths. Highlights: Config.KEYS (the keymap, including toggleWindow "-", releaseMouse "=", and toggleRotateAxis "/"), Config.VERBOSE (per-spawn debug logging), Config.LIVE_EDIT_MOVE_STEP/LIVE_EDIT_HEIGHT_STEP/LIVE_EDIT_ROTATE_STEP (per-press step sizes, shared with the GUI's move panel), Config.TARGET_MIN_VIEW_DOT (how directly your camera needs to be looking at an object to target it), Config.DECOR_CATEGORIES (in Scripts/fkeys.lua, the six base decoration lists plus 18 themed Drops categories), Config.DECOR_COLLISION (placed decorations are solid by default), statue rosters (STANDING_STATUES/SEATED_STATUES/CHAIR_STATUES/INTERACTIVE_STATUES), Config.HANDYMAN_FOR_TOWNSFOLK, Config.HIDE_NAMEPLATES.[/color]
 

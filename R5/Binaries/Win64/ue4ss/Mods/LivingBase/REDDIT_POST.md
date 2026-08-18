@@ -2,7 +2,7 @@
 
 ---
 
-Hey folks — sharing **Living Base Enhanced**, a base-population toolkit for Windrose. It's a fork of [Living Base](https://www.nexusmods.com/windrose/mods/519) by me123420 (full credit to them for the original toolkit and concept), built out with a lot of fixes, quality-of-life, and new content on top. Like the original, this was built with AI assistance — I'm not a developer — and it's staying just as open: public domain, no credit needed, no permission needed, do whatever you want with it.
+Hey folks — sharing **Living Base Enhanced**, a base-population toolkit for Windrose. It's a fork of [Living Base](https://www.nexusmods.com/windrose/mods/519) by me123420 (full credit to them for the original toolkit and concept), built out with a lot of fixes, quality-of-life, and new content on top. Like the original, this was built with AI assistance — I'm not a developer.
 
 **[Living Base Enhanced on Nexus](https://www.nexusmods.com/windrose/mods/535)**
 

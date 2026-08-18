@@ -1,8 +1,6 @@
 [size=5][b]Living Base Enhanced[/b][/size]
 [color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place (full X/Y/Z position and rotation), and have it all persist across reloads. The primary way to do all of this is a real clickable GUI window — press '-' in-game to open it — with every keyboard control still fully available alongside it.[/color]
 
-[color=#D4D4D8]Built with AI assistance, and meant to stay completely open: if anyone wants to fix something, improve something, or take it in a different direction, all the files are in the download and you don't need to ask.[/color]
-
 [size=4][b]What's new in 2.1.0[/b][/size]
 [color=#D4D4D8]
 [b]Full 3-axis rotation[/b] — the GUI's move panel and Coords window can now rotate a placed object around all three axes (X/Y/Z = Roll/Pitch/Yaw), not just spin it around its vertical axis. Useful for anything that can rest at any angle — a dropped weapon, a coin, an ingot — not just statues/NPCs, which only ever needed the one. The move panel's old single Rot L/R + Flip 180 are now three full rows, each with its own Left/Right button; the Coords window's single "Rotation" field is now Rotation X/Y/Z. Keyboard ',' '.' stay the only two rotate keys — '/' (the plain key next to '.', not the numpad one) cycles which axis they act on, from either the game or the GUI window, toast-confirmed each press — both input paths share the exact same selection, so they can never disagree.

@@ -168,8 +168,13 @@ Note on townsfolk: the townsman key (Num 2) spawns a mixed-sex crowd of dressed,
 [/color]
 
 [size=4][b]Permissions / License[/b][/size]
-[color=#D4D4D8]No rights reserved. I don't claim ownership of, or any license over, this mod — treat it as public domain. Do whatever you want with it: use it, modify it, redistribute it, fork it, bundle it into something else. No credit needed, no permission needed. If you make it better, that's great.
+[color=#D4D4D8]Licensed under [url=https://creativecommons.org/licenses/by-sa/4.0/][b]Creative Commons Attribution-ShareAlike 4.0 International[/b][/url] (CC BY-SA 4.0). Use, modify, and redistribute freely — including commercially — as long as you (1) credit the original author(s), and (2) release your own version under this same license.
 
-This waiver covers the mod's own code. Windrose and its game assets, class names, and intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
+This covers this fork's own code and content. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see Credits below). Windrose and its game assets, class names, and intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
 
-[color=#D4D4D8]Built iteratively with Claude.[/color]
+[size=4][b]Credits[/b][/size]
+[color=#D4D4D8]This project started as a fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place.
+
+Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.
+
+Built iteratively with Claude.[/color]

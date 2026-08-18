@@ -421,13 +421,31 @@ There are two files:
 
 ## License / ownership
 
-**No rights reserved.** I don't claim ownership of, or any license over, this mod — treat it
-as public domain. Do whatever you want with it: use it, modify it, redistribute it, fork it,
-bundle it into something else. No credit needed, no permission needed. If you make it better,
-that's great.
+Licensed under **[Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
+(CC BY-SA 4.0)**. Use, modify, and redistribute freely — including commercially — as long as you:
 
-(This waiver covers the mod's own code. **Windrose** and its game assets, class names, and
-intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.)
+1. **Credit** the original author(s), and
+2. **Release your own version under this same license** (a modified/derivative version can't be
+   taken closed-source or relicensed under different terms).
+
+This covers this fork's own code and content. The original *Living Base* toolkit this project
+builds on remains public domain under its own author's terms (see *Credits* below); **Windrose**
+and its game assets, class names, and intellectual property belong to Kraken Express — this is an
+unofficial, unaffiliated mod.
+
+---
+
+## Credits
+
+This project started as a fork of [Living Base](https://www.nexusmods.com/windrose/mods/519) by
+[me123420](https://www.nexusmods.com/profile/me123420) — thank you to them for the original
+concept and toolkit, and for open-sourcing it into the public domain in the first place. The
+amount that's changed since then means this README no longer walks through it point-by-point, but
+the debt is real and gladly acknowledged.
+
+Thanks also to [IceBoxStudio](https://www.nexusmods.com/windrose/users/77413713) for
+[Windrose Mod Settings](https://www.nexusmods.com/windrose/mods/442), which this mod optionally
+integrates with for in-game keybind/toggle configuration.
 
 ---
 

@@ -6,7 +6,7 @@ your base, fine-tune each one in place, and have it all persist across reloads.
 
 This is an enhanced fork of [Living Base](https://www.nexusmods.com/windrose/mods/519) by
 [me123420](https://www.nexusmods.com/profile/me123420) — full credit to them for the original concept and
-toolkit. Their permissions are public domain, so this fork carries that same open spirit forward (see
+toolkit, released into the public domain. This fork's own code and content are licensed separately (see
 *License* below).
 
 For what the mod actually **does** and how to **use** it, see the shipped, end-user-facing README at
@@ -56,8 +56,10 @@ R5/Binaries/Win64/ue4ss/Mods/
 
 ## License
 
-**No rights reserved.** Treat this as public domain — use it, modify it, redistribute it, fork it, bundle
-it into something else. No credit needed, no permission needed.
+Licensed under **[Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
+(CC BY-SA 4.0)** — see [`LICENSE`](LICENSE). Use, modify, and redistribute freely, including commercially,
+as long as you (1) credit the original author(s), and (2) release your own version under this same license.
 
-This waiver covers this mod's own code only. **Windrose** and its game assets, class names, and
-intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.
+This covers this fork's own code and content. The original *Living Base* toolkit it builds on remains
+public domain under its own author's terms (me123420 — see above). **Windrose** and its game assets, class
+names, and intellectual property belong to Kraken Express — this is an unofficial, unaffiliated mod.

@@ -1814,6 +1814,18 @@ else
     log("lbprobe/lbprobedump unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestfemalereskin" (2026-08-18) -- console-command twin of the existing
+-- Numpad Decimal key (testFemaleWalkerReskin), NOT a replacement for it -- unlike HOME/PAUSE this
+-- key has no known conflict, so it stays. Cycles to the next name in Config.FEMALE_RESKIN_TARGETS
+-- and spawns that walking-woman reskin test subject; see Testbed.TestFemaleWalkerReskin's own
+-- comment. Safe to expose -- no crash history, unlike TestApplyBodyType (see that function's own
+-- comment for why it's deliberately NOT wired to anything).
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbtestfemalereskin", function() Testbed.TestFemaleWalkerReskin() end, "TestFemaleWalkerReskin")
+else
+    log("lbtestfemalereskin unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbreload" (2026-08-13) -- reload JUST LivingBase without a full game restart,
 -- via UE4SS's own RestartMod("LivingBase"). NOT a manual teardown-then-reload: there is no exposed
 -- API to individually unregister RegisterInitGameStatePostHook/RegisterConsoleCommandHandler/

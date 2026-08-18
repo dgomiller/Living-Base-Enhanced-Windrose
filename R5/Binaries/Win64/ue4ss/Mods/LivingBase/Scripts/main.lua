@@ -395,26 +395,6 @@ local function toggleModAction()
 end
 register("toggleMod", toggleModAction)
 
--- Dev-tool diagnostic (Home): probe whatever actor is under the reticle — logs its class path to
--- discovery_dump.txt and its full component list to ue4ss.log. Not a real feature, so registered
--- directly with no modGate, same treatment the toast investigation's Home/Pause probes got before
--- they were removed (CLAUDE.md item 28). See Spawner.ProbeNearestActor's own comment for why.
-register("probeNearest", function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(function() Spawner.ProbeNearestActor() end)
-        if not ok then log("probeNearest FAILED: " .. tostring(err)) end
-    end)
-end)
-
--- Second step of the probe (PAUSE) — see Spawner.ProbeDumpProperties's own comment for why this is
--- a separate key from HOME rather than one combined press.
-register("probeProperties", function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(function() Spawner.ProbeDumpProperties() end)
-        if not ok then log("probeProperties FAILED: " .. tostring(err)) end
-    end)
-end)
-
 -- reloadTest (Num+/NUM_ADD) REMOVED (2026-08-13) -- confirmed live that lbreload alone (no
 -- world-load/menu round-trip) picks up a keybind change; see config.lua's Config.KEYS comment.
 -- NUM_ADD briefly reused the same day for a "Female_Barbie" test key, then retired in favor of
@@ -1816,6 +1796,22 @@ if RegisterConsoleCommandHandler then
     registerDumpCommand("lbdumpmesh", function() DumpStaticMeshes() end, "DumpStaticMeshes")
 else
     log("lbdumpobj/lbdumpact/lbdumpmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbprobe" / "lbprobedump" (2026-08-18) -- replace the old HOME/PAUSE diagnostic
+-- keybinds (RedFalcon's request: console commands over physical keys for these). Same two-step
+-- design as before, same functions, just triggered by typing instead of pressing a key: lbprobe
+-- (= old HOME) aims via the camera -- or uses the locked target if one's set -- logs the nearest
+-- actor's class path to discovery_dump.txt, and caches it; lbprobedump (= old PAUSE) walks that
+-- cached actor's full property list (up the class hierarchy) to ue4ss.log. Deliberately still two
+-- commands, not one -- see Spawner.ProbeDumpProperties's own comment for the live crash that made
+-- the two-step split necessary in the first place; combining them back into one call would
+-- reintroduce that risk.
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbprobe", function() Spawner.ProbeNearestActor() end, "ProbeNearestActor")
+    registerDumpCommand("lbprobedump", function() Spawner.ProbeDumpProperties() end, "ProbeDumpProperties")
+else
+    log("lbprobe/lbprobedump unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbreload" (2026-08-13) -- reload JUST LivingBase without a full game restart,

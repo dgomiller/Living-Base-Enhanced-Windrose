@@ -294,17 +294,9 @@ Config.KEYS = {
   facing    = "OEM_FIVE",  -- '\'  flip statue placement 180 deg (back-to-you / riflers face you)
   clear     = "DEL",       -- despawn ALL (clean house) — off the pad (destructive)
 
-  -- DEV-TOOL diagnostic, not a real feature — see Spawner.ProbeNearestActor's own comment. Aim at
-  -- ANY actor (ours, wild NPCs, undiscovered decor) and press HOME: logs its class path to
-  -- discovery_dump.txt (the ASSET_CATALOG.md workflow) and caches it for probeProperties.
-  -- Registered directly, NOT gated by the Insert toggle, so it works even with mod keys off.
-  probeNearest = "HOME",
-  -- DEV-TOOL diagnostic, second step — see Spawner.ProbeDumpProperties's own comment. After HOME has
-  -- targeted something, press PAUSE to dump its declared properties to ue4ss.log. Deliberately a
-  -- SEPARATE key from HOME (split after a live crash inside the old single-key version's component
-  -- sweep) and deliberately PAUSE, not END — "END" is CONFIRMED DEAD in this build (produced zero
-  -- log output at all, not even "key received", per the 2026-08-06 toast investigation).
-  probeProperties = "PAUSE",
+  -- DEV-TOOL diagnostics (Spawner.ProbeNearestActor/ProbeDumpProperties) moved from HOME/PAUSE
+  -- keybinds to the "lbprobe"/"lbprobedump" console commands (2026-08-18, RedFalcon's request) --
+  -- see main.lua's own registration comment for why. No Config.KEYS entry needed anymore.
   -- TEMP DEV/TEST TOOL (2026-08-10) -- see Testbed.TestFemaleWalkerReskin's own comment. Reuses the
   -- slot the now-settled SpawnCompareMobCaster tool had (and, briefly, the failed
   -- TestFemaleStatueAI attempt). NUM_DECIMAL needs the VK_FALLBACK raw-virtual-key treatment,

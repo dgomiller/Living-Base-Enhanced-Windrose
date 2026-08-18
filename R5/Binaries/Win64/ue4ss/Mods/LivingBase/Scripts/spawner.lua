@@ -2772,8 +2772,10 @@ function Spawner.StripVoice(actor)
 end
 
 --------------------------------------------------------------------
--- Spawner.ProbeNearestActor() / Spawner.ProbeDumpProperties() — dev-tool diagnostics (HOME / PAUSE),
--- not a real feature, not gated by modGate (same treatment the toast investigation's
+-- Spawner.ProbeNearestActor() / Spawner.ProbeDumpProperties() — dev-tool diagnostics, triggered by
+-- the "lbprobe" / "lbprobedump" console commands (main.lua) as of 2026-08-18 -- originally bound to
+-- HOME/PAUSE keys, moved to console commands on RedFalcon's request; the functions themselves are
+-- unchanged. Not a real feature, not gated by modGate (same treatment the toast investigation's
 -- DumpActiveWidgets/DumpNotificationFunctions got before they were removed once their job was done
 -- — see CLAUDE.md item 28). Aim at ANY actor in the world — ours, a wild NPC like the real Letty, or
 -- an undiscovered decoration.

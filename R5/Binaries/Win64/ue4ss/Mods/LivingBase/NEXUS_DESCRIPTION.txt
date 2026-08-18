@@ -182,4 +182,6 @@ This covers this fork's own code and content. The original Living Base toolkit t
 
 Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.
 
-Thanks also to [url=https://www.nexusmods.com/profile/irecode][b]irecode[/b][/url] for a resource this mod relies on.[/color]
+Thanks also to [url=https://www.nexusmods.com/profile/irecode][b]irecode[/b][/url] for a resource this mod relies on.
+
+Built iteratively with Claude.[/color]

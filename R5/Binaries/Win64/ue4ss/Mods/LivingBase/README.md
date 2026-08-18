@@ -460,6 +460,8 @@ integrates with for in-game keybind/toggle configuration.
 
 Thanks also to [irecode](https://www.nexusmods.com/profile/irecode) for a resource this mod relies on.
 
+Built iteratively with Claude.
+
 ---
 
 *Built iteratively with Claude. See `CLAUDE.md` and `WINDROSE_MODDING_NOTES.md` (bundled

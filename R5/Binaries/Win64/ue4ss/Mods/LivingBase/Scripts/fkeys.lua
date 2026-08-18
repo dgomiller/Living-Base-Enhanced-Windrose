@@ -130,9 +130,7 @@ FKeys.DECOR_CATEGORIES = {
     { name = "Shared_Camp_PropsComposition_60", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_60.BP_Shared_Camp_PropsComposition_60_C" },
     { name = "Shared_Camp_PropsComposition_61", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_61.BP_Shared_Camp_PropsComposition_61_C" },
     { name = "Shared_Camp_PropsComposition_69", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_69.BP_Shared_Camp_PropsComposition_69_C" },
-    -- Composition_70 (the old Blackbeard raid flag prop) is NOT in this list — it was reserved for
-    -- the now-removed raid feature's dedicated key. Currently unreachable in-game; add it here if it
-    -- should just become a normal furniture piece.
+    { name = "Shared_Camp_PropsComposition_70", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_70.BP_Shared_Camp_PropsComposition_70_C" },
     { name = "Tortuga_Wardrobe_02", zoffset = 0.0, path = "/Game/Gameplay/POI/Tortuga/Tortuga_NPC_InteractionProps/BP_Tortuga_Wardrobe_02.BP_Tortuga_Wardrobe_02_C" },
     { name = "WardrobeAshlands_04", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_04.BP_Shared_DestructibleStructures_WardrobeAshlands_04_C" },
     { name = "WardrobeAshlands_06", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_06.BP_Shared_DestructibleStructures_WardrobeAshlands_06_C" },

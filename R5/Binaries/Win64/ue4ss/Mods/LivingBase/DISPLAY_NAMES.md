@@ -565,6 +565,9 @@ DECOR: Furniture  (20 entries, key: ' / ; -- category 'furniture')
 [Shared_Camp_PropsComposition_69]  (class: BP_Shared_Camp_PropsComposition_69)
   Friendly name: 
 
+[Shared_Camp_PropsComposition_70]  (class: BP_Shared_Camp_PropsComposition_70)
+  Friendly name: 
+
 [Tortuga_Wardrobe_02]  (class: BP_Tortuga_Wardrobe_02)
   Friendly name: 
 

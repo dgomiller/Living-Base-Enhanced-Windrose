@@ -580,6 +580,9 @@ DECOR: Furniture  (20 entries, key: ' / ; -- category 'furniture')
 [Shared_Camp_PropsComposition_69]
   lblook Shared_Camp_PropsComposition_69
 
+[Shared_Camp_PropsComposition_70]
+  lblook Shared_Camp_PropsComposition_70
+
 [Tortuga_Wardrobe_02]
   lblook Tortuga_Wardrobe_02
 

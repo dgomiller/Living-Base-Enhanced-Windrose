@@ -1,65 +1,65 @@
 [size=5][b]Living Base Enhanced[/b][/size]
-[color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place, and have it all persist across reloads. As of 2.0.0, the primary way to do all of this is a real clickable GUI window — press '-' in-game to open it.[/color]
+[color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place (full X/Y/Z position and rotation), and have it all persist across reloads. The primary way to do all of this is a real clickable GUI window — press '-' in-game to open it — with every keyboard control still fully available alongside it.[/color]
 
-[size=4][b]Built on[/b][/size]
-[color=#D4D4D8]This is an enhanced fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — full credit to them for the original concept and toolkit. Their permissions are public domain ("no credit needed, no permission needed... do whatever you want with it"), so this fork carries that same open spirit forward: everything below is offered under the same no-rights-reserved terms. See Permissions/License at the bottom.[/color]
+[color=#D4D4D8]Built with AI assistance, and meant to stay completely open: if anyone wants to fix something, improve something, or take it in a different direction, all the files are in the download and you don't need to ask.[/color]
 
-[color=#D4D4D8]Like the original, the changes in this fork were built with AI assistance — I'm not a developer either. Same deal as before: if anyone wants to fix something, improve something, or take it in a different direction, all the files are in the download and you don't need to ask. This mod, and this fork of it, are both meant to stay completely open.[/color]
+[size=4][b]What's new in 2.1.0[/b][/size]
+[color=#D4D4D8]
+[b]Full 3-axis rotation[/b] — the GUI's move panel and Coords window can now rotate a placed object around all three axes (X/Y/Z = Roll/Pitch/Yaw), not just spin it around its vertical axis. Useful for anything that can rest at any angle — a dropped weapon, a coin, an ingot — not just statues/NPCs, which only ever needed the one. The move panel's old single Rot L/R + Flip 180 are now three full rows, each with its own Left/Right button; the Coords window's single "Rotation" field is now Rotation X/Y/Z. Keyboard ',' '.' stay the only two rotate keys — '/' (the plain key next to '.', not the numpad one) cycles which axis they act on, from either the game or the GUI window, toast-confirmed each press — both input paths share the exact same selection, so they can never disagree.
 
-[size=4][b]What's new in 2.0.0 — a real GUI[/b][/size]
-[color=#D4D4D8]This download now bundles a second mod, [b]LivingBaseSpawnMenu[/b], a compiled companion that adds an always-on-top, clickable window instead of keyboard-only cycling. Every keyboard control from earlier versions still works exactly as before — the GUI is an additional, faster way to reach the same rosters, not a replacement.[/color]
+[b]Drops[/b] — a new decor category: 18 hand-picked themed groups (Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood, Writings) covering everything from weapon and armor pieces to currency, ingredients, and treasure. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01") in both the GUI tree and its on-screen toast. Browsable in the GUI's spawn tree, or by cycling the ' key in-game.
+
+[b]Fixed[/b] — the console-only lbsexchange command was silently broken since 2.0.0 (a function-ordering bug in this mod's own code); works again.
+[/color]
+
+[size=4][b]The GUI[/b][/size]
+[color=#D4D4D8]LivingBaseSpawnMenu, a second, compiled companion mod bundled with this download, adds an always-on-top, clickable window instead of keyboard-only cycling. Every keyboard control still works exactly as before — the GUI is an additional, faster way to reach the same rosters, not a replacement.[/color]
 
 [color=#D4D4D8]
-[b]A categorized spawn tree[/b] — every roster (crew, statues, Senkamati, decor, animals, walking women, and more) laid out as a browsable, clickable tree instead of "press a key and cycle." Click an entry, then Spawn a new copy or Replace whatever's currently target-locked with it — no more stepping through a 14-look roster one press at a time to find the one you want.
+[b]A categorized spawn tree[/b] — every roster (crew, statues, Senkamati, decor, animals, walking women, and more) laid out as a browsable, clickable tree instead of "press a key and cycle." Click an entry, then Spawn a new copy or Replace whatever's currently target-locked with it — no more stepping through a roster one press at a time to find the one you want.
 
-[b]A real held-repeat move panel[/b] — Forward/Left/Right/Backward/Up/Down/rotate as actual UI buttons you can hold down for continuous movement, sidestepping this UE4SS build's well-known "most rapid repeat keypresses get dropped before the mod ever sees them" limitation on the equivalent keyboard keys.
+[b]A real held-repeat move panel[/b] — Forward/Left/Right/Backward/Up/Down and full X/Y/Z rotate as actual UI buttons you can hold down for continuous movement, sidestepping this UE4SS build's well-known "most rapid repeat keypresses get dropped before the mod ever sees them" limitation on the equivalent keyboard keys.
 
-[b]A precise coordinate editor[/b] — type exact X/Y/Z and Rotation (0-359°) values for whatever's target-locked, with Preview (try it live), Apply (commit), Reset, and Cancel (both revert to however it was when the editor opened).
+[b]A precise coordinate editor[/b] — type exact X/Y/Z position and X/Y/Z rotation for whatever's target-locked, with Preview (try it live), Apply (commit), Reset, and Cancel (both revert to however it was when the editor opened).
 
 [b]In-window Instructions and History tabs[/b] — the full control reference and a running log of every on-screen toast this session, both readable without alt-tabbing out.
 
 [b]Two always-available keys[/b] — '-' opens/closes the GUI window from anywhere while playing (starts closed each session); '=' steals OS focus for it once it's open, so your next click lands there without an extra click first.
 
-[b]In-Game Keys, narrowed in scope[/b] — the on/off master toggle (Insert) now controls ONLY LivingBase's own keyboard keys (placement, live-edit, cycle, clear); the GUI's own buttons are independent of it by design, since the GUI is the primary way to use the mod now. It also now starts OFF by default each session (config.txt's KEYS_ENABLED_ONSTART) rather than on.
+[b]In-Game Keys, narrowed in scope[/b] — the on/off master toggle (Insert) controls ONLY LivingBase's own keyboard keys (placement, live-edit, cycle, clear); the GUI's own buttons are independent of it by design, since the GUI is the primary way to use the mod. Off by default each session.
 
-[b]Unique per-placement names[/b] — every object you place now gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the same look sharing one identical label. Stored in your save, so names stay stable across reloads — an older save gets names assigned automatically the first time it restores.
-
-[b]Frozen Herbalist-base Senkamati Caster[/b] — the idle/frozen crew re-skin variant now also comes in the Herbalist body, matching the already-existing Gatherer-base frozen version.
+[b]Unique per-placement names[/b] — every object you place gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the same look sharing one identical label. Stored in your save, so names stay stable across reloads.
 [/color]
 
-[size=4][b]What's new in Enhanced (since forking from the original)[/b][/size]
-[color=#D4D4D8]The original's placement toolkit, whistle escort, invulnerable structures, and hidden build-piece unlock are all still here, untouched. On top of that:[/color]
-
+[size=4][b]The full toolkit[/b][/size]
 [color=#D4D4D8]
-[b]Real Undo (Num 0)[/b] — the original's Num 9 was labeled "Undo" but only despawned; there was no way to bring something back. Num 0 now actually restores the last despawned object (or an entire Delete wipe, as one batch) at its exact spot, including AI/composite-look appearance where recorded. Steps back through your last 20 actions.
+[b]Real Undo (Num 0)[/b] — restores the last despawned object (or an entire Delete wipe, as one batch) at its exact spot, including AI/composite-look appearance where recorded. Steps back through your last 20 actions.
 
-[b]Cycle statues AND decorations (] and [)[/b] — swap the targeted statue or decoration for the next (or previous) entry in its own roster (pose roster for statues, category for decorations), in place, without re-placing it from scratch. One key pair auto-detects which kind you're targeting. Undo-able with Num 0, which now names what it restored on-screen instead of just a count.
+[b]Cycle statues AND decorations (] and [)[/b] — swap the targeted statue or decoration for the next (or previous) entry in its own roster, in place, without re-placing it from scratch. One key pair auto-detects which kind you're targeting. Undo-able with Num 0, which names what it restored on-screen.
 
-[b]Generalized quest NPCs[/b] — fixed a bug that let named quest NPCs (Letty, Francois Arno, and more) keep their live quest dialogue and interact prompt when placed with this mod. They now become plain ambient set-dressing like every other statue, as intended.
+[b]Generalized quest NPCs[/b] — named quest NPCs (Letty, Francois Arno, and more) become plain ambient set-dressing when placed with this mod, instead of keeping their live quest dialogue and interact prompt.
 
-[b]Faction leaders & walking faction visitors[/b] — added 5 new named NPCs to the standing statue roster (Benjamin Hornigold, Henri Boucher, Marita Suares, Long Ben, Charlie Sharp), plus 15 more standing/seated/interactive poses that shipped with the game but were never wired in. Crew (Num 1) now also cycles through 14 looks per press: the original crew look, plus 12 walking re-skins covering all four factions (Buccaneers, Smugglers, People of Tortuga, Brethren of the Coast) in Musketeer/Sailor/Sergeant variants, plus a Brethren of the Coast woman look — real crew pawns with working walk AI, not statues.
+[b]Faction leaders & walking faction visitors[/b] — named NPCs (Benjamin Hornigold, Henri Boucher, Marita Suares, Long Ben, Charlie Sharp) on the standing statue roster, plus 15 more standing/seated/interactive poses that shipped with the game but were never wired in. Crew (Num 1) cycles through 14 looks per press: the default crew look, plus 12 walking re-skins covering all four factions (Buccaneers, Smugglers, People of Tortuga, Brethren of the Coast) in Musketeer/Sailor/Sergeant variants, plus a Brethren of the Coast woman look — real crew pawns with working walk AI, not statues.
 
-[b]Normal-posture Senkamati and bigger animal roster[/b] — the Senkamati Hunter and Caster (Num 7) now walk with normal human posture instead of their native mob's lumbering gait, matching the Warrior. Num 7 cycles through looks so you can compare: original mob body vs. re-skinned, with or without the tribal helmet, plus each one's untouched "as original" corrupted appearance — the female Caster's re-skin comes in two different base bodies (Gatherer and Herbalist), each with its own distinct figure/hair-color/palette. Farm animals (Num 8) expanded from 5 to 13 entries: Goat Mega, Sow, Charging Boar, Boar Mega, Wolf, Alpha Wolf, Crocodile, and a corrupted "Plague" Crocodile join the original boar/goat/dodo set, all tamed and friendly the same way.
+[b]Normal-posture Senkamati and a big animal roster[/b] — the Senkamati Hunter and Caster (Num 7) walk with normal human posture instead of their native mob's lumbering gait, matching the Warrior. Num 7 cycles through 30+ looks: original mob body vs. re-skinned, with or without the tribal helmet, each one's untouched "as original" corrupted appearance, and a frozen/idle counterpart for every look — the female Caster's re-skin comes in two different base bodies (Gatherer and Herbalist) with distinct figure/hair-color/palette. Farm animals (Num 8): 13 entries — Goat Mega, Sow, Charging Boar, Boar Mega, Wolf, Alpha Wolf, Crocodile, and a corrupted "Plague" Crocodile alongside the boar/goat/dodo set, all tamed and friendly.
 
-[b]Walking Women (Numpad . key)[/b] — a real, walking female NPC that can be re-skinned to look like Letty, Marita Suares, or the Buccaneers Merchant, instead of only being available as a frozen statue. Two extra plain looks, "Woman With Hat" and "Woman With Hair", round out the roster for general crowd variety. Every one of the five looks comes in TWO different base bodies (Base 1/Base 2, using two different underlying NPC classes for genuinely different figures and hair color, not just a different outfit — each character's own outfit/hair-style stays the same either way), for 10 stops total. Every placement also rolls a random skin tone (and, for the plain looks, a random hairstyle) for extra variety — this re-rolls each time you reload your save on purpose, rather than being locked in permanently. Repeated presses cycle through all ten looks in order, and reloading correctly restores which look/character/base each placed NPC was.
+[b]Walking Women (Numpad . key)[/b] — a real, walking female NPC re-skinned to look like Letty, Marita Suares, or the Buccaneers Merchant, plus two plain looks ("Woman With Hat" and "Woman With Hair") for general crowd variety. Every look comes in TWO different base bodies (Base 1/Base 2, genuinely different figures and hair color via two different underlying NPC classes, same outfit/hair-style either way) for 10 stops total. Every placement rolls a random skin tone (and, for the plain looks, a random hairstyle) — this re-rolls each time you reload your save, on purpose. Reloading correctly restores which look/character/base each placed NPC was.
 
-[b]Reticle-accurate targeting[/b] — despawn, live-edit, and pose-cycle now pick the object your camera is actually pointed at (including up/down — you can target two things stacked vertically), instead of a wide "anything vaguely in front of your character's body" guess. Much less mis-picking the wrong nearby object.
+[b]Reticle-accurate targeting[/b] — despawn, live-edit, and pose-cycle pick the object your camera is actually pointed at (including up/down — you can target two things stacked vertically), instead of a wide "anything vaguely in front of your character's body" guess.
 
 [b]Camera-relative placement[/b] — new spawns appear in the direction your camera is looking (horizontally), not just where your character's body happens to be facing, so free-looking in third person actually matters.
 
 [b]Fixed 45°/180° rotate (Num / and Num *), a precision cycle (Num -), and a target lock (Num +)[/b] — finer live-edit control without needing to spam the regular rotate keys, plus a way to pin despawn/cycle/live-edit to one object so you can walk around it or look away without losing your target.
 
-[b]One key freezes the mod's keyboard keys (Insert)[/b] — toggles LivingBase's own keys (numpad, ;/', Delete, backslash, live-edit) on/off at runtime, so they're free for other uses — or for another mod that wants the same key — without editing config files. Starting state (on/off) is configurable too; as of 2.0.0 it defaults OFF, since the GUI is the primary workflow now.
+[b]One key freezes the mod's keyboard keys (Insert)[/b] — toggles LivingBase's own keys (numpad, ;/', Delete, backslash, live-edit) on/off at runtime, so they're free for other uses without editing config files. Starting state is configurable; defaults OFF, since the GUI is the primary workflow.
 
-[b]Real on-screen toast feedback[/b] — despawn, undo, cycle, and spawn actions confirm on-screen now, not just in the log, by reusing the game's own native notification widget (not a custom overlay). World load shows staged progress too: waiting for you to move, restoring your base, and a final summary once it's done. Deliberately quiet where a toast would just be spam — live-edit nudges and "nothing there" misses stay log-only.
+[b]Real on-screen toast feedback[/b] — despawn, undo, cycle, and spawn actions confirm on-screen, not just in the log, by reusing the game's own native notification widget. World load shows staged progress too: waiting for you to move, restoring your base, and a final summary once it's done. Deliberately quiet where a toast would just be spam — live-edit nudges and "nothing there" misses stay log-only.
 
-[b]No more duplicate spawns on load[/b] — every mod key (and, as of 2.0.0, the GUI's buttons) is locked from the moment a world load starts until your base finishes restoring. Previously, placing something manually in that window got saved immediately and then restored a SECOND time once the real restore ran, leaving a duplicate.
+[b]No more duplicate spawns on load[/b] — every mod key and the GUI's buttons are locked from the moment a world load starts until your base finishes restoring, so nothing you place manually in that window gets saved and then restored a second time.
 
-[b]Assorted reliability fixes[/b] — a render desync where moved objects didn't visually update until you walked away and back; a bug where undoing a pose-cycle stacked a duplicate statue instead of replacing it; tighter, more consistent despawn reach.
+[b]Decorations off the F-row (; and ')[/b] — decoration placement never touches F1-F6, for compatibility with other mods that use F-Keys. ' cycles which decoration category is active (with an on-screen message telling you which one), and ; places from whichever category that is.
 
-[b]Decorations off the F-row (; and ')[/b] — to ensure compatibility with other mods that use F-Keys, decoration placement has been moved off F1-F6 entirely. ' cycles which decoration category is active (with an on-screen message telling you which one), and ; places from whichever category that is.
-
-[b]Per-world saves[/b] — if you play more than one Windrose world, each one now keeps its own separate base save. Previously every world shared a single save file, so loading a different world would restore the wrong crew into it. Upgrading from an older version: the first world you load automatically keeps your existing save, and every other world starts clean — no setup needed.
+[b]Per-world saves[/b] — if you play more than one Windrose world, each one keeps its own separate base save automatically.
 [/color]
 
 [size=4][b]Installation[/b][/size]
@@ -81,17 +81,17 @@ Back up your saves before first use — standard caution for an Early Access gam
 
 [size=4][b]Main Features[/b][/size]
 [color=#D4D4D8]
-[b]GUI window (LivingBaseSpawnMenu)[/b] — a categorized, clickable spawn tree; a held-repeat move/edit panel; a precise typed X/Y/Z/Rotation coordinate editor; in-window Instructions/History reference. Open/close with '-', steal focus for it with '='.
+[b]GUI window (LivingBaseSpawnMenu)[/b] — a categorized, clickable spawn tree; a held-repeat move/edit panel with full X/Y/Z rotation; a precise typed coordinate editor; in-window Instructions/History reference. Open/close with '-', steal focus for it with '='.
 
 [b]Placement toolkit[/b] — drop one actor or prop per pick (GUI) or keypress (keyboard), ~3m ahead in the direction you're looking:
 - Numpad 1-9: crew (cycles 14 looks, including faction-visitor re-skins), townsfolk, four kinds of posed statue, friendly Senkamati tribals, friendly wildlife, and despawn.
 - Numpad . (decimal): a walking female NPC, cycling through Letty, Marita, the Buccaneers Merchant, and two plain looks.
-- ' (apostrophe): change the active decoration category (nature, boats, wrecks, tents, storage, furniture). ; (semicolon): place from the active category.
+- ' (apostrophe): change the active decoration category (nature, boats, wrecks, tents, storage, furniture, plus 18 Drops themes). ; (semicolon): place from the active category.
 - Num 0: undo the last despawn/wipe/pose-cycle. ] and [: cycle a statue or decoration's pose forward/backward. Backslash: flip statue facing for future spawns.
 
-[b]Live-edit[/b] — nudge the nearest placed piece (or, via the GUI, the target-locked one) and the change persists: PageUp/PageDown height, comma/period rotate, arrow keys slide, Num / and Num * for fixed 45°/180° rotation, Num - cycles precision, Num + toggles a target lock. Targeting tracks your camera, not just your body facing.
+[b]Live-edit[/b] — nudge the nearest placed piece (or, via the GUI, the target-locked one) and the change persists: PageUp/PageDown height, comma/period rotate whichever axis is selected ('/' switches axis), arrow keys slide, Num / and Num * for fixed 45°/180° yaw, Num - cycles precision, Num + toggles a target lock. Targeting tracks your camera, not just your body facing.
 
-[b]Persistence[/b] — everything you place is saved and restored on the next world load (the game doesn't save modded actors, so LivingBase does it itself), separately per world if you play more than one, each with its own unique per-placement name. Delete (pressed twice), or the GUI's Delete All, clears everything in the current world.
+[b]Persistence[/b] — everything you place is saved and restored on the next world load, separately per world if you play more than one, each with its own unique per-placement name and full position/rotation. Delete (pressed twice), or the GUI's Delete All, clears everything in the current world.
 
 [b]In-Game Keys toggle[/b] — Insert freezes LivingBase's own keyboard keys (numpad/;/'/etc.), independent of the GUI, which keeps working either way. Off by default each session.
 
@@ -113,7 +113,7 @@ Every feature is individually toggleable in config.txt.
 [/color]
 
 [size=4][b]Controls[/b][/size]
-[color=#D4D4D8]NumLock must be ON for the numpad keys to register. Everything below also works, or has an equivalent, in the GUI window (see What's New in 2.0.0 above) — press '-' to open it.[/color]
+[color=#D4D4D8]NumLock must be ON for the numpad keys to register. Everything below also works, or has an equivalent, in the GUI window (see What's New above) — press '-' to open it.[/color]
 
 [color=#D4D4D8][b]Numpad[/b] — place NPCs, statues & animals (one per press, ~3m ahead in your camera direction; statues face you):
 Num 1 — Crew pawn (wanders; fights hostiles as a combat ally; cycles 14 looks — default crew, plus 12 walking faction-visitor re-skins across Buccaneers/Smugglers/People of Tortuga/Brethren of the Coast, plus a Brethren of the Coast woman)
@@ -134,21 +134,22 @@ Backslash (\) — Flip statue facing 180° for future spawns only[/color]
 [ — Cycle it backward instead[/color]
 
 [color=#D4D4D8][b]Decorations[/b]:
-' (apostrophe) — Change the active decoration category: nature, boats, wrecks, tents, storage, furniture (announces which one on-screen; doesn't place anything)
+' (apostrophe) — Change the active decoration category: nature, boats, wrecks, tents, storage, furniture, plus 18 themed Drops categories (announces which one on-screen; doesn't place anything)
 ; (semicolon) — Place one decoration from the active category (cycles its own list, same as the other placement keys)[/color]
 
 [color=#D4D4D8][b]Live-edit[/b] — tunes the nearest placed piece; persists:
 PageUp / PageDown — Raise / lower
-Comma / Period — Rotate left / right
-Num / — Rotate a fixed 45°
-Num * — Rotate a fixed 180° (flip in place)
+Comma / Period — Rotate the currently-selected axis left / right (X/Y/Z = Roll/Pitch/Yaw; starts on Z)
+/ — Cycle which axis Comma/Period rotate (X -> Y -> Z -> X), toast-confirmed
+Num / — Rotate a fixed 45° (Yaw)
+Num * — Rotate a fixed 180° (flip in place, Yaw)
 Arrow keys — Slide forward / back / left / right
 Num - — Cycle precision for the slide/height keys: full / 1/2 / 1/4 / 1/8 / 2x
 Num + — Toggle target lock: pin despawn (Num 9), ]/[ cycle, and every live-edit key above — plus the GUI's move panel/Despawn/Coords/Replace — to the object in front of you, so they keep hitting it even after you walk away or look elsewhere. Press again to release; auto-releases if the locked object gets despawned, or if you walk more than ~15m away from it. Always active regardless of In-Game Keys, since the GUI depends on it.[/color]
 
 [color=#D4D4D8][b]Housekeeping[/b]:
 Delete (x2) — Clean house: despawn everything (press twice within a few seconds to confirm)
-Insert — Toggle LivingBase's own keyboard keys on/off (does not affect the GUI). Starting state configurable in config.txt, off by default as of 2.0.0.[/color]
+Insert — Toggle LivingBase's own keyboard keys on/off (does not affect the GUI). Starting state configurable in config.txt, off by default.[/color]
 
 [color=#D4D4D8]Remap anything by editing Config.KEYS in Scripts\config.lua.[/color]
 
@@ -169,15 +170,12 @@ Insert — Toggle LivingBase's own keyboard keys on/off (does not affect the GUI
 - If using the optional Windrose Mod Settings integration: keybind changes made there need a game restart to fully take effect (a few toggles apply immediately — each one says so in its own description). Separately, moving the mouse cursor quickly over its settings list has been observed to crash the game — this is a Windrose Mod Settings issue, not this mod. Move the cursor slowly there for now.
 [/color]
 
-[size=4][b]Note: Blackbeard Raid Removed[/b][/size]
-[color=#D4D4D8]The original mod's Blackbeard raid feature (drop a flag, trigger a pirate wave) has been removed from this fork due to lack of interest and the difficulty of maintaining it going forward.[/color]
-
 [size=4][b]Permissions / License[/b][/size]
-[color=#D4D4D8]Same terms as the original: no rights reserved. I don't claim ownership of, or any license over, this mod's own code — treat it as public domain. Do whatever you want with it: use it, modify it, redistribute it, re-upload it, fork it, bundle it into something else. No credit needed, no permission needed. If you make it better, that's great.
+[color=#D4D4D8]No rights reserved. I don't claim ownership of, or any license over, this mod's own code — treat it as public domain. Do whatever you want with it: use it, modify it, redistribute it, re-upload it, fork it, bundle it into something else. No credit needed, no permission needed. If you make it better, that's great.
 
 This waiver covers this mod's own code only. Windrose and its game assets, class names, and IP belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
 
 [size=4][b]Credits[/b][/size]
-[color=#D4D4D8]All credit to [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] for creating the original [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] and open-sourcing it into the public domain. This fork wouldn't exist without that toolkit already doing the hard part.
+[color=#D4D4D8]This project started as a fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place. The amount that's changed since then means this page no longer walks through it point-by-point, but the debt is real and gladly acknowledged.
 
 Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.[/color]

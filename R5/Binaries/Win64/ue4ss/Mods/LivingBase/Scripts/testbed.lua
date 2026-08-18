@@ -402,12 +402,31 @@ local decorIdx = {}   -- per-category cursor
 -- Place ONE decoration entry {name, path, zoffset} ~3m in front: spawn, solidify, and pin its Z so it
 -- rests at floor + zoffset (live-edit nudges from there; the pose persists). Shared by the F-row category
 -- cyclers (SpawnDecorCategory) and the dedicated raid-flag key (SpawnRaidFlag).
+-- Spawn label: `d.label` (2026-08-17, a "Proper Name" some entries now carry, e.g. "Bezoar") if
+-- present, else the raw `d.name` -- was unconditionally "DECOR_" .. d.name before; dropped the
+-- prefix since it made every toast/persisted label read like "DECOR_Loot_T02_Bezoar_01 1" instead
+-- of something a player would want to see. Safe to drop: Spawner.SolidifyDecor's "is this tracked
+-- entry decor" fallback check (e.label:sub(1,6)=="DECOR_") is an OR alongside
+-- Spawner.IsDecorClass(e.class), which independently and reliably catches every entry here anyway
+-- (decorPathSet is built straight from these same categories' own `path` fields) -- confirmed by
+-- reading that function, not assumed.
 local function placeDecorEntry(d)
     local floorZ = playerFloorZ()
-    local a = Spawner.Spawn(d.path, "DECOR_" .. d.name, frontSpot(300))
+    local a = Spawner.Spawn(d.path, d.label or d.name, frontSpot(300))
     if not (a and a:IsValid()) then
         log("Decoration " .. d.name .. " failed — path may be wrong; probe a wild one for its class.")
         return
+    end
+    -- Item-drop decor entries (fkeys.lua's inventoryDrops category) carry a `mesh` field: a real
+    -- static-mesh asset path, not a class path. Their shared class (R5LootActor) normally gets its
+    -- mesh from a real drop event (LootView), which a generic spawn never gets — confirmed dead
+    -- silent/invisible without this (see Spawner.SetLootMesh's own comment for why the business-
+    -- rule route is unusable). Force the mesh, then immediately convert it to inert decor (no pickup
+    -- prompt, no toss physics, no sparkle) the same way lbdecorloot handles an already-dropped item —
+    -- these are meant to be pure set-dressing like every other decor category, not real pickups.
+    if d.mesh then
+        Spawner.SetLootMesh(a, d.mesh)
+        Spawner.MakeLootDecor(a)
     end
     -- These props float because their MESH sits offset above the actor's ROOT (placing the root on the
     -- ground leaves the mesh at chest height), and their bounds are unreliable so snapToFloor can't fix

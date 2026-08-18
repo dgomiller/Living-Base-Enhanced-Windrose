@@ -129,9 +129,34 @@ local function crew_path_and_label(entry)
     return {"Crew", tostring(entry.faction or "Other")}, entry.name
 end
 
+-- Most decor categories map to ONE path segment under "Decor" (a plain string). The 18
+-- invdrop_<theme> categories (2026-08-17, see fkeys.lua's own comment on `invdrop_animalparts` for
+-- the full history -- hand-curated from RedFalcon's spreadsheet review, replacing the earlier
+-- folder-shaped grouping entirely) need a SECOND level -- everything grouped under one shared
+-- "Drops" branch, with the theme (Animal Parts/Weapons/Currency/...) as its own sub-branch -- so
+-- their labels are a TABLE of path segments instead of a bare string. decor_path_and_label below
+-- handles either shape.
 local DECOR_CATEGORY_LABELS = {
     nature = "Nature", boats = "Boats", wrecks = "Wrecks",
     tents = "Tents & Bedrolls", storage = "Storage Clutter", furniture = "Furniture",
+    invdrop_animalparts = {"Drops", "Animal Parts"},
+    invdrop_artifacts = {"Drops", "Artifacts"},
+    invdrop_clothes = {"Drops", "Clothes"},
+    invdrop_currency = {"Drops", "Currency"},
+    invdrop_ingredients = {"Drops", "Ingredients"},
+    invdrop_keys = {"Drops", "Keys"},
+    invdrop_meals = {"Drops", "Meals"},
+    invdrop_mined = {"Drops", "Mined"},
+    invdrop_misc = {"Drops", "Misc"},
+    invdrop_potions = {"Drops", "Potions, Bottles, and Healing"},
+    invdrop_seeds = {"Drops", "Seeds"},
+    invdrop_tailoring = {"Drops", "Tailoring"},
+    invdrop_tools = {"Drops", "Tools"},
+    invdrop_treasure = {"Drops", "Treasure"},
+    invdrop_trophies = {"Drops", "Trophies"},
+    invdrop_weapons = {"Drops", "Weapons"},
+    invdrop_wood = {"Drops", "Wood"},
+    invdrop_writings = {"Drops", "Writings"},
 }
 
 -- Decor lives in per-category sub-tables (Config.DECOR_CATEGORIES[key]), not one flat array like
@@ -149,7 +174,18 @@ local function decor_rows(Config)
     return rows
 end
 local function decor_path_and_label(row)
-    return {"Decor", DECOR_CATEGORY_LABELS[row.category] or row.category}, row.entry.name
+    local label = DECOR_CATEGORY_LABELS[row.category] or row.category
+    local path = {"Decor"}
+    if type(label) == "table" then
+        for _, seg in ipairs(label) do path[#path + 1] = seg end
+    else
+        path[#path + 1] = label
+    end
+    -- `label` (2026-08-17): a hand-picked "Proper Name" (e.g. "Bezoar") some entries now carry
+    -- alongside `name` (the system identifier, e.g. "Loot_T02_Bezoar_01") -- prefer it for the tree
+    -- leaf a player actually sees; `name` still has to be what's written as the roster lookup value
+    -- elsewhere, unrelated to this display text.
+    return path, row.entry.label or row.entry.name
 end
 
 -- Livestock is spread across five separate Config tables -- flatten the same way as decor above,

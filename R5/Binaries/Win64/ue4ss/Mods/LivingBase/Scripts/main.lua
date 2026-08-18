@@ -439,6 +439,19 @@ end)
 -- live-edit keys deliberately do NOT get claimed by LivingBase at all when LIVE_EDIT is off, so
 -- they stay free for other mods to bind. Toggling LIVE_EDIT in Settings > Mods needs a restart to
 -- take effect, same as every keybind on that page (see the "KEY REGISTRATION" comment above).
+-- Rotate axis (2026-08-18): shared by the in-game ','/'.' keys below AND the LivingBaseSpawnMenu
+-- window's own ','/'.' shortcut (via ROTATE_AXIS_CYCLE, see the MOVE MENU BRIDGE section) -- ONE
+-- piece of state either input path reads/cycles, so the keyboard and the GUI window can never
+-- silently disagree about which axis ',' '.' currently rotate. In-memory only (a tool preference,
+-- not per-object data -- unlike everything persist.txt tracks, this isn't tied to any one placed
+-- object), resets to "Z" (yaw, matching the old single-axis behavior) every session/reload.
+local rotateAxis = "Z"
+local function cycleRotateAxis()
+    rotateAxis = (rotateAxis == "X" and "Y") or (rotateAxis == "Y" and "Z") or "X"
+    print("[LivingBase] Rotate axis: " .. rotateAxis .. "\n")
+    pcall(function() Spawner.Toast("Rotate axis: " .. rotateAxis, 2.0) end)
+end
+
 if Config.LIVE_EDIT then
     local rs = Config.LIVE_EDIT_ROTATE_STEP or 15.0
     local hs = Config.LIVE_EDIT_HEIGHT_STEP or 10.0
@@ -452,10 +465,22 @@ if Config.LIVE_EDIT then
             Spawner.EditNearestInFront(dZ * scale, dYaw, dFwd * scale, dRight * scale)
         end, name)
     end
+    -- ','/'.': rotate by `amt` around WHICHEVER axis rotateAxis currently names (X/Y=Roll/Pitch,
+    -- Z=Yaw) -- checked live at call time (same "read Spawner.editPrecisionScale live" reasoning
+    -- editAction's closure above already uses), so cycling the axis takes effect on the very next
+    -- press, no re-registration needed.
+    local function editRotAction(name, amt)
+        return directAction(function()
+            if rotateAxis == "X" then Spawner.EditNearestInFront(0, 0, 0, 0, 0, amt)
+            elseif rotateAxis == "Y" then Spawner.EditNearestInFront(0, 0, 0, 0, amt, 0)
+            else Spawner.EditNearestInFront(0, amt, 0, 0, 0, 0) end
+        end, name)
+    end
     register("editUp",    editAction("editUp",    hs, 0, 0, 0))
     register("editDown",  editAction("editDown", -hs, 0, 0, 0))
-    register("editRotL",  editAction("editRotL",  0, -rs, 0, 0))
-    register("editRotR",  editAction("editRotR",  0,  rs, 0, 0))
+    register("editRotL",  editRotAction("editRotL", -rs))
+    register("editRotR",  editRotAction("editRotR",  rs))
+    register("toggleRotateAxis", directAction(cycleRotateAxis, "toggleRotateAxis"))
     register("editRot45", editAction("editRot45", 0,  45.0, 0, 0))   -- fixed 45° step, not tied to LIVE_EDIT_ROTATE_STEP
     register("editRot180",editAction("editRot180",0, 180.0, 0, 0))   -- fixed 180° flip on the object in front of you
     register("editFwd",   editAction("editFwd",  0, 0,  ms, 0))      -- arrows slide the prop in your facing frame
@@ -774,26 +799,31 @@ local function findMoveRequestPath()
     return nil
 end
 
--- One entry per SPATIAL action MoveMenu.cpp can send -- UNIT (dZ, dYaw, dFwd, dRight) deltas,
--- matching the sign/axis convention the editUp/editDown/editRotL/editRotR/editFwd/editBack/
--- editLeft/editRight key actions already use above. Multiplied by the real step sizes +
+-- One entry per SPATIAL action MoveMenu.cpp can send -- UNIT (dZ, dYaw, dFwd, dRight, dPitch,
+-- dRoll) deltas, matching the sign/axis convention the editUp/editDown/editRotL/editRotR/editFwd/
+-- editBack/editLeft/editRight key actions already use above. Multiplied by the real step sizes +
 -- precision scale at flush time below, never baked into the C++ side (see MoveMenu.cpp's own
--- header comment). ROT_180 is a fixed-180-degree flip in one shot, matching the keyboard's own
--- Num* -- dYaw here is a literal degree value, not a unit multiplied by LIVE_EDIT_ROTATE_STEP
--- like ROT_L/ROT_R, so it's applied separately at flush time below.
+-- header comment).
+-- ROTX/ROTY/ROTZ (2026-08-18): full 3-axis rotation, replacing the old single-axis Rot L/R + the
+-- Flip 180 button (removed -- RedFalcon: "not useful as much" once every axis is reachable
+-- directly). Z is the original yaw rotation (was ROT_L/ROT_R, renamed for the new 3-row layout);
+-- X/Y are UE's Roll/Pitch respectively -- matches Unreal's own FRotator convention (X axis =
+-- Roll, Y axis = Pitch, Z axis = Yaw), which conveniently lines up with RedFalcon's own X/Y/Z
+-- mockup row order without needing a different mapping.
 local MOVE_MENU_ACTIONS = {
-    UP    = {1, 0, 0, 0},
-    DOWN  = {-1, 0, 0, 0},
-    ROT_L = {0, -1, 0, 0},
-    ROT_R = {0, 1, 0, 0},
-    FWD   = {0, 0, 1, 0},
-    BACK  = {0, 0, -1, 0},
-    LEFT  = {0, 0, 0, -1},
-    RIGHT = {0, 0, 0, 1},
+    UP     = {1, 0, 0, 0, 0, 0},
+    DOWN   = {-1, 0, 0, 0, 0, 0},
+    FWD    = {0, 0, 1, 0, 0, 0},
+    BACK   = {0, 0, -1, 0, 0, 0},
+    LEFT   = {0, 0, 0, -1, 0, 0},
+    RIGHT  = {0, 0, 0, 1, 0, 0},
+    ROTZ_L = {0, -1, 0, 0, 0, 0},
+    ROTZ_R = {0, 1, 0, 0, 0, 0},
+    ROTX_L = {0, 0, 0, 0, 0, -1},
+    ROTX_R = {0, 0, 0, 0, 0, 1},
+    ROTY_L = {0, 0, 0, 0, -1, 0},
+    ROTY_R = {0, 0, 0, 0, 1, 0},
 }
--- ROT_180 gets its own table (not folded into MOVE_MENU_ACTIONS above) since its dYaw is a literal
--- 180, not a unit scaled by LIVE_EDIT_ROTATE_STEP -- see flush-time handling below.
-local MOVE_MENU_ROT180_ACTION = "ROT_180"
 
 -- ACTION:<NAME> one-shot commands (distinct from MOVE:<ACTION> spatial nudges above) -- these
 -- come from single clicks (toggle/clear/lock buttons, or the in-window +/NUM_ADD keyboard
@@ -826,6 +856,17 @@ local function handleMoveMenuTargetLock()
     ExecuteInGameThread(function()
         local ok, err = pcall(function() Spawner.ToggleTargetLock() end)
         if not ok then log("move menu target-lock FAILED: " .. tostring(err)) end
+    end)
+end
+-- Rotate-axis cycle (matches the keyboard '/' shortcut, see Config.KEYS.toggleRotateAxis's own
+-- comment) -- calls the SAME cycleRotateAxis() function defined up in the LIVE_EDIT section, so
+-- the window's '/' and the in-game one can never disagree about which axis is currently selected.
+-- restoreGate only, NOT modGate -- same reasoning as every other move-menu one-shot action here.
+local function handleMoveMenuRotateAxisCycle()
+    if not restoreGate("move menu: rotate axis") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(cycleRotateAxis)
+        if not ok then log("move menu rotate-axis FAILED: " .. tostring(err)) end
     end)
 end
 -- Despawn (matches Num9/Testbed.DespawnInFront): gated + shares the spawn debounce, same as
@@ -869,16 +910,17 @@ end
 local function handleMoveMenuCoordsClose()
     Spawner.suspendTargetLockDistanceCheck = false
 end
--- COORDS_MOVE:x:y:z:yaw -- Preview/Apply/Reset/Cancel in the Coords window all funnel through this
--- SAME line shape, just with different values (Preview/Apply send whatever's typed; Reset/Cancel
--- send the window's own remembered opening snapshot back) -- see Spawner.SetLockedTargetTransform's
--- own comment for why this writes an ABSOLUTE transform rather than reusing the relative-delta
--- EditNearestInFront path every other nudge control here uses.
-local function handleMoveMenuCoordsMove(x, y, z, yaw)
+-- COORDS_MOVE:x:y:z:pitch:yaw:roll (2026-08-18, was x:y:z:yaw before full 3-axis rotation) --
+-- Preview/Apply/Reset/Cancel in the Coords window all funnel through this SAME line shape, just
+-- with different values (Preview/Apply send whatever's typed; Reset/Cancel send the window's own
+-- remembered opening snapshot back) -- see Spawner.SetLockedTargetTransform's own comment for why
+-- this writes an ABSOLUTE transform rather than reusing the relative-delta EditNearestInFront path
+-- every other nudge control here uses.
+local function handleMoveMenuCoordsMove(x, y, z, pitch, yaw, roll)
     -- restoreGate only, NOT modGate (2026-08-16 split) -- see restoreGate's own comment.
     if not restoreGate("move menu: coords") then return end
     ExecuteInGameThread(function()
-        local ok, err = pcall(function() return Spawner.SetLockedTargetTransform(x, y, z, yaw) end)
+        local ok, err = pcall(function() return Spawner.SetLockedTargetTransform(x, y, z, pitch, yaw, roll) end)
         if not ok then log("move menu coords FAILED: " .. tostring(err)) end
     end)
 end
@@ -907,6 +949,7 @@ local MOVE_MENU_MAX_ACTIONS_PER_DRAIN = 20
 -- (slow, 250ms -- see its own comment) is the ONLY thing that ever reads it and calls
 -- Spawner.EditNearestInFront, then resets it to zero.
 local movePendingZ, movePendingYaw, movePendingFwd, movePendingRight = 0.0, 0.0, 0.0, 0.0
+local movePendingPitch, movePendingRoll = 0.0, 0.0
 local movePendingCount = 0
 
 local function drainMoveMenuQueue()
@@ -938,16 +981,13 @@ local function drainMoveMenuQueue()
     -- "PRECISION:<value>") -- see this block's own header comment for why one-shot commands are
     -- handled immediately here rather than queued into the spatial accumulator below.
     for line in content:gmatch("[^\r\n]+") do
-        -- %u_ alone does NOT match digits in Lua patterns -- "ROT_180" silently failed to match
-        -- here until this was widened to %u%d_ (confirmed live 2026-08-16: Flip 180 did nothing).
+        -- %u_ alone does NOT match digits in Lua patterns -- confirmed live 2026-08-16 with the
+        -- now-removed "ROT_180" action, which silently failed to match here until this was widened
+        -- to %u%d_.
         local spatialAction = line:match("^MOVE:([%u%d_]+)$")
         if spatialAction then
             if count >= MOVE_MENU_MAX_ACTIONS_PER_DRAIN then
                 skipped = skipped + 1
-            elseif spatialAction == MOVE_MENU_ROT180_ACTION then
-                movePendingYaw = movePendingYaw + 180.0
-                movePendingCount = movePendingCount + 1
-                count = count + 1
             else
                 local d = MOVE_MENU_ACTIONS[spatialAction]
                 if d then
@@ -955,6 +995,8 @@ local function drainMoveMenuQueue()
                     movePendingYaw   = movePendingYaw   + d[2] * rs
                     movePendingFwd   = movePendingFwd   + d[3] * ms * scale
                     movePendingRight = movePendingRight + d[4] * ms * scale
+                    movePendingPitch = movePendingPitch + d[5] * rs
+                    movePendingRoll  = movePendingRoll  + d[6] * rs
                     movePendingCount = movePendingCount + 1
                     count = count + 1
                 end
@@ -969,6 +1011,8 @@ local function drainMoveMenuQueue()
                 handleMoveMenuClearAll()
             elseif line == "ACTION:TARGET_LOCK" then
                 handleMoveMenuTargetLock()
+            elseif line == "ACTION:ROTATE_AXIS_CYCLE" then
+                handleMoveMenuRotateAxisCycle()
             elseif line == "ACTION:DESPAWN" then
                 handleMoveMenuDespawn()
             elseif line == "ACTION:UNDO" then
@@ -978,9 +1022,13 @@ local function drainMoveMenuQueue()
             elseif line == "ACTION:COORDS_CLOSE" then
                 handleMoveMenuCoordsClose()
             else
-                local cx, cy, cz, cyaw = line:match("^COORDS_MOVE:(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
+                -- COORDS_MOVE:x:y:z:pitch:yaw:roll (2026-08-18, was x:y:z:yaw before full 3-axis
+                -- rotation) -- see handleMoveMenuCoordsMove's own comment.
+                local cx, cy, cz, cp, cyaw, cr = line:match(
+                    "^COORDS_MOVE:(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
                 if cx then
-                    handleMoveMenuCoordsMove(tonumber(cx), tonumber(cy), tonumber(cz), tonumber(cyaw))
+                    handleMoveMenuCoordsMove(tonumber(cx), tonumber(cy), tonumber(cz),
+                        tonumber(cp), tonumber(cyaw), tonumber(cr))
                 end
             end
         end
@@ -994,14 +1042,16 @@ end
 local function flushMoveMenuQueue()
     if movePendingCount == 0 then return end
     local z, yaw, fwd, right = movePendingZ, movePendingYaw, movePendingFwd, movePendingRight
+    local pitch, roll = movePendingPitch, movePendingRoll
     movePendingZ, movePendingYaw, movePendingFwd, movePendingRight, movePendingCount = 0.0, 0.0, 0.0, 0.0, 0
+    movePendingPitch, movePendingRoll = 0.0, 0.0
     if not Config.LIVE_EDIT then return end -- reset above either way; just don't act on it
     -- No shared spawnBusy debounce -- same "fast repeated tap" treatment directAction gives the
     -- keyboard live-edit keys. The throttle here is the flush RATE (250ms), not a busy-flag.
     -- restoreGate only, NOT modGate (2026-08-16 split) -- see restoreGate's own comment.
     if not restoreGate("move menu") then return end
     ExecuteInGameThread(function()
-        local ok, err = pcall(function() Spawner.EditNearestInFront(z, yaw, fwd, right) end)
+        local ok, err = pcall(function() Spawner.EditNearestInFront(z, yaw, fwd, right, pitch, roll) end)
         if not ok then log("move menu FAILED: " .. tostring(err)) end
     end)
 end
@@ -1052,6 +1102,7 @@ end
 local SPAWN_MENU_STATUS_PATH = "ue4ss/Mods/LivingBase/spawn_menu_status.txt"
 local lastPublishedEnabled, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = nil, nil, nil, nil
 local lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = nil, nil, nil, nil
+local lastPublishedPitch, lastPublishedRoll = nil, nil
 -- Also reads the locked target's live transform (2026-08-16, for the Coords window's "populate
 -- from wherever the target currently is" snapshot-on-open) -- empty label/zeroed transform when
 -- nothing's locked, same as before.
@@ -1067,34 +1118,39 @@ local lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = nil, ni
 local function currentLockedTargetInfo()
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then
-        return "", "", 0.0, 0.0, 0.0, 0.0
+        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     end
     local id = ""
     pcall(function() id = lt.actor:GetFullName() end)
-    local x, y, z, yaw = 0.0, 0.0, 0.0, 0.0
+    local x, y, z, yaw, pitch, roll = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     pcall(function()
         local l = lt.actor:K2_GetActorLocation()
         local r = lt.actor:K2_GetActorRotation()
-        x, y, z, yaw = l.X, l.Y, l.Z, r.Yaw
+        x, y, z, yaw, pitch, roll = l.X, l.Y, l.Z, r.Yaw, r.Pitch, r.Roll
     end)
-    return tostring(lt.label), tostring(id), x, y, z, yaw
+    return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll
 end
 local lastPublishedWindowToggle = nil
 local lastPublishedFocusSteal = nil
+local lastPublishedRotateAxis = nil
 local function publishSpawnMenuStatusIfChanged()
     local enabled, restoring = modEnabled, restoreLockActive
-    local target, id, x, y, z, yaw = currentLockedTargetInfo()
+    local target, id, x, y, z, yaw, pitch, roll = currentLockedTargetInfo()
     if enabled == lastPublishedEnabled and restoring == lastPublishedRestoring and target == lastPublishedTarget
         and id == lastPublishedId
         and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
+        and pitch == lastPublishedPitch and roll == lastPublishedRoll
         and windowToggleSeq == lastPublishedWindowToggle
-        and focusStealSeq == lastPublishedFocusSteal then
+        and focusStealSeq == lastPublishedFocusSteal
+        and rotateAxis == lastPublishedRotateAxis then
         return
     end
     lastPublishedEnabled, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = enabled, restoring, target, id
     lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = x, y, z, yaw
+    lastPublishedPitch, lastPublishedRoll = pitch, roll
     lastPublishedWindowToggle = windowToggleSeq
     lastPublishedFocusSteal = focusStealSeq
+    lastPublishedRotateAxis = rotateAxis
     local f = io.open(SPAWN_MENU_STATUS_PATH, "w")
     if not f then return end
     f:write("ENABLED=", enabled and "1" or "0", "\n")
@@ -1105,8 +1161,11 @@ local function publishSpawnMenuStatusIfChanged()
     f:write("TARGET_Y=", string.format("%.2f", y), "\n")
     f:write("TARGET_Z=", string.format("%.2f", z), "\n")
     f:write("TARGET_YAW=", string.format("%.2f", yaw), "\n")
+    f:write("TARGET_PITCH=", string.format("%.2f", pitch), "\n")
+    f:write("TARGET_ROLL=", string.format("%.2f", roll), "\n")
     f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
     f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
+    f:write("ROTATE_AXIS=", rotateAxis, "\n")
     f:close()
 end
 if ExecuteWithDelay then
@@ -1681,6 +1740,74 @@ if RegisterConsoleCommandHandler then
     log("Console command registered: lbsexchange")
 else
     log("lbsexchange unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbdecorloot" (2026-08-17) -- converts the dropped item (R5LootActor) nearest in
+-- front of you into inert decoration: no longer pickable, no longer physically tossable, sparkle
+-- turned off. Acts on a WILD world actor, never one LivingBase spawned, so this can't reuse the
+-- spawned-only nearest-in-front picker lbsexchange/despawn/cycle share -- see
+-- Spawner.MakeLootDecorNearest's own comment for the FindAllOf("R5LootActor") sweep this uses
+-- instead. Same say()/Ar:Log() dual-output shape as every other console command in this file.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdecorloot", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbdecorloot] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.MakeLootDecorNearest(say) end)
+            if not ok then say("lbdecorloot FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdecorloot")
+else
+    log("lbdecorloot unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobestone" (2026-08-17) -- TEMP DEV TOOL, see Spawner.ProbeStoneItemMesh's
+-- own comment. Read-only diagnostic for the "make a fresh inventoryDrops spawn actually show a
+-- mesh" follow-up -- prints whatever the Stone item's ItemMesh SoftObjectProperty actually is.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobestone", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeStoneItemMesh() end)
+            if not ok then print("[LivingBase] [lbprobestone] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobestone")
+else
+    log("lbprobestone unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobelootmesh" (2026-08-17) -- TEMP DEV TOOL, see
+-- Spawner.ProbeNearestLootMesh's own comment. Follow-up to lbprobestone dead-ending on an opaque
+-- TSoftObjectPtrUserdata: reads the mesh straight off a REAL dropped item instead. Drop any item,
+-- face it, run this.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobelootmesh", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobelootmesh] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.ProbeNearestLootMesh(say) end)
+            if not ok then say("lbprobelootmesh FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobelootmesh")
+else
+    log("lbprobelootmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console commands "lbdumpobj" / "lbdumpact" / "lbdumpmesh" (2026-08-13) -- thin wrappers around

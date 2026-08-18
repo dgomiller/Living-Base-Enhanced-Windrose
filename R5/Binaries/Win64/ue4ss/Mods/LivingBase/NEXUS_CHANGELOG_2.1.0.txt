@@ -1,0 +1,7 @@
+Living Base Enhanced v2.1.0 (previous version on Nexus: v2.0.0)
+
+===== NEW IN v2.1.0 =====
+
+- Full 3-axis rotation: the GUI's move panel and Coords window can now rotate a placed object around all three axes (X/Y/Z = Roll/Pitch/Yaw), not just spin it around its vertical axis — useful for props that can rest at any angle (a dropped weapon, a coin, an ingot), not just statues/NPCs which only ever needed the one. The move panel's old single Rot L/R + Flip 180 are now three full rows, each with its own Left/Right button; the Coords window's single "Rotation" field is now Rotation X/Y/Z. Keyboard ',' '.' stay the only two rotate keys — '/' (the plain key next to '.', not the numpad one) cycles which axis they act on, in either the game or the GUI window, toast-confirmed each press, both input paths sharing the exact same selection.
+
+- Drops: a new decor category, browsable in the GUI tree and by cycling ' in-game — 18 hand-picked themed categories (Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood, Writings) covering everything from weapon and armor pieces to currency, ingredients, and treasure. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01") in both the GUI tree and its on-screen toast.

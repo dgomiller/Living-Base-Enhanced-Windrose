@@ -1,6 +1,31 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v2.1.0 (2026-08-18) -- previous version: v2.0.0
+======================================================================
+
+FULL 3-AXIS ROTATION -- the GUI's move panel and Coords window
+- The move panel's old single-axis Rot L/R + Flip 180 are replaced with
+  three full rows -- X, Y, Z (Roll, Pitch, Yaw) -- each with its own
+  Left/Right button, so a placed prop can rest at any angle, not just
+  spun around its vertical axis. The Coords window's single "Rotation"
+  field is now three: Rotation X/Y/Z.
+- Keyboard: ',' '.' stay the only two rotate keys -- '/' (the plain key
+  next to '.', not the numpad one) cycles which axis they act on, in
+  either the game or the GUI window, toast-confirmed each press. Both
+  input paths share the same selection, so they can never disagree.
+- Persists correctly across reloads and target-lock edits.
+
+DROPS -- a new decor category, browsable in the GUI and by cycling ' in-game
+- 18 hand-picked themed categories -- Animal Parts, Artifacts, Clothes,
+  Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/
+  Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood,
+  Writings -- covering everything from weapon and armor pieces to
+  currency, ingredients, and treasure.
+- Every entry has a real display name (e.g. "Bezoar," not
+  "Loot_T02_Bezoar_01") in both the GUI tree and on-screen toasts.
+
+======================================================================
 v2.0.0 (2026-08-16) -- previous version: v1.3.10
 ======================================================================
 

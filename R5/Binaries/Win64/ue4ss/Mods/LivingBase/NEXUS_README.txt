@@ -1,7 +1,7 @@
 [size=5][b]Living Base Enhanced — Base Building & Population Mod for Windrose[/b][/size]
 [color=#D4D4D8]A placement toolkit for your base. Hand-drop ambient NPCs, animals, posed statues, and decorations wherever you want them, fine-tune each piece in place, and let it all persist across reloads. Plus a few base-life extras: a summonable crew escort, invulnerable structures, and an unlock for hidden build-menu pieces.[/color]
 
-[color=#D4D4D8][b]As of 2.0.0, the primary way to use this mod is a real clickable GUI window[/b] — LivingBaseSpawnMenu, a companion mod bundled with this download. Press '-' in-game to open it: a categorized spawn tree, held-repeat movement buttons, and a precise coordinate editor, instead of cycling numpad keys one press at a time. Every keyboard control from earlier versions still works exactly as before and is fully documented further down — the GUI doesn't replace anything, it's just the faster, easier way to reach the same rosters.[/color]
+[color=#D4D4D8][b]The primary way to use this mod is a real clickable GUI window[/b] — LivingBaseSpawnMenu, a companion mod bundled with this download. Press '-' in-game to open it: a categorized spawn tree, held-repeat movement buttons with full X/Y/Z rotation, and a precise coordinate editor, instead of cycling numpad keys one press at a time. Every keyboard control still works exactly as before and is fully documented further down — the GUI doesn't replace anything, it's just the faster, easier way to reach the same rosters.[/color]
 
 [color=#D4D4D8]A UE4SS Lua mod (plus one compiled C++ companion) for Windrose (Kraken Express, UE 5.6, single-player). Modding is unofficial — keep save backups; a game patch may change class paths (all centralized in Scripts/config.lua).[/color]
 
@@ -32,7 +32,7 @@ Move/edit panel (right):
 - Selected Target — shows whatever's currently target-locked. Hover if the name is truncated.
 - In-Game Keys — mirrors the in-game Insert key, but ONLY turns LivingBase's own keyboard keys on/off (placement, live-edit, cycle, clear) — it does NOT affect this panel's own buttons, which work regardless. Off by default each session (see Configuration).
 - Forward / Left / Right / Backward / Up / Down — slide/raise/lower the target-locked object. Real held-repeat buttons (hold to keep moving) — unlike the same in-game keys, which this UE4SS build drops most rapid repeat presses for.
-- Flip 180 / Rot L / Rot R — rotate the target in place.
+- Rotate X / Y / Z (Roll / Pitch / Yaw) — three full rows, each with its own Left/Right button, so a placed prop can rest at any angle, not just spin around its vertical axis.
 - Coords — opens the precise coordinate editor (below). Only enabled with something target-locked.
 - Precision — scales how far Up/Down/slide move per press (1/8 through 4x; rotation is unaffected).
 - Despawn / Undo — same as Num9/Num0, acting on the target-locked object.
@@ -40,7 +40,7 @@ Move/edit panel (right):
 - All of the above (except In-Game Keys itself) require a target lock first and are greyed out until you have one — and, like every keyboard key, stay disabled until your base has finished restoring on world load.[/color]
 
 [color=#D4D4D8][b]Coords window[/b]
-Opens a small editor with the target's exact X, Y, Z, and Rotation (0–359°, not Unreal's native −180 to 180) as editable numbers. Typing doesn't move anything by itself — only these:
+Opens a small editor with the target's exact X, Y, Z position and X, Y, Z rotation (Roll, Pitch, Yaw — 0–359° each, not Unreal's native −180 to 180) as editable numbers. Typing doesn't move anything by itself — only these:
 - Preview — moves the object to whatever you've typed, without closing. Adjust and preview as many times as you like.
 - Apply — same as Preview, but closes the window — the "I'm done" button.
 - Reset — moves the object back to wherever it was when the window opened, fields included. Stays open.
@@ -76,14 +76,15 @@ Backslash (\) — Flip statue facing 180° for future spawns only[/color]
 [ — Cycle it backward instead[/color]
 
 [color=#D4D4D8][b]Decorations[/b]:
-' (apostrophe) — Change the active decoration category: nature, boats, wrecks, tents, storage, furniture (announces which one on-screen; doesn't place anything)
+' (apostrophe) — Change the active decoration category: nature, boats, wrecks, tents, storage, furniture, plus 18 themed Drops categories (Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood, Writings) — announces which one on-screen; doesn't place anything
 ; (semicolon) — Place one decoration from the active category (cycles its own list, same as the other placement keys)[/color]
 
 [color=#D4D4D8][b]Live-edit[/b] — tunes the nearest placed piece; persists:
 PageUp / PageDown — Raise / lower
-Comma / Period — Rotate left / right
-Num / — Rotate a fixed 45°
-Num * — Rotate a fixed 180° (flip in place)
+Comma / Period — Rotate the currently-selected axis left / right (X/Y/Z = Roll/Pitch/Yaw; starts on Z, so these behave exactly like a plain yaw rotate until / is pressed at least once)
+/ (plain, not Num /) — Cycle which axis Comma/Period rotate (X -> Y -> Z -> X), toast-confirmed, shared with the GUI's own '/' shortcut
+Num / — Rotate a fixed 45° (Yaw)
+Num * — Rotate a fixed 180° (flip in place, Yaw)
 Arrow keys — Slide forward / back / left / right
 Num - — Cycle precision for the slide/height keys: full / 1/2 / 1/4 / 1/8 / 2x
 Num + — Toggle target lock: pin despawn (Num 9), ]/[ cycle, and every live-edit key above — plus the GUI's move panel/Despawn/Coords/Replace — to the object in front of you, so they keep hitting it even after you walk away or look elsewhere. Press again to release; auto-releases if the locked object gets despawned, or if you walk more than ~15m away from it. Always active regardless of the In-Game Keys toggle, since the GUI depends on it.
@@ -92,20 +93,20 @@ Reliability note: arrows, PageUp/PageDown, and the numpad operator keys (/ * -) 
 
 [color=#D4D4D8][b]Housekeeping[/b]:
 Delete (x2) — Clean house: despawn everything (press twice within a few seconds to confirm)
-Insert — Toggle LivingBase's own keyboard keys on/off — does NOT affect the GUI window or its buttons, which work independently by design. Starting state controlled by config.txt's KEYS_ENABLED_ONSTART — false by default as of 2.0.0 (set true for the old always-on behavior).[/color]
+Insert — Toggle LivingBase's own keyboard keys on/off — does NOT affect the GUI window or its buttons, which work independently by design. Starting state controlled by config.txt's KEYS_ENABLED_ONSTART, off by default (set true for an always-on start instead).[/color]
 
 [color=#D4D4D8]Remap anything by editing Config.KEYS in Scripts\config.lua.[/color]
 
 [size=4][b]Main Features[/b][/size]
 
 [color=#D4D4D8][b]GUI window (LivingBaseSpawnMenu)[/b]
-A categorized, clickable spawn tree; a held-repeat move/edit panel that doesn't suffer the keyboard's dropped-repeat-press problem; a precise typed X/Y/Z/Rotation coordinate editor; and an in-window Instructions/History reference.[/color]
+A categorized, clickable spawn tree; a held-repeat move/edit panel with full X/Y/Z rotation that doesn't suffer the keyboard's dropped-repeat-press problem; a precise typed coordinate editor (X/Y/Z position and X/Y/Z rotation); and an in-window Instructions/History reference.[/color]
 
 [color=#D4D4D8][b]Placement toolkit + live-edit[/b]
 Drop NPCs, animals, posed statues, and decorations, then nudge each one into place — via the GUI or the keyboard live-edit keys (height, rotation, slide, a 6-level precision cycle, and a target lock to pin your edits to one object). Everything you place is saved and restored on the next world load.[/color]
 
 [color=#D4D4D8][b]Unique per-placement names[/b]
-As of 2.0.0, every placed object gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the same look sharing one identical label. Stored in persist.txt, so names stay stable across reloads; an older save gets names assigned automatically the first time it restores.[/color]
+Every placed object gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2") instead of every copy of the same look sharing one identical label. Stored in persist.txt, so names stay stable across reloads; an older save gets names assigned automatically the first time it restores.[/color]
 
 [color=#D4D4D8][b]Console commands[/b]
 Type these into UE4SS's console (the same input used for the game's own dev/cheat commands) for spawning by name instead of cycling a numpad key. All three print their response both on-screen and to ue4ss.log (look for [LivingBase] lines).
@@ -133,7 +134,7 @@ Restores whatever was most recently despawned — a single Num 9 despawn, an ent
 Despawn, undo, cycle, spawn, and the mod on/off toggle all confirm on-screen — not just in ue4ss.log — by splicing a message into the game's own native side-notification widget, so it looks and behaves like a normal game notification rather than a custom overlay. Deliberately quiet for the cases that would otherwise spam: live-edit nudges don't toast per press, and neither does pressing a targeted key at nothing. Every toast is also logged to the GUI's History tab.[/color]
 
 [color=#D4D4D8][b]Persistence & clean-house[/b]
-Windrose doesn't save mod-spawned actors, so LivingBase records every placement to persist.txt (class, position, facing, look, and — as of 2.0.0 — its unique display name) and re-spawns it on world load.
+Windrose doesn't save mod-spawned actors, so LivingBase records every placement to persist.txt (class, full position/rotation, look, and its unique display name) and re-spawns it on world load.
 - If you play multiple Windrose worlds, each one gets its own save automatically — persist_<world id>.txt/spawn_ledger_<world id>.txt, keyed off that world's own internal ID. Upgrading from a version before this existed: the first world you load inherits the old shared persist.txt/spawn_ledger.txt (renamed to .bak once claimed, so no other world can also inherit it), and every world after that starts clean.
 - Config.RESTORE_ON_LOAD = true (default) repopulates on load (not on lbreload, so no duplicates while tinkering). false = place fresh each session.
 - Delete (twice), or the GUI's Delete All, despawns everything and clears the save file for the current world.[/color]
@@ -147,15 +148,12 @@ Your building blocks are made invulnerable so raiders (and anything else) can't 
 [color=#D4D4D8][b]Unlock hidden build pieces (UNLOCK_HIDDEN_BUILDING)[/b]
 Surfaces build-menu pieces that are hidden from standard play (cut/dev content) while leaving normal progression intact — it never unlocks pieces you're meant to earn. Runtime-only; open the build menu once after loading so the catalog is present.[/color]
 
-[color=#D4D4D8][b]Blackbeard raid — removed[/b]
-The original mod's Blackbeard raid (drop a flag, trigger a pirate wave) has been removed as a supported feature since v1.3.7, due to lack of interest and the ongoing maintenance burden of keeping it stable. The code and its BBRAID_ENABLED toggle are still present for anyone who wants to re-enable it themselves, but it's off by default and not part of the mod's supported feature set going forward.[/color]
-
 [size=4][b]Configuration[/b][/size]
 [color=#D4D4D8]There are two files:
 
-config.txt — plain-text overrides you can edit without touching Lua. Lines are NAME = value (true/false or numbers). This is the one file you normally edit; it overrides the defaults. Current toggles include WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, PROTECT_STRUCTURES, KEYS_ENABLED_ONSTART (false by default as of 2.0.0), LIVE_EDIT. (BBRAID_ENABLED also still exists, off by default.)
+config.txt — plain-text overrides you can edit without touching Lua. Lines are NAME = value (true/false or numbers). This is the one file you normally edit; it overrides the defaults. Current toggles include WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, PROTECT_STRUCTURES, KEYS_ENABLED_ONSTART (off by default), LIVE_EDIT.
 
-Scripts/config.lua — the shipped defaults and all class paths. Highlights: Config.KEYS (the keymap, including toggleWindow "-" and releaseMouse "=" as of 2.0.0), Config.VERBOSE (per-spawn debug logging), Config.LIVE_EDIT_MOVE_STEP/LIVE_EDIT_HEIGHT_STEP/LIVE_EDIT_ROTATE_STEP (per-press step sizes, shared with the GUI's move panel), Config.TARGET_MIN_VIEW_DOT (how directly your camera needs to be looking at an object to target it), Config.DECOR_CATEGORIES (in Scripts/fkeys.lua, the six decoration lists), Config.DECOR_COLLISION (placed decorations are solid by default), statue rosters (STANDING_STATUES/SEATED_STATUES/CHAIR_STATUES/INTERACTIVE_STATUES), Config.HANDYMAN_FOR_TOWNSFOLK, Config.HIDE_NAMEPLATES.[/color]
+Scripts/config.lua — the shipped defaults and all class paths. Highlights: Config.KEYS (the keymap, including toggleWindow "-", releaseMouse "=", and toggleRotateAxis "/"), Config.VERBOSE (per-spawn debug logging), Config.LIVE_EDIT_MOVE_STEP/LIVE_EDIT_HEIGHT_STEP/LIVE_EDIT_ROTATE_STEP (per-press step sizes, shared with the GUI's move panel), Config.TARGET_MIN_VIEW_DOT (how directly your camera needs to be looking at an object to target it), Config.DECOR_CATEGORIES (in Scripts/fkeys.lua, the six base decoration lists plus 18 themed Drops categories), Config.DECOR_COLLISION (placed decorations are solid by default), statue rosters (STANDING_STATUES/SEATED_STATUES/CHAIR_STATUES/INTERACTIVE_STATUES), Config.HANDYMAN_FOR_TOWNSFOLK, Config.HIDE_NAMEPLATES.[/color]
 
 [size=4][b]Known Limitations[/b][/size]
 [color=#D4D4D8]

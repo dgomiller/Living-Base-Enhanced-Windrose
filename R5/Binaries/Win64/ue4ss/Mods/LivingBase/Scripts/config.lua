@@ -261,8 +261,17 @@ Config.KEYS = {
   -- shield-tuner keys instead. Rotate: ',' / '.'   Height: PageUp / '-'.
   editUp    = "PAGE_UP",     -- raise
   editDown  = "PAGE_DOWN",   -- lower
-  editRotL  = "OEM_COMMA",   -- ','  rotate left
-  editRotR  = "OEM_PERIOD",  -- '.'  rotate right
+  editRotL  = "OEM_COMMA",   -- ','  rotate left (whichever axis is currently selected, see below)
+  editRotR  = "OEM_PERIOD",  -- '.'  rotate right (whichever axis is currently selected, see below)
+  -- Full 3-axis rotation (2026-08-18): ',' '.' stay the only two rotate keys instead of growing to
+  -- six -- this key cycles which axis they act on (X -> Y -> Z -> X, X/Y = Roll/Pitch, Z = Yaw),
+  -- toast-confirmed each press. Starts on Z, so ',' '.' behave exactly as before (yaw-only) until
+  -- this is pressed at least once. The PLAIN '/' key, not NUM_DIVIDE (numpad '/', still the fixed
+  -- 45-degree-rotate key right below, untouched) -- confirmed those are two genuinely different
+  -- keys in this UE4SS build, not the same physical key under two names. Shared with the
+  -- LivingBaseSpawnMenu window's own '/' shortcut -- same underlying Lua state either way, so the
+  -- keyboard and the GUI window can never disagree about which axis is currently selected.
+  toggleRotateAxis = "OEM_SLASH",
   editRot45 = "NUM_DIVIDE",  -- numpad '/'  rotate a fixed 45 deg (not scaled by LIVE_EDIT_ROTATE_STEP)
   editRot180 = "NUM_MULTIPLY", -- numpad '*'  rotate a fixed 180 deg (flip the object in front of you)
   editPrecisionToggle = "NUM_SUBTRACT", -- numpad '-'  cycle slide/height precision: full -> 1/2 -> 1/4 -> 1/8 -> 2x -> full

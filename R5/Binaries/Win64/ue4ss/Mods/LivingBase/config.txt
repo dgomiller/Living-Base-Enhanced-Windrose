@@ -5,12 +5,9 @@
 
 # --- Features ---
 WHISTLE_CREW           = true    # boar whistle summons 2 crew instead of a boar
-BBRAID_ENABLED         = false   # force-disabled 2026-08-13 -- feature kept in code, not active. Flip
-                                 # to true here AND in config.lua (Config.BBRAID_ENABLED) to revive it;
-                                 # it's also been pulled from the R5ModSettings panel (modsettings.lua).
 UNLOCK_HIDDEN_BUILDING = true    # surface build pieces hidden from standard play (keeps progression)
 PROTECT_STRUCTURES     = true    # make building blocks invulnerable so raids can't wreck the base
-KEYS_ENABLED_ONSTART   = false   # false = starts OFF; press the toggle key (Insert by default) to turn on (default as of 2.0.0 -- the GUI is the primary workflow now).
+KEYS_ENABLED_ONSTART   = false   # false = starts OFF; press the toggle key (Insert by default) to turn on (the GUI is the primary workflow).
                                  # true = mod keys ready to use immediately on launch
 
 # --- Dev / tuning tools ---

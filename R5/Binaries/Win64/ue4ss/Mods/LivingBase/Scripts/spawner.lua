@@ -1529,51 +1529,8 @@ function Spawner.ApplyBodySex(actor, newSex)
     return true
 end
 
--- Spawner.ApplySexChangeToNearest(say) -- backing function for the `lbsexchange` console command
--- (main.lua). RedFalcon: "it only has to work on spawned ones" -- reuses the SAME "nearest
--- spawned actor in front, respecting target lock" picker despawn/cycle/live-edit already share
--- (findNearestSpawnInFront, this file), not the dev-only HOME probe ApplyBodySex's own test key
--- used. Checks `IsBodySexChangeAvailable()` FIRST (RedFalcon's explicit ask -- report clearly
--- rather than just attempting the swap and seeing what happens), reuses the confirmed-working
--- Spawner.ApplyBodySex for the actual swap, then independently re-reads GetBodySex() afterward to
--- confirm it actually took before reporting success -- matches the "confirmed genuinely stuck, not
--- just an immediate post-write echo" standard the rest of this session's live tests used.
--- `say(msg)` is the caller's own output function, so this has no dependency on UE4SS's console
--- Ar/output-device machinery -- passed in from main.lua's command handler.
-function Spawner.ApplySexChangeToNearest(say)
-    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
-    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
-    if not bestI then
-        say(string.format("Nothing within %.0fuu ahead -- walk closer / face it.", maxDist))
-        return
-    end
-    local actor = e.actor
-    local name = tostring(e.label or "actor")
-    local comp = nil
-    pcall(function() comp = actor.CompositeMeshComponent end)
-    if not (comp and comp:IsValid()) then
-        say(name .. " does not support changing sex.")
-        return
-    end
-    local available = false
-    pcall(function() available = comp:IsBodySexChangeAvailable() end)
-    if not available then
-        say(name .. " does not support changing sex.")
-        return
-    end
-    local current = nil
-    pcall(function() current = comp:GetBodySex() end)
-    local newSex = (current == 1) and 2 or 1
-    Spawner.ApplyBodySex(actor, newSex)
-    local after = nil
-    pcall(function() after = comp:GetBodySex() end)
-    if after == newSex then
-        say(string.format("%s has been switched to %s.", name, (after == 2) and "female" or "male"))
-    else
-        say(name .. " does not support changing sex.")
-    end
-end
+-- Spawner.ApplySexChangeToNearest(say) moved further down this file, right after
+-- findNearestSpawnInFront's own definition -- see that spot for why (2026-08-17 lbsexchange fix).
 
 -- Spawner.ApplyBodyType(actor, tagName, bodySex, forceLoad) -- TEMP DEV/TEST TOOL (2026-08-15).
 -- RedFalcon's follow-up to ApplyBodySex's success: "something like the sexchange or pose change
@@ -2550,6 +2507,245 @@ function Spawner.StripInteraction(actor)
     if not actor or not actor:IsValid() then return end
     stripComponentsOfClass(actor, "/Script/R5.R5CommonInteractionTargetComponent")
     stripComponentsOfClass(actor, "/Script/R5.R5PrimitiveInteractionTargetComponent")
+end
+
+-- Spawner.SetLootMesh(actor, meshPath) — forces a R5LootActor's MeshComponent to show a specific
+-- static mesh, bypassing the whole business-rule/LootView system that normally sets it (that path is
+-- CONFIRMED DEAD: Spawner.ProbeStoneItemMesh found the Stone item's ItemMesh property is an opaque
+-- TSoftObjectPtrUserdata in this UE4SS build — LoadSynchronous/IsValid/IsNull/ToString/GetPath/Get all
+-- throw "attempt to call a TSoftObjectPtrUserdata value", and even field access like .AssetPathName
+-- just silently returns the same userdata back, not a real value — there is no way to resolve it from
+-- Lua). meshPath is a real STATIC MESH asset path, not a class path (e.g.
+-- "/Game/Environment/Gameplay/Resources/Resources/SM_ResourcesT01_Stone_01.SM_ResourcesT01_Stone_01"
+-- — confirmed live via Spawner.ProbeNearestLootMesh reading 4 REAL dropped items' MeshComponents
+-- directly, 2026-08-17: Stone, Wood, Leather, Pickaxe T03). resolveClass's LoadAsset fallback works
+-- fine here since it's a generic StaticFindObject+LoadAsset resolve, not class-specific.
+function Spawner.SetLootMesh(actor, meshPath)
+    if not (actor and actor:IsValid() and meshPath) then return false end
+    local mesh = resolveClass(meshPath)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] SetLootMesh: could not resolve " .. tostring(meshPath) .. "\n")
+        return false
+    end
+    local mc = nil
+    pcall(function() mc = actor.MeshComponent end)
+    if not (mc and mc:IsValid()) then
+        print("[LivingBase] SetLootMesh: actor has no MeshComponent.\n")
+        return false
+    end
+    local ok = pcall(function() mc:SetStaticMesh(mesh) end)
+    print(string.format("[LivingBase] SetLootMesh: %s -> %s\n", ok and "ok" or "FAILED", tostring(meshPath)))
+    return ok
+end
+
+-- Spawner.MakeLootDecor(actor) — converts a dropped-item actor (R5LootActor, the single native class
+-- every world-dropped item uses, confirmed via HOME+PAUSE live probe 2026-08-17) into inert decoration:
+-- no longer pickable, no longer physically tossable, no longer glowing as lootable. Leaves
+-- CollisionComponent (root) and MeshComponent alone — the whole point is it KEEPS its 3D mesh and stays
+-- solid, it just stops behaving like a pickup from here on.
+--
+-- The probe's property dump named three components relevant here:
+--   InteractTargetComponent = R5PrimitiveInteractionTargetComponent -- the SAME class
+--     Spawner.StripInteraction already strips for statues, so that proven call is reused as-is.
+--   ProjectileMovement = R5LootMovementComponent -- the toss/bounce/settle physics. Stripped too, same
+--     stripComponentsOfClass() pattern, so a leftover decor item can't be knocked around by collisions.
+--   NiagaraComponent -- the sparkle marking it as lootable. Deactivated (not destroyed — no proven-safe
+--     precedent yet for destroying a Niagara component specifically, and Deactivate() is the standard,
+--     low-risk way to stop an effect without touching the component graph).
+-- InitialLifeSpan read as 0.0 on the probed instance (no engine auto-despawn timer on the actor itself),
+-- so there's no timer here to race.
+function Spawner.MakeLootDecor(actor)
+    if not (actor and actor:IsValid()) then return false end
+    Spawner.StripInteraction(actor)
+    stripComponentsOfClass(actor, "/Script/R5.R5LootMovementComponent")
+    pcall(function()
+        local niag = actor.NiagaraComponent
+        if niag and niag:IsValid() then niag:Deactivate() end
+    end)
+    return true
+end
+
+-- Spawner.MakeLootDecorNearest(say) — console-command entry point (lbdecorloot). A dropped item is a
+-- WILD world actor, never tracked in Spawner.spawned, so findNearestSpawnInFront (which only walks
+-- tracked spawns — see its own comment) can't see it. Uses a direct FindAllOf("R5LootActor") sweep
+-- instead, filtered by the same cone/range test Spawner.ProbeNearestActor uses (camera forward, dot
+-- >= Config.TARGET_MIN_VIEW_DOT, Config.PROBE_MIN_DIST..PROBE_MAX_DIST), since class-filtering at the
+-- FindAllOf call (confirmed working for a native, non-Blueprint class — see the "R5BuildingBlock" sweep
+-- elsewhere in this file) is far cheaper than the probe's full FindAllOf("Actor") world sweep.
+-- findNearestLootActor(maxDist) -- shared by Spawner.MakeLootDecorNearest and
+-- Spawner.ProbeNearestLootMesh. Extracted 2026-08-17 (was duplicated inline in
+-- MakeLootDecorNearest) once a second caller needed the exact same
+-- FindAllOf("R5LootActor") + camera-cone sweep. Returns (actor, dist) or nil on no match/no
+-- camera.
+local function findNearestLootActor(maxDist)
+    maxDist = maxDist or Config.PROBE_MAX_DIST or 800.0
+    local minViewDot = Config.TARGET_MIN_VIEW_DOT or 0.90
+    local minDist = Config.PROBE_MIN_DIST or 50.0
+    local camX, camY, camZ, cfx, cfy, cfz
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        if not (pc and pc:IsValid()) then return end
+        local pawn = pc.Pawn
+        local cam = pc.PlayerCameraManager
+        local camRot
+        if cam and cam:IsValid() then
+            pcall(function() local l = cam:GetCameraLocation(); camX, camY, camZ = l.X, l.Y, l.Z end)
+            pcall(function() camRot = cam:GetCameraRotation() end)
+        end
+        if not camRot then pcall(function() camRot = pc:GetControlRotation() end) end
+        if not camX and pawn and pawn:IsValid() then
+            local l = pawn:K2_GetActorLocation(); camX, camY, camZ = l.X, l.Y, l.Z
+        end
+        if camRot then
+            local yaw, pitch = math.rad(camRot.Yaw), math.rad(camRot.Pitch)
+            local cp = math.cos(pitch)
+            cfx, cfy, cfz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+        end
+    end)
+    if not (camX and cfx) then return nil, "no player/camera available." end
+    local list
+    local ok = pcall(function() list = FindAllOf("R5LootActor") end)
+    if not (ok and list) then return nil, "no dropped items found in the world." end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local best, bestD
+    for i = 1, n do
+        local a = list[i]
+        if not a then pcall(function() a = list:Get(i) end) end
+        if a and a:IsValid() then
+            local dist, cosAngle
+            pcall(function()
+                local l = a:K2_GetActorLocation()
+                local dx, dy, dz = l.X - camX, l.Y - camY, l.Z - camZ
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                cosAngle = dist > 0 and ((dx * cfx + dy * cfy + dz * cfz) / dist) or 1.0
+            end)
+            if dist and cosAngle and dist >= minDist and cosAngle >= minViewDot and dist <= maxDist
+               and (not bestD or dist < bestD) then
+                best, bestD = a, dist
+            end
+        end
+    end
+    if not best then
+        return nil, string.format("no dropped item within %.0fuu ahead -- walk closer / face it.", maxDist)
+    end
+    return best, bestD
+end
+
+function Spawner.MakeLootDecorNearest(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local best, bestD = findNearestLootActor()
+    if not best then
+        say(bestD) -- second return is the failure reason when best is nil
+        return
+    end
+    if Spawner.MakeLootDecor(best) then
+        say(string.format("dropped item @ %.0fuu converted to decor -- no longer pickable.", bestD))
+    else
+        say("failed to convert -- see log.")
+    end
+end
+
+-- Spawner.ProbeNearestLootMesh(say) -- TEMP DEV TOOL (2026-08-17). Reads the ACTUAL mesh off a
+-- REAL, already-dropped item's MeshComponent (a plain StaticMeshComponent -- a normal, already-
+-- resolved hard object reference once something is really dropped, NOT the opaque
+-- TSoftObjectPtrUserdata that dead-ended Spawner.ProbeStoneItemMesh on the DataAsset side). Drop
+-- any real item, face it, run this. Console-only diagnostic, read-only, no actor mutated.
+function Spawner.ProbeNearestLootMesh(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local best, bestD = findNearestLootActor()
+    if not best then
+        say(bestD)
+        return
+    end
+    say(string.format("probing dropped item @ %.0fuu...", bestD))
+    pcall(function()
+        local mc = best.MeshComponent
+        if not (mc and mc:IsValid()) then
+            say("MeshComponent missing/invalid.")
+            return
+        end
+        local mesh
+        pcall(function() mesh = mc:GetStaticMesh() end)
+        if not (mesh and mesh:IsValid()) then pcall(function() mesh = mc.StaticMesh end) end
+        if not (mesh and mesh:IsValid()) then
+            say("no static mesh assigned (MeshComponent has no mesh).")
+            return
+        end
+        local full = "?"
+        pcall(function() full = mesh:GetFullName() end)
+        say("static mesh: " .. full)
+        local n = 0
+        pcall(function() n = mc:GetNumMaterials() end)
+        for m = 0, (n - 1) do
+            pcall(function()
+                local mat = mc:GetMaterial(m)
+                if mat and mat:IsValid() then say(string.format("  material[%d]: %s", m, mat:GetFullName())) end
+            end)
+        end
+    end)
+end
+
+-- Spawner.ProbeStoneItemMesh() -- TEMP DEV TOOL (2026-08-17). Follow-up to the inventoryDrops decor
+-- experiment (confirmed live: a bare-spawned R5LootActor has no visible mesh, because MeshComponent
+-- is only populated at a REAL drop event via LootView/ItemsStack -- see fkeys.lua's own comment).
+-- UE4SS_ObjectDump.txt showed the Stone item DataAsset (DA_DID_Resource_Stone_T01, class
+-- R5BLInventoryItem) carries a nested struct property InventoryItemGppData
+-- (R5BLInventoryItemGPP) with its own SoftObjectProperty field ItemMesh -- exactly the kind of
+-- field that should hold the world-drop static mesh asset. This is READ-ONLY: it doesn't touch any
+-- actor, just resolves the DataAsset and prints whatever ItemMesh actually is, in several shapes
+-- (SoftObjectProperty's exact Lua representation in this UE4SS build is unconfirmed -- could
+-- resolve to a live UObject already, or to a struct with AssetPathName/SubPathString fields, or to
+-- nil if unloaded), so the log output decides which path forward is real rather than guessing.
+-- Console-only, remove once the mesh path is confirmed and wired into a real feature (or ruled out).
+function Spawner.ProbeStoneItemMesh()
+    local path = "/R5BusinessRules/InventoryItems/DefaultItems/Resource/DA_DID_Resource_Stone_T01.DA_DID_Resource_Stone_T01"
+    local obj = resolveClass(path)
+    if not (obj and obj:IsValid()) then
+        print("[LivingBase] [probe-item] could not resolve " .. path .. "\n")
+        return
+    end
+    print("[LivingBase] [probe-item] resolved DataAsset OK.\n")
+    pcall(function()
+        local gpp = obj.InventoryItemGppData
+        if not gpp then
+            print("[LivingBase] [probe-item] InventoryItemGppData is nil.\n")
+            return
+        end
+        local mesh = gpp.ItemMesh
+        print(string.format("[LivingBase] [probe-item] ItemMesh raw: type=%s tostring=%s\n", type(mesh), tostring(mesh)))
+        if mesh == nil then return end
+        -- Each candidate tried in its OWN pcall with an explicit before/after print (see
+        -- WINDROSE_MODDING_NOTES.md 3b -- log before the call, and here also log the pcall's error
+        -- string on failure) so a wrong method name shows up as a visible "FAILED: <reason>" line
+        -- instead of silently vanishing, unlike the first version of this probe.
+        local function tryCall(label, fn)
+            print("[LivingBase] [probe-item] trying " .. label .. "...\n")
+            local ok, result = pcall(fn)
+            if ok then
+                print(string.format("[LivingBase] [probe-item] %s -> OK: type=%s tostring=%s\n", label, type(result), tostring(result)))
+            else
+                print(string.format("[LivingBase] [probe-item] %s -> FAILED: %s\n", label, tostring(result)))
+            end
+            return ok, result
+        end
+        local okLoad, loaded = tryCall("LoadSynchronous()", function() return mesh:LoadSynchronous() end)
+        if okLoad and loaded and type(loaded) == "userdata" then
+            pcall(function()
+                local valid = loaded:IsValid()
+                print("[LivingBase] [probe-item] LoadSynchronous() result :IsValid()=" .. tostring(valid) .. "\n")
+                if valid then print("[LivingBase] [probe-item] LoadSynchronous() result :GetFullName()=" .. tostring(loaded:GetFullName()) .. "\n") end
+            end)
+        end
+        tryCall("IsValid()", function() return mesh:IsValid() end)
+        tryCall("IsNull()", function() return mesh:IsNull() end)
+        tryCall("ToString()", function() return mesh:ToString() end)
+        tryCall("GetPath()", function() return mesh:GetPath() end)
+        tryCall("Get()", function() return mesh:Get() end)
+        tryCall(".AssetPathName (field)", function() return mesh.AssetPathName end)
+        tryCall(".SubPathString (field)", function() return mesh.SubPathString end)
+    end)
 end
 
 -- Spawner.StripQuestScenario(actor) — destroys R5ScenarioComponent_ForIslandActor, the component
@@ -3569,13 +3765,18 @@ function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instance
     -- have it" contract as field 12 above -- restoreOne treats a missing field 13 as an old-format
     -- line to migrate, not an error.
     local ll = tostring(instanceLabel or "")
+    -- Fields 14/15 = pitch/roll (2026-08-18) -- always "0.0" here: a FRESH spawn is always upright
+    -- at spawn time (Spawner.Spawn's own transform quaternion is yaw-only), same as `yaw` itself
+    -- being the only non-zero rotation a fresh placement ever has. Only Spawner.PersistUpdatePose
+    -- (live-edit rotate) or Spawner.SetLockedTargetTransform (Coords) ever write a non-zero value
+    -- into these fields, after the fact.
     migrateIfNeeded("persist.txt", OLD_PERSIST_PATHS)
     for _, p in ipairs(PERSIST_PATHS()) do
         local f = io.open(p, "a")
         if f then
-            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s\n",
+            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%.1f|%.1f\n",
                 classPath, loc.X, loc.Y, loc.Z, aiPath or "", yaw or 0.0,
-                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll))
+                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll, 0.0, 0.0))
             f:close(); return
         end
     end
@@ -3606,10 +3807,10 @@ local function persistWriteLines(lines)
 end
 
 -- Parse one persist.txt line into its fields. Field order is fixed by persistAppend() above:
--- classPath|X|Y|Z|aiPath|yaw|makeFriendly|look.params|look.archetype|look.sex|look.bodyTypes|look.reskinTarget|instanceLabel
--- Field 12 (reskinTarget) is a 2026-08-11 addition, field 13 (instanceLabel) a 2026-08-16 one --
--- on an older line, gmatch simply never produces that part, so it comes out nil here. Callers
--- must treat that as "unknown", not an error.
+-- classPath|X|Y|Z|aiPath|yaw|makeFriendly|look.params|look.archetype|look.sex|look.bodyTypes|look.reskinTarget|instanceLabel|pitch|roll
+-- Field 12 (reskinTarget) is a 2026-08-11 addition, field 13 (instanceLabel) a 2026-08-16 one,
+-- fields 14/15 (pitch/roll) a 2026-08-18 one -- on an older line, gmatch simply never produces
+-- that part, so it comes out nil here. Callers must treat that as "unknown", not an error.
 local function parsePersistLine(line)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
@@ -3627,6 +3828,10 @@ local function parsePersistLine(line)
         makeFriendly = (parts[7] == "1"),
         look = look,
         instanceLabel = (parts[13] and parts[13] ~= "" and parts[13]) or nil,
+        -- Fields 14/15 (2026-08-18) -- pitch/roll, absent on any pre-2.0.1 line, same "missing =
+        -- 0.0, not an error" contract as every other field added to this format so far.
+        pitch = tonumber(parts[14]) or 0.0,
+        roll = tonumber(parts[15]) or 0.0,
     }
 end
 
@@ -3720,14 +3925,15 @@ end
 -- Re-spawn one persisted line. Returns (actor, classPath, look) or nil. Does NOT run the
 -- restore hook — post-processing is deferred until the world is stable (see below).
 local function restoreOne(line)
-    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel
-    -- (reskinTarget is a 2026-08-11 addition/field 12, instanceLabel a 2026-08-16 one/field 13 --
-    -- either can be absent/nil on an older line, same graceful-degradation contract as
-    -- parsePersistLine above.)
+    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel|pitch|roll
+    -- (reskinTarget is a 2026-08-11 addition/field 12, instanceLabel a 2026-08-16 one/field 13,
+    -- pitch/roll a 2026-08-18 one/fields 14-15 -- any of these can be absent/nil on an older line,
+    -- same graceful-degradation contract as parsePersistLine above.)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
     local cls, x, y, z, ai, yw, fr = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
     local lp, la, ls, lb, lr, storedLabel = parts[8], parts[9], parts[10], parts[11], parts[12], parts[13]
+    local pitch, roll = tonumber(parts[14]) or 0.0, tonumber(parts[15]) or 0.0
     if not (cls and x and y and z) then return end
     local loc = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) }
     local aiPath = (ai and ai ~= "") and ai or nil
@@ -3779,6 +3985,14 @@ local function restoreOne(line)
             pcall(function() Spawner.SetDecorSolid(a) end)
             pcall(function() Spawner.MakeMovable(a) end)
             pcall(function() a:K2_SetActorLocation({ X = loc.X, Y = loc.Y, Z = loc.Z }, false, {}, true) end)
+        end
+        -- Pitch/roll (2026-08-18): Spawner.Spawn's own placement transform is yaw-only (matches
+        -- every OTHER spawn path, upright by default), so a saved non-zero pitch/roll from a prior
+        -- live-edit/Coords session needs a direct post-spawn correction here, same K2_SetActorRotation
+        -- call EditNearestInFront/SetLockedTargetTransform already use. Skipped entirely when both
+        -- are 0 (the overwhelming common case) to avoid a pointless extra native call on every restore.
+        if pitch ~= 0.0 or roll ~= 0.0 then
+            pcall(function() a:K2_SetActorRotation({ Pitch = pitch, Yaw = yaw, Roll = roll }, false) end)
         end
         return a, cls, look
     end
@@ -4264,6 +4478,59 @@ local function findNearestSpawnInFront(maxDist, ignoreLock)
     return bestI, Spawner.spawned[bestI], bestD, px, py, pz, fx, fy
 end
 
+-- Spawner.ApplySexChangeToNearest(say) -- backing function for the `lbsexchange` console command
+-- (main.lua). RedFalcon: "it only has to work on spawned ones" -- reuses the SAME "nearest
+-- spawned actor in front, respecting target lock" picker despawn/cycle/live-edit already share
+-- (findNearestSpawnInFront, just above -- MUST stay below that function in this file: it's a
+-- `local function`, only visible to code that comes lexically AFTER its declaration, regardless of
+-- when either function actually gets CALLED at runtime. This function originally lived up near
+-- Spawner.ApplyBodySex, textually BEFORE findNearestSpawnInFront's declaration -- which silently
+-- resolved the bare name to a nonexistent GLOBAL instead of the local, so every call failed with
+-- "attempt to call a nil value (global 'findNearestSpawnInFront')". Confirmed via live UE4SS.log
+-- error 2026-08-17. Moved here, the one place in the file guaranteed to be after the declaration.),
+-- not the dev-only HOME probe ApplyBodySex's own test key used. Checks `IsBodySexChangeAvailable()`
+-- FIRST (RedFalcon's explicit ask -- report clearly rather than just attempting the swap and seeing
+-- what happens), reuses the confirmed-working Spawner.ApplyBodySex for the actual swap, then
+-- independently re-reads GetBodySex() afterward to confirm it actually took before reporting
+-- success -- matches the "confirmed genuinely stuck, not just an immediate post-write echo"
+-- standard the rest of this session's live tests used. `say(msg)` is the caller's own output
+-- function, so this has no dependency on UE4SS's console Ar/output-device machinery -- passed in
+-- from main.lua's command handler.
+function Spawner.ApplySexChangeToNearest(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("Nothing within %.0fuu ahead -- walk closer / face it.", maxDist))
+        return
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(name .. " does not support changing sex.")
+        return
+    end
+    local available = false
+    pcall(function() available = comp:IsBodySexChangeAvailable() end)
+    if not available then
+        say(name .. " does not support changing sex.")
+        return
+    end
+    local current = nil
+    pcall(function() current = comp:GetBodySex() end)
+    local newSex = (current == 1) and 2 or 1
+    Spawner.ApplyBodySex(actor, newSex)
+    local after = nil
+    pcall(function() after = comp:GetBodySex() end)
+    if after == newSex then
+        say(string.format("%s has been switched to %s.", name, (after == 2) and "female" or "male"))
+    else
+        say(name .. " does not support changing sex.")
+    end
+end
+
 -- Spawner.ToggleTargetLock() — Num+ toggle (see Spawner.lockedTarget's own comment inside
 -- findNearestSpawnInFront for what a lock DOES). This function only decides ON vs OFF and picks
 -- what to lock onto; the actual "make every other action use it" behavior lives entirely in that one
@@ -4356,26 +4623,28 @@ function Spawner.TargetLockDistanceCheck(px, py, pz)
     return false
 end
 
--- Spawner.SetLockedTargetTransform(x, y, z, yaw) -- writes an ABSOLUTE transform to the currently
--- locked target, for the LivingBaseSpawnMenu Coords window's Preview/Apply/Reset/Cancel (2026-08-16;
--- all four end up calling this, just with different X/Y/Z/Yaw -- Preview/Apply send whatever's
--- typed, Reset/Cancel send the opening snapshot back). Deliberately separate from
--- Spawner.EditNearestInFront -- that one applies a RELATIVE delta to whatever's targeted/in-front
--- (keyboard/move-panel nudging); this one sets an absolute position on the LOCKED target
--- specifically (Coords editing only makes sense against an explicit lock, never an ad-hoc "nearest
--- in front" pick that could silently change between typing and pressing Apply).
+-- Spawner.SetLockedTargetTransform(x, y, z, pitch, yaw, roll) -- writes an ABSOLUTE transform to
+-- the currently locked target, for the LivingBaseSpawnMenu Coords window's Preview/Apply/Reset/
+-- Cancel (2026-08-16, extended to full pitch/yaw/roll 2026-08-18; all four buttons end up calling
+-- this, just with different values -- Preview/Apply send whatever's typed, Reset/Cancel send the
+-- opening snapshot back). Deliberately separate from Spawner.EditNearestInFront -- that one
+-- applies a RELATIVE delta to whatever's targeted/in-front (keyboard/move-panel nudging); this one
+-- sets an absolute position on the LOCKED target specifically (Coords editing only makes sense
+-- against an explicit lock, never an ad-hoc "nearest in front" pick that could silently change
+-- between typing and pressing Apply).
 -- No SetActorHiddenInGame visibility-toggle here -- CONFIRMED (2026-08-16, see that function's own
 -- comment) that toggle was the actual cause of a real crash under sustained rapid calls, and
 -- Spawner.MakeMovable alone is sufficient for the mesh to visually update.
-function Spawner.SetLockedTargetTransform(x, y, z, yaw)
+function Spawner.SetLockedTargetTransform(x, y, z, pitch, yaw, roll)
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then
         return false, "no locked target"
     end
+    pitch, roll = pitch or 0.0, roll or 0.0
     pcall(function() Spawner.MakeMovable(lt.actor) end)
     local ok = pcall(function()
         lt.actor:K2_SetActorLocation({ X = x, Y = y, Z = z }, false, {}, true)
-        lt.actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false)
+        lt.actor:K2_SetActorRotation({ Pitch = pitch, Yaw = yaw, Roll = roll }, false)
     end)
     if not ok then
         return false, "transform write failed"
@@ -4385,7 +4654,7 @@ function Spawner.SetLockedTargetTransform(x, y, z, yaw)
     -- NEXT edit (Cycle/Replace/Edit/another Coords apply) starts from the right place.
     for _, entry in ipairs(Spawner.spawned) do
         if entry.actor == lt.actor then
-            pcall(function() Spawner.PersistUpdatePose(entry.class, entry.home, { X = x, Y = y, Z = z }, yaw) end)
+            pcall(function() Spawner.PersistUpdatePose(entry.class, entry.home, { X = x, Y = y, Z = z }, yaw, pitch, roll) end)
             entry.home = { X = x, Y = y, Z = z }
             entry.yaw = yaw
             break
@@ -4526,7 +4795,12 @@ end
 --- persisted line nearest `loc`, keeping every other field (ai, friendly, composite look) intact, so a
 --- live-edited pose survives a reload without losing appearance. `newLoc` may be a table {X,Y,Z} (moves
 --- the prop) or a plain number (Z only, keeps X/Y). Lossless in-place edit.
-function Spawner.PersistUpdatePose(classPath, loc, newLoc, newYaw)
+-- newPitch/newRoll (2026-08-18, optional): fields 14/15, full 3-axis rotation for props that can
+-- rest at any angle -- see Spawner.EditNearestInFront's own comment. Omitted callers (nil) leave
+-- those fields untouched on an existing line, so any caller that only ever cared about yaw (there
+-- aren't any left after this session's edits, but keeping the params optional costs nothing) can't
+-- accidentally zero out a pitch/roll some OTHER caller had already set.
+function Spawner.PersistUpdatePose(classPath, loc, newLoc, newYaw, newPitch, newRoll)
     if not (classPath and loc) then return false end
     local lines = persistReadLines()
     local bestI, bestD, bestParts
@@ -4548,6 +4822,16 @@ function Spawner.PersistUpdatePose(classPath, loc, newLoc, newYaw)
         bestParts[4] = string.format("%.1f", newLoc)    -- Z only (keeps X/Y)
     end
     bestParts[6] = string.format("%.1f", newYaw)   -- yaw
+    if newPitch or newRoll then
+        -- Pad any gap up through field 13 first (same defensive reasoning as
+        -- Spawner.PersistUpdateLabel's own field 8-12 padding) so setting 14/15 directly after
+        -- never leaves a hole table.concat can't handle.
+        for f = 7, 13 do
+            if bestParts[f] == nil then bestParts[f] = "" end
+        end
+        if newPitch then bestParts[14] = string.format("%.1f", newPitch) end
+        if newRoll then bestParts[15] = string.format("%.1f", newRoll) end
+    end
     lines[bestI] = table.concat(bestParts, "|")
     persistWriteLines(lines)
     return true
@@ -4757,14 +5041,18 @@ end
 -- zero trapped error (same "uncatchable crash" signature as the toggle bug was), and look at
 -- whether K2_SetActorRotation behaves differently under sustained rapid calls than
 -- K2_SetActorLocation does. See memory/project_livingbase_spawn_menu.md for the full history.
-function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
+-- dPitch/dRoll (2026-08-18): full 3-axis rotation, for props that can rest at any angle (a coin,
+-- an ingot, a dropped weapon) unlike a statue/NPC, which only ever needed dYaw. Same delta/mod-360
+-- treatment as dYaw below, just on the other two Euler components; optional, so every EXISTING
+-- caller (keyboard live-edit, which only ever drove dZ/dYaw/dFwd/dRight) keeps working unchanged.
+function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight, dPitch, dRoll)
     -- Fires FIRST, before any lookup — so the log proves the keypress reached us even when there's
     -- nothing in front to edit. If you press a live-edit key and DON'T see this line, that key is
     -- being consumed by the game before UE4SS sees it (like '[' and numpad-0 were).
     -- print() directly, NOT log() — log() is gated behind Config.VERBOSE and was silently hiding all of
     -- this tool's output, which made the keys look dead when they were firing fine.
-    print(string.format("[LivingBase] live-edit key: dZ=%.0f dYaw=%.0f dFwd=%.0f dRight=%.0f\n",
-        dZ or 0.0, dYaw or 0.0, dFwd or 0.0, dRight or 0.0))
+    print(string.format("[LivingBase] live-edit key: dZ=%.0f dYaw=%.0f dFwd=%.0f dRight=%.0f dPitch=%.0f dRoll=%.0f\n",
+        dZ or 0.0, dYaw or 0.0, dFwd or 0.0, dRight or 0.0, dPitch or 0.0, dRoll or 0.0))
     local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
     -- fx/fy here (the SLIDE frame for arrow-key movement) come from the PAWN'S OWN body rotation, not
     -- the camera — mixing camera-facing with pawn-position made MOVEMENT worse (camera can look a fair
@@ -4795,7 +5083,7 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
     -- is set to); DECORATIONS move in the player's frame. Statues are AnimatedActor/QuestStatic classes.
     local statueFrame = (e.class and (string.find(e.class, "AnimatedActor", 1, true)
         or string.find(e.class, "QuestStatic", 1, true))) and true or false
-    local newX, newY, newZ, newYaw
+    local newX, newY, newZ, newYaw, newPitch, newRoll
     pcall(function()
         local l = e.actor:K2_GetActorLocation()
         local r = e.actor:K2_GetActorRotation()
@@ -4807,9 +5095,11 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
         newX   = l.X + f * afx + rt * (-afy)
         newY   = l.Y + f * afy + rt * (afx)
         newZ   = l.Z + (dZ or 0.0)
-        newYaw = (r.Yaw + (dYaw or 0.0)) % 360.0
+        newYaw   = (r.Yaw   + (dYaw   or 0.0)) % 360.0
+        newPitch = (r.Pitch + (dPitch or 0.0)) % 360.0
+        newRoll  = (r.Roll  + (dRoll  or 0.0)) % 360.0
         e.actor:K2_SetActorLocation({ X = newX, Y = newY, Z = newZ }, false, {}, true)
-        e.actor:K2_SetActorRotation({ Pitch = r.Pitch, Yaw = newYaw, Roll = r.Roll }, false)
+        e.actor:K2_SetActorRotation({ Pitch = newPitch, Yaw = newYaw, Roll = newRoll }, false)
         -- SetActorHiddenInGame(true)/(false) toggle DISABLED (2026-08-16, RedFalcon) -- originally
         -- added because the rendered mesh apparently only picked up a moved actor's new transform
         -- when it streamed out/in (walking away and back "refreshed" it), so this forced the same
@@ -4840,7 +5130,7 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight)
     else
         print("[LivingBase] Persist match: none found (not yet saved, or TRANSIENT) — editing live actor only.\n")
     end
-    pcall(function() Spawner.PersistUpdatePose(e.class, e.home, { X = newX, Y = newY, Z = newZ }, newYaw) end)
+    pcall(function() Spawner.PersistUpdatePose(e.class, e.home, { X = newX, Y = newY, Z = newZ }, newYaw, newPitch, newRoll) end)
     e.home = { X = newX, Y = newY, Z = newZ }
 
     local short = tostring(e.class or ""):match("([%w_]+)%.[%w_]+$") or tostring(e.class)
@@ -5123,7 +5413,7 @@ function Spawner.CycleNearestInFront(direction)
     Spawner.PersistRemoveMatching(e.class, e.home)
 
     local newLabel = kind == "statue" and (label:upper() .. "_" .. tostring(nextEntry.faction))
-        or ("DECOR_" .. nextEntry.name)
+        or (nextEntry.label or nextEntry.name) -- see placeDecorEntry's own comment for why no "DECOR_" prefix
     Spawner._suppressSpawnToast = true
     local ok, newActor = pcall(function()
         return Spawner.Spawn(nextEntry.path, newLabel, { X = oldX, Y = oldY, Z = oldZ }, nil, nil, newYaw)

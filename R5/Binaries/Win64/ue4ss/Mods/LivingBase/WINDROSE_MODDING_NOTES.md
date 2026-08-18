@@ -183,6 +183,28 @@ that was fine at human-keypress frequency is not proven fine at 10x that, sustai
 find out which specific line is the problem is to disable/throttle candidates ONE AT A TIME and
 retest, not to fix the first plausible-looking cost and declare victory.
 
+### 3k. A function defined BEFORE a `local function` it calls silently binds to a global instead (2026-08-18)
+A console command (`lbsexchange`) broke completely — every call failed with `attempt to call a nil
+value (global 'findNearestSpawnInFront')` — despite `findNearestSpawnInFront` genuinely existing as
+a `local function` elsewhere in the exact same file, and despite half a dozen OTHER callers in that
+same file working fine. Root cause: Lua's `local` scoping is purely LEXICAL (by source position),
+not by call-time order. A `local function foo()` statement creates the local binding at THAT POINT
+in the file; any code textually written ABOVE that line — even a function that only ever executes
+much later, long after the whole file has loaded — permanently resolves a bare reference to `foo`
+as a GLOBAL instead, because at the moment the Lua compiler parsed that earlier code, no local
+named `foo` existed yet in scope. This has nothing to do with when either function is actually
+CALLED at runtime; it's fixed forever at compile/parse time by source position alone. The broken
+caller here had been added near a thematically-related function earlier in the file, textually
+before the shared helper it depended on (which had been relocated further down during unrelated
+work) — an easy mistake to make since nothing about "add this function near its similar siblings"
+suggests checking what's declared `local` below it. **Fix**: move the caller to any point in the
+file after the `local function` declaration it depends on (or forward-declare the local at the top
+of the file and assign it later, if ordering can't be controlled). **Diagnostic signature**: the
+error names the dependency as a "global" even though you know it's declared `local` somewhere in
+the same file — that mismatch (local declared, but Lua calls it a nil global) is the tell; grep the
+file for two things — where the bare name is called, and where its `local function`/`local X =`
+declaration actually sits — before assuming the function itself is broken or missing.
+
 ---
 
 ## 4. Restore-on-load design (why it looks the way it does)
@@ -304,6 +326,17 @@ Windrose navigates with **Mercuna**, a third-party system. Consequences:
   commands to work at all. `BPML_GenericFunctions` is unrelated plumbing for a separate
   Blueprint-based mod-loading framework (BPModLoader), not something LivingBase or any Lua/
   UE4SS mod depends on.
+- **The game's actual process name is `Windrose-Win64-Shipping.exe`, NOT `R5-Win64-Shipping.exe`**
+  (2026-08-18) -- confirmed via `MenuStatus.cpp`'s own logged "game executable" path and cross-
+  checked live with `tasklist`. `R5` is the internal PROJECT/folder name (`R5/Binaries/Win64/...`,
+  every path in this codebase), which makes it an easy, silent wrong guess for the process name
+  specifically -- a `tasklist //FI "IMAGENAME eq R5-Win64-Shipping.exe"` check ALWAYS reports "no
+  tasks found," even while the game is genuinely running, with no error to flag the mistake. This
+  cost real deploy attempts this session (a DLL copy silently would have needed the correct check
+  to know to wait) before being caught. A closed-game check that never once reports the game as
+  running, across many real play sessions, is itself the tell that the process name is wrong --
+  worth a live `tasklist` (no filter) spot-check for the real name if that pattern ever repeats
+  with a different game.
 
 ---
 
@@ -441,6 +474,40 @@ Warrior always avoided). What matters and what doesn't:
   archetype, which mesh actually loads) — that still needs a live spawn or a real in-world NPC of
   that class to confirm — but it's a genuinely useful FIRST filter: any class sharing a proven base's
   exact `[sps: ...]` is a much safer next guess than an unrelated class in the same rough folder.
+
+### 9c. Mechanically discovering EVERY asset of a kind: a folder-shape assumption is never provably exhaustive (2026-08-17/18)
+A mechanical scan for "every drop-mesh in the game" assumed the assets all lived under exactly two
+known folder prefixes (confirmed by 4 hand-probed items landing in exactly those two trees) and
+built a 148-entry roster from grepping `UE4SS_ObjectDump.txt` for `StaticMesh` under just those two
+paths. Revisiting it later with a DIFFERENT search strategy — grepping the whole dump for a
+FILENAME pattern (`SM_Drop_*`) instead of trusting the folder shape — immediately found real items
+the folder-based scan had structurally no way to catch: one drop mesh that sits one folder deeper
+than its siblings AND skips the literal `Drop` folder segment entirely (still passes the filename
+test), and a WHOLE THIRD asset prefix (`Character/Skeletal_Meshes/Armor/ArmorRegular/<Set>/Meshes/
+Drops/`, 17 armor-piece drops) the original two-prefix search had no reason to ever look at.
+**Lesson: a folder-shape assumption that explained every item found so far is not proof the
+assumption is exhaustive** — it only proves it fit whatever you already found by hand. A
+filename/naming-CONVENTION grep across the entire dump (not scoped to assumed folders) is a
+meaningfully different, complementary search that catches structural outliers a path-based scan
+categorically cannot, and is worth re-running whenever "did we get everything" matters, not just
+once at the start.
+
+Separately: an item that's real, confirmed to exist in the game, and even visible in a player's
+inventory can still be COMPLETELY ABSENT from an object dump. `R5LootActor` (the native class every
+world-dropped item uses) only gets a real `MeshComponent` populated at the moment something is
+actually dropped/discarded as a physical actor in the world — an item still sitting in an unopened
+container's own inventory list, or merely held in the player's inventory, is not a spawned actor at
+all, so nothing forces its static mesh to load into memory, so it can never appear in a
+`DumpAllObjects()`-style snapshot taken at that moment. Two practical consequences: (1) a single
+object-dump snapshot systematically UNDER-counts relative to "everything that could exist" — it can
+only ever reflect what's been dropped in front of the player (or otherwise rendered) at least once
+before the dump was taken, not the full catalog of possible items; re-running the dump after more
+exploration reliably finds MORE, even against the exact same folder prefixes already scanned.
+(2) For confirming ONE specific known item's exact mesh path on demand (rather than a full sweep),
+reading a real dropped instance's `MeshComponent:GetStaticMesh()` directly (a live probe, not a
+dump grep) works regardless of whether that asset happened to be loaded when the last full dump ran
+— the two techniques are complementary, not interchangeable: dump-grep for a broad sweep, live probe
+for confirming one specific item you can currently see.
 
 ---
 
@@ -777,3 +844,22 @@ layer. The fix, if there is one in scope, lives in C++, not in a cleverer Lua re
   exports, same shape regardless of what the mod actually renders. Deploys as
   `.../ue4ss/Mods/<ModName>/dlls/main.dll` (+ `enabled.txt`), same folder convention as this
   project's own Lua mod.
+
+### 12m. A toggle reachable from BOTH the game and a companion C++ window needs ONE owner, not two (2026-08-18)
+A feature needed to be triggerable from an in-game keybind AND a button/key inside the separate
+compiled-mod window, with both paths meaning the same logical state (e.g. "which of three
+options is currently selected"). The tempting shortcut — give the C++ window its own local
+variable, toggled directly by its own keypress handler — silently produces TWO independent copies
+of what's supposed to be one piece of state: the in-game key changes the Lua-side copy, the
+window's own key changes the C++-local copy, and nothing keeps them in sync; whichever one the
+player checks last is "wrong" from the other's perspective. **Fix**: let the SCRIPT side (Lua)
+own the state as the single source of truth, exactly like every other piece of live game state
+this bridge already exposes (target lock, restore-in-progress, etc.). Both input paths just SEND
+A REQUEST to change it — the in-game key calls the mutator function directly; the C++ window's
+own key/button appends a one-shot `ACTION:` line to the same request-file bridge every other GUI
+action already uses. Neither input path ever mutates its own local copy of the state — the C++
+side only ever READS the current value back via the existing status-file poll (`MenuStatus`),
+same mechanism it already uses for target-lock info. This guarantees the two input paths can
+never disagree, at the cost of nothing extra: the status-poll and request-bridge machinery were
+already there for other shared state, so a new toggle is just one more field on each, not a new
+synchronization mechanism.

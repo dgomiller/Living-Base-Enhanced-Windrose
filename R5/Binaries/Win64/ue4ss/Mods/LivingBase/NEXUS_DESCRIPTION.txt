@@ -182,4 +182,6 @@ This covers this fork's own code and content. The original Living Base toolkit t
 [size=4][b]Credits[/b][/size]
 [color=#D4D4D8]This project started as a fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place. The amount that's changed since then means this page no longer walks through it point-by-point, but the debt is real and gladly acknowledged.
 
-Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.[/color]
+Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.
+
+Thanks also to [url=https://www.nexusmods.com/profile/irecode][b]irecode[/b][/url] for a resource this mod relies on.[/color]

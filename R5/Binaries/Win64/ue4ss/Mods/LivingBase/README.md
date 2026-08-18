@@ -458,6 +458,8 @@ Thanks also to [IceBoxStudio](https://www.nexusmods.com/windrose/users/77413713)
 [Windrose Mod Settings](https://www.nexusmods.com/windrose/mods/442), which this mod optionally
 integrates with for in-game keybind/toggle configuration.
 
+Thanks also to [irecode](https://www.nexusmods.com/profile/irecode) for a resource this mod relies on.
+
 ---
 
 *Built iteratively with Claude. See `CLAUDE.md` and `WINDROSE_MODDING_NOTES.md` (bundled

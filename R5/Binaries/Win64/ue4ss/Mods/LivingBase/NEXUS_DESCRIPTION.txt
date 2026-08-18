@@ -7,7 +7,6 @@
 
 [b]Drops[/b] — a new decor category: 18 hand-picked themed groups (Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood, Writings) covering everything from weapon and armor pieces to currency, ingredients, and treasure. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01") in both the GUI tree and its on-screen toast. Browsable in the GUI's spawn tree, or by cycling the ' key in-game.
 
-[b]Fixed[/b] — the console-only lbsexchange command was silently broken since 2.0.0 (a function-ordering bug in this mod's own code); works again.
 [/color]
 
 [size=4][b]The GUI[/b][/size]

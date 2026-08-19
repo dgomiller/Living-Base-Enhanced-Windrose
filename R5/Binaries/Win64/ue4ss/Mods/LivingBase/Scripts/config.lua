@@ -1561,7 +1561,15 @@ Config.FEMALE_WALKER_OVERLAYS = {
       -- { match = "SK_Adventure_Female_01", to = objPath(HMN .. "Orient/Meshes/", "SK_Orient_Female_01") }, -- T-POSES, disabled
       { match = "Female_Feet",         to = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Feet_Long") },
       { match = "Female_Hands",             to = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Hands_Long") },
-      { match = "Female_Legs",              to = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Male_Legs") },
+      -- Female_Legs (2026-08-19, RedFalcon: "booty sticks out of her pants"): the original rule
+      -- pointed at SK_Armor_Conquistador_02_MALE_Legs -- confirmed via a live probe on the real
+      -- female Merchant statue (Buccaneers_Merchant_01) that this is genuinely what she wears
+      -- in-game too (every other piece here matches her real outfit exactly), so it wasn't a wrong
+      -- guess -- it's a real body-shape mismatch between the Walker's own skeleton and a mesh built
+      -- to fit the Standing statue's body. FIXED: confirmed via Manifest_UFSFiles_Win64.txt that a
+      -- genuine SK_Armor_Conquistador_02_Female_Legs.uasset exists (part of the actual
+      -- player-equippable Conquistador armor set, its own CompositeMeshGroup) -- using that instead.
+      { match = "Female_Legs",              to = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Legs") },
       { match = "Female_Torso",     to = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_04_Female_Torso") },
       { match = "Female_Headband",       to = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer03_Head") },
       -- BUG FIX (2026-08-10): see Marita's own note on the "Female_Hat" naming variant.

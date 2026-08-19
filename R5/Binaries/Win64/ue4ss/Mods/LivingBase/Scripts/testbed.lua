@@ -1162,14 +1162,23 @@ local RESTORE_RULES = {
       when  = function(cls) return cls == Config.SENKA_FEMALE_BASE_CLASS
           or cls == Config.SENKA_FEMALE_BASE_CLASS_HERBALIST end,
       apply = function(actor, cls, look)
+          -- BUG FIX (2026-08-19, RedFalcon: "vanilla herbalist/gatherer turns into the merchant
+          -- on reload"). SENKA_FEMALE_BASE_CLASS/_HERBALIST are the SAME class paths whether an
+          -- actor came from the reskin system or was spawned vanilla (lbspawn/lblook) directly --
+          -- a vanilla spawn never threads a reskinTarget through persistAppend in the first
+          -- place, so it looks IDENTICAL to a genuine pre-1.3.5 save missing the field (that
+          -- field has existed since 2026-08-11, so that legacy case is essentially dead by now).
+          -- The old fallback (Testbed.ApplyRandomFemaleLook, removed) couldn't tell the two
+          -- apart and forced a RANDOM character reskin onto every vanilla spawn on every reload.
+          -- Nothing persisted can disambiguate them, so the only safe default is to leave a
+          -- reskinTarget-less actor as its own plain look -- a genuine ancient legacy save
+          -- (increasingly unlikely) just shows as vanilla now instead of getting a random
+          -- identity, which is a far better trade than corrupting every vanilla spawn.
+          if not (look and look.reskinTarget) then return end
           Spawner.BeginAsyncPostProcess()
           Spawner.RunSerialized(function(done)
               local onSettled = function() Spawner.EndAsyncPostProcess(); done() end
-              if look and look.reskinTarget then
-                  Testbed.ApplyFemaleReskinTarget(actor, look.reskinTarget, nil, onSettled)
-              else
-                  Testbed.ApplyRandomFemaleLook(actor, onSettled)
-              end
+              Testbed.ApplyFemaleReskinTarget(actor, look.reskinTarget, nil, onSettled)
           end)
       end },
 }
@@ -1718,15 +1727,6 @@ function Testbed.ApplyFemaleReskinTarget(actor, targetName, retriesLeft, onSettl
         -- outcome == "done": onSettled already fired inside doWork's own callback.
     end
     ExecuteWithDelay(Config.MOB_DECORRUPT_DELAY_MS or 4000, tick)
-end
-
--- Testbed.ApplyRandomFemaleLook(actor, onSettled) -- fallback for a restored actor whose
--- persisted line has no reskinTarget field at all (a pre-1.3.5 save -- persist.txt never
--- recorded which target it was, so there's nothing to recover; picks uniformly among the
--- full current roster, including the named characters, rather than always defaulting to generic).
--- onSettled: see Testbed.ApplyFemaleReskinTarget's own comment; passed straight through.
-function Testbed.ApplyRandomFemaleLook(actor, onSettled)
-    Testbed.ApplyFemaleReskinTarget(actor, FEMALE_RESKIN_TARGETS[math.random(#FEMALE_RESKIN_TARGETS)], nil, onSettled)
 end
 
 -- Spawn a walking-woman reskin for a SPECIFIC target name -- shared by the rotation-driven

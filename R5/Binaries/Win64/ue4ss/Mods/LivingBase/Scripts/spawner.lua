@@ -766,6 +766,16 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
         tostring(finalLabel), classPath, loc.X, loc.Y, loc.Z))
+    -- Auto-target the probe (2026-08-18, RedFalcon's request): every LIVE placement becomes the
+    -- lbprobe/lbprobedump target immediately, no separate aim-and-lbprobe step needed -- run
+    -- lbprobedump right after spawning something to inspect exactly what you just placed. Gated on
+    -- Spawner.restoring alone (not _suppressSpawnToast too) -- unlike the toast below, a cycle/undo
+    -- replacement swapping in a new actor is still something worth being able to probe right away,
+    -- even when it suppresses its own toast. Excludes RestoreFromPersist's own dozens of calls on
+    -- world load, same reasoning as the toast: not something you just deliberately placed.
+    if not Spawner.restoring then
+        Spawner._lastProbedActor = actor
+    end
     -- Only for live placements, not the dozens of Spawn calls RestoreFromPersist fires on world load,
     -- and not when the caller (Undo, pose-cycle) already shows its own more specific toast.
     if not Spawner.restoring and not Spawner._suppressSpawnToast then
@@ -2816,13 +2826,17 @@ end
 -- time on twice. Keep both from PlayerCameraManager, full stop.
 --
 -- TARGET LOCK SHORTCUT (v1.3.10+): if Spawner.lockedTarget (Numpad +, see ToggleTargetLock) is
--- set, HOME probes THAT actor directly instead of re-running the cone/range sweep — same reason
+-- set, lbprobe probes THAT actor directly instead of re-running the cone/range sweep — same reason
 -- the lock already bypasses findNearestSpawnInFront's own pick: lets you back away, circle
--- around, or stand at an awkward angle to line up HOME/PAUSE on the same actor repeatedly without
--- re-aiming precisely each press. Only ever helps for something the lock could target in the
--- first place (an actor tracked in Spawner.spawned, e.g. one of our own placed statues) — a wild
--- world NPC/undiscovered decoration was never lockable, so probing one still falls through to the
--- normal full-world sweep exactly as before.
+-- around, or stand at an awkward angle without re-aiming precisely each time. Only ever helps for
+-- something the lock could target in the first place (an actor tracked in Spawner.spawned, e.g.
+-- one of our own placed statues) — a wild world NPC/undiscovered decoration was never lockable, so
+-- probing one still falls through to the normal full-world sweep exactly as before.
+--
+-- AUTO-TARGET ON SPAWN (2026-08-18): Spawner.Spawn itself also sets Spawner._lastProbedActor on
+-- every live placement (see its own comment, right after the SPAWNED log line) — so lbprobedump
+-- works immediately after placing something, with no lbprobe step needed first, unless you
+-- deliberately want to re-aim at something else.
 --------------------------------------------------------------------
 local DISCOVERY_PATHS = {
     "ue4ss/Mods/LivingBase/discovery_dump.txt",

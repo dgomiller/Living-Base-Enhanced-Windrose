@@ -133,6 +133,18 @@ NOT a bypass — it runs with no error, but silently no-ops (`GetBodySex()` unch
 exactly when the availability check would have refused. The gate is enforced natively inside the
 function itself, not just a convention the existing `SetCharacterSex`-based code chose to respect.
 
+**`SetCharacterSex` rebuilds the mesh controller list, wiping picks either side of the call — not
+just a stale-value issue.** Confirmed live on `BP_NPC_Citizen_Walker`, round-tripped male → female
+→ male: the controller SET partially collapses on the female side (11 controllers → 2, the other 9
+categories not just zeroed but absent from the list entirely) and, more importantly, swapping back
+to male restores the full 11-category shape (same categories, same option counts as before) but
+resets every single `CurValue` to `0` — none of the original picks survive, even ones set BEFORE
+the sex change (confirmed: setting a value pre-swap does not protect it, the swap wipes it anyway
+on its way through). **The only order that actually works: change sex FIRST, THEN set values** — a
+plain `SetCustomizationMeshControllerValue` call made AFTER the swap has already settled sticks
+completely normally (confirmed live again). Don't bother trying to preserve a look across a sex
+change; re-apply it after, not before.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

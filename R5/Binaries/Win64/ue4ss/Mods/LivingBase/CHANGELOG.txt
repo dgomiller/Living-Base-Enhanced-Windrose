@@ -26,6 +26,17 @@ FIXED -- two duplicate Drops labels
   now "Worn-Out Pistol". "Clay Tablet" (used for both tablet tiers) is
   now "Clay Tablet 1" / "Clay Tablet 2".
 
+FIXED -- Merchant walking-woman reskin's clipping pants
+- Her legs mesh was a male-proportioned piece mismatched to her female
+  body, causing visible clipping. Now uses the correct female legs
+  mesh from the same armor set.
+
+FIXED -- vanilla Herbalist/Gatherer turning into a random character on reload
+- A plain, un-reskinned Herbalist or Gatherer (spawned directly, not
+  through the walking-women reskin system) would silently get
+  reassigned a random character's look every time the world reloaded.
+  Restoring one now correctly leaves it as its own plain look instead.
+
 ======================================================================
 v2.1.0 (2026-08-18) -- previous version: v2.0.0
 ======================================================================

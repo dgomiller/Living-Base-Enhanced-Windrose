@@ -7,3 +7,7 @@ Living Base Enhanced v2.1.5 (previous version on Nexus: v2.1.0)
 - Trimmed the crew roster: removed 9 looks (Smugglers and Tortuga's Musketeer/Sailor/Sergeant, plus Brethren's Musketeer/Sailor/Sergeant) as part of the reorganization. Player Crew, all 3 Buccaneers looks, and Brethren Woman remain.
 
 - Fixed two Drops items that shared a display name with a different item ("Reliable Pistol," "Clay Tablet"); both now have distinct names.
+
+- Fixed the Merchant walking-woman reskin's legs mesh being mismatched to her body, causing visible clipping; now uses the correct mesh.
+
+- Fixed a plain, un-reskinned Herbalist or Gatherer silently turning into a random character on world reload; restoring one now correctly leaves it as its own plain look.

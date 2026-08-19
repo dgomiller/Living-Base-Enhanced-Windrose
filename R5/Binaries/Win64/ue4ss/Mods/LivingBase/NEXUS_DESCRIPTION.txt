@@ -9,6 +9,10 @@
 
 [b]Fixed[/b] — two Drops items shared a display name with a different item ("Reliable Pistol," "Clay Tablet"); both now have distinct names.
 
+[b]Fixed[/b] — the Merchant walking-woman reskin's legs mesh was mismatched to her body, causing visible clipping; now uses the correct mesh.
+
+[b]Fixed[/b] — a plain, un-reskinned Herbalist or Gatherer would silently turn into a random character on world reload; restoring one now correctly leaves it as its own plain look.
+
 [/color]
 
 [size=4][b]The GUI[/b][/size]

@@ -3320,6 +3320,94 @@ local function dumpColorControllers(actor)
     print(string.format("[LivingBase] [probe-color] %d color controller(s) total.\n", n))
 end
 
+-- dumpUnknownStruct(val, tag) -- shared helper (2026-08-19), extracted from the
+-- dumpCustomizationMeshControllers investigation once it became clear the same "figure out an
+-- unknown struct's shape" dance would be needed twice (the controller itself, then its nested
+-- GroupCategoryId field). Two dead ends already found and folded in here: val:GetClass() on a
+-- struct instance returns a useless generic "ScriptStruct" placeholder with 0 properties, not the
+-- specific type; and the "extract the path out of tostring()" trick that worked for
+-- CustomizationRecordID (raw form "ScriptStruct /Script/Module.Type") does NOT apply to this
+-- "UScriptStruct: <hex>" shape -- for THIS shape, val:GetFName() and val:ForEachProperty() work
+-- DIRECTLY on the value itself, no separate StaticFindObject(path) resolution needed.
+-- Deliberately NOT auto-recursive into further nested structs it finds -- that's the same class of
+-- blind auto-drill that crashed the game once already (see dumpObjectProperties' own header
+-- comment) -- callers must explicitly ask for one more level, same discipline as everywhere else.
+local function dumpUnknownStruct(val, tag)
+    if val == nil then
+        print("[LivingBase] [probe-struct] " .. tag .. " is nil.\n")
+        return
+    end
+    local rawStr = tostring(val)
+    print("[LivingBase] [probe-struct] " .. tag .. ": " .. rawStr .. "\n")
+    if not rawStr:match("^UScriptStruct:") then
+        print("[LivingBase] [probe-struct]   not a recognized struct shape -- nothing more to do.\n")
+        return
+    end
+    local okName, name = pcall(function() return val:GetFName():ToString() end)
+    if okName and name then print("[LivingBase] [probe-struct]   type name=" .. name .. "\n") end
+    local propCount = 0
+    local okWalk, errWalk = pcall(function()
+        val:ForEachProperty(function(prop)
+            propCount = propCount + 1
+            local pname = "?"
+            pcall(function() pname = prop:GetFName():ToString() end)
+            local valStr = "<unreadable>"
+            local okv, fv = pcall(function() return val[pname] end)
+            if okv then
+                local okStr, asStr = pcall(function() return fv:ToString() end)
+                valStr = (okStr and asStr) and asStr or tostring(fv)
+            end
+            print(string.format("[LivingBase] [probe-struct]   %s = %s\n", pname, valStr))
+        end)
+    end)
+    if not okWalk then
+        print("[LivingBase] [probe-struct]   ForEachProperty FAILED: " .. tostring(errWalk) .. "\n")
+    elseif propCount == 0 then
+        print("[LivingBase] [probe-struct]   0 declared properties.\n")
+    end
+end
+
+-- dumpCustomizationMeshControllers(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked
+-- whether per-slot mesh controllers (GetCustomizationMeshControllers/
+-- SetCustomizationMeshControllerValue, found via dumpCompositeFunctions) offer more granular
+-- control than swapping a whole `params` DataAsset -- CONFIRMED YES, live: each controller is an
+-- R5SelectableCompositeMeshController with MeshGroupIndex/CurValue/MaxValue/bSelectionAllowed/
+-- GroupCategoryId. Also dumps GroupCategoryId (itself a struct) since it almost certainly
+-- identifies WHICH body part a given MeshGroupIndex actually is -- one explicit extra level via
+-- dumpUnknownStruct, not a general auto-drill.
+local function dumpCustomizationMeshControllers(actor)
+    if not (actor and actor:IsValid()) then return end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [probe-meshctrl] no CompositeMeshComponent on this actor.\n")
+        return
+    end
+    local list = nil
+    pcall(function() list = comp:GetCustomizationMeshControllers() end)
+    if not list then
+        print("[LivingBase] [probe-meshctrl] GetCustomizationMeshControllers() returned nothing.\n")
+        return
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    for i = 1, n do
+        local ctrl = nil
+        pcall(function() ctrl = list[i] end)
+        if ctrl == nil then pcall(function() ctrl = list:Get(i) end) end
+        pcall(function() if ctrl ~= nil and type(ctrl) == "userdata" and ctrl.get then ctrl = ctrl:get() end end)
+        if ctrl then
+            dumpUnknownStruct(ctrl, string.format("controller[%d]", i))
+            local okCat, catId = pcall(function() return ctrl.GroupCategoryId end)
+            if okCat and catId ~= nil then
+                dumpUnknownStruct(catId, string.format("controller[%d].GroupCategoryId", i))
+            end
+        end
+    end
+    print(string.format("[LivingBase] [probe-meshctrl] %d customization mesh controller(s) total.\n", n))
+end
+
 -- dumpCustomizability(actor) -- TEMP DEV/PROBE TOOL (2026-08-13): the color-controller/ColorParams
 -- routes are confirmed dead (see Spawner.SetColorControllers/ApplyColorParams's own removal
 -- comments), but every attempt so far assumed the composite was EDITABLE and just wasn't
@@ -3708,8 +3796,60 @@ function Spawner.ProbeDumpProperties()
         return
     end
     pcall(function() dumpObjectProperties(target, "TARGET") end)
+    -- COMPOSITE (2026-08-19): dumpObjectProperties is generic (any object + a tag) but every prior
+    -- call here only ever pointed it at the ACTOR -- CompositeMeshComponent's OWN declared
+    -- properties (e.g. CustomizationRecordID, the backing field OnRep_CustomizationRecordID reacts
+    -- to -- see dumpCompositeFunctions's LoadCharacterDataFromDB lead) were never actually dumped.
+    -- Reuses the same function, just pointed at comp instead of target.
+    pcall(function()
+        local comp = nil
+        pcall(function() comp = target.CompositeMeshComponent end)
+        if comp and comp:IsValid() then
+            dumpObjectProperties(comp, "COMPOSITE")
+            -- CustomizationRecordID (2026-08-19) is a ScriptStruct (R5BLRecordId), so
+            -- dumpObjectProperties above only shows its TYPE, not its actual field values --
+            -- plain dot-access into an unknown struct field is a real crash risk in this codebase
+            -- (see WINDROSE_MODDING_NOTES.md #10), so drill it the SAME safe way that finding
+            -- required: resolve the struct's own UScriptStruct type, ForEachProperty over THAT to
+            -- discover its real field names, then bracket-index the struct VALUE for each. This is
+            -- narrowly scoped to this one known struct -- NOT the same as the auto-drill-into-nested-
+            -- OBJECTS technique removed 2026-08-07 for crashing on a live component; a plain data
+            -- struct is a different, lower-risk case this file already reads safely elsewhere
+            -- (Vector .X/.Y/.Z). Still pcall'd throughout since pcall cannot catch a native crash.
+            pcall(function()
+                local recId = comp.CustomizationRecordID
+                if recId == nil then
+                    print("[LivingBase] [probe-props] CustomizationRecordID is nil.\n")
+                    return
+                end
+                local structType = nil
+                pcall(function() structType = StaticFindObject("/Script/R5BLCommon.R5BLRecordId") end)
+                if not (structType and structType:IsValid()) then
+                    print("[LivingBase] [probe-props] could not resolve R5BLRecordId struct type.\n")
+                    return
+                end
+                pcall(function()
+                    structType:ForEachProperty(function(prop)
+                        local fname = "?"
+                        pcall(function() fname = prop:GetFName():ToString() end)
+                        local valStr = "<unreadable>"
+                        local okv, val = pcall(function() return recId[fname] end)
+                        if okv then
+                            -- FString: 2026-08-19, plain tostring() on the userdata only shows the
+                            -- wrapper's identity, not its text -- needs :ToString() called explicitly,
+                            -- same as FName elsewhere in this file (prop:GetFName():ToString()).
+                            local okStr, asStr = pcall(function() return val:ToString() end)
+                            valStr = (okStr and asStr) and asStr or tostring(val)
+                        end
+                        print(string.format("[LivingBase] [probe-props] CustomizationRecordID.%s = %s\n", fname, valStr))
+                    end)
+                end)
+            end)
+        end
+    end)
     pcall(function() dumpMeshComponentNames(target) end)
     pcall(function() dumpColorControllers(target) end)
+    pcall(function() dumpCustomizationMeshControllers(target) end)
     pcall(function() dumpMaterialParameters(target) end)
     pcall(function() dumpArchetypeInfo(target) end)
     pcall(function() dumpCustomizability(target) end)
@@ -4589,6 +4729,152 @@ function Spawner.ApplySexChangeToNearest(say)
     else
         say(name .. " does not support changing sex.")
     end
+end
+
+-- Spawner.TestSwapBodySex(say) -- THROWAWAY DEV TEST (2026-08-19): does SwapBodySex bypass the
+-- IsBodySexChangeAvailable() gate that blocks lbsexchange? Never called before -- found only by
+-- listing R5CompositeMeshComponent's full function list (lbprobedump's dumpCompositeFunctions,
+-- added this session specifically to answer this: no Set*Available/Enable* setter exists, but
+-- this function was sitting right there, untested). Deliberately SKIPS the availability check --
+-- that's the whole point of the test -- and targets the same nearest-in-front actor lbsexchange
+-- uses. Signature unknown: tries a bare call first ("Swap" reads as a toggle, not "set to X"), and
+-- if that raises a Lua error, retries with a sex-code argument matching SetCharacterSex's own
+-- convention (1=Male, 2=Female) in case it actually needs a target. Reports GetBodySex() before/
+-- after either way, so a silent no-op is visible even if the call itself "succeeds".
+function Spawner.TestSwapBodySex(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("Nothing within %.0fuu ahead -- walk closer / face it.", maxDist))
+        return
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(name .. " has no CompositeMeshComponent.")
+        return
+    end
+    local available = false
+    pcall(function() available = comp:IsBodySexChangeAvailable() end)
+    local before = nil
+    pcall(function() before = comp:GetBodySex() end)
+    say(string.format("%s: IsBodySexChangeAvailable=%s, GetBodySex before=%s", name, tostring(available), tostring(before)))
+
+    local okBare, errBare = pcall(function() comp:SwapBodySex() end)
+    if not okBare then
+        say("SwapBodySex() bare call FAILED: " .. tostring(errBare) .. " -- retrying with a sex-code argument.")
+        local target = (before == 1) and 2 or 1
+        local okArg, errArg = pcall(function() comp:SwapBodySex(target) end)
+        if not okArg then
+            say("SwapBodySex(" .. tostring(target) .. ") ALSO FAILED: " .. tostring(errArg))
+            return
+        end
+    end
+
+    local after = nil
+    pcall(function() after = comp:GetBodySex() end)
+    say(string.format("%s: GetBodySex after=%s (%s)", name, tostring(after),
+        (after == before) and "NO CHANGE" or "CHANGED"))
+end
+
+-- findMeshControllerByTag(comp, wantedTag) -- shared helper (2026-08-19) for
+-- Spawner.TestSetHairController: walks comp:GetCustomizationMeshControllers() (same unwrap dance
+-- dumpCustomizationMeshControllers uses) looking for the one whose GroupCategoryId.TagName matches.
+-- Direct dot-access into GroupCategoryId.TagName is safe here -- unlike guessing an UNKNOWN
+-- struct's fields, TagName is now a CONFIRMED field name (found via the live probe/dump work just
+-- done), same "known-safe field, direct read" class as every other `.SomeKnownField` access in
+-- this file. Returns the controller (struct) and its list index, or nil if not found.
+local function findMeshControllerByTag(comp, wantedTag)
+    local list = nil
+    pcall(function() list = comp:GetCustomizationMeshControllers() end)
+    if not list then return nil, nil end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    for i = 1, n do
+        local ctrl = nil
+        pcall(function() ctrl = list[i] end)
+        if ctrl == nil then pcall(function() ctrl = list:Get(i) end) end
+        pcall(function() if ctrl ~= nil and type(ctrl) == "userdata" and ctrl.get then ctrl = ctrl:get() end end)
+        if ctrl then
+            local tag = nil
+            pcall(function() tag = ctrl.GroupCategoryId.TagName:ToString() end)
+            if tag == wantedTag then return ctrl, i end
+        end
+    end
+    return nil, nil
+end
+
+-- Spawner.TestSetHairController(say) -- THROWAWAY DEV TEST (2026-08-19): the payoff test for the
+-- whole GetCustomizationMeshControllers/SetCustomizationMeshControllerValue investigation --
+-- RedFalcon asked whether these per-slot controllers (found via dumpCompositeFunctions, their real
+-- shape found via dumpCustomizationMeshControllers) can actually be SET, not just read. Targets the
+-- Hairs slot specifically -- confirmed present and selectable on every one of the 6 actor types
+-- probed live tonight (crew, statue, both Tortuga men, Herbalist, Gatherer), unlike Armor (locked
+-- on female actors) or Eyebrows (inconsistently locked everywhere). Cycles CurValue forward by 1
+-- (wrapping at MaxValue) so the change is visually obvious. Signature of
+-- SetCustomizationMeshControllerValue is UNKNOWN -- guesses (ctrl, newValue) first (matching
+-- SetColorControllerValue's own shape elsewhere in this file), falls back to (MeshGroupIndex,
+-- newValue) if that errors. Re-reads the controller list from scratch afterward (not the same ctrl
+-- reference) to confirm whether it actually stuck, same "confirmed genuinely stuck" standard
+-- Spawner.ApplySexChangeToNearest already uses.
+function Spawner.TestSetHairController(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        say("No valid probed target -- run lbprobe on something first.")
+        return
+    end
+    local name = "actor"
+    pcall(function() name = actor:GetClass():GetFName():ToString() end)
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(name .. " has no CompositeMeshComponent.")
+        return
+    end
+
+    local ctrl = findMeshControllerByTag(comp, "Customization.UID.Hairs")
+    if not ctrl then
+        say(name .. ": no Hairs controller found.")
+        return
+    end
+    local before, maxVal, allowed = nil, nil, nil
+    pcall(function() before = ctrl.CurValue end)
+    pcall(function() maxVal = ctrl.MaxValue end)
+    pcall(function() allowed = ctrl.bSelectionAllowed end)
+    if not allowed then
+        say(string.format("%s: Hairs controller found but bSelectionAllowed=false -- not attempting.", name))
+        return
+    end
+    if not (maxVal and maxVal > 0) then
+        say(string.format("%s: Hairs controller has MaxValue=%s -- nothing to cycle to.", name, tostring(maxVal)))
+        return
+    end
+    local target = ((before or 0) + 1) % (maxVal + 1)
+    say(string.format("%s: Hairs before=%s max=%s -- attempting SetCustomizationMeshControllerValue -> %s",
+        name, tostring(before), tostring(maxVal), tostring(target)))
+
+    local okCtrl, errCtrl = pcall(function() comp:SetCustomizationMeshControllerValue(ctrl, target) end)
+    if not okCtrl then
+        say("SetCustomizationMeshControllerValue(ctrl, value) FAILED: " .. tostring(errCtrl) .. " -- retrying with (MeshGroupIndex, value).")
+        local groupIdx = nil
+        pcall(function() groupIdx = ctrl.MeshGroupIndex end)
+        local okIdx, errIdx = pcall(function() comp:SetCustomizationMeshControllerValue(groupIdx, target) end)
+        if not okIdx then
+            say("SetCustomizationMeshControllerValue(index, value) ALSO FAILED: " .. tostring(errIdx))
+            return
+        end
+    end
+
+    local afterCtrl = select(1, findMeshControllerByTag(comp, "Customization.UID.Hairs"))
+    local after = nil
+    if afterCtrl then pcall(function() after = afterCtrl.CurValue end) end
+    say(string.format("%s: Hairs after=%s (%s)", name, tostring(after),
+        (after == target) and "CHANGED as requested" or ((after == before) and "NO CHANGE" or "changed to something else")))
 end
 
 -- Spawner.ToggleTargetLock() — Num+ toggle (see Spawner.lockedTarget's own comment inside

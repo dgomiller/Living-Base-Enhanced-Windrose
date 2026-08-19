@@ -1687,6 +1687,57 @@ else
     log("lbsexchange unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestswapbodysex" (2026-08-19) -- THROWAWAY DEV TEST, see
+-- Spawner.TestSwapBodySex's own comment. Answers whether SwapBodySex (found via lbprobedump's
+-- function listing) can change sex on an actor lbsexchange refuses (IsBodySexChangeAvailable()
+-- false). Deliberately NOT documented in README/NEXUS docs, same reasoning as lbsexchange.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestswapbodysex", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestswapbodysex] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestSwapBodySex(say) end)
+            if not ok then say("lbtestswapbodysex FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestswapbodysex")
+else
+    log("lbtestswapbodysex unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestsethair" (2026-08-19) -- THROWAWAY DEV TEST, see
+-- Spawner.TestSetHairController's own comment. Payoff test for the whole
+-- GetCustomizationMeshControllers/SetCustomizationMeshControllerValue investigation -- cycles the
+-- probed target's Hairs slot forward by one value. Not documented in README/NEXUS docs, same as
+-- every other throwaway probe/test command.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestsethair", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestsethair] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestSetHairController(say) end)
+            if not ok then say("lbtestsethair FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestsethair")
+else
+    log("lbtestsethair unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbdecorloot" (2026-08-17) -- converts the dropped item (R5LootActor) nearest in
 -- front of you into inert decoration: no longer pickable, no longer physically tossable, sparkle
 -- turned off. Acts on a WILD world actor, never one LivingBase spawned, so this can't reuse the

@@ -130,12 +130,21 @@ FKeys.DECOR_CATEGORIES = {
     { name = "Shared_Camp_PropsComposition_60", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_60.BP_Shared_Camp_PropsComposition_60_C" },
     { name = "Shared_Camp_PropsComposition_61", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_61.BP_Shared_Camp_PropsComposition_61_C" },
     { name = "Shared_Camp_PropsComposition_69", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_69.BP_Shared_Camp_PropsComposition_69_C" },
-    { name = "Shared_Camp_PropsComposition_70", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_70.BP_Shared_Camp_PropsComposition_70_C" },
     { name = "Tortuga_Wardrobe_02", zoffset = 0.0, path = "/Game/Gameplay/POI/Tortuga/Tortuga_NPC_InteractionProps/BP_Tortuga_Wardrobe_02.BP_Tortuga_Wardrobe_02_C" },
     { name = "WardrobeAshlands_04", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_04.BP_Shared_DestructibleStructures_WardrobeAshlands_04_C" },
     { name = "WardrobeAshlands_06", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_06.BP_Shared_DestructibleStructures_WardrobeAshlands_06_C" },
     { name = "WardrobeAshlands_09", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/Furniture/BP_Shared_DestructibleStructures_WardrobeAshlands_09.BP_Shared_DestructibleStructures_WardrobeAshlands_09_C" },
     { name = "WindChime_02", zoffset = 0.0, path = "/Game/Gameplay/POI/CoastJungle/CoastJungle_Props/BP_WindChime_02.BP_WindChime_02_C" },
+    -- Added at the END, deliberately (2026-08-18) -- NOT mid-list. spawnmenu_manifest.lua assigns
+    -- each DECOR entry a POSITIONAL index shared across every category in DECOR_ORDER (furniture
+    -- through the 18 Drops categories all share one counter) -- inserting anywhere but the end
+    -- shifts every entry after it, which silently corrupts any spawn_menu.ini already generated
+    -- with the old order (an existing tree section still says e.g. "index = 40", but that index now
+    -- resolves to a DIFFERENT row -- wrong item spawns, no error). Composition_70 was previously
+    -- inserted mid-list for one commit; fixed here. If a spawn_menu.ini already exists from that
+    -- window, delete it and let it regenerate -- see this comment if any other DECOR entry ever
+    -- needs adding: always append here, never insert.
+    { name = "Shared_Camp_PropsComposition_70", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/CampPropsComposition/BP_Shared_Camp_PropsComposition_70.BP_Shared_Camp_PropsComposition_70_C" },
   },
   -- Drops (238, split into 18 hand-curated subcategories) (2026-08-17). Every OTHER category above
   -- spawns a per-prop Blueprint (BP_..._C) with its mesh baked in at the class level, so a raw

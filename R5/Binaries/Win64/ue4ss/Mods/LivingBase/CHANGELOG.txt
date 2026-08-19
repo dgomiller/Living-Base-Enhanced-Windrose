@@ -1,6 +1,32 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v2.1.5 (2026-08-18) -- previous version: v2.1.0
+======================================================================
+
+REORGANIZED GUI SPAWN TREE -- a full hand-curated pass
+- The categorized spawn tree (LivingBaseSpawnMenu) has been completely
+  reorganized: new top-level sections, new subgrouping, and a real
+  friendly name for every entry, replacing the old mechanically
+  auto-generated grouping. Covers every roster -- crew, statues,
+  townsfolk, walking women, Senkamati, animals, and decor (including
+  Drops, positioned alphabetically within Decor).
+- Keyboard cycling and lblook/lbspawn are unaffected -- this is purely
+  the GUI tree's organization, not a change to what's spawnable or how
+  it's reached from the keyboard.
+
+TRIMMED -- crew roster
+- Removed 9 crew looks (Smugglers Musketeer/Sailor/Sergeant, Tortuga
+  Musketeer/Sailor/Sergeant, Brethren Musketeer/Sailor/Sergeant) as
+  part of the tree reorganization. Player Crew, all 3 Buccaneers looks,
+  and Brethren Woman remain.
+
+FIXED -- two duplicate Drops labels
+- "Reliable Pistol" was used for two different pistol drops -- one is
+  now "Worn-Out Pistol". "Clay Tablet" (used for both tablet tiers) is
+  now "Clay Tablet 1" / "Clay Tablet 2".
+
+======================================================================
 v2.1.0 (2026-08-18) -- previous version: v2.0.0
 ======================================================================
 

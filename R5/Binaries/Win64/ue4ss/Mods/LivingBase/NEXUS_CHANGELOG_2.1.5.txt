@@ -1,0 +1,9 @@
+Living Base Enhanced v2.1.5 (previous version on Nexus: v2.1.0)
+
+===== NEW IN v2.1.5 =====
+
+- Reorganized GUI spawn tree: a full hand-curated pass replacing the old mechanically auto-generated grouping — new top-level sections, new subgrouping, and a real friendly name for every entry. Covers every roster (crew, statues, townsfolk, walking women, Senkamati, animals, decor including Drops). Keyboard cycling and lblook/lbspawn are unaffected — this is purely the GUI tree's organization.
+
+- Trimmed the crew roster: removed 9 looks (Smugglers and Tortuga's Musketeer/Sailor/Sergeant, plus Brethren's Musketeer/Sailor/Sergeant) as part of the reorganization. Player Crew, all 3 Buccaneers looks, and Brethren Woman remain.
+
+- Fixed two Drops items that shared a display name with a different item ("Reliable Pistol," "Clay Tablet"); both now have distinct names.

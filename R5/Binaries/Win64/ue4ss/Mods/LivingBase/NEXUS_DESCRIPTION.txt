@@ -1,13 +1,13 @@
 [size=5][b]Living Base Enhanced[/b][/size]
 [color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place (full X/Y/Z position and rotation), and have it all persist across reloads. The primary way to do all of this is a real clickable GUI window — press '-' in-game to open it — with every keyboard control still fully available alongside it.[/color]
 
-[size=4][b]What's new in 2.1.0[/b][/size]
+[size=4][b]What's new in 2.1.5[/b][/size]
 [color=#D4D4D8]
-[b]Full 3-axis rotation[/b] — the GUI's move panel and Coords window can now rotate a placed object around all three axes (X/Y/Z = Roll/Pitch/Yaw), not just spin it around its vertical axis. Useful for anything that can rest at any angle — a dropped weapon, a coin, an ingot — not just statues/NPCs, which only ever needed the one. The move panel's old single Rot L/R + Flip 180 are now three full rows, each with its own Left/Right button; the Coords window's single "Rotation" field is now Rotation X/Y/Z. Keyboard ',' '.' stay the only two rotate keys — '/' (the plain key next to '.', not the numpad one) cycles which axis they act on, from either the game or the GUI window, toast-confirmed each press — both input paths share the exact same selection, so they can never disagree.
+[b]Reorganized GUI spawn tree[/b] — a full hand-curated pass: new top-level sections, new subgrouping, and a real friendly name for every entry, replacing the old mechanically auto-generated grouping. Covers every roster — crew, statues, townsfolk, walking women, Senkamati, animals, and decor (including Drops, now grouped inside Decor). Keyboard cycling and lblook/lbspawn are unaffected — this is purely the GUI tree's organization.
 
-[b]Drops[/b] — a new decor category: 18 hand-picked themed groups (Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals, Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood, Writings) covering everything from weapon and armor pieces to currency, ingredients, and treasure. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01") in both the GUI tree and its on-screen toast. Browsable in the GUI's spawn tree, or by cycling the ' key in-game.
+[b]Trimmed crew roster[/b] — removed 9 crew looks (Smugglers and Tortuga's Musketeer/Sailor/Sergeant, plus Brethren's Musketeer/Sailor/Sergeant) as part of the reorganization. Player Crew, all 3 Buccaneers looks, and Brethren Woman remain.
 
-[b]Removed[/b] — the Blackbeard raid (drop a flag, trigger a pirate wave) and the structure-invulnerability toggle it justified are both gone, not just disabled, due to lack of interest and ongoing maintenance burden. The prop that used to be reserved for the raid flag is now a normal furniture piece instead.
+[b]Fixed[/b] — two Drops items shared a display name with a different item ("Reliable Pistol," "Clay Tablet"); both now have distinct names.
 
 [/color]
 

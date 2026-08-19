@@ -89,6 +89,50 @@ something changeable should exist.
   values from an otherwise-successful array read is almost certainly missing this step, not proof
   the array itself is empty.
 
+### 2c. A SECOND struct shape exists — and it's the one that finally unlocked writable per-piece customization (2026-08-19)
+
+The `"ScriptStruct /Script/Module.Type"` shape §10/2b already document (extract the path,
+`StaticFindObject` it, `:ForEachProperty` the resolved type) is not the only one. A struct
+returned from inside a `TArray` element — confirmed on `R5SelectableCompositeMeshController` and
+on a nested `FGameplayTag` field one level inside it — instead prints as `"UScriptStruct: <hex
+address>"`, with no module/type path in the string at all. `GetClass()` on it is a dead end too
+(returns a generic `"ScriptStruct"` placeholder object with 0 declared properties — not the
+specific type). **The fix for THIS shape is simpler than §10's, not the same recipe reapplied**:
+the value itself directly supports `:GetFName():ToString()` (gives the real type name, e.g.
+`R5SelectableCompositeMeshController`, `GameplayTag`) and `:ForEachProperty(...)` called directly
+on it (no separate `StaticFindObject` round-trip needed at all) — bracket-index that SAME value
+for each field name found, same as always. Check which shape you've got by pattern-matching the
+raw `tostring()` output before picking a recipe; guessing wrong just wastes a round-trip, doesn't
+crash anything.
+
+**Payoff, confirmed live across 6 actor types** (a composite mob, a baked Standing statue, two
+Tortuga male NPCs, the Herbalist, the Gatherer): `R5CompositeMeshComponent:
+GetCustomizationMeshControllers()` returns one `R5SelectableCompositeMeshController` per
+customizable body-part slot — `MeshGroupIndex` (int), `CurValue`/`MaxValue` (the current pick and
+how many options exist, 0-based), `bSelectionAllowed` (bool), and `GroupCategoryId` (an
+`FGameplayTag` naming the slot, e.g. `Customization.UID.Hairs`, `Customization.UID.Armor.Legs`).
+**`SetCustomizationMeshControllerValue(ctrl, newValue)` genuinely works** — confirmed live,
+changed a Gatherer's `Hairs` controller from `2` to `3`, visually confirmed changed in-game, no
+crash. This is a real, independent, per-slot customization path — nothing to do with the
+`params`/composite-DataAsset-swap or component-name-`replaces` mechanisms every reskin in this
+codebase has used until now, and it answers "can we get more variety than the color/sex/preset
+knobs already expose" with a genuine yes, not another dead end.
+
+What's inconsistent across actors, from the same live sample: `Hairs` was present AND selectable
+on every single actor tested — the safe universal target. `Armor.*` slots exist with real option
+counts on female actors too, but `bSelectionAllowed=false` locks every one of them there while the
+same slots are fully open on male actors tested. `Facial.Eyebrows` was locked on both female base
+walker bodies (Herbalist, Gatherer) despite `Facial.Mustache`/`Beard`/`Whiskers` on those same
+actors being marked selectable despite having 0 options — an inconsistency worth expecting, not
+assuming away, before building a feature on top of any one slot.
+
+**A related dead end, same investigation**: `SwapBodySex` (sitting right next to the already-used
+`SetCharacterSex`/`SetBody` in this component's function list, found via the technique in §2)
+looked like a plausible way to bypass `IsBodySexChangeAvailable()==false`. Confirmed live it is
+NOT a bypass — it runs with no error, but silently no-ops (`GetBodySex()` unchanged before/after)
+exactly when the availability check would have refused. The gate is enforced natively inside the
+function itself, not just a convention the existing `SetCharacterSex`-based code chose to respect.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

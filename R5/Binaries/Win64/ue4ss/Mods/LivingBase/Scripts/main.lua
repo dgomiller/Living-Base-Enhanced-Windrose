@@ -1712,30 +1712,52 @@ else
     log("lbtestswapbodysex unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbtestsethair" (2026-08-19) -- THROWAWAY DEV TEST, see
--- Spawner.TestSetHairController's own comment. Payoff test for the whole
--- GetCustomizationMeshControllers/SetCustomizationMeshControllerValue investigation -- cycles the
--- probed target's Hairs slot forward by one value. Not documented in README/NEXUS docs, same as
--- every other throwaway probe/test command.
+-- Console command "lbcustomnpc" (2026-08-19) -- DEV TOOL, see Spawner.ListCustomizationControllers/
+-- Spawner.SetCustomizationController's own comments. General-purpose replacement for the earlier
+-- throwaway lbtestsethair -- RedFalcon asked for a proper get/set pair to explore the
+-- GetCustomizationMeshControllers/SetCustomizationMeshControllerValue system on whatever's
+-- currently probed (lbprobe first), not just the Hairs slot. `lbcustomnpc get` lists every
+-- controller (category/current/options/selectable); `lbcustomnpc set <category|index> <value>`
+-- writes one, matched by category name (exact or a case-insensitive suffix after
+-- "Customization.UID.", e.g. "hairs") or by plain MeshGroupIndex for a controller with no usable
+-- tag. Not documented in README/NEXUS docs, same as every other dev probe/test command.
 if RegisterConsoleCommandHandler then
     pcall(function()
-        RegisterConsoleCommandHandler("lbtestsethair", function(FullCommand, Parameters, Ar)
+        RegisterConsoleCommandHandler("lbcustomnpc", function(FullCommand, Parameters, Ar)
             local function say(msg)
-                print("[LivingBase] [lbtestsethair] " .. msg .. "\n")
+                print("[LivingBase] [lbcustomnpc] " .. msg .. "\n")
                 pcall(function()
                     if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
                         Ar:Log(msg)
                     end
                 end)
             end
-            local ok, err = pcall(function() Spawner.TestSetHairController(say) end)
-            if not ok then say("lbtestsethair FAILED: " .. tostring(err)) end
+            local function usage()
+                say("Usage: lbcustomnpc get")
+                say("       lbcustomnpc set <category|index> <value>   e.g. lbcustomnpc set hairs 5")
+            end
+            local sub = Parameters and Parameters[1] and Parameters[1]:lower()
+            local ok, err
+            if sub == "get" then
+                ok, err = pcall(function() Spawner.ListCustomizationControllers(say) end)
+            elseif sub == "set" then
+                local which, newValue = Parameters[2], Parameters[3]
+                if not (which and newValue) then
+                    usage()
+                    return true
+                end
+                ok, err = pcall(function() Spawner.SetCustomizationController(which, newValue, say) end)
+            else
+                usage()
+                return true
+            end
+            if not ok then say("lbcustomnpc FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestsethair")
+    log("Console command registered: lbcustomnpc")
 else
-    log("lbtestsethair unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+    log("lbcustomnpc unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbdecorloot" (2026-08-17) -- converts the dropped item (R5LootActor) nearest in

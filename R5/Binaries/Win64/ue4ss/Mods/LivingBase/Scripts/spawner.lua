@@ -4780,17 +4780,16 @@ function Spawner.TestSwapBodySex(say)
         (after == before) and "NO CHANGE" or "CHANGED"))
 end
 
--- findMeshControllerByTag(comp, wantedTag) -- shared helper (2026-08-19) for
--- Spawner.TestSetHairController: walks comp:GetCustomizationMeshControllers() (same unwrap dance
--- dumpCustomizationMeshControllers uses) looking for the one whose GroupCategoryId.TagName matches.
--- Direct dot-access into GroupCategoryId.TagName is safe here -- unlike guessing an UNKNOWN
--- struct's fields, TagName is now a CONFIRMED field name (found via the live probe/dump work just
--- done), same "known-safe field, direct read" class as every other `.SomeKnownField` access in
--- this file. Returns the controller (struct) and its list index, or nil if not found.
-local function findMeshControllerByTag(comp, wantedTag)
+-- listCustomizationControllers(comp) -- shared helper (2026-08-19): the unwrap-and-walk dance
+-- dumpCustomizationMeshControllers uses, factored out so both Spawner.ListCustomizationControllers
+-- and findMeshController (below) share one implementation instead of three near-copies. Returns a
+-- plain array of {ctrl=, idx=, cur=, max=, allowed=, tag=} tables (tag may be nil for a controller
+-- with no GroupCategoryId, e.g. the placeholder seen on some actor types).
+local function listCustomizationControllers(comp)
+    local out = {}
     local list = nil
     pcall(function() list = comp:GetCustomizationMeshControllers() end)
-    if not list then return nil, nil end
+    if not list then return out end
     local n = 0
     pcall(function() n = list:GetArrayNum() end)
     if n == 0 then pcall(function() n = #list end) end
@@ -4800,28 +4799,81 @@ local function findMeshControllerByTag(comp, wantedTag)
         if ctrl == nil then pcall(function() ctrl = list:Get(i) end) end
         pcall(function() if ctrl ~= nil and type(ctrl) == "userdata" and ctrl.get then ctrl = ctrl:get() end end)
         if ctrl then
-            local tag = nil
-            pcall(function() tag = ctrl.GroupCategoryId.TagName:ToString() end)
-            if tag == wantedTag then return ctrl, i end
+            local row = { ctrl = ctrl }
+            pcall(function() row.idx = ctrl.MeshGroupIndex end)
+            pcall(function() row.cur = ctrl.CurValue end)
+            pcall(function() row.max = ctrl.MaxValue end)
+            pcall(function() row.allowed = ctrl.bSelectionAllowed end)
+            pcall(function() row.tag = ctrl.GroupCategoryId.TagName:ToString() end)
+            out[#out + 1] = row
         end
     end
-    return nil, nil
+    return out
 end
 
--- Spawner.TestSetHairController(say) -- THROWAWAY DEV TEST (2026-08-19): the payoff test for the
--- whole GetCustomizationMeshControllers/SetCustomizationMeshControllerValue investigation --
--- RedFalcon asked whether these per-slot controllers (found via dumpCompositeFunctions, their real
--- shape found via dumpCustomizationMeshControllers) can actually be SET, not just read. Targets the
--- Hairs slot specifically -- confirmed present and selectable on every one of the 6 actor types
--- probed live tonight (crew, statue, both Tortuga men, Herbalist, Gatherer), unlike Armor (locked
--- on female actors) or Eyebrows (inconsistently locked everywhere). Cycles CurValue forward by 1
--- (wrapping at MaxValue) so the change is visually obvious. Signature of
--- SetCustomizationMeshControllerValue is UNKNOWN -- guesses (ctrl, newValue) first (matching
--- SetColorControllerValue's own shape elsewhere in this file), falls back to (MeshGroupIndex,
--- newValue) if that errors. Re-reads the controller list from scratch afterward (not the same ctrl
--- reference) to confirm whether it actually stuck, same "confirmed genuinely stuck" standard
--- Spawner.ApplySexChangeToNearest already uses.
-function Spawner.TestSetHairController(say)
+-- findMeshController(comp, which) -- matches `which` against either a plain MeshGroupIndex number
+-- (so controllers with no usable tag, e.g. tag=None, are still reachable) or a category tag,
+-- exact OR as a case-insensitive suffix after "Customization.UID." (so "hairs" and
+-- "facial.eyebrows" both work, not just the full "Customization.UID.Hairs"). Returns the matching
+-- row (see listCustomizationControllers) or nil.
+local function findMeshController(comp, which)
+    local wantIdx = tonumber(which)
+    local wantLower = tostring(which):lower()
+    for _, row in ipairs(listCustomizationControllers(comp)) do
+        if wantIdx and row.idx == wantIdx then return row end
+        if row.tag then
+            local tagLower = row.tag:lower()
+            local suffix = tagLower:match("^customization%.uid%.(.+)$") or tagLower
+            if tagLower == wantLower or suffix == wantLower then return row end
+        end
+    end
+    return nil
+end
+
+-- Spawner.ListCustomizationControllers(say) -- backing function for "lbcustomnpc get". Lists every
+-- controller on the currently probed actor (run lbprobe first) -- category, current pick, how many
+-- options exist, and whether it's actually editable right now. RedFalcon's own tool for exploring
+-- what's available before deciding what to change, per-actor -- confirmed this session that both
+-- the SET of categories and whether any given one is selectable varies a lot by actor type/state
+-- (see WINDROSE_MODDING_NOTES.md §2c), so there's no substitute for checking the specific actor.
+function Spawner.ListCustomizationControllers(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        say("No valid probed target -- run lbprobe on something first.")
+        return
+    end
+    local name = "actor"
+    pcall(function() name = actor:GetClass():GetFName():ToString() end)
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(name .. " has no CompositeMeshComponent.")
+        return
+    end
+    local rows = listCustomizationControllers(comp)
+    if #rows == 0 then
+        say(name .. ": no customization controllers.")
+        return
+    end
+    say(string.format("%s: %d controller(s):", name, #rows))
+    for _, row in ipairs(rows) do
+        say(string.format("  %-38s index=%s current=%s options=0..%s selectable=%s",
+            row.tag or "(no category)", tostring(row.idx), tostring(row.cur), tostring(row.max), tostring(row.allowed)))
+    end
+end
+
+-- Spawner.SetCustomizationController(which, newValue, say) -- backing function for "lbcustomnpc
+-- set <which> <value>". `which` is matched by findMeshController (category name or plain index,
+-- see its own comment). Range-checks against MaxValue and bSelectionAllowed before attempting --
+-- confirmed this session those vary per actor, so this can't assume anything the actor's own
+-- controller list doesn't say. Signature of SetCustomizationMeshControllerValue is (ctrl,
+-- newValue) -- CONFIRMED working live 2026-08-19 (was previously a guess, tried with a
+-- (MeshGroupIndex, value) fallback in case it errored; the primary guess has worked every time
+-- since, so the fallback was dropped here). Re-reads the controller list from scratch afterward
+-- (not the same ctrl reference) to confirm it actually stuck, same "confirmed genuinely stuck"
+-- standard Spawner.ApplySexChangeToNearest already uses.
+function Spawner.SetCustomizationController(which, newValue, say)
     say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
     local actor = Spawner._lastProbedActor
     if not (actor and actor:IsValid()) then
@@ -4837,44 +4889,36 @@ function Spawner.TestSetHairController(say)
         return
     end
 
-    local ctrl = findMeshControllerByTag(comp, "Customization.UID.Hairs")
-    if not ctrl then
-        say(name .. ": no Hairs controller found.")
+    local row = findMeshController(comp, which)
+    if not row then
+        say(string.format("%s: no controller matching '%s'. Run 'lbcustomnpc get' to see what's available.", name, tostring(which)))
         return
     end
-    local before, maxVal, allowed = nil, nil, nil
-    pcall(function() before = ctrl.CurValue end)
-    pcall(function() maxVal = ctrl.MaxValue end)
-    pcall(function() allowed = ctrl.bSelectionAllowed end)
-    if not allowed then
-        say(string.format("%s: Hairs controller found but bSelectionAllowed=false -- not attempting.", name))
+    if not row.allowed then
+        say(string.format("%s: %s found but not currently selectable (bSelectionAllowed=false).", name, row.tag or tostring(row.idx)))
         return
     end
-    if not (maxVal and maxVal > 0) then
-        say(string.format("%s: Hairs controller has MaxValue=%s -- nothing to cycle to.", name, tostring(maxVal)))
+    local target = tonumber(newValue)
+    if not target then
+        say("'" .. tostring(newValue) .. "' isn't a number.")
         return
     end
-    local target = ((before or 0) + 1) % (maxVal + 1)
-    say(string.format("%s: Hairs before=%s max=%s -- attempting SetCustomizationMeshControllerValue -> %s",
-        name, tostring(before), tostring(maxVal), tostring(target)))
-
-    local okCtrl, errCtrl = pcall(function() comp:SetCustomizationMeshControllerValue(ctrl, target) end)
-    if not okCtrl then
-        say("SetCustomizationMeshControllerValue(ctrl, value) FAILED: " .. tostring(errCtrl) .. " -- retrying with (MeshGroupIndex, value).")
-        local groupIdx = nil
-        pcall(function() groupIdx = ctrl.MeshGroupIndex end)
-        local okIdx, errIdx = pcall(function() comp:SetCustomizationMeshControllerValue(groupIdx, target) end)
-        if not okIdx then
-            say("SetCustomizationMeshControllerValue(index, value) ALSO FAILED: " .. tostring(errIdx))
-            return
-        end
+    if row.max and (target < 0 or target > row.max) then
+        say(string.format("%s: %s value %d out of range (0..%s).", name, row.tag or tostring(row.idx), target, tostring(row.max)))
+        return
     end
 
-    local afterCtrl = select(1, findMeshControllerByTag(comp, "Customization.UID.Hairs"))
-    local after = nil
-    if afterCtrl then pcall(function() after = afterCtrl.CurValue end) end
-    say(string.format("%s: Hairs after=%s (%s)", name, tostring(after),
-        (after == target) and "CHANGED as requested" or ((after == before) and "NO CHANGE" or "changed to something else")))
+    local okSet, errSet = pcall(function() comp:SetCustomizationMeshControllerValue(row.ctrl, target) end)
+    if not okSet then
+        say("SetCustomizationMeshControllerValue FAILED: " .. tostring(errSet))
+        return
+    end
+
+    local afterRow = findMeshController(comp, which)
+    local after = afterRow and afterRow.cur or nil
+    say(string.format("%s: %s before=%s -> after=%s (%s)", name, row.tag or tostring(row.idx),
+        tostring(row.cur), tostring(after),
+        (after == target) and "CHANGED as requested" or ((after == row.cur) and "NO CHANGE" or "changed to something else")))
 end
 
 -- Spawner.ToggleTargetLock() — Num+ toggle (see Spawner.lockedTarget's own comment inside

@@ -2958,7 +2958,7 @@ function Spawner.ProbeNearestActor(maxDist)
         print("[LivingBase] [probe] could not open discovery_dump.txt for writing.\n")
     end
     Spawner._lastProbedActor = best
-    print("[LivingBase] [probe] press PAUSE to dump this target's properties.\n")
+    print("[LivingBase] [probe] run lbprobedump to dump this target's properties.\n")
 end
 
 -- Spawner.ProbeDumpProperties() — the deliberate SECOND step, PAUSE. Walks Spawner._lastProbedActor's
@@ -3395,6 +3395,49 @@ local function dumpAvailableBodyTypes(actor)
     end
 end
 
+-- dumpCompositeFunctions(actor) -- TEMP DEV/PROBE TOOL (2026-08-18): list EVERY function
+-- R5CompositeMeshComponent declares (walking up GetSuperStruct(), same technique the now-removed
+-- DumpNotificationFunctions used on a UMG widget class -- see CLAUDE.md item 22 -- just ForEachFunction
+-- instead of dumpObjectProperties' ForEachProperty). Built to answer a specific open question:
+-- IsBodySexChangeAvailable() has always read TRUE on every actor probed so far (2026-08-13/14), so
+-- whether it's a computed/gated result or something with a matching SETTER (the way SetCharacterSex/
+-- SetBody sit right next to their own getters) has never actually been checked -- this is that check,
+-- live, on whatever's targeted, instead of manually grepping a fresh UE4SS_ObjectDump.txt by hand.
+-- Read-only (calling ForEachFunction does not invoke anything), so no crash risk beyond what every
+-- other reflective class walk in this file already carries (none observed so far).
+local function dumpCompositeFunctions(actor)
+    if not (actor and actor:IsValid()) then return end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [probe-funcs] no CompositeMeshComponent on this actor.\n")
+        return
+    end
+    local cls
+    pcall(function() cls = comp:GetClass() end)
+    local total = 0
+    while cls and cls:IsValid() do
+        local className = "?"
+        pcall(function() className = cls:GetFName():ToString() end)
+        local names = {}
+        pcall(function()
+            cls:ForEachFunction(function(fn)
+                local fname = "?"
+                pcall(function() fname = fn:GetFName():ToString() end)
+                names[#names + 1] = fname
+            end)
+        end)
+        table.sort(names)
+        total = total + #names
+        print(string.format("[LivingBase] [probe-funcs] -- %s (%d functions) --\n", className, #names))
+        print("[LivingBase] [probe-funcs]   " .. table.concat(names, ", ") .. "\n")
+        local nextCls
+        pcall(function() nextCls = cls:GetSuperStruct() end)
+        cls = nextCls
+    end
+    print(string.format("[LivingBase] [probe-funcs] %d functions total across the class hierarchy.\n", total))
+end
+
 -- dumpArchetypeInfo(actor) -- TEMP DEV/PROBE TOOL (2026-08-10): pursuing the NPC-side tattoo
 -- system instead of the PLAYER-only composite-params route (CONFIRMED to crash the game, see
 -- Config.TATTOO_TEST_PARAMS' own comment -- do not revisit that path). The game's own manifest
@@ -3647,7 +3690,7 @@ function Spawner.ProbeDumpProperties()
     print("[LivingBase] [probe-props] key received.\n")
     local target = Spawner._lastProbedActor
     if not (target and target:IsValid()) then
-        print("[LivingBase] [probe-props] no valid probed target -- press HOME on something first.\n")
+        print("[LivingBase] [probe-props] no valid probed target -- run lbprobe on something first.\n")
         return
     end
     pcall(function() dumpObjectProperties(target, "TARGET") end)
@@ -3657,6 +3700,7 @@ function Spawner.ProbeDumpProperties()
     pcall(function() dumpArchetypeInfo(target) end)
     pcall(function() dumpCustomizability(target) end)
     pcall(function() dumpAvailableBodyTypes(target) end)
+    pcall(function() dumpCompositeFunctions(target) end)
     pcall(function() dumpAnimInfo(target) end)
     print("[LivingBase] [probe-props] done.\n")
 end

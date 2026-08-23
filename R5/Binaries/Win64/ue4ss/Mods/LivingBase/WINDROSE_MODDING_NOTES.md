@@ -1092,3 +1092,100 @@ same mechanism it already uses for target-lock info. This guarantees the two inp
 never disagree, at the cost of nothing extra: the status-poll and request-bridge machinery were
 already there for other shared state, so a new toggle is just one more field on each, not a new
 synchronization mechanism.
+
+### 12n. Constructing real UMG widgets natively from C++ — the same primitives a Lua UMG binding uses, just called directly (2026-08-22)
+A companion C++ mod moved from a separate ImGui window to real UMG widgets living in the actual
+game viewport. Confirmed live, working: `UObjectGlobals::StaticFindObject<UClass*>(nullptr,
+nullptr, "/Script/UMG.<ClassName>")` resolves each stock UMG class (`UserWidget`, `WidgetTree`,
+`CanvasPanel`, `Border`, `TextBlock`, `Button`, ...) by its full path; `UObjectGlobals::
+NewObject<UObject>(Outer, Class, FName(...))` constructs each instance (Outer chain: GameInstance
+→ root UserWidget → its own WidgetTree → root CanvasPanel → children); `UObject::ProcessEvent`
+with a hand-built params struct calls ordinary UFUNCTIONs on them (`AddChildToCanvas`,
+`SetContent`, `SetText`, `AddToViewport`, `RemoveFromParent`). This is not a novel technique —
+it's the exact sequence an existing, proven-working Lua-side UMG-building mod already performs
+via `StaticConstructObject`/`FindObject`, just invoked from native C++ instead of through the Lua
+binding layer. Two structural properties (`WidgetTree` on the root widget, `RootWidget` on the
+`WidgetTree`) only exist as UPROPERTYs with no setter UFUNCTION — see §12o for why the "obvious"
+official accessor for writing those crashed, and what was used instead. Every `ProcessEvent`
+params struct must mirror the REAL target UFUNCTION's actual parameter list in order (plus a
+trailing `ReturnValue` field if it returns something) — this is standard UE4SS-C++ native-call
+practice (see §3l/§3q), not specific to UMG, but the risk is easy to underweight for something as
+familiar-looking as "just calling a widget setter."
+
+### 12o. A property's "official" C++ accessor can resolve through a WRONG vtable offset for a specific game build, and crash uncatchably — prefer a raw memory write when the layout is simple and known (2026-08-22)
+Writing to `WidgetTree`/`RootWidget` (see §12n) was first attempted via the SDK's own
+purpose-built property accessor for object-reference properties (its equivalent of "the correct,
+supported way to set an object property from C++"). **Confirmed live: this crashed the game
+instantly, with no catchable error** — reproducible, first call, every time. Root cause: that
+accessor is a genuine C++ virtual function on the property-reflection object, and this specific
+compiled UE4SS build resolves virtual calls on engine reflection types through a **vtable-offset
+lookup table populated from a version-specific dump at UE4SS startup** — for this exact game
+build, the entry for that one function was apparently wrong or unresolved, so the call jumped
+through a bad function pointer. Two facts made the real fix possible: (1) the property's raw
+STORAGE ADDRESS (`ContainerPtrToValuePtr`, a plain offset computation, no virtual dispatch) was
+separately confirmed safe by the same crash-catching test; (2) a plain object-reference
+property's underlying storage is JUST a flat pointer, no smart-pointer/ref-counting machinery —
+so `*reinterpret_cast<UObject**>(address) = value;` at that confirmed-correct address is both
+correct and vtable-free. **Lesson: when an "official" reflected accessor is a C++ virtual
+function on a reflection object (property/field types, not the target UObject itself), treat it
+as unverified for this specific compiled build until proven live — even though it's the
+documented/intended API — and prefer a raw memory write at a plain-old-data address when you can
+independently confirm both the address and the value's true in-memory layout are simple and
+correct.** This is a DIFFERENT risk class from §3l/§12n's "wrong params struct for a UFUNCTION
+call" — that risk is about guessing a signature; this one is about an internals-level
+version-detection table being wrong for one specific game build, something no amount of correct
+C++ on the caller's part can work around except by avoiding the virtual call entirely.
+
+### 12p. Binding a native multicast delegate (e.g. UMG's `OnClicked`) from C++, avoiding the same vtable risk as §12o (2026-08-22)
+Real click interaction (not just display) needed a `Button` widget's click to reach native C++
+code. The engine's own delegate-property accessor for "add a bound function to this multicast
+delegate" is, like §12o's case, a C++ virtual function on the property-reflection object — same
+risk class, not attempted. Instead: the delegate's own VALUE TYPE (`TMulticastScriptDelegate`, an
+array of `{weak object, function name}` pairs) has a `BindUFunction(UObject*, FName)` method that
+is a plain, non-virtual, two-field assignment — confirmed by reading its own definition, not
+assumed — and its containing array's `Add()` is an ordinary template container method, also
+non-virtual. So: get the delegate property's raw storage address the same proven way as §12o,
+reinterpret it as its real value-type struct (size-checked against `sizeof()` of that struct
+first — a mismatch there means the assumed layout is wrong for this build, and the fix is to bail
+out cleanly rather than write through a wrong-sized reinterpret, not to guess further), then call
+the plain non-virtual `BindUFunction`+`Add` directly on it. Bind to a genuinely harmless,
+already-inherited, no-argument void UFUNCTION the widget already has (a real, existing lifecycle
+call — never an invented one), THEN register a native post-hook (this SDK's own instance-scoped
+function-hook API, itself proven, heavily-used infrastructure, not a fresh risk) on that same
+UFunction scoped to that one widget instance. A real click routes through the engine's own input
+handling → broadcasts the delegate → calls the bound function on that instance → the hook fires.
+**Confirmed live across multiple sessions: 100+ rapid clicks, hook fire count exactly matching
+click count every time (no double-fires, no misses), no click passing through to the game
+underneath, no crash from the bound function's real body actually executing as a side effect of
+each click.**
+
+### 12q. An inherited UFUNCTION can intermittently fail to resolve on an otherwise-valid, freshly-constructed object, for reasons not fully root-caused — build self-healing verification, not just an existence/liveness check (2026-08-23)
+After §12n/§12o/§12p were all confirmed working cleanly in one live session, a LATER session
+intermittently failed: a freshly `NewObject`-constructed widget (confirmed non-null, confirmed
+`IsReal()`, confirmed its class's own function table was fully populated with a normal function
+count when checked in a working session) would nonetheless fail `GetFunctionByNameInChain` for
+functions that had resolved perfectly moments earlier in a different session with byte-identical
+code. Ruled out: memory corruption from the delegate-binding code in §12p (reproduced the same
+failure with that code path fully disabled); "the class just hasn't finished loading yet" (stayed
+broken for 20+ seconds and many retries within an affected session, which is not a plausible
+async-loading window). Root cause not pinned down. **Practical fix, regardless of cause**: don't
+let "the cached object is still a live UObject" (`IsReal()`) stand in for "the cached object is
+still actually usable." Re-verify the SPECIFIC capability you depend on (here: that the one
+UFUNCTION you need is still resolvable) every time you're about to rely on cached state, and
+rebuild from scratch if that check ever fails — turns "silently and permanently broken for the
+rest of the session" into "self-heals on the next attempt." A liveness check and a usability
+check are not the same claim, and conflating them is an easy, costly mistake once you've already
+convinced yourself construction succeeded.
+
+### 12r. Before claiming a native keybind, audit EVERY installed mod's key configuration, not just your own mod's (2026-08-22)
+A new native (non-Lua) keybind, registered via this SDK's own C++ input-hook API rather than the
+Lua-side `RegisterKeyBind`, was assigned to an F-row key that turned out to already be another
+installed mod's own menu-toggle key (hardcoded in that mod's own config file). The result looked
+exactly like a crash from the new feature's own code (game exited immediately on press) and cost
+real debugging time chasing the wrong cause before the actual collision was found. **F-row keys
+are especially collision-prone** — multiple unrelated tools/overlays default to them — a lesson
+this project's own Lua-side keybind config already carries for exactly this reason (see its own
+"F9 collided with one" note). Before assigning ANY new keybind, native or scripted: grep every
+installed mod's own config/settings files for hardcoded key names first, not just the mod you're
+actively building — a real collision reads identically to a crash in your own new code, and the
+two are easy to conflate without checking.

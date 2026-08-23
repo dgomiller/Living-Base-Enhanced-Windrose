@@ -1091,6 +1091,38 @@ function Testbed.SpawnSenkaByKey(key)
     return nil, "no Senkamati look keyed '" .. tostring(key) .. "'"
 end
 
+-- freezeIdleOnRestore (2026-08-23, RedFalcon's report: "all the idle senkamati are walking
+-- when restored again... they do eventually freeze, but they need to freeze immediately --
+-- they are supposed to be frozen like statues"). ROOT CAUSE FOUND AND FIXED AT THE SOURCE:
+-- this function only ever runs via RestoreHook, which doesn't fire until
+-- Config.RESTORE_POSTPROCESS_MS (8s default) after every restored mover has already spawned
+-- (see spawner.lua's scheduleRestorePostProcess comment -- that whole pipeline is gated that
+-- late for de-corrupt/MakePassive/goat-strip's crash-prone component surgery). Every idle
+-- Senkamati visibly walked for that entire 8+ second wait before this ever got called. The
+-- REAL fix is now inline in spawner.lua's restoreOne -- SetAILogic(actor, false) fires
+-- immediately, same frame as the spawn, same as decor's own physics/collision restoration
+-- right next to it. This function (and its call sites in RESTORE_RULES below) are KEPT as a
+-- secondary safety net / re-assertion -- harmless no-op once the immediate freeze has already
+-- taken, in case that one somehow doesn't for a given actor. Logs success/failure of every
+-- attempt (previously totally silent) so a re-occurrence shows real evidence in ue4ss.log
+-- instead of guessing blind again.
+local function freezeIdleOnRestore(actor)
+    local gen = Spawner.generation
+    local function pass(label)
+        if not stillAlive(actor, gen) then return end
+        local ok = false
+        pcall(function() ok = Spawner.SetAILogic(actor, false) end)
+        print(string.format("[LivingBase] freezeIdleOnRestore[%s]: SetAILogic(false) -> %s\n",
+            label, tostring(ok)))
+    end
+    freezeSenkaStatue(actor, function() pass("initial") end)
+    if ExecuteWithDelay then
+        for _, delay in ipairs({ 3000, 8000, 15000 }) do
+            ExecuteWithDelay(delay, function() pass(tostring(delay) .. "ms") end)
+        end
+    end
+end
+
 -- Called by Spawner.RestoreFromPersist for each re-created actor on WORLD LOAD. Restore
 -- only re-runs Spawner.Spawn (which re-applies the pre-build look/faction/AI), so the
 -- POST-spawn fixes — Senkamati de-corrupt/passivity, goat perception-strip — must be
@@ -1120,7 +1152,7 @@ local RESTORE_RULES = {
           -- no reason to make it wait behind de-corrupt). Parsed once here, ahead of the
           -- RunSerialized block below, purely so this one read isn't duplicated inside it.
           local preRow = parseSenkaRowKey(look and look.reskinTarget)
-          if preRow and preRow.idle then freezeSenkaStatue(actor) end
+          if preRow and preRow.idle then freezeIdleOnRestore(actor) end
           Spawner.BeginAsyncPostProcess()
           local onDone = function() Spawner.EndAsyncPostProcess() end
           Spawner.RunSerialized(function(done)
@@ -1152,7 +1184,7 @@ local RESTORE_RULES = {
           -- helmet flag. Falls back to hidden (the old fixed default) for a pre-1.3.x line.
           local row = parseSenkaRowKey(look.reskinTarget)
           -- idle (2026-08-15): see the mob rule's own comment above -- same freeze-first ordering.
-          if row and row.idle then freezeSenkaStatue(actor) end
+          if row and row.idle then freezeIdleOnRestore(actor) end
           Spawner.BeginAsyncPostProcess()
           local onDone = function() Spawner.EndAsyncPostProcess() end
           Spawner.RunSerialized(function(done)

@@ -5779,6 +5779,27 @@ local function restoreOne(line)
             pcall(function() Spawner.SetLootMesh(a, look.lootMesh) end)
             pcall(function() Spawner.MakeLootDecor(a) end)
         end
+        -- Idle Senkamati (2026-08-23 fix, RedFalcon: "they do eventually freeze, but they need
+        -- to freeze immediately... they are supposed to be frozen like statues"). testbed.lua's
+        -- RESTORE_RULES already calls freezeSenkaStatue for an idle row, correctly ordered
+        -- BEFORE its own de-corrupt work -- but RestoreHook (which is what actually invokes
+        -- RESTORE_RULES) never runs until Config.RESTORE_POSTPROCESS_MS (8s default) after
+        -- EVERY mover in this restore has already spawned, since that whole deferred pipeline
+        -- exists for de-corrupt/MakePassive/goat-strip's crash-prone COMPONENT SURGERY (see
+        -- scheduleRestorePostProcess's own comment) -- confirmed live, every idle Senkamati
+        -- visibly walked for the full 8+ second wait before that first freeze call ever landed.
+        -- SetAILogic is a plain function call, not component surgery, so it doesn't need that
+        -- gate at all -- same reasoning already applied to decor's own physics/collision and
+        -- loot-mesh restoration immediately above. reskinTarget's format is
+        -- "name::kind::helmet::idle" (see testbed.lua's senkaRowKey/parseSenkaRowKey) --
+        -- checking the trailing "::true" inline here, rather than requiring testbed.lua (which
+        -- spawner.lua never does, to avoid a circular require -- same precedent as
+        -- spawnmenu_manifest.lua's own short_class_name duplicate). RestoreHook's own later
+        -- freeze call is UNCHANGED and still runs too -- harmless no-op re-assertion once this
+        -- one has already taken, and a safety net if this one somehow doesn't.
+        if look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") then
+            pcall(function() Spawner.SetAILogic(a, false) end)
+        end
         return a, cls, look
     end
 end

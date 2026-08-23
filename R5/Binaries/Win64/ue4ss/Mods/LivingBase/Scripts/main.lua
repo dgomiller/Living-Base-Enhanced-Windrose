@@ -276,14 +276,40 @@ end
 local function restoreGatedAction(fn, name)
     -- Like directAction, but checks ONLY restoreGate, not the full modGate -- for actions that must
     -- stay reachable with In-Game Keys OFF (the GUI depends on them) but that DO touch real game
-    -- state, so the world-load restore lock must still apply. Currently just target lock (Num+) --
-    -- see its own registration comment below for why it's exempt from In-Game Keys specifically.
+    -- state, so the world-load restore lock must still apply. Target lock (Num+), and now
+    -- restoreLast/Num0 too (2026-08-19, RedFalcon's request, same reasoning) -- see targetLock's
+    -- own registration comment below for the original rationale.
     return function()
         if not restoreGate(name) then return end
         ExecuteInGameThread(function()
             local ok, err = pcall(fn)
             if not ok then log(name .. " FAILED: " .. tostring(err)) end
         end)
+    end
+end
+local function restoreGatedDebouncedAction(fn, name)
+    -- Like gatedAction, but checks ONLY restoreGate, not the full modGate -- for despawn/Num9
+    -- (2026-08-19, RedFalcon's request: reachable with In-Game Keys OFF, same as target lock
+    -- already is, since a live-edit session driven from the GUI still wants quick despawn access).
+    -- Keeps gatedAction's shared spawn-debounce, unlike plain restoreGatedAction -- a despawn
+    -- immediately followed by a respawn is exactly the "two composite builds in one frame" risk a
+    -- raw spawn already guards against, so this shouldn't drop that protection just to change gates.
+    return function()
+        if not restoreGate(name) then return end
+        if spawnBusy then
+            print("[LivingBase] '" .. tostring(name) .. "' ignored — shared spawn-debounce still active (" .. (Config.SPAWN_DEBOUNCE_MS or 300) .. "ms).\n")
+            return
+        end
+        spawnBusy = true
+        ExecuteInGameThread(function()
+            local ok, err = pcall(fn)
+            if not ok then log(name .. " FAILED: " .. tostring(err)) end
+        end)
+        if ExecuteWithDelay then
+            ExecuteWithDelay(Config.SPAWN_DEBOUNCE_MS or 300, function() spawnBusy = false end)
+        else
+            spawnBusy = false
+        end
     end
 end
 
@@ -302,7 +328,7 @@ register("plague",    gatedAction(Testbed.SpawnNextPlague,      "place Senkamati
 -- purged (NSFW risk from the archetype-reroll's flash-through, see config.lua's own removal note
 -- and CLAUDE.md). Both keys are free again.
 register("livestock", gatedAction(Testbed.SpawnNextLivestock,   "place farm animal (boar/goat)"))
-register("undo",      gatedAction(Testbed.DespawnInFront,       "despawn spawn in front (same floor)"))
+register("undo",      restoreGatedDebouncedAction(Testbed.DespawnInFront, "despawn spawn in front (same floor)"))
 -- TEMP DEV/TEST TOOL (2026-08-10) -- see Testbed.TestFemaleWalkerReskin's own comment.
 register("testFemaleWalkerReskin", gatedAction(Testbed.TestFemaleWalkerReskin, "test: female walker reskin (Brethren Woman look)"))
 -- F5/testApplyPose and F6/testApplyBodySex keys REMOVED (2026-08-15, same day) -- both were
@@ -330,7 +356,9 @@ register("testFemaleWalkerReskin", gatedAction(Testbed.TestFemaleWalkerReskin, "
 
 -- Undo (restore last despawn / DEL clean-house), Num0. No shared debounce — this is the "I made a
 -- mistake" key, so it shouldn't be at risk of getting swallowed right when you need it.
-register("restoreLast", directAction(function() Spawner.UndoDespawn() end, "undo"))
+-- restoreGatedAction, not directAction (2026-08-19, RedFalcon's request) -- exempt from In-Game
+-- Keys, same as targetLock/undo above.
+register("restoreLast", restoreGatedAction(function() Spawner.UndoDespawn() end, "undo"))
 
 -- Cycle the targeted statue OR decoration through its own roster (']' forward / '[' backward) —
 -- auto-detecting which kind of roster the targeted actor's class belongs to. No shared debounce — a
@@ -437,11 +465,28 @@ if Config.LIVE_EDIT then
     -- Z=Yaw) -- checked live at call time (same "read Spawner.editPrecisionScale live" reasoning
     -- editAction's closure above already uses), so cycling the axis takes effect on the very next
     -- press, no re-registration needed.
+    -- Precision-scaled (2026-08-19, RedFalcon's request) -- previously always unscaled regardless
+    -- of axis count, a deliberate choice when precision was translation-only (see editAction's own
+    -- comment), but RedFalcon wants rotation to respect it too now that it's a real 3-axis control.
+    -- NORMALIZED against the "1x (normal)" precision level (0.25, PRECISION_LEVELS[4] below,
+    -- precisionIdx starts at 4) rather than multiplying the raw scale directly the way editAction
+    -- does for translation -- RedFalcon confirmed the CURRENT unscaled amount (Config.
+    -- LIVE_EDIT_ROTATE_STEP, 15 deg) is exactly right at normal speed, so 0.25 must map to a 1.0
+    -- multiplier here, not editAction's literal 0.25 (which would quarter it at "normal"). Keep
+    -- this 0.25 in sync with PRECISION_LEVELS[4].scale/precisionIdx's own starting value below if
+    -- that table's baseline is ever rebased again (same "keep in sync" caveat already noted for
+    -- the GUI slider's own duplicate of this table).
     local function editRotAction(name, amt)
         return directAction(function()
-            if rotateAxis == "X" then Spawner.EditNearestInFront(0, 0, 0, 0, 0, amt)
-            elseif rotateAxis == "Y" then Spawner.EditNearestInFront(0, 0, 0, 0, amt, 0)
-            else Spawner.EditNearestInFront(0, amt, 0, 0, 0, 0) end
+            -- Fresh local, NEVER reassign the outer `amt` parameter here -- it's captured by
+            -- reference (an upvalue), not copied, and this inner function is called once per
+            -- keypress, so mutating `amt` itself would compound the scale on every repeated press
+            -- instead of always scaling the same original step.
+            local scale = (Spawner.editPrecisionScale or 0.25) / 0.25
+            local scaledAmt = amt * scale
+            if rotateAxis == "X" then Spawner.EditNearestInFront(0, 0, 0, 0, 0, scaledAmt)
+            elseif rotateAxis == "Y" then Spawner.EditNearestInFront(0, 0, 0, 0, scaledAmt, 0)
+            else Spawner.EditNearestInFront(0, scaledAmt, 0, 0, 0, 0) end
         end, name)
     end
     register("editUp",    editAction("editUp",    hs, 0, 0, 0))
@@ -668,6 +713,60 @@ SPAWN_MENU_HANDLERS.LIVESTOCK = function(index)
     local row = SPAWN_MENU_LIVESTOCK_ROWS[index]
     if not row then return false, "index " .. tostring(index) .. " out of range" end
     return Testbed.SpawnLivestockByName(row.name)
+end
+
+------------------------------------------------------------
+-- FRIENDLY SPAWN LABELS (2026-08-19, RedFalcon's request): spawn_menu.ini's hand-curated
+-- `label = ...` per roster/index entry -- the tree reorganization from v2.1.5 -- becomes the
+-- ACTUAL toast/target-name/persist.txt label for that entry everywhere it's placed (keyboard
+-- cycling, lblook/lbspawn, the GUI tree itself), not just something the ImGui window displays
+-- while Lua goes on using its own mechanical "STANDING_People of Tortuga 1"-style label. Built
+-- ONCE here from spawnmenu_manifest.lua's M.ReadLabels() (spawn_menu.ini only changes via a hand-
+-- edit + restart, same one-time-INI-read pattern modsettings.lua's own EnsureSavedDefaults uses),
+-- reusing every roster/index/row resolution this section already built above rather than
+-- duplicating it a third time. Keyed by each roster's own IDENTITY string -- the exact same one
+-- its by-name lookup already uses (short class name for statues via spawnMenuStatueShortName,
+-- `.name` for crew/townsfolk/decor/livestock, Testbed.SenkaShortKey for Senkamati, the plain
+-- string itself for walking women) -- so testbed.lua's placement functions can look themselves up
+-- with zero roster/index plumbing threaded through at call time. Stored on Spawner (not a local
+-- here) since testbed.lua already requires that module and is where every placement function
+-- actually lives.
+------------------------------------------------------------
+Spawner.FriendlyLabels = {}
+do
+    local ok, SpawnMenuManifest = pcall(require, "spawnmenu_manifest")
+    local byRoster = ok and SpawnMenuManifest.ReadLabels() or {}
+
+    for index, label in pairs(byRoster.FACTION_VISITOR_LOOKS or {}) do
+        local row = Config.FACTION_VISITOR_LOOKS and Config.FACTION_VISITOR_LOOKS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.TOWNSFOLK_CLASSES or {}) do
+        local row = Config.TOWNSFOLK_CLASSES and Config.TOWNSFOLK_CLASSES[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.SENKAMATI_LOOKS or {}) do
+        local row = Config.SENKAMATI_LOOKS and Config.SENKAMATI_LOOKS[index]
+        if row then Spawner.FriendlyLabels[Testbed.SenkaShortKey(row)] = label end
+    end
+    for index, label in pairs(byRoster.FEMALE_RESKIN_TARGETS or {}) do
+        local name = Config.FEMALE_RESKIN_TARGETS and Config.FEMALE_RESKIN_TARGETS[index]
+        if name then Spawner.FriendlyLabels[name] = label end
+    end
+    for index, label in pairs(byRoster.DECOR or {}) do
+        local row = SPAWN_MENU_DECOR_ROWS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.LIVESTOCK or {}) do
+        local row = SPAWN_MENU_LIVESTOCK_ROWS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for roster, def in pairs(SPAWN_MENU_STATUE_ROSTERS) do
+        for index, label in pairs(byRoster[roster] or {}) do
+            local row = def.list and def.list[index]
+            if row then Spawner.FriendlyLabels[spawnMenuStatueShortName(row.path)] = label end
+        end
+    end
 end
 
 local function pollSpawnMenuRequest()
@@ -914,8 +1013,8 @@ end
 local MOVE_MENU_MAX_ACTIONS_PER_DRAIN = 20
 
 -- Pending accumulator: drainMoveMenuQueue() (fast, 100ms) adds to this; flushMoveMenuQueue()
--- (slow, 250ms -- see its own comment) is the ONLY thing that ever reads it and calls
--- Spawner.EditNearestInFront, then resets it to zero.
+-- (slow, 330ms as of 2026-08-19 -- see its own loop's comment) is the ONLY thing that ever reads
+-- it and calls Spawner.EditNearestInFront, then resets it to zero.
 local movePendingZ, movePendingYaw, movePendingFwd, movePendingRight = 0.0, 0.0, 0.0, 0.0
 local movePendingPitch, movePendingRoll = 0.0, 0.0
 local movePendingCount = 0
@@ -943,6 +1042,12 @@ local function drainMoveMenuQueue()
     local rs = Config.LIVE_EDIT_ROTATE_STEP or 15.0
     local ms = Config.LIVE_EDIT_MOVE_STEP or 10.0
     local scale = Spawner.editPrecisionScale or 1.0
+    -- Rotation precision scaling (2026-08-19) -- same fix/reasoning as editRotAction's own comment
+    -- (main.lua, the keyboard ','/'.' path): normalized against "1x (normal)" (0.25) rather than
+    -- multiplying `scale` directly, so the CURRENT unscaled rs (15 deg) still comes out unchanged
+    -- at normal precision, matching what RedFalcon confirmed already feels right. Keep in sync with
+    -- editRotAction's own copy of this same 0.25 baseline if PRECISION_LEVELS is ever rebased again.
+    local rotScale = scale / 0.25
     local count, skipped = 0, 0
     -- Line-by-line, not one gmatch over the whole file: MoveMenu.cpp can now send THREE distinct
     -- line shapes in the same file (spatial "MOVE:<ACTION>", one-shot "ACTION:<NAME>", and
@@ -960,11 +1065,11 @@ local function drainMoveMenuQueue()
                 local d = MOVE_MENU_ACTIONS[spatialAction]
                 if d then
                     movePendingZ     = movePendingZ     + d[1] * hs * scale
-                    movePendingYaw   = movePendingYaw   + d[2] * rs
+                    movePendingYaw   = movePendingYaw   + d[2] * rs * rotScale
                     movePendingFwd   = movePendingFwd   + d[3] * ms * scale
                     movePendingRight = movePendingRight + d[4] * ms * scale
-                    movePendingPitch = movePendingPitch + d[5] * rs
-                    movePendingRoll  = movePendingRoll  + d[6] * rs
+                    movePendingPitch = movePendingPitch + d[5] * rs * rotScale
+                    movePendingRoll  = movePendingRoll  + d[6] * rs * rotScale
                     movePendingCount = movePendingCount + 1
                     count = count + 1
                 end
@@ -1032,19 +1137,21 @@ if ExecuteWithDelay then
         end)
     end
     moveMenuDrainLoop()
-    -- 100ms (matches the drain rate above, so there's no artificial lag beyond it) = at most 10
-    -- Spawner.EditNearestInFront calls/sec. CONFIRMED (2026-08-16) the crash's real cause was
-    -- EditNearestInFront's per-edit SetActorHiddenInGame toggle (spawner.lua, now disabled, see
-    -- that function's own comment), not raw call rate -- a controlled test held up at 250ms with
-    -- only the toggle disabled, after a stricter 500ms throttle alone had NOT been enough. persist.txt
-    -- itself (the other per-call cost, two reads + one rewrite) is only ~50 entries / ~11KB on this
-    -- base -- negligible even at high frequency -- so there's no remaining reason to throttle this
-    -- hard; kept at 100ms rather than removed entirely purely as cheap insurance against
-    -- MOVE_MENU_MAX_ACTIONS_PER_DRAIN's own race-window worst case (see that constant's comment).
-    -- If persist.txt ever grows dramatically (hundreds+ entries) and nudging starts to feel
-    -- hitchy, that's the first thing to revisit.
+    -- FLUSH RATE (2026-08-19, RedFalcon: "movement causing crashing is a bit persnickety") --
+    -- SLOWED, down from the actual 100ms this was running. History: the 2026-08-16 crash
+    -- investigation traced the real cause to EditNearestInFront's per-edit SetActorHiddenInGame
+    -- toggle (spawner.lua, since disabled) and confirmed a controlled test held up fine at 250ms
+    -- with just that toggle fix -- the comment here used to conclude call rate alone was never the
+    -- real problem and kept 100ms purely as cheap insurance, not because it was re-tested and
+    -- confirmed safe at that speed. It wasn't -- RedFalcon is seeing renewed instability at 100ms.
+    -- First tried 1000ms (a full second, deliberately well below the known-good 250ms rather than
+    -- guessing a small reduction); RedFalcon then asked to try 330ms instead -- roughly a third of
+    -- a second, still meaningfully slower than 100ms and close to the previously-validated 250ms,
+    -- to see if a lighter slowdown is enough before committing to the choppier 1000ms feel. If
+    -- 330ms doesn't fully resolve it, the toggle-disable fix itself (or something new since
+    -- 2026-08-16) needs re-examining, not just another rate reduction.
     local function moveMenuFlushLoop()
-        ExecuteWithDelay(100, function()
+        ExecuteWithDelay(330, function()
             flushMoveMenuQueue()
             moveMenuFlushLoop()
         end)
@@ -1685,6 +1792,288 @@ if RegisterConsoleCommandHandler then
     log("Console command registered: lbsexchange")
 else
     log("lbsexchange unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestswapbodysex" (2026-08-19) -- THROWAWAY DEV TEST, see
+-- Spawner.TestSwapBodySex's own comment. Answers whether SwapBodySex (found via lbprobedump's
+-- function listing) can change sex on an actor lbsexchange refuses (IsBodySexChangeAvailable()
+-- false). Deliberately NOT documented in README/NEXUS docs, same reasoning as lbsexchange.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestswapbodysex", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestswapbodysex] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestSwapBodySex(say) end)
+            if not ok then say("lbtestswapbodysex FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestswapbodysex")
+else
+    log("lbtestswapbodysex unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestparamswap" (2026-08-19) -- THROWAWAY DEV TEST. RedFalcon asked whether an
+-- ALREADY-SPAWNED actor with an empty slot (e.g. the Gatherer, no Headgear entry in
+-- BuildedCompositeMeshes) could have a piece added live, instead of needing to respawn with
+-- different composite params -- which is how every reskin in this mod has worked so far. Turns out
+-- this was ALREADY answered: Spawner.ApplyComposite's own dead-end note (right above
+-- Spawner.ApplyBodySex, spawner.lua) says its `paramsPath` argument (== DefaultParams, the outfit)
+-- is "the proven, working half" post-build -- only `archetypePath` (body/skin/hair) was ever
+-- confirmed dead. ApplyComposite itself was never wired to a console command though (only ever
+-- called from other dev-test code), so this is just that missing wrapper -- targets whatever
+-- lbprobe last aimed at, same as lbtestswapbodysex. Full /Game/... path required (no short-name
+-- index for composite-params DataAssets), e.g. the Buccaneers Merchant 01's own DefaultParams:
+-- /Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/
+-- DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams.
+-- DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestparamswap", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestparamswap] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsPath = Parameters and Parameters[1]
+            if not paramsPath then
+                say("Usage: lbtestparamswap <full /Game/... DefaultParams DataAsset path> -- run lbprobe on a target first.")
+                return true
+            end
+            local actor = Spawner._lastProbedActor
+            if not (actor and actor:IsValid()) then
+                say("No valid probed target -- run lbprobe on something first.")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.ApplyComposite(actor, paramsPath) end)
+            if not ok then say("lbtestparamswap FAILED: " .. tostring(err)) end
+            say("Done -- see ue4ss.log ([LivingBase:Composite] lines) for the before/after readback.")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestparamswap")
+else
+    log("lbtestparamswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestparamswap2" (2026-08-19) -- THROWAWAY DEV TEST, second variant. See
+-- Spawner.ApplyCompositeOrdered's own comment: lbtestparamswap's first attempt left
+-- BuildedCompositeMeshes unchanged (5 -> 5, no actual rebuild) even though the DefaultParams
+-- property write itself landed -- this wraps the write+rebuild INSIDE the StartCharacterEdit/
+-- EndCharacterEdit session instead of firing the rebuild before the session opens, to see if call
+-- ORDER was the reason nothing rebuilt. Same targeting/usage shape as lbtestparamswap.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestparamswap2", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestparamswap2] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsPath = Parameters and Parameters[1]
+            if not paramsPath then
+                say("Usage: lbtestparamswap2 <full /Game/... DefaultParams DataAsset path> -- run lbprobe on a target first.")
+                return true
+            end
+            local actor = Spawner._lastProbedActor
+            if not (actor and actor:IsValid()) then
+                say("No valid probed target -- run lbprobe on something first.")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.ApplyCompositeOrdered(actor, paramsPath, say) end)
+            if not ok then say("lbtestparamswap2 FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestparamswap2")
+else
+    log("lbtestparamswap2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestprebuildparams" (2026-08-19) -- THROWAWAY DEV TEST. lbtestparamswap/
+-- lbtestparamswap2 both confirmed POST-build DefaultParams swapping is dead (BuildedCompositeMeshes
+-- never rebuilds on an already-spawned actor, see Spawner.ApplyCompositeOrdered's own dead-end
+-- note). This is the control test done the RIGHT way: spawns a BRAND NEW actor with the override
+-- DefaultParams set in the pre-build deferred window -- the exact same compositeLook.params
+-- mechanism Spawner.SetCompositeParams already runs safely dozens of times a session (Senkamati/
+-- Warrior cross-skeleton reskins, every crew/townsfolk look) -- no new engine surface, no new
+-- crash risk. Answers: does a cross-class DefaultParams override (e.g. Gatherer body + Buccaneers
+-- Merchant outfit) actually render correctly when set at the only time this component reads it, or
+-- does the cross-skeleton/cross-archetype mismatch block it regardless of timing? Same ShortName|
+-- ClassPath resolution as lbspawn. Spawns as a plain (non-friendly) raw validation spawn, same as
+-- lbspawn -- not tracked into any roster.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestprebuildparams", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestprebuildparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local input = Parameters and Parameters[1]
+            local paramsPath = Parameters and Parameters[2]
+            if not (input and paramsPath) then
+                say("Usage: lbtestprebuildparams <ShortName|ClassPath> <full /Game/... DefaultParams DataAsset path>")
+                say("  e.g. lbtestprebuildparams BP_NPC_Handyman_Gatherer /Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams.DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams")
+                return true
+            end
+            local classPath = input
+            if not input:match("^/") then
+                classPath = ClassIndex[input] or ClassIndexLower[input:lower()]
+                if not classPath then
+                    say("Unknown short name: " .. input .. " (pass the full /Game/... path instead)")
+                    return true
+                end
+            end
+            local ok, actor = pcall(function()
+                return Spawner.Spawn(classPath, "PrebuildParamsTest_" .. input, nil, nil, nil, nil, false,
+                    { params = paramsPath })
+            end)
+            if ok and actor and actor:IsValid() then
+                say("Spawned " .. input .. " with DefaultParams override -- check BuildedCompositeMeshes via lbprobe+lbprobedump.")
+            else
+                say("FAILED to spawn: " .. classPath .. " (see ue4ss.log SPAWN FAILED / [LivingBase:Composite] lines)")
+            end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestprebuildparams")
+else
+    log("lbtestprebuildparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbcustomnpc" (2026-08-19) -- DEV TOOL, see Spawner.ListCustomizationControllers/
+-- Spawner.SetCustomizationController's own comments. General-purpose replacement for the earlier
+-- throwaway lbtestsethair -- RedFalcon asked for a proper get/set pair to explore the
+-- GetCustomizationMeshControllers/SetCustomizationMeshControllerValue system on whatever's
+-- currently probed (lbprobe first), not just the Hairs slot. `lbcustomnpc get` lists every
+-- controller (category/current/options/selectable); `lbcustomnpc set <category|index> <value>`
+-- writes one, matched by category name (exact or a case-insensitive suffix after
+-- "Customization.UID.", e.g. "hairs") or by plain MeshGroupIndex for a controller with no usable
+-- tag. Not documented in README/NEXUS docs, same as every other dev probe/test command.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcustomnpc", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbcustomnpc] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local function usage()
+                say("Usage: lbcustomnpc get")
+                say("       lbcustomnpc set <category|index> <value>   e.g. lbcustomnpc set hairs 5")
+            end
+            local sub = Parameters and Parameters[1] and Parameters[1]:lower()
+            local ok, err
+            if sub == "get" then
+                ok, err = pcall(function() Spawner.ListCustomizationControllers(say) end)
+            elseif sub == "set" then
+                local which, newValue = Parameters[2], Parameters[3]
+                if not (which and newValue) then
+                    usage()
+                    return true
+                end
+                ok, err = pcall(function() Spawner.SetCustomizationController(Spawner._lastProbedActor, which, newValue, say) end)
+            else
+                usage()
+                return true
+            end
+            if not ok then say("lbcustomnpc FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcustomnpc")
+else
+    log("lbcustomnpc unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeclass" (2026-08-19) -- DEV TOOL, see Spawner.ProbeClassCustomization's
+-- own comment. Reads a class's customization controllers straight off its Class Default Object --
+-- NO SpawnActor call -- to test whether the Armor.*/Facial.*/Hairs breakdown can be surveyed across
+-- the roster without loading every actor into the world. Same ShortName|ClassPath resolution as
+-- lbspawn (reuses the same class_index.lua lookup), since this is the "read-only, no spawn" sibling
+-- of that command.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobeclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local input = Parameters and Parameters[1]
+            if not input then
+                say("Usage: lbprobeclass <ShortName|ClassPath>  e.g. lbprobeclass BP_AnimatedActor_TortugaCitizen_Combatant_CrossHands")
+                return true
+            end
+            local classPath = input
+            if not input:match("^/") then
+                classPath = ClassIndex[input] or ClassIndexLower[input:lower()]
+                if not classPath then
+                    say("Unknown short name: " .. input .. " (not in the index of 2,562 known BP_ classes"
+                        .. " -- check spelling, run 'lbspawn list' to browse LivingBase's own roster,"
+                        .. " or pass the full /Game/... path instead)")
+                    return true
+                end
+            end
+            local ok, err = pcall(function() Spawner.ProbeClassCustomization(classPath, say) end)
+            if not ok then say("lbprobeclass FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeclass")
+else
+    log("lbprobeclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbcustomscan" (2026-08-19) -- DEV TOOL, see Spawner.ScanNearbyCustomization's
+-- own comment. lbprobeclass's CDO route proved a dead end for pawn classes (controller list is only
+-- built at spawn time), so this is the practical fallback: place a handful of actors (lbspawn/
+-- lblook, or just use whatever's already wandering nearby), run this once, and every NEW class
+-- within range gets its full controller breakdown + sex/body/customizable flags appended to
+-- customization_survey.jsonl -- already-recorded classes are skipped automatically, so repeated runs
+-- after placing more actors and despawning the old ones only grow the file, never duplicate it.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcustomscan", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbcustomscan] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local radius = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.ScanNearbyCustomization(radius, say) end)
+            if not ok then say("lbcustomscan FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcustomscan")
+else
+    log("lbcustomscan unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbdecorloot" (2026-08-17) -- converts the dropped item (R5LootActor) nearest in

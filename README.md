@@ -53,6 +53,11 @@ R5/Binaries/Win64/ue4ss/Mods/
   install directory. Confirm the game isn't running first if you're not going through `lbreload`.
 - Full engine-quirk findings, dead ends, and the reasoning behind non-obvious code live in `CLAUDE.md`
   (technical history) and `ASSET_CATALOG.md` (the spawnable-asset database) inside the mod folder.
+- The durable, mod-agnostic findings from that history (crash traps, the composite/appearance system,
+  restore-on-load, C++ UE4SS overlays, etc.) are also maintained separately, generalized for any Windrose
+  mod, in **[Windrose-UE4SS-Modding-Notes](https://github.com/dgomiller/Windrose-UE4SS-Modding-Notes)**
+  (public domain) — worth checking if you're modding this game and hitting something that feels like it
+  should already have an answer.
 
 ## License
 

@@ -1,13 +1,21 @@
 [size=5][b]Living Base Enhanced[/b][/size]
 [color=#D4D4D8]A base-building and population toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base, fine-tune each piece in place (full X/Y/Z position and rotation), and have it all persist across reloads. The primary way to do all of this is a real clickable GUI window — press '-' in-game to open it — with every keyboard control still fully available alongside it.[/color]
 
-[size=4][b]What's new in 2.1.5[/b][/size]
+[size=4][b]What's new in 2.1.7[/b][/size]
 [color=#D4D4D8]
-[b]Reorganized GUI spawn tree[/b] — a full hand-curated pass: new top-level sections, new subgrouping, and a real friendly name for every entry, replacing the old mechanically auto-generated grouping. Covers every roster — crew, statues, townsfolk, walking women, Senkamati, animals, and decor (including Drops, now grouped inside Decor). Keyboard cycling and lblook/lbspawn are unaffected — this is purely the GUI tree's organization.
+[b]Rebuilt Letty, Marita, and the Merchant walking women[/b] — each now spawns with her own real, distinct outfit instead of sharing one generic look with a patched-on overlay. Letty and Marita wear their actual in-game outfits; the Merchant wears a proper female-fitted Buccaneers Merchant look, fixing a persistent pants-clipping issue. Hair and skin tone are still randomized on every spawn. Anyone placed in an earlier version upgrades automatically the next time your save loads.
 
-[b]Trimmed crew roster[/b] — removed 9 crew looks (Smugglers and Tortuga's Musketeer/Sailor/Sergeant, plus Brethren's Musketeer/Sailor/Sergeant) as part of the reorganization. Player Crew, all 3 Buccaneers looks, and Brethren Woman remain.
+[b]Merged "Woman With Hat" and "Woman With Hair"[/b] into a single "Woman" entry (still spawnable as either base body), whose outfit, hat presence, hair, and skin tone all vary naturally on their own — a wider range of genuine variety than the old forced-hat system gave.
 
-[b]Fixed[/b] — two Drops items shared a display name with a different item ("Reliable Pistol," "Clay Tablet"); both now have distinct names.
+[b]Despawn (Num9) and Undo-Despawn (Num0)[/b] now stay reachable with In-Game Keys off, matching Target Lock (Num+) — useful for a GUI-driven session where the keyboard placement keys are deliberately disabled.
+
+[b]Newly placed items are now the live Target Lock automatically[/b], as if Num+ had just been pressed on them — adjust what you just placed right away, no separate targeting step.
+
+[b]Rotation now respects the live-edit precision setting[/b], the same way movement already did. Normal speed rotates exactly like before; the other precision levels now actually apply to rotation too.
+
+[b]Decor/object nudging now moves along a fixed direction[/b] instead of relative to whichever way you're facing, so the same forward/back/left/right press always shifts an object the same way. Statues and NPCs are unchanged.
+
+[b]Fixed[/b] — "Drops" decor could come back invisible after a reload. Anything placed before this fix needs to be despawned and re-placed once to pick up the correction.
 
 [/color]
 
@@ -42,7 +50,7 @@
 
 [b]Normal-posture Senkamati and a big animal roster[/b] — the Senkamati Hunter and Caster (Num 7) walk with normal human posture instead of their native mob's lumbering gait, matching the Warrior. Num 7 cycles through 30+ looks: original mob body vs. re-skinned, with or without the tribal helmet, each one's untouched "as original" corrupted appearance, and a frozen/idle counterpart for every look — the female Caster's re-skin comes in two different base bodies (Gatherer and Herbalist) with distinct figure/hair-color/palette. Farm animals (Num 8): 13 entries — Goat Mega, Sow, Charging Boar, Boar Mega, Wolf, Alpha Wolf, Crocodile, and a corrupted "Plague" Crocodile alongside the boar/goat/dodo set, all tamed and friendly.
 
-[b]Walking Women (Numpad . key)[/b] — a real, walking female NPC re-skinned to look like Letty, Marita Suares, or the Buccaneers Merchant, plus two plain looks ("Woman With Hat" and "Woman With Hair") for general crowd variety. Every look comes in TWO different base bodies (Base 1/Base 2, genuinely different figures and hair color via two different underlying NPC classes, same outfit/hair-style either way) for 10 stops total. Every placement rolls a random skin tone (and, for the plain looks, a random hairstyle) — this re-rolls each time you reload your save, on purpose. Reloading correctly restores which look/character/base each placed NPC was.
+[b]Walking Women (Numpad . key)[/b] — a real, walking female NPC. Letty, Marita Suares, and the Buccaneers Merchant each wear their own real, distinct outfit; a fourth, plain "Woman" look rounds out the roster with an outfit, hat presence, and hair that all vary naturally on their own for general crowd variety. Every look comes in TWO different base bodies (Base 1/Base 2, genuinely different figures and hair color via two different underlying NPC classes) for 8 stops total. Every placement rolls a random skin tone — this re-rolls each time you reload your save, on purpose. Reloading correctly restores which look/character/base each placed NPC was, upgrading anyone placed before 2.1.7 to her real outfit automatically.
 
 [b]Reticle-accurate targeting[/b] — despawn, live-edit, and pose-cycle pick the object your camera is actually pointed at (including up/down — you can target two things stacked vertically), instead of a wide "anything vaguely in front of your character's body" guess.
 
@@ -62,18 +70,18 @@
 [/color]
 
 [size=4][b]Installation[/b][/size]
-[color=#D4D4D8]1. Install UE4SS (latest experimental / RE-UE4SS build) into Windrose. In ue4ss\UE4SS-settings.ini, under [EngineVersionOverride], set MajorVersion=5 and MinorVersion=6. The mod will not load without this override.
-
-2. Extract the download so BOTH mod folders sit at:
+[color=#D4D4D8]
+[list=1]
+[*]Install UE4SS (latest experimental / RE-UE4SS build) into Windrose. In ue4ss\UE4SS-settings.ini, under [EngineVersionOverride], set MajorVersion=5 and MinorVersion=6. The mod will not load without this override.
+[*]Extract the download so BOTH mod folders sit at:
 ...\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\
 ...\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBaseSpawnMenu\
 (you should have ...\Mods\LivingBase\Scripts\... and config.txt inside the first one, and ...\Mods\LivingBaseSpawnMenu\dlls\main.dll inside the second).
-
-3. Enable both: open ...\ue4ss\Mods\mods.txt and add the lines:
+[*]Enable both: open ...\ue4ss\Mods\mods.txt and add the lines:
 LivingBase : 1
 LivingBaseSpawnMenu : 1
-
-4. Launch the game, load into a world, and press '-' to open the GUI (or use the keyboard controls below directly).
+[*]Launch the game, load into a world, and press '-' to open the GUI (or use the keyboard controls below directly).
+[/list]
 
 Optional: edit LivingBase\config.txt (plain text, no coding) to toggle features.
 Back up your saves before first use — standard caution for an Early Access game with unofficial mods.[/color]
@@ -83,10 +91,12 @@ Back up your saves before first use — standard caution for an Early Access gam
 [b]GUI window (LivingBaseSpawnMenu)[/b] — a categorized, clickable spawn tree; a held-repeat move/edit panel with full X/Y/Z rotation; a precise typed coordinate editor; in-window Instructions/History reference. Open/close with '-', steal focus for it with '='.
 
 [b]Placement toolkit[/b] — drop one actor or prop per pick (GUI) or keypress (keyboard), ~3m ahead in the direction you're looking:
-- Numpad 1-9: crew (cycles 14 looks, including faction-visitor re-skins), townsfolk, four kinds of posed statue, friendly Senkamati tribals, friendly wildlife, and despawn.
-- Numpad . (decimal): a walking female NPC, cycling through Letty, Marita, the Buccaneers Merchant, and two plain looks.
-- ' (apostrophe): change the active decoration category (nature, boats, wrecks, tents, storage, furniture, plus 18 Drops themes). ; (semicolon): place from the active category.
-- Num 0: undo the last despawn/wipe/pose-cycle. ] and [: cycle a statue or decoration's pose forward/backward. Backslash: flip statue facing for future spawns.
+[list]
+[*]Numpad 1-9: crew (cycles 14 looks, including faction-visitor re-skins), townsfolk, four kinds of posed statue, friendly Senkamati tribals, friendly wildlife, and despawn.
+[*]Numpad . (decimal): a walking female NPC, cycling through Letty, Marita, the Buccaneers Merchant, and a plain look.
+[*]' (apostrophe): change the active decoration category (nature, boats, wrecks, tents, storage, furniture, plus 18 Drops themes). ; (semicolon): place from the active category.
+[*]Num 0: undo the last despawn/wipe/pose-cycle. ] and [: cycle a statue or decoration's pose forward/backward. Backslash: flip statue facing for future spawns.
+[/list]
 
 [b]Live-edit[/b] — nudge the nearest placed piece (or, via the GUI, the target-locked one) and the change persists: PageUp/PageDown height, comma/period rotate whichever axis is selected ('/' switches axis), arrow keys slide, Num / and Num * for fixed 45°/180° yaw, Num - cycles precision, Num + toggles a target lock. Targeting tracks your camera, not just your body facing.
 
@@ -103,10 +113,12 @@ Every feature is individually toggleable in config.txt.
 
 [size=4][b]Requirements[/b][/size]
 [color=#D4D4D8]
-- Windrose (Kraken Express) — single-player. Built against the current Early Access build.
-- UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise.
-- No other mods required.
-- Note: this is an unofficial mod, so a game patch may change internal class paths (all centralized in config.lua for quick fixing). Keep save backups.
+[list]
+[*]Windrose (Kraken Express) — single-player. Built against the current Early Access build.
+[*]UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise.
+[*]No other mods required.
+[*]Note: this is an unofficial mod, so a game patch may change internal class paths (all centralized in config.lua for quick fixing). Keep save backups.
+[/list]
 [/color]
 
 [size=4][b]Controls[/b][/size]
@@ -123,7 +135,7 @@ Num 7 — Friendly Senkamati tribal human: Warrior, Hunter, and female Caster �
 Num 8 — Friendly wildlife: boar family / goats / dodos / wolves / crocodile (cycles)
 Num 9 — Despawn the object in front of you, on your floor
 Num 0 — Undo: restore the last despawn (or a whole Delete wipe) at its exact spot, appearance included; names what it restored
-Num . (decimal) — Walking female NPC: cycles Woman With Hat, Woman With Hair, the Buccaneers Merchant, Letty, and Marita — each with a randomized skin tone (and, for the two plain looks, hairstyle) on every placement
+Num . (decimal) — Walking female NPC: cycles Woman, the Buccaneers Merchant, Letty, and Marita — each with a randomized skin tone (and, for Woman, hairstyle and outfit too) on every placement
 Backslash (\) — Flip statue facing 180° for future spawns only[/color]
 
 [color=#D4D4D8][b]Cycle a placed statue/decoration[/b] (not numpad — reticle-targeted, same as despawn):
@@ -157,20 +169,27 @@ Insert — Toggle LivingBase's own keyboard keys on/off (does not affect the GUI
 
 [size=4][b]Known Limitations[/b][/size]
 [color=#D4D4D8]
-- The GUI's mouse cursor stays confined to the game window until one click inside it, after =/- releases it. To fully return to normal camera control: click once in the game window, press = (or -) again if needed, then click once more. Alt+Tab or the Windows key also fully frees the OS cursor as a side effect.
-- Because it's an unofficial mod, a game patch can change internal class paths and temporarily break a feature. Everything version-dependent lives in config.lua, so fixes are quick once paths are updated.
-- The posed statue keys (Num 3-6) place static actors on purpose — that's the feature, not a bug.
-- Arrows, PageUp/PageDown, and the numpad operator keys (/ * -) aren't in this UE4SS build's normal key table and only work via a raw-key-code fallback — the engine drops most rapid repeat presses for these specific keys before UE4SS ever sees them. Individual, deliberate taps land reliably; holding/mashing won't give smooth continuous movement. The GUI's move panel buttons don't have this problem. This is an engine-level limitation, not a mod bug.
-- The Brethren of the Coast "woman" crew re-skin (Num 1) currently has a male body under the female clothing — known, not yet fixed.
-- Outfit and hair COLOR can't be changed on any NPC placed by this mod, for any feature — this covers the walking faction-visitor re-skins' uniform colors too (generic rather than faction-matched). Confirmed to be a hard engine limitation (the game only sets color once, when a character is first created behind the scenes) rather than something not yet implemented, so it's not on the to-do list. Skin tone and hairstyle are unaffected and both work fine.
-- ] and [ (the statue/decoration cycle keys) share a bind with the game's own "Change Target" combat key. Low-risk in practice — you're not usually cycling statues mid-fight — and Insert disables every key this mod uses instantly if it ever gets in the way.
-- If using the optional Windrose Mod Settings integration: keybind changes made there need a game restart to fully take effect (a few toggles apply immediately — each one says so in its own description). Separately, moving the mouse cursor quickly over its settings list has been observed to crash the game — this is a Windrose Mod Settings issue, not this mod. Move the cursor slowly there for now.
+[list]
+[*]The GUI's mouse cursor stays confined to the game window until one click inside it, after =/- releases it. To fully return to normal camera control: click once in the game window, press = (or -) again if needed, then click once more. Alt+Tab or the Windows key also fully frees the OS cursor as a side effect.
+[*]Because it's an unofficial mod, a game patch can change internal class paths and temporarily break a feature. Everything version-dependent lives in config.lua, so fixes are quick once paths are updated.
+[*]The posed statue keys (Num 3-6) place static actors on purpose — that's the feature, not a bug.
+[*]Arrows, PageUp/PageDown, and the numpad operator keys (/ * -) aren't in this UE4SS build's normal key table and only work via a raw-key-code fallback — the engine drops most rapid repeat presses for these specific keys before UE4SS ever sees them. Individual, deliberate taps land reliably; holding/mashing won't give smooth continuous movement. The GUI's move panel buttons don't have this problem. This is an engine-level limitation, not a mod bug.
+[*]The Brethren of the Coast "woman" crew re-skin (Num 1) currently has a male body under the female clothing — known, not yet fixed.
+[*]Outfit and hair COLOR can't be changed on any NPC placed by this mod, for any feature — this covers the walking faction-visitor re-skins' uniform colors too (generic rather than faction-matched). Confirmed to be a hard engine limitation (the game only sets color once, when a character is first created behind the scenes) rather than something not yet implemented, so it's not on the to-do list. Skin tone and hairstyle are unaffected and both work fine.
+[*]] and [ (the statue/decoration cycle keys) share a bind with the game's own "Change Target" combat key. Low-risk in practice — you're not usually cycling statues mid-fight — and Insert disables every key this mod uses instantly if it ever gets in the way.
+[*]If using the optional Windrose Mod Settings integration: keybind changes made there need a game restart to fully take effect (a few toggles apply immediately — each one says so in its own description). Separately, moving the mouse cursor quickly over its settings list has been observed to crash the game — this is a Windrose Mod Settings issue, not this mod. Move the cursor slowly there for now.
+[/list]
 [/color]
 
 [size=4][b]Permissions / License[/b][/size]
 [color=#D4D4D8]All rights reserved by default, except for the specific permissions below — nothing here is implied beyond what's listed.
 
-Permitted, without needing to ask: (1) modify this mod for your own personal use, (2) reuse this mod's code or assets in your own separate mod, with credit, (3) convert or port this mod to other games, with credit.
+Permitted, without needing to ask:
+[list=1]
+[*]Modify this mod for your own personal use.
+[*]Reuse this mod's code or assets in your own separate mod, with credit.
+[*]Convert or port this mod to other games, with credit.
+[/list]
 
 Not permitted: reuploading or rehosting this mod — modified or unmodified — anywhere other than this page; selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus's own Donation Points system is fine — that's Nexus's own charity-linked mechanism, not third-party monetization.)
 

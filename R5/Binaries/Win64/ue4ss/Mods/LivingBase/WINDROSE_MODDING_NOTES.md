@@ -89,6 +89,113 @@ something changeable should exist.
   values from an otherwise-successful array read is almost certainly missing this step, not proof
   the array itself is empty.
 
+### 2c. A SECOND struct shape exists — and it's the one that finally unlocked writable per-piece customization (2026-08-19)
+
+The `"ScriptStruct /Script/Module.Type"` shape §10/2b already document (extract the path,
+`StaticFindObject` it, `:ForEachProperty` the resolved type) is not the only one. A struct
+returned from inside a `TArray` element — confirmed on `R5SelectableCompositeMeshController` and
+on a nested `FGameplayTag` field one level inside it — instead prints as `"UScriptStruct: <hex
+address>"`, with no module/type path in the string at all. `GetClass()` on it is a dead end too
+(returns a generic `"ScriptStruct"` placeholder object with 0 declared properties — not the
+specific type). **The fix for THIS shape is simpler than §10's, not the same recipe reapplied**:
+the value itself directly supports `:GetFName():ToString()` (gives the real type name, e.g.
+`R5SelectableCompositeMeshController`, `GameplayTag`) and `:ForEachProperty(...)` called directly
+on it (no separate `StaticFindObject` round-trip needed at all) — bracket-index that SAME value
+for each field name found, same as always. Check which shape you've got by pattern-matching the
+raw `tostring()` output before picking a recipe; guessing wrong just wastes a round-trip, doesn't
+crash anything.
+
+**Payoff, confirmed live across 6 actor types** (a composite mob, a baked Standing statue, two
+Tortuga male NPCs, the Herbalist, the Gatherer): `R5CompositeMeshComponent:
+GetCustomizationMeshControllers()` returns one `R5SelectableCompositeMeshController` per
+customizable body-part slot — `MeshGroupIndex` (int), `CurValue`/`MaxValue` (the current pick and
+how many options exist, 0-based), `bSelectionAllowed` (bool), and `GroupCategoryId` (an
+`FGameplayTag` naming the slot, e.g. `Customization.UID.Hairs`, `Customization.UID.Armor.Legs`).
+**`SetCustomizationMeshControllerValue(ctrl, newValue)` genuinely works** — confirmed live,
+changed a Gatherer's `Hairs` controller from `2` to `3`, visually confirmed changed in-game, no
+crash. This is a real, independent, per-slot customization path — nothing to do with the
+`params`/composite-DataAsset-swap or component-name-`replaces` mechanisms every reskin in this
+codebase has used until now, and it answers "can we get more variety than the color/sex/preset
+knobs already expose" with a genuine yes, not another dead end.
+
+What's inconsistent across actors, from the same live sample: `Hairs` was present AND selectable
+on every single actor tested — the safe universal target. `Armor.*` slots exist with real option
+counts on female actors too, but `bSelectionAllowed=false` locks every one of them there while the
+same slots are fully open on male actors tested. `Facial.Eyebrows` was locked on both female base
+walker bodies (Herbalist, Gatherer) despite `Facial.Mustache`/`Beard`/`Whiskers` on those same
+actors being marked selectable despite having 0 options — an inconsistency worth expecting, not
+assuming away, before building a feature on top of any one slot.
+
+**A related dead end, same investigation**: `SwapBodySex` (sitting right next to the already-used
+`SetCharacterSex`/`SetBody` in this component's function list, found via the technique in §2)
+looked like a plausible way to bypass `IsBodySexChangeAvailable()==false`. Confirmed live it is
+NOT a bypass — it runs with no error, but silently no-ops (`GetBodySex()` unchanged before/after)
+exactly when the availability check would have refused. The gate is enforced natively inside the
+function itself, not just a convention the existing `SetCharacterSex`-based code chose to respect.
+
+**`SetCharacterSex` rebuilds the mesh controller list, wiping picks either side of the call — not
+just a stale-value issue.** Confirmed live on `BP_NPC_Citizen_Walker`, round-tripped male → female
+→ male: the controller SET partially collapses on the female side (11 controllers → 2, the other 9
+categories not just zeroed but absent from the list entirely) and, more importantly, swapping back
+to male restores the full 11-category shape (same categories, same option counts as before) but
+resets every single `CurValue` to `0` — none of the original picks survive, even ones set BEFORE
+the sex change (confirmed: setting a value pre-swap does not protect it, the swap wipes it anyway
+on its way through). **The only order that actually works: change sex FIRST, THEN set values** — a
+plain `SetCustomizationMeshControllerValue` call made AFTER the swap has already settled sticks
+completely normally (confirmed live again). Don't bother trying to preserve a look across a sex
+change; re-apply it after, not before.
+
+### 2d. `BuildedCompositeMeshes` — a second, always-populated mesh-attachment layer (2026-08-19)
+
+**Why an actor can render visible clothes despite having ZERO `Armor.*` customization controllers**
+(the Gatherer/Herbalist walker bodies both do this): the mesh-controllers list in §2c
+(`GetCustomizationMeshControllers()`) is a *pick list* — which option is currently selected per
+slot — not the thing actually attached to the skeleton. The real attachment array is a separate
+component property, `comp.BuildedCompositeMeshes`, and it's populated independent of whether that
+slot has any selectable controller at all. A class with 0 Armor controllers can still have 5+
+`BuildedCompositeMeshes` entries wearing a full outfit; the controller list only governs slots the
+game exposes as player-changeable, not everything actually rendered.
+
+Each entry is an `R5EquippedSlotData` struct (`GetFullName()` → `"ScriptStruct
+/Script/R5.R5EquippedSlotData"`, the *named*-struct shape from §10/2b — resolve via
+`StaticFindObject` + `:ForEachProperty`, not §2c's inline-`:GetFName()` shape; check which shape
+you've got before picking a recipe, same caveat as 2c). Key fields: `BodyPart` (an
+`ER5BLCompositeMeshBodyPartType_V0_8_0` enum value — decoded from `UE4SS_ObjectDump.txt`, e.g.
+`13` = Legs) and `EquippedMesh` (the live `SkeletalMeshComponent` actually attached for that slot —
+a real component, not an asset reference, so it takes the same `SetSkeletalMeshAsset`/
+`SetSkeletalMesh` calls any other mesh component does).
+
+**Confirmed dead, two independent tests, two call orderings**: mutating a `BuildedCompositeMeshes`
+entry (or its `EquippedMesh`) AFTER the composite has already built does not stick — same
+"reports success, rebuild count increments, rendered mesh never changes" signature as §2a's
+property-write dead end. **Confirmed working**: setting the composite's PRE-build params
+(`DefaultParams`/`ArchetypePreset`) so a *different class's* outfit/body bakes in at build time —
+this is the mechanism the walking-women outfit rebuild (Letty/Marita/Merchant, v2.1.7) actually
+ships on. Post-build mutation of the array itself is dead; pre-build substitution of what gets
+built is not.
+
+**`Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)`** (`spawner.lua`) is the general tool
+this unlocked: given a `BodyPart` enum value, it walks `BuildedCompositeMeshes` for the matching
+entry and swaps that ONE slot's `EquippedMesh` — hide → `SetSkeletalMeshAsset` (fallback
+`SetSkeletalMesh`) → `SetLeaderPoseComponent` rebind to the actor's own `Mesh` → show. Reuses the
+exact sequence `Spawner.DeCorrupt`'s content-name-matched `replaces` rule already proved safe, just
+addressed by `BodyPart` enum instead of guessing a live component's current mesh name — useful when
+a cross-class `DefaultParams` swap (the pre-build fix above) bakes in one body-shape-mismatched
+piece from the donor class (this fixed the Merchant walking-woman's leg-clipping: her real outfit's
+Legs piece was built for a different base skeleton than the Walker pawn wears).
+
+**CDO route confirmed dead for pawn classes, works for buildable-actor classes.** §7 already
+confirmed a buildable trader's Class Default Object (`Default__<ClassName>`, same trick used
+elsewhere in this file) owns a real, populated `R5CompositeMeshComponent` — readable with zero
+`SpawnActor` cost. Tested this session whether that generalizes to actual pawn classes (Letty,
+Marita, walker bodies, etc.): it does not. A pawn class's CDO resolves fine and has a valid
+`CompositeMeshComponent`, but `GetCustomizationMeshControllers()` on it reads back empty —
+confirming pawns build their composite at spawn time (an explicit runtime `SetCompositeParams`/
+build call, §9) rather than having it pre-populated on the class default like a buildable actor
+does. Surveying a pawn roster's customization options without paying a live-spawn cost isn't
+possible via this route; `Spawner.ProbeClassCustomization` (the `lbprobeclass` command) exists to
+make that distinction quickly, but still needs a live actor for any pawn class.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)
@@ -215,6 +322,16 @@ declaration actually sits — before assuming the function itself is broken or m
 - Wait for player pawn (`R5Character`), then wait for the player to **move** → world is live.
 - Split the save: **statues** (`AnimatedActor` / `QuestStatic`, no AI — fast) vs **movers** (each
   wakes an AI — pace them). Only movers get post-processing.
+- **Decor-class actors NEVER reach `RestoreHook`/`postList`/`RESTORE_RULES`, by design, not
+  oversight (2026-08-19).** Decor is spawned as part of the statics batch above with `collect=false`
+  — a deliberate perf optimization (no reason to track/post-process a static prop the way a mover
+  needs), but the consequence is that `RestoreHook`/`Spawner.restoreHook` and any `RESTORE_RULES`
+  entry keyed to a decor class is dead code that will never fire, no matter how correct its match
+  condition is (confirmed the hard way: a syntactically-correct `RESTORE_RULES` entry for restoring
+  Drops-decor mesh overrides matched the persisted data perfectly and simply never ran). **Any fixup
+  a decor actor needs on restore has to live inline in `restoreOne` itself**, alongside the other
+  immediate-apply decor corrections (`SetDecorSolid`/`MakeMovable`/pitch-roll), not in the
+  deferred/hook-based path movers use.
 - `persistAppend` is guarded by `Spawner.restoring` so restore doesn't re-record.
 - Ledger writes are **buffered during restore** and flushed once (was 1 file open per spawn).
 - Never fail silently — log both "waiting" and "gave up". Silence hid a total-restore-failure bug.

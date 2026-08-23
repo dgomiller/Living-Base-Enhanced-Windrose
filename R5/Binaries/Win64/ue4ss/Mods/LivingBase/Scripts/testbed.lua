@@ -102,7 +102,10 @@ local lastCrewIdx = 0
 -- (Testbed.SpawnCrewByName, 2026-08-13, for lbspawn/lblook validation -- see main.lua).
 local function spawnCrewEntry(entry)
     local ai = Config.HANDYMAN_FOR_CREW and Config.HANDYMAN_AI_CLASS or nil
-    local actor = Spawner.Spawn(Config.CREW_CLASS, "CREW_" .. entry.name, nil, nil, ai, nil, false,
+    -- Prefer spawn_menu.ini's curated label (Spawner.FriendlyLabels, built in main.lua) over the
+    -- mechanical "CREW_<name>" fallback -- see that table's own comment for the full mechanism.
+    local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[entry.name]) or ("CREW_" .. entry.name)
+    local actor = Spawner.Spawn(Config.CREW_CLASS, spawnLabel, nil, nil, ai, nil, false,
         { params = entry.params, sex = entry.sex, bodyTypes = entry.bodyTypes })
     -- Set-dressing: disarm only if CREW_PASSIVE (off by default so crew still defend).
     if Config.CREW_PASSIVE and actor and actor:IsValid() then disarmRepeated(actor) end
@@ -161,7 +164,10 @@ local function spawnTownsmanEntry(cls)
             (a:find("_Female_") and " (F)" or "")
     end
     log(string.format("Placing townsman: %s%s%s", cls.name, archName, ai and " (+sit AI)" or ""))
-    local actor = Spawner.Spawn(cls.path, "TOWN_" .. cls.name, nil, nil, ai, nil, false, look)
+    -- Prefer spawn_menu.ini's curated label over the mechanical "TOWN_<name>" fallback -- see
+    -- Spawner.FriendlyLabels' own comment (main.lua) for the full mechanism.
+    local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[cls.name]) or ("TOWN_" .. cls.name)
+    local actor = Spawner.Spawn(cls.path, spawnLabel, nil, nil, ai, nil, false, look)
     if not (actor and actor:IsValid()) then
         -- Path miss (e.g. a Handyman variant) — fall back to the plain Walker.
         log("Townsman '" .. cls.name .. "' failed; falling back to Walker.")
@@ -363,13 +369,20 @@ local function buildLivestockList()
     return livestock
 end
 
+-- Prefer spawn_menu.ini's curated label over the mechanical "LIVESTOCK_<name>" fallback -- see
+-- Spawner.FriendlyLabels' own comment (main.lua) for the full mechanism. Shared by both call sites
+-- below so the lookup can't drift between the rotation-driven key and the by-name console lookup.
+local function livestockLabel(a)
+    return (Spawner.FriendlyLabels and Spawner.FriendlyLabels[a.name]) or ("LIVESTOCK_" .. a.name)
+end
+
 function Testbed.SpawnNextLivestock()
     local list = buildLivestockList()
     if #list == 0 then log("No livestock configured."); return end
     liveIdx = liveIdx % #list + 1
     local a = list[liveIdx]
     log(string.format("Livestock %d/%d: %s", liveIdx, #list, a.name))
-    if not spawnCreature(a.candidates, "LIVESTOCK_" .. a.name, a.ai, a.disable) then
+    if not spawnCreature(a.candidates, livestockLabel(a), a.ai, a.disable) then
         log("Livestock " .. a.name .. " failed — no candidate path resolved.")
     end
 end
@@ -385,7 +398,7 @@ function Testbed.SpawnLivestockByName(name)
     local list = buildLivestockList()
     for _, a in ipairs(list) do
         if a.name:lower() == tostring(name):lower() then
-            return spawnCreature(a.candidates, "LIVESTOCK_" .. a.name, a.ai, a.disable)
+            return spawnCreature(a.candidates, livestockLabel(a), a.ai, a.disable)
         end
     end
     return nil, "no livestock entry named '" .. tostring(name) .. "'"
@@ -412,7 +425,12 @@ local decorIdx = {}   -- per-category cursor
 -- reading that function, not assumed.
 local function placeDecorEntry(d)
     local floorZ = playerFloorZ()
-    local a = Spawner.Spawn(d.path, d.label or d.name, frontSpot(300))
+    -- spawn_menu.ini's curated label (Spawner.FriendlyLabels, main.lua) wins over config.lua's own
+    -- `d.label`, since the ini tree is what RedFalcon actively renames -- falls back to d.label,
+    -- then d.name, same as before this existed.
+    local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[d.name]) or d.label or d.name
+    local spot = frontSpot(300)
+    local a = Spawner.Spawn(d.path, spawnLabel, spot)
     if not (a and a:IsValid()) then
         log("Decoration " .. d.name .. " failed — path may be wrong; probe a wild one for its class.")
         return
@@ -427,6 +445,14 @@ local function placeDecorEntry(d)
     if d.mesh then
         Spawner.SetLootMesh(a, d.mesh)
         Spawner.MakeLootDecor(a)
+        -- Backfill persist.txt's field 16 (2026-08-19 fix, RedFalcon's bug report -- see
+        -- spawner.lua's restoreOne, right where look.lootMesh gets reapplied, for the full root-
+        -- cause writeup, including why that fix had to live there and not in a RESTORE_RULES entry).
+        -- Spawner.Spawn already wrote the persist line for this actor by the time we get here, with
+        -- no mesh recorded (it can't know about d.mesh, a testbed.lua-only concept) -- this call
+        -- finds that SAME just-written line (by class+nearest-location, same as PersistUpdatePose)
+        -- and adds the one field it was missing.
+        pcall(function() Spawner.PersistUpdateLootMesh(d.path, spot, d.mesh) end)
     end
     -- These props float because their MESH sits offset above the actor's ROOT (placing the root on the
     -- ground leaves the mesh at chest height), and their bounds are unreliable so snapToFloor can't fix
@@ -891,7 +917,9 @@ local function spawnSenkaEntry(s)
     -- name+kind+helmet format; reused senkaShortKey directly so baseLabel differentiation (see its
     -- own comment) can't drift between the lookup key and the display label the way it easily could
     -- if this stayed a separate inline format string.
-    local rowLabel = "SENKA_" .. senkaShortKey(s)
+    -- Prefer spawn_menu.ini's curated label (Spawner.FriendlyLabels, main.lua) over the mechanical
+    -- "SENKA_<shortkey>" fallback -- see that table's own comment for the full mechanism.
+    local rowLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[senkaShortKey(s)]) or ("SENKA_" .. senkaShortKey(s))
 
     if s.kind == "crew" then
         -- forceArchetype: Warrior/Hunter need the male Senkamati archetype pinned (their crew
@@ -1131,6 +1159,14 @@ local RESTORE_RULES = {
               senkaCrewFix(actor, nm, row and row.helmet or false, function() onDone(); done() end)
           end)
       end },
+    -- Item-drop decor's own RESTORE_RULES entry REMOVED (2026-08-19, same session it was added):
+    -- confirmed live it was unreachable dead code -- isStaticLine() (spawner.lua) routes every
+    -- decor-class actor, R5LootActor drops included, into the restore loop's `statics` list, which
+    -- gets spawned with collect=false specifically so a statics-heavy base skips a no-op post-
+    -- process pass -- RestoreHook/this whole rules table never sees a decor actor at all, by
+    -- design. The actual fix now lives inline in spawner.lua's restoreOne, right where pitch/roll
+    -- and SetDecorSolid/MakeMovable already get the same immediate (not deferred) treatment for
+    -- every decor actor -- see that block's own comment for the full root-cause writeup.
     -- Goats keep the perception-strip on restore — confirmed in-game that they DON'T flee
     -- with it. The strip is component-destruction, but running it after the world settles
     -- (deferred ~8s post-load) has not crashed.
@@ -1162,14 +1198,23 @@ local RESTORE_RULES = {
       when  = function(cls) return cls == Config.SENKA_FEMALE_BASE_CLASS
           or cls == Config.SENKA_FEMALE_BASE_CLASS_HERBALIST end,
       apply = function(actor, cls, look)
+          -- BUG FIX (2026-08-19, RedFalcon: "vanilla herbalist/gatherer turns into the merchant
+          -- on reload"). SENKA_FEMALE_BASE_CLASS/_HERBALIST are the SAME class paths whether an
+          -- actor came from the reskin system or was spawned vanilla (lbspawn/lblook) directly --
+          -- a vanilla spawn never threads a reskinTarget through persistAppend in the first
+          -- place, so it looks IDENTICAL to a genuine pre-1.3.5 save missing the field (that
+          -- field has existed since 2026-08-11, so that legacy case is essentially dead by now).
+          -- The old fallback (Testbed.ApplyRandomFemaleLook, removed) couldn't tell the two
+          -- apart and forced a RANDOM character reskin onto every vanilla spawn on every reload.
+          -- Nothing persisted can disambiguate them, so the only safe default is to leave a
+          -- reskinTarget-less actor as its own plain look -- a genuine ancient legacy save
+          -- (increasingly unlikely) just shows as vanilla now instead of getting a random
+          -- identity, which is a far better trade than corrupting every vanilla spawn.
+          if not (look and look.reskinTarget) then return end
           Spawner.BeginAsyncPostProcess()
           Spawner.RunSerialized(function(done)
               local onSettled = function() Spawner.EndAsyncPostProcess(); done() end
-              if look and look.reskinTarget then
-                  Testbed.ApplyFemaleReskinTarget(actor, look.reskinTarget, nil, onSettled)
-              else
-                  Testbed.ApplyRandomFemaleLook(actor, onSettled)
-              end
+              Testbed.ApplyFemaleReskinTarget(actor, look.reskinTarget, nil, onSettled)
           end)
       end },
 }
@@ -1257,7 +1302,12 @@ local function placeStatueEntry(w, label, yaw)
     if w.yaw then placeYaw = (placeYaw + w.yaw) % 360.0 end
     log(string.format("%s [%s]%s %s", label, tostring(w.faction),
         facingFlipped and " (flipped)" or "", nm))
-    return spawnPosed(w.path, label:upper() .. "_" .. tostring(w.faction), nil, placeYaw)
+    -- Prefer spawn_menu.ini's curated label (Spawner.FriendlyLabels, main.lua) over the mechanical
+    -- "STANDING_<faction>"-style fallback -- see that table's own comment for the full mechanism.
+    -- Statues have no human name field in Config at all, so this is the one roster where the
+    -- fallback was never anything but a category+faction string, not a real name.
+    local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[nm]) or (label:upper() .. "_" .. tostring(w.faction))
+    return spawnPosed(w.path, spawnLabel, nil, placeYaw)
 end
 
 local function cycleStatues(list, label, yaw)
@@ -1482,6 +1532,64 @@ function Testbed.ApplyFemaleReskinTarget(actor, targetName, retriesLeft, onSettl
     -- " Base N" suffix) stays the one used for the Spawn label/persisted reskinTarget/every print
     -- below, so logs/toasts/persist.txt still say "Letty Base 2", not the collapsed "Letty".
     local characterKey = femaleCharacterKey(targetName)
+    -- Config.FEMALE_CHARACTER_PARAMS fast path (2026-08-19) -- Letty/Marita/Merchant now spawn
+    -- with their OWN real composite params (spawnFemaleWalkerTarget already did this), so the
+    -- outfit is correct from the moment the actor is built -- no piece-replace/hide/forceHat
+    -- overlay needed at all. That also means NO shared-rule-table collision risk (the whole
+    -- reason the busy-guard/queue below exists), so this returns BEFORE touching either --
+    -- fully independent of the namedOverlay/generic-hat/generic-hair system past this point.
+    -- Just (1) preload Hairs/Eyebrows to this character's own real value -- the controller
+    -- range belongs to the NEW outfit, not the walker's own base body, so her carried-over
+    -- index would otherwise land in the wrong pool (confirmed live this session: a stale
+    -- index rendered a visibly wrong hairstyle until corrected) -- and (2) layer randomized
+    -- skin tone on top via the same swap-only Spawner.DeCorrupt call the overlay branches
+    -- below use, proven fast/reliable on its own (see that branch's own comment: the retry
+    -- loop exists for LATE-attaching hat/headwear timing, not for skin tone).
+    local charParams = Config.FEMALE_CHARACTER_PARAMS and Config.FEMALE_CHARACTER_PARAMS[characterKey]
+    if charParams then
+        local skinFamily = Config.SKIN_FAMILIES[math.random(#Config.SKIN_FAMILIES)]
+        local gen = Spawner.generation
+        if not ExecuteWithDelay then
+            if onSettled then pcall(onSettled) end
+            return
+        end
+        -- Short settle delay (2026-08-19): the composite is built synchronously in the
+        -- deferred pre-build window, so this is cheap insurance against a first-frame timing
+        -- edge case, not a real wait for late-attaching components the way the old system's
+        -- 4000ms initial delay was.
+        ExecuteWithDelay(250, function()
+            ExecuteInGameThread(function()
+                pcall(function()
+                    if not stillAlive(actor, gen) then return end
+                    Spawner.StripVoice(actor)
+                    -- charParams.hairs = a fixed preload (Letty/Marita/Merchant, whose OWN dedicated
+                    -- outfit's controller pool doesn't match their carried-over index).
+                    -- charParams.hairsRandomMax = a fresh random pick each spawn (Woman) -- the
+                    -- shared composite's own build-time randomization covers Armor.*/skin but NOT
+                    -- Hairs on this walking host (confirmed live), so it needs an explicit nudge;
+                    -- confirmed live the controller write still picks a hat-compatible variant
+                    -- correctly even when a hat rolled that spawn, no coordination risk.
+                    if charParams.hairs then
+                        Spawner.SetCustomizationController(actor, "hairs", charParams.hairs)
+                    elseif charParams.hairsRandomMax then
+                        Spawner.SetCustomizationController(actor, "hairs", math.random(0, charParams.hairsRandomMax))
+                    end
+                    if charParams.eyebrows then
+                        Spawner.SetCustomizationController(actor, "eyebrows", charParams.eyebrows)
+                    end
+                    -- meshFixes (2026-08-19): per-BodyPart mesh overrides for a real body-shape
+                    -- mismatch baked into this character's own params (see Config.
+                    -- FEMALE_CHARACTER_PARAMS' own comment, Merchant's Legs piece specifically).
+                    for _, fix in ipairs(charParams.meshFixes or {}) do
+                        Spawner.SetBodyPartMesh(actor, fix.bodyPart, fix.mesh)
+                    end
+                    Spawner.DeCorrupt(actor, { swaps = Config.SkinFamilySwapRules(skinFamily) })
+                end)
+            end)
+            if onSettled then pcall(onSettled) end
+        end)
+        return
+    end
     if reskinTargetBusy[characterKey] then
         reskinTargetQueue[characterKey] = reskinTargetQueue[characterKey] or {}
         table.insert(reskinTargetQueue[characterKey],
@@ -1720,15 +1828,6 @@ function Testbed.ApplyFemaleReskinTarget(actor, targetName, retriesLeft, onSettl
     ExecuteWithDelay(Config.MOB_DECORRUPT_DELAY_MS or 4000, tick)
 end
 
--- Testbed.ApplyRandomFemaleLook(actor, onSettled) -- fallback for a restored actor whose
--- persisted line has no reskinTarget field at all (a pre-1.3.5 save -- persist.txt never
--- recorded which target it was, so there's nothing to recover; picks uniformly among the
--- full current roster, including the named characters, rather than always defaulting to generic).
--- onSettled: see Testbed.ApplyFemaleReskinTarget's own comment; passed straight through.
-function Testbed.ApplyRandomFemaleLook(actor, onSettled)
-    Testbed.ApplyFemaleReskinTarget(actor, FEMALE_RESKIN_TARGETS[math.random(#FEMALE_RESKIN_TARGETS)], nil, onSettled)
-end
-
 -- Spawn a walking-woman reskin for a SPECIFIC target name -- shared by the rotation-driven
 -- Numpad-decimal key (Testbed.TestFemaleWalkerReskin, picks the next target itself) and the
 -- by-name console lookup (Testbed.SpawnFemaleWalkerByName, 2026-08-13 -- see main.lua). Not
@@ -1753,8 +1852,20 @@ local function spawnFemaleWalkerTarget(targetName)
     -- etc.) instead of the old internal "TESTWALKRESKIN_<n>" placeholder -- this is also what the
     -- "Spawned: %s" toast (Spawner.Spawn's own comment) shows verbatim, so the toast now reads
     -- the character name instead of a meaningless index.
-    local actor = Spawner.Spawn(baseClass, targetName,
-        frontSpot(300), nil, nil, nil, false, { params = entry.params, reskinTarget = targetName })
+    -- Prefer spawn_menu.ini's curated label over targetName itself -- see Spawner.FriendlyLabels'
+    -- own comment (main.lua) for the full mechanism. targetName is already human-readable, so this
+    -- only matters if RedFalcon has since renamed the tree entry to something else.
+    local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[targetName]) or targetName
+    -- Config.FEMALE_CHARACTER_PARAMS (2026-08-19): Letty/Marita/Merchant spawn with their OWN real
+    -- composite params instead of the shared Brethren Woman outfit -- see that table's own comment
+    -- for why. Woman With Hat/Woman With Hair have an entry too (so Testbed.ApplyFemaleReskinTarget
+    -- can take its fast path and skip the old overlay/retry system) but no `.params` of their own --
+    -- they still default to entry.params (Brethren Woman) below, same outfit source as always,
+    -- since that shared composite's own build-time randomization already covers their whole look.
+    local charParams = Config.FEMALE_CHARACTER_PARAMS and Config.FEMALE_CHARACTER_PARAMS[femaleCharacterKey(targetName)]
+    local outfitParams = (charParams and charParams.params) or entry.params
+    local actor = Spawner.Spawn(baseClass, spawnLabel,
+        frontSpot(300), nil, nil, nil, false, { params = outfitParams, reskinTarget = targetName })
     if not (actor and actor:IsValid()) then
         log("spawnFemaleWalkerTarget: spawn FAILED for " .. tostring(targetName))
         return nil

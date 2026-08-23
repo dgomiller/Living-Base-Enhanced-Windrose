@@ -2232,12 +2232,25 @@ internally rather than duplicating the search.
     `DISPLAY_NAMES.md` — dev/posting reference material, never shipped in any version (confirmed
     by diffing 1.3.5/1.3.7/old-1.3.8's actual file lists on 2026-08-13, not by any prior written
     rule; `NEXUS_README.txt` didn't exist yet at that point but belongs in the same category)
-  What SHOULD ship, confirmed against that same diff: `ASSET_CATALOG.md`, `CHANGELOG.txt`,
-  `CLAUDE.md`, `config.txt`, `enabled.txt`, `mod.txt`, `NEXUS_DESCRIPTION.txt`, `README.md`,
-  `WINDROSE_MODDING_NOTES.md`, and everything under `Scripts/` (including `class_index.lua` as of
-  2026-08-13 — genuinely new, actually `require`d by `main.lua`, unlike the dev-reference docs
-  above). If `R5\Content\Paks\LivingBase\` exists (a bundled content pak, e.g. the nude-body-mesh
+  - `CLAUDE.md`, `WINDROSE_MODDING_NOTES.md` — **superseded 2026-08-19**: these shipped inside the
+    main zip through 1.3.10, but by 2.1.5 they'd moved OUT of it into a separate, optional
+    `LivingBaseEnhancedDevInfo.zip` (just those two files) — confirmed by inspecting 2.1.5's actual
+    built zips, not by this written rule (which still said "should ship" until this correction).
+    Build/refresh that second zip alongside the main one whenever either file changes; don't fold
+    them back into the main zip.
+  What SHOULD ship in the MAIN zip, confirmed against the 2.1.5 precedent: `ASSET_CATALOG.md`,
+  `CHANGELOG.txt`, `config.txt`, `enabled.txt`, `mod.txt`, `NEXUS_DESCRIPTION.txt`, `README.md`,
+  and everything under `Scripts/` (including `class_index.lua` as of 2026-08-13 — genuinely new,
+  actually `require`d by `main.lua`, unlike the dev-reference docs above). If `R5\Content\Paks\
+  LivingBase\` exists (a bundled content pak, e.g. the nude-body-mesh
   add-on folded in 2026-08-13), it ships too — it's a sibling of the Lua side, not dev-only.
+  `spawn_menu.ini` SHOULD ship too (added to this rule 2026-08-19, RedFalcon's call) — it's the
+  hand-curated tree data the LivingBaseSpawnMenu companion mod reads, needed for that GUI to have
+  any categories at all on a fresh install; not previously listed here because it didn't exist
+  when this checklist was first written. Its own runtime siblings (`spawn_request.txt`,
+  `spawn_menu_status.txt`, `spawn_menu_history.txt`) stay OUT, same as `persist.txt`/
+  `discovery_dump.txt`/`customization_survey.jsonl` — those are live per-session state, not data,
+  regenerated fresh by the mod itself on first use.
   Do a final `find`/listing pass against this exact set before compressing — don't assume a
   wholesale directory mirror is already correct just because it compiles/runs.
 - Every engine-touching call wrapped in `pcall`.

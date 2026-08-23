@@ -1561,7 +1561,15 @@ Config.FEMALE_WALKER_OVERLAYS = {
       -- { match = "SK_Adventure_Female_01", to = objPath(HMN .. "Orient/Meshes/", "SK_Orient_Female_01") }, -- T-POSES, disabled
       { match = "Female_Feet",         to = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Feet_Long") },
       { match = "Female_Hands",             to = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Hands_Long") },
-      { match = "Female_Legs",              to = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Male_Legs") },
+      -- Female_Legs (2026-08-19, RedFalcon: "booty sticks out of her pants"): the original rule
+      -- pointed at SK_Armor_Conquistador_02_MALE_Legs -- confirmed via a live probe on the real
+      -- female Merchant statue (Buccaneers_Merchant_01) that this is genuinely what she wears
+      -- in-game too (every other piece here matches her real outfit exactly), so it wasn't a wrong
+      -- guess -- it's a real body-shape mismatch between the Walker's own skeleton and a mesh built
+      -- to fit the Standing statue's body. FIXED: confirmed via Manifest_UFSFiles_Win64.txt that a
+      -- genuine SK_Armor_Conquistador_02_Female_Legs.uasset exists (part of the actual
+      -- player-equippable Conquistador armor set, its own CompositeMeshGroup) -- using that instead.
+      { match = "Female_Legs",              to = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Legs") },
       { match = "Female_Torso",     to = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_04_Female_Torso") },
       { match = "Female_Headband",       to = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer03_Head") },
       -- BUG FIX (2026-08-10): see Marita's own note on the "Female_Hat" naming variant.
@@ -1588,6 +1596,87 @@ Config.FEMALE_WALKER_OVERLAYS = {
   -- skeleton. Question answered, nothing left to check for.
 }
 
+-- Config.FEMALE_CHARACTER_PARAMS (2026-08-19) -- REPLACES the old shared-"Brethren Woman"-
+-- params-plus-DeCorrupt-piece-overlay approach for Letty/Marita/Merchant specifically, now that a
+-- real cross-class pre-build DefaultParams swap is confirmed to render correctly (this session's
+-- investigation, see WINDROSE_MODDING_NOTES.md's composite section) -- no more per-piece replace/
+-- hide/forceHat rules, no more topless/bald settle-check retry loop, because the REAL outfit is
+-- correct from the moment the actor is built, not reconstructed piece-by-piece after the fact.
+-- `params` for Letty/Marita is their OWN real QuestStatic NPC's composite params, live-probed
+-- directly off the actual characters (not guessed/reused from something else) -- Merchant reuses
+-- Buccaneers Merchant 01's, the closest thematic fit among the confirmed-clean female-authored
+-- outfits surveyed this session. `hairs`/`eyebrows` are those SAME real NPCs' own live controller
+-- values (also live-probed) -- "preloaded" onto the spawned actor right after the composite swap
+-- (see Testbed.ApplyFemaleReskinTarget's own branch for these characters) because
+-- GetCustomizationMeshControllers() reflects whichever composite is CURRENTLY built, not the
+-- walker's own base body -- her carried-over index otherwise lands in the wrong pool for this new
+-- outfit's controller range (confirmed live this session: a stale index rendered a visibly wrong
+-- hairstyle until corrected). Keyed by femaleCharacterKey (testbed.lua) -- the character name with
+-- any trailing " Base N" stripped -- since the outfit/hair choice doesn't depend on which base
+-- body (Gatherer/Herbalist) is underneath, only which NAMED character this is.
+Config.FEMALE_CHARACTER_PARAMS = {
+  -- "Woman" (2026-08-19, RedFalcon's call, revised after his own live probe): the collapsed
+  -- replacement for the old separate "Woman With Hat"/"Woman With Hair" entries -- those two
+  -- produced IDENTICAL results once the ForceHeadwear/content-matched-replace/topless-retry
+  -- system was dropped (see below), so keeping 4 roster entries (x Base 1/2) for 2 real outcomes
+  -- was pure clutter. Now just "Woman Base 1"/"Woman Base 2" in Config.FEMALE_RESKIN_TARGETS.
+  -- Uses the SHARED Brethren Woman outfit (NOT the walker's own plain vanilla one -- that was
+  -- this entry's first draft, reverted same session). Two live lbcustomnpc-get probes of
+  -- BP_AnimatedActor_BotC_Female_Standing_01_C (shares this IDENTICAL DefaultParams asset)
+  -- showed 8 controllers total -- SIX different Armor.* slots (Head 0..8, Torso 0..9, Hands 0..6,
+  -- Legs 0..4, Feet 0..4, Belt 0..5), each locked from further live edits (selectable=false) but
+  -- with a genuinely different BUILD-TIME-RANDOM value each spawn, plus Facial.Eyebrows and Hairs
+  -- (both selectable) also varying spawn to spawn (19->28 seen live). So this shared composite
+  -- already randomizes essentially her WHOLE outfit for free, including whether she rolls
+  -- headwear at all -- confirmed live: same class, one spawn had a hat, another didn't. That's
+  -- WHY the old ForceHeadwear/content-matched-replace/topless-retry system existed in the first
+  -- place (reacting to/steering this pre-existing randomness) -- and why it can be dropped
+  -- entirely now that RedFalcon confirmed the randomness itself already produces a valid look:
+  -- no forcing needed, just spawn with this outfit and layer skin tone on top, same as before.
+  -- An EMPTY table here (no `.params`) is enough to trigger Testbed.ApplyFemaleReskinTarget's fast
+  -- path (skip the whole old overlay/retry system) while spawnFemaleWalkerTarget's own fallback
+  -- still resolves the actual outfit to Brethren Woman's params, same as it always has.
+  -- hairsRandomMax (2026-08-19, RedFalcon's live testing): the Armor.* build-time randomization
+  -- confirmed above does NOT extend to Hairs for this walking (CREW_CLASS-hosted) spawn, unlike
+  -- the Standing statue (AnimatedActor-hosted) probes which showed both varying -- confirmed live,
+  -- her hair stayed static across spawns even as hat/outfit varied. Fix confirmed live too:
+  -- `lbcustomnpc set hairs #` correctly picks a hat-COMPATIBLE hair variant even when a hat rolled
+  -- that spawn -- the controller write coordinates properly on its own, no risk of the old hair-
+  -- through-hat clipping bug forcing a value manually was worried about. 32 is this shared
+  -- composite's own confirmed real Hairs max (BP_AnimatedActor_BotC_Female_Standing_01_C probes),
+  -- NOT the vanilla Gatherer/Herbalist's own smaller 0..7 range used by Letty/Marita/Merchant's
+  -- controller preloads below -- different composite, different pool size.
+  Woman = { hairsRandomMax = 32 },
+  Letty = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/TortugaCitizen/CompositeMesh/Letty/",
+      "DA_NPC_QuestStatic_TortugaCitizen_Letty_CompositeMeshComponentParams"),
+    hairs = 16, eyebrows = 2,
+  },
+  Marita = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/Smugglers/CompositeMesh/MaritaSuares/",
+      "DA_NPC_QuestStatic_Smugglers_MaritaSuares_CompositeMeshComponentParams"),
+    hairs = 32, eyebrows = 2,
+  },
+  Merchant = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/",
+      "DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams"),
+    hairs = 23, eyebrows = 0,
+    -- meshFixes (2026-08-19): the SAME "booty sticks out of her pants" bug the old
+    -- FEMALE_WALKER_OVERLAYS "Merchant" entry already root-caused and fixed THIS SAME DAY --
+    -- her real DefaultParams genuinely bakes in SK_Armor_Conquistador_02_MALE_Legs (confirmed
+    -- via a live probe on her own real statue, not a wrong guess -- see that entry's own
+    -- comment) -- a real body-shape mismatch between the Walker's skeleton and a mesh built for
+    -- the Standing statue's body, not a simple wrong-sex-asset mistake. The old fix swapped in
+    -- SK_Armor_Conquistador_02_Female_Legs by content-matching the live component's mesh name;
+    -- this is the same fix, same target mesh, just applied via Spawner.SetBodyPartMesh's
+    -- BodyPart-enum lookup (13 = Legs, ER5BLCompositeMeshBodyPartType_V0_8_0) since the new
+    -- pre-build-params spawn path bypasses the old content-matched `replaces` rule entirely.
+    meshFixes = {
+      { bodyPart = 13, mesh = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Legs") },
+    },
+  },
+}
+
 -- Config.FEMALE_RESKIN_TARGETS -- the walking-women name roster (testbed.lua's
 -- Testbed.TestFemaleWalkerReskin/SpawnFemaleWalkerByName cycle/look up these exact strings against
 -- Config.FEMALE_WALKER_OVERLAYS above). MOVED HERE from a local table in testbed.lua (2026-08-16,
@@ -1599,8 +1688,9 @@ Config.FEMALE_WALKER_OVERLAYS = {
 -- suffix picks the body. Deliberately does NOT include "Female_Barbie" -- that one's lblook-only by
 -- design (Testbed.SpawnBarbieByName's own comment), not part of this rotation.
 Config.FEMALE_RESKIN_TARGETS = {
-    "Woman With Hat Base 1",  "Woman With Hat Base 2",
-    "Woman With Hair Base 1", "Woman With Hair Base 2",
+    -- "Woman With Hat"/"Woman With Hair" collapsed into plain "Woman" (2026-08-19) -- see
+    -- Config.FEMALE_CHARACTER_PARAMS' own "Woman" entry comment for why they became identical.
+    "Woman Base 1",           "Woman Base 2",
     "Merchant Base 1",        "Merchant Base 2",
     "Letty Base 1",           "Letty Base 2",
     "Marita Base 1",          "Marita Base 2",

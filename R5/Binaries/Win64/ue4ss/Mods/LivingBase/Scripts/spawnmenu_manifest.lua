@@ -79,6 +79,44 @@ local function ini_escape_section(path_parts)
     return table.concat(path_parts, ".")
 end
 
+-- M.ReadLabels() -- the read-back counterpart to GenerateOnce (2026-08-19, RedFalcon's request):
+-- returns { [roster] = { [index] = curatedLabel } } for every section in spawn_menu.ini, so a
+-- hand-renamed tree entry ("Tort Combatant 1") can become the ACTUAL runtime spawn label (toast/
+-- target-name/persist.txt), not just something the ImGui tree displays and Lua never sees again.
+-- Deliberately still no real INI parser -- same per-line pattern-match approach
+-- existing_roster_indices already uses, just also capturing `label` per section instead of only
+-- roster/index. Safe to call from anywhere that only needs Config (main.lua, after Testbed/Config/
+-- Spawner are all loaded) -- this function itself touches neither, so it carries none of
+-- GenerateOnce's "can only see Config, never require('testbed')" circular-require constraint (see
+-- this file's own header).
+function M.ReadLabels()
+    local content = read_file(resolve_ini_path())
+    local out = {}
+    if not content then return out end
+    local roster, index, label
+    local function commit()
+        if roster and index and label then
+            out[roster] = out[roster] or {}
+            out[roster][index] = label
+        end
+    end
+    for line in content:gmatch("[^\r\n]+") do
+        if line:match("^%s*%[") then
+            commit()
+            roster, index, label = nil, nil, nil
+        else
+            local l = line:match("^%s*label%s*=%s*(.-)%s*$")
+            if l then label = l end
+            local r = line:match("^%s*roster%s*=%s*(.-)%s*$")
+            if r then roster = r end
+            local i = line:match("^%s*index%s*=%s*(%d+)%s*$")
+            if i then index = tonumber(i) end
+        end
+    end
+    commit()
+    return out
+end
+
 -- Senkamati (Config.SENKAMATI_LOOKS) row -> a display path, mirroring testbed.lua's own
 -- senkaShortKey grouping logic (name/kind/helmet/idle) so the generated tree lines up with what
 -- the roster actually contains. Kept deliberately plain/mechanical -- see this file's header.

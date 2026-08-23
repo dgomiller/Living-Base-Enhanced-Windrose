@@ -10,6 +10,16 @@ local Config = require("config")
 local Spawner = {}
 local MOD_NAME = "[LivingBase:Spawner]"
 
+-- TEMP DIAGNOSTIC (2026-08-19, remove after use): lbghosttest2 has reported 0 dynamic instances
+-- with NO error message on every attempt since the error-logging fix was deployed, which shouldn't
+-- be possible unless this file isn't actually being re-read on lbreload -- Lua's require() caches
+-- modules in package.loaded and main.lua loads this file via a plain require("spawner"), which does
+-- NOT re-read from disk on a second call unless something clears that cache first. This print runs
+-- once at module load/require time -- if it does NOT reappear in ue4ss.log after an lbreload, that
+-- confirms RestartMod("LivingBase") is reusing a stale cached copy of this file instead of the
+-- redeployed one, which would mean several of tonight's spawner.lua fixes were never actually live.
+print("[LivingBase:Spawner] MODULE LOAD MARKER v2026-08-19-2235\n")
+
 local function log(msg)
     if Config.VERBOSE then print(string.format("%s %s\n", MOD_NAME, tostring(msg))) end
 end
@@ -443,20 +453,93 @@ end
 -- don't fall), and F9 despawn iterates the tracked list rather than tracing, so it's unaffected.
 --
 -- ECollisionResponse: Ignore=0, Overlap=1, Block=2.   ECollisionChannel: Pawn=2.
+--
+-- ECC_Visibility (raw channel 3) ALSO kept blocking (2026-08-21) -- CONFIRMED LIVE this "ignore
+-- everything but Pawn" design (see above) had a real side effect: RedFalcon could no longer target a
+-- confirmed-placed statue at all (Num+/hover-highlight both use LineTraceSingle -- see
+-- Spawner.UpdateHoverHighlight's own comment -- with a trace-channel arg of 0, which this function
+-- had been silently turning off for every statue since it predates the raycast-targeting feature).
+-- Two wrong guesses before landing here, both CONFIRMED LIVE wrong: (1) switched the TRACE itself to
+-- channel 2 assuming that's "Pawn" -- broke targeting for decor too, which had always worked fine on
+-- channel 0; (2) blocked raw ECollisionChannel 0 here (ECC_WorldStatic) on the same wrong assumption
+-- that LineTraceSingle's channel PARAMETER and SetCollisionResponseToChannel's channel parameter
+-- share one numbering -- they don't. LineTraceSingle's channel arg is `ETraceTypeQuery` (a
+-- Blueprint-only enum built from Project Settings > Collision > Trace Channels), NOT the raw
+-- `ECollisionChannel` SetCollisionResponseToChannel takes. By Unreal's own default project settings
+-- (unless Windrose customized this), TraceTypeQuery index 0 is "Visibility", which in the raw
+-- ECollisionChannel enum is index 3, not 0 -- consistent with decor (default "block everything"
+-- collision, Visibility included) always having worked on trace-channel 0. Blocking raw channel 3
+-- here is the standards-based fix, not another blind index guess. Residual risk unchanged from
+-- before: this function's whole POINT was avoiding a guess at furniture's own channel by blocking
+-- NOTHING but Pawn -- if furniture placement also happens to use Visibility, this re-introduces the
+-- "furniture won't slide under a seated statue" bug. Not yet re-tested live either way.
 function Spawner.LetFurniturePass(actor)
     if not (actor and actor:IsValid()) then return false end
     local cls = StaticFindObject("/Script/Engine.PrimitiveComponent")
     if not (cls and cls:IsValid()) then return false end
     local n = 0
+    local touched = 0
     pcall(function()
         local comps = actor:K2_GetComponentsByClass(cls)
         pcall(function() n = comps:GetArrayNum() end)
         if n == 0 then pcall(function() n = #comps end) end
         for i = 1, n do
             local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            -- UNWRAP (2026-08-21) -- CONFIRMED SUSPECT: K2_GetComponentsByClass's returned array can
+            -- hand back a RemoteUnrealParam wrapper, not the component directly -- a documented,
+            -- recurring pitfall in THIS file (Spawner.MakeMovable, ApplyGhostMaterial,
+            -- dumpMeshComponentNames all already unwrap it) that this function -- older, predates the
+            -- raycast-targeting feature entirely per its own header comment -- never did. If c was a
+            -- wrapper, every collision-response call below could have been silently no-op'ing this
+            -- WHOLE TIME, on every channel guess tried tonight (0, then 3/Visibility, then a 0-12
+            -- sweep) -- which would explain why NONE of them ever changed the statue's actual
+            -- behavior even once.
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
             if c and c:IsValid() then
+                touched = touched + 1
                 pcall(function() c:SetCollisionResponseToAllChannels(0) end)   -- Ignore all
                 pcall(function() c:SetCollisionResponseToChannel(2, 2) end)    -- Block Pawn
+                -- BROAD SWEEP (2026-08-21) -- covers every default engine channel plus the usual
+                -- custom GameTraceChannel range, so whichever one targeting's raycast actually uses
+                -- gets blocked regardless of the exact index -- see this function's own history above
+                -- for the two narrower guesses that came before this.
+                for ch = 0, 12 do
+                    pcall(function() c:SetCollisionResponseToChannel(ch, 2) end)
+                end
+            end
+        end
+    end)
+    print(string.format("[LivingBase] [furniturepass] found=%d touched=%d\n", n, touched))
+    return n > 0
+end
+
+-- Spawner.EnsureRaytraceChannel(actor) -- (2026-08-22, RedFalcon: "the walking actors, the idle
+-- senkamati, and the drops decor need to be added to raytrace targeting because i cant target them
+-- currently") -- confirmed live via the [hover-diag] probe: aiming at a walking NPC/idle Senkamati,
+-- the raycast passed straight through and hit an R5BuildingBlock behind it instead -- same root cause
+-- as the original statue-targeting bug (their collision doesn't respond on the trace channel), but
+-- these are NOT stationary display statues, so LetFurniturePass's "ignore everything but Pawn" design
+-- would be the wrong fix here -- it'd make walking NPCs/decor non-solid to everything but the player,
+-- when they should keep their normal collision. This ONLY sets the one channel our own raycast
+-- actually uses (raw ECollisionChannel 3 / Visibility, confirmed by LetFurniturePass's own comment:
+-- LineTraceSingle's channel arg is TraceTypeQuery index 0, which maps to raw channel 3 by Unreal's
+-- default project settings) to Block, WITHOUT touching any other channel's existing response --
+-- additive, not a wipe-and-rebuild like LetFurniturePass.
+function Spawner.EnsureRaytraceChannel(actor)
+    if not (actor and actor:IsValid()) then return false end
+    local cls = StaticFindObject("/Script/Engine.PrimitiveComponent")
+    if not (cls and cls:IsValid()) then return false end
+    local n, touched = 0, 0
+    pcall(function()
+        local comps = actor:K2_GetComponentsByClass(cls)
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                touched = touched + 1
+                pcall(function() c:SetCollisionResponseToChannel(3, 2) end)  -- Block Visibility (raw ECC 3)
             end
         end
     end)
@@ -760,8 +843,20 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     if Config.STATUE_IGNORE_FURNITURE and classPath and classPath:find("AnimatedActor") then
         Spawner.LetFurniturePass(actor)
     end
+    -- Unconditional, EVERY spawn (2026-08-22, RedFalcon: walking actors/idle Senkamati couldn't be
+    -- raytrace-targeted) -- LetFurniturePass above already covers this for statues as a side effect
+    -- of its own broad channel sweep, but only statues go through that branch. Calling this
+    -- unconditionally here is a harmless no-op re-set for statues (same value, idempotent) and the
+    -- actual fix for everything else that spawns through this function -- crew/townsman/Senkamati/
+    -- livestock/etc. -- without touching their other collision responses at all.
+    Spawner.EnsureRaytraceChannel(actor)
+    -- hasLook tracked on the entry itself (2026-08-19) so anything reading Spawner.spawned later --
+    -- e.g. Spawner.ScanNearbyCustomization telling a recipe-reskinned spawn apart from a raw/vanilla
+    -- one of the SAME underlying class -- doesn't have to guess from the label string, which varies
+    -- by caller (lbspawn passes the raw typed input, lblook passes the recipe's own display name)
+    -- and was never a reliable "was a look actually applied" signal on its own.
     table.insert(Spawner.spawned, { actor = actor, label = finalLabel, class = classPath,
-        home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed })
+        hasLook = hasLook and true or false, home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed })
     ledgerAppend(actor)
     persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
@@ -775,6 +870,16 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     -- world load, same reasoning as the toast: not something you just deliberately placed.
     if not Spawner.restoring then
         Spawner._lastProbedActor = actor
+    end
+    -- Auto-LOCK on spawn (2026-08-19, RedFalcon's correction: the earlier request above was meant
+    -- for the actual live-edit target lock -- Spawner.lockedTarget, Num+ -- not the passive
+    -- lbprobe/lbcustomnpc target; those are two separate things this file tracks). Every live
+    -- placement becomes the locked target immediately, exactly as if Num+ had just been pressed on
+    -- it -- same wrapper shape/StartTargetLockTick call Spawner.ToggleTargetLock's own "ON" branch
+    -- uses. Same restoring-only gate as the probe target above.
+    if not Spawner.restoring then
+        Spawner.lockedTarget = { actor = actor, label = finalLabel, class = classPath }
+        Spawner.StartTargetLockTick()
     end
     -- Only for live placements, not the dozens of Spawn calls RestoreFromPersist fires on world load,
     -- and not when the caller (Undo, pose-cycle) already shows its own more specific toast.
@@ -1505,6 +1610,77 @@ end
 -- only. Don't retry forcing archetype through this function (or invent a new post-build variant
 -- of the same idea) without a genuinely new theory; two independent build-time-only-input walls
 -- (color, now archetype) is a real pattern in this game's composite system, not a coincidence.
+--
+-- ADDENDUM (2026-08-19): the "paramsPath remains proven working" claim above needs a caveat.
+-- Live-tested giving the Gatherer (5 BuildedCompositeMeshes entries, no Headgear at all) the
+-- Buccaneers Merchant 01's DefaultParams (11 entries, includes a hat) via THIS function, on an
+-- actor that had been alive/walking for a while (not freshly spawned): comp.DefaultParams read
+-- back correctly changed, but `BuildedCompositeMeshes` stayed at 5 -- the rebuild never actually
+-- re-ran the composite construction from the new params AT ALL, a different failure mode than
+-- archetypePath's own (which DID show the rebuild "succeed" per its own reporting, just not
+-- render). Suspect cause: this function's call order is ConstructVisualFromParams ->
+-- StartCharacterEdit -> EndCharacterEdit -- the rebuild fires BEFORE the edit session opens, then
+-- the session opens/closes around nothing. See Spawner.ApplyCompositeOrdered below for the
+-- corrected-order variant this addendum motivated -- test THAT before concluding paramsPath is
+-- dead post-build too; don't treat the original "proven working" note as still fully accurate
+-- until it's confirmed one way or the other.
+
+-- Spawner.ApplyCompositeOrdered(actor, paramsPath, say) -- TEMP DEV/TEST TOOL (2026-08-19),
+-- companion to Spawner.ApplyComposite's own addendum just above. Same property write, same three
+-- rebuild-trigger calls, but wraps the write+rebuild INSIDE the edit session instead of firing the
+-- rebuild before the session opens: StartCharacterEdit() -> comp.DefaultParams = params ->
+-- ConstructVisualFromParams(0) -> EndCharacterEdit(true). All three calls are already proven not
+-- to crash (ApplyBodySex/ApplyComposite have called this exact trio many times) -- only the ORDER
+-- is new, not any new engine surface, so this carries no additional crash risk per §3h's own
+-- standard. Reports BuildedCompositeMeshes before/after so a real rebuild (array count actually
+-- changing, e.g. 5 -> 11) is unambiguous from a no-op (count staying put, what ApplyComposite's
+-- own unordered call just produced).
+function Spawner.ApplyCompositeOrdered(actor, paramsPath, say)
+    say = say or function(m) print("[LivingBase:CompositeOrdered] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local params = resolveAsset(paramsPath)
+    if not params then
+        say("params unresolved: " .. tostring(paramsPath))
+        return false
+    end
+    local function builtCount()
+        local n = "?"
+        pcall(function() n = comp.BuildedCompositeMeshes:GetArrayNum() end)
+        return n
+    end
+    local before = builtCount()
+    local okEdit = pcall(function() comp:StartCharacterEdit() end)
+    pcall(function() comp.DefaultParams = params end)
+    local okBuild = pcall(function() comp:ConstructVisualFromParams(0) end)
+    local okEnd = pcall(function() comp:EndCharacterEdit(true) end)
+    local after = builtCount()
+    say(string.format("StartCharacterEdit=%s ConstructVisualFromParams=%s EndCharacterEdit=%s -- BuildedCompositeMeshes before=%s after=%s (requested %s)",
+        tostring(okEdit), tostring(okBuild), tostring(okEnd), tostring(before), tostring(after), paramsPath))
+    return true
+end
+-- CONCLUDED DEAD (2026-08-19), live-tested via lbtestparamswap2 giving the long-alive Gatherer the
+-- Buccaneers Merchant 01's DefaultParams (5 -> 11 entries expected, including a Headgear piece she
+-- has none of): StartCharacterEdit/ConstructVisualFromParams/EndCharacterEdit all reported success
+-- (no pcall failures), yet BuildedCompositeMeshes stayed at 5 -> 5 -- the mesh-piece list itself
+-- never gets reconstructed post-build, regardless of whether the rebuild trigger fires before or
+-- inside the edit session (Spawner.ApplyComposite's own unordered call showed the identical 5 -> 5
+-- symptom first). This is a HARDER wall than archetypePath/ColorParams above -- those at least
+-- showed the array "rebuild" per its own reporting, just not render; here the array count itself
+-- never moves. Retracts this file's earlier "paramsPath remains the proven, working half" claim as
+-- not holding for an actor that's been alive/walking a while (the original claim may have been
+-- observed on a much-more-recently-spawned actor, or by a different verification standard than
+-- comparing real array counts) -- don't trust that older note without re-verifying on a fresh
+-- spawn first. Bottom line for "can an empty composite slot be filled on an already-spawned
+-- actor": NO, not via anything in dumpCompositeFunctions' own list, tried two different call
+-- orders. The only proven lever for composite pieces remains pre-build (compositeLook/
+-- SetCompositeParams in the deferred spawn window) -- respawning is still required. Don't retry
+-- ConstructVisualFromParams-based rebuilds a third way without a genuinely new theory.
 
 -- Spawner.ApplyBodySex(actor, newSex) -- TEMP DEV/TEST TOOL (2026-08-14). RedFalcon probed a wild male
 -- Standing NPC via HOME+PAUSE and noticed IsBodySexChangeAvailable=true (dumpCustomizability) --
@@ -2572,6 +2748,13 @@ function Spawner.MakeLootDecor(actor)
         local niag = actor.NiagaraComponent
         if niag and niag:IsValid() then niag:Deactivate() end
     end)
+    -- Raytrace targeting (2026-08-22, RedFalcon: "drops decor need to be added to raytrace targeting
+    -- because i cant target them") -- same collision-channel fix as walking actors/Senkamati (see
+    -- Spawner.EnsureRaytraceChannel's own comment). NOT yet added to Spawner.spawned -- that's the
+    -- SEPARATE open question of whether this should become a fully tracked spawn (despawnable,
+    -- persisted across reloads) -- pending RedFalcon's answer, since it's not a normal spawnable
+    -- class and restore-on-reload behavior for it is unverified.
+    Spawner.EnsureRaytraceChannel(actor)
     return true
 end
 
@@ -2657,6 +2840,23 @@ function Spawner.MakeLootDecorNearest(say)
     end
 end
 
+-- Spawner.FixAllRaytraceChannels(say) -- (2026-08-22) EnsureRaytraceChannel only runs at SPAWN time,
+-- so it doesn't retroactively fix anything already placed BEFORE this fix shipped -- this walks
+-- every tracked spawn (walking actors, idle Senkamati, statues, decor -- everything in
+-- Spawner.spawned) and applies it now, without needing a reload/respawn. Loot-drop decor isn't
+-- tracked in Spawner.spawned (a separate, still-open question -- see MakeLootDecor's own comment),
+-- so re-run lbdecorloot on those instead -- MakeLootDecor itself now includes the same fix.
+function Spawner.FixAllRaytraceChannels(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local n = 0
+    for _, e in ipairs(Spawner.spawned or {}) do
+        if e.actor and e.actor:IsValid() then
+            if Spawner.EnsureRaytraceChannel(e.actor) then n = n + 1 end
+        end
+    end
+    say(string.format("raytrace channel re-applied to %d tracked spawns.", n))
+end
+
 -- Spawner.ProbeNearestLootMesh(say) -- TEMP DEV TOOL (2026-08-17). Reads the ACTUAL mesh off a
 -- REAL, already-dropped item's MeshComponent (a plain StaticMeshComponent -- a normal, already-
 -- resolved hard object reference once something is really dropped, NOT the opaque
@@ -2694,6 +2894,49 @@ function Spawner.ProbeNearestLootMesh(say)
                 if mat and mat:IsValid() then say(string.format("  material[%d]: %s", m, mat:GetFullName())) end
             end)
         end
+    end)
+end
+
+-- Spawner.ProbeLootSparkle(say) -- TEMP DEV TOOL (2026-08-21). RedFalcon: "can we make an effect
+-- appear by them instead" -- looking for a real, already-confirmed-working effect to reuse instead
+-- of the material-swap ghost highlight (root cause of the whole statue skin/eye white-restore saga).
+-- The interaction-params DataAsset RedFalcon found dead-ended (Spawner.ProbeInteractionTargetParams
+-- -- just interact distance/options/requirements, no FX reference at all). R5LootActor's own
+-- NiagaraComponent (the lootable sparkle, already handled elsewhere -- Deactivate()'d in
+-- Spawner.MakeLootDecor) IS a real, confirmed-working native effect. Reads its Asset (the actual
+-- NiagaraSystem) plus world transform, so we know exactly what to spawn/attach onto a targeted
+-- statue/decor object instead of ever touching materials.
+function Spawner.ProbeLootSparkle(say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    local best, bestD = findNearestLootActor()
+    if not best then
+        say(bestD)
+        return
+    end
+    say(string.format("probing dropped item @ %.0fuu for its sparkle...", bestD))
+    pcall(function()
+        local niag = best.NiagaraComponent
+        if not (niag and niag:IsValid()) then
+            say("NiagaraComponent missing/invalid.")
+            return
+        end
+        local asset
+        pcall(function() asset = niag.Asset end)
+        if asset and type(asset) == "userdata" and asset.IsValid and asset:IsValid() then
+            local full = "?"
+            pcall(function() full = asset:GetFullName() end)
+            say("NiagaraComponent.Asset: " .. full)
+        else
+            say("NiagaraComponent.Asset: nil/invalid (tried .Asset).")
+        end
+        local relLoc, relScale
+        pcall(function() relLoc = niag:K2_GetComponentLocation() end)
+        pcall(function() relScale = niag:K2_GetComponentScale() end)
+        if relLoc then say(string.format("world loc: (%.1f,%.1f,%.1f)", relLoc.X, relLoc.Y, relLoc.Z)) end
+        if relScale then say(string.format("world scale: (%.2f,%.2f,%.2f)", relScale.X, relScale.Y, relScale.Z)) end
+        local isActive
+        pcall(function() isActive = niag:IsActive() end)
+        say("IsActive: " .. tostring(isActive))
     end)
 end
 
@@ -2924,6 +3167,19 @@ function Spawner.ProbeNearestActor(maxDist)
         -- catches every subclass without needing to know its name in advance.
         local controllerClass
         pcall(function() controllerClass = StaticFindObject("/Script/Engine.Controller") end)
+        -- Volume + bare-Actor exclusion (2026-08-21, RedFalcon: lbprobe kept latching onto invisible
+        -- helper actors instead of a real chest POI -- confirmed live via the instance-name
+        -- diagnostic: a MercunaNavExclusionVolume (a 3rd-party AI-pathing exclusion zone, base class
+        -- AVolume) and a genuinely bare, subclass-less AActor (an anchor/marker with no Blueprint at
+        -- all, hence GetClass() legitimately resolving to plain "/Script/Engine.Actor") were both
+        -- winning "nearest in cone" over the chest -- these dev/test-map (GYM/Genlandia) volumes and
+        -- markers apparently sprawl wide enough to out-compete a real, closer POI. Same IsA()
+        -- exclusion pattern already used for Controller above: AVolume covers NavExclusionVolume/
+        -- TriggerVolume/BlockingVolume/etc. generically, and a direct class-identity check catches
+        -- the bare-Actor case (comparing against ONE canonical StaticFindObject fetch, not a
+        -- cross-fetch comparison -- see this file's own documented wrapper-identity pitfall).
+        local volumeClass
+        pcall(function() volumeClass = StaticFindObject("/Script/Engine.Volume") end)
 
         local list
         local ok = pcall(function() list = FindAllOf("Actor") end)
@@ -2940,7 +3196,23 @@ function Spawner.ProbeNearestActor(maxDist)
             if not a then pcall(function() a = list:Get(i) end) end
             local isController = false
             if a and controllerClass then pcall(function() isController = a:IsA(controllerClass) end) end
-            if a and a:IsValid() and not isController and not exclude[actorInstancePath(a)] then
+            local isVolumeOrBare = false
+            if a and volumeClass then pcall(function() isVolumeOrBare = a:IsA(volumeClass) end) end
+            -- BUG FIX (2026-08-21): `a:GetClass() == bareActorClass` never actually matched --
+            -- confirmed live, bare Actor still won every probe after this shipped. `a:GetClass()` is
+            -- fetched fresh per candidate here, a DIFFERENT wrapper handle each time than the ONE
+            -- `bareActorClass` fetched outside the loop -- exactly this file's own documented
+            -- cross-fetch wrapper-identity pitfall (raw `==` between independently-fetched handles to
+            -- the same underlying UObject can silently read as unequal). String-compare the resolved
+            -- class's own FullName instead, same low-risk pattern already used everywhere else in
+            -- this file for class/asset-path matching.
+            if a and not isVolumeOrBare then
+                pcall(function()
+                    local cf = a:GetClass():GetFullName()
+                    if cf == "Class /Script/Engine.Actor" then isVolumeOrBare = true end
+                end)
+            end
+            if a and a:IsValid() and not isController and not isVolumeOrBare and not exclude[actorInstancePath(a)] then
                 local dist, cosAngle
                 pcall(function()
                     local l = a:K2_GetActorLocation()
@@ -2965,7 +3237,15 @@ function Spawner.ProbeNearestActor(maxDist)
         local full = best:GetClass():GetFullName()
         cls = full:match("(/Game/[%w_/%.]+)$") or full
     end)
-    print(string.format("[LivingBase] [probe] TARGET @ %.0fuu: %s\n", bestD, cls))
+    -- TEMP DIAGNOSTIC (2026-08-21, RedFalcon: "lbprobe is only grabbing /script/engine.actor" while
+    -- reportedly aiming at the same chest as before, same session) -- printing the actor's own
+    -- instance name/path too (not just the resolved class) tells us whether `best` is genuinely a
+    -- DIFFERENT object each press (e.g. an invisible trigger/interaction volume overlapping the
+    -- chest, now winning "nearest" by a hair) or the SAME chest instance with GetClass() itself
+    -- somehow degrading to the base Actor class post-restart.
+    local instName = "?"
+    pcall(function() instName = best:GetFullName() end)
+    print(string.format("[LivingBase] [probe] TARGET @ %.0fuu: %s (instance: %s)\n", bestD, cls, instName))
     if discoveryAppend("CLASS: " .. cls) then
         print("[LivingBase] [probe] logged to discovery_dump.txt\n")
     else
@@ -3028,6 +3308,673 @@ local function dumpObjectProperties(obj, tag)
         local nextCls
         pcall(function() nextCls = cls:GetSuperStruct() end)
         cls = nextCls
+    end
+end
+
+-- Spawner.ProbeChestFX() -- TEMP DEV TOOL (2026-08-21). RedFalcon probed a real chest POI
+-- (BP_ChestVisual_Clay_02_C) and its full property dump turned up TWO promising leads no other probe
+-- this session has found: `ChestFXParams` (a DataAsset LITERALLY named DA_ChestFXParams, class
+-- R5ChestFXParams) and `SpawnedChestVFX` (a LIVE, already-spawned NiagaraComponent reference sitting
+-- right on the actor). Much better candidates than the interaction-params dead end
+-- (Spawner.ProbeInteractionTargetParams) or the loot sparkle (Spawner.ProbeLootSparkle) -- this is
+-- the exact system driving a real, persistent POI's sparkle/highlight, not a generic interact-prompt
+-- system or a transient dropped-item effect. Operates on Spawner._lastProbedActor (run lbprobe on a
+-- chest first) -- read-only, no auto-drill (same safe pattern as dumpObjectProperties everywhere else).
+function Spawner.ProbeChestFX()
+    local target = Spawner._lastProbedActor
+    if not (target and target:IsValid()) then
+        print("[LivingBase] [probe-chestfx] no valid probed target -- run lbprobe on a chest first.\n")
+        return
+    end
+    pcall(function()
+        local params = target.ChestFXParams
+        if params and params:IsValid() then
+            local full = "?"
+            pcall(function() full = params:GetFullName() end)
+            print("[LivingBase] [probe-chestfx] ChestFXParams: " .. full .. "\n")
+            dumpObjectProperties(params, "CHESTFX")
+        else
+            print("[LivingBase] [probe-chestfx] ChestFXParams missing/invalid on this actor.\n")
+        end
+    end)
+    pcall(function()
+        local niag = target.SpawnedChestVFX
+        if not (niag and niag:IsValid()) then
+            print("[LivingBase] [probe-chestfx] SpawnedChestVFX missing/invalid on this actor.\n")
+            return
+        end
+        local asset
+        pcall(function() asset = niag.Asset end)
+        if asset and type(asset) == "userdata" and asset.IsValid and asset:IsValid() then
+            local full = "?"
+            pcall(function() full = asset:GetFullName() end)
+            print("[LivingBase] [probe-chestfx] SpawnedChestVFX.Asset: " .. full .. "\n")
+        else
+            print("[LivingBase] [probe-chestfx] SpawnedChestVFX.Asset: nil/invalid.\n")
+        end
+        local isActive
+        pcall(function() isActive = niag:IsActive() end)
+        print("[LivingBase] [probe-chestfx] SpawnedChestVFX.IsActive: " .. tostring(isActive) .. "\n")
+    end)
+end
+
+-- Spawner.ProbeNiagaraFunctions() -- TEMP DEV TOOL (2026-08-21). Next step after confirming a real,
+-- reusable NiagaraSystem (FX_PickUP_Chest_01, off a live chest's SpawnedChestVFX component) --
+-- RedFalcon wants to try spawning/attaching this ourselves onto a targeted statue/decor object
+-- instead of swapping materials (the root cause of the whole skin/eye white-restore saga). Spawning a
+-- Niagara system from Lua needs UNiagaraFunctionLibrary's static SpawnSystemAttached (or similar) --
+-- never called from this codebase before, and UE versions vary on the exact function name/signature,
+-- so read-only reflection FIRST (same ForEachFunction walk dumpCompositeFunctions already uses
+-- safely) rather than guessing a call and risking a crash from wrong arg count/types.
+function Spawner.ProbeNiagaraFunctions()
+    local cdo
+    pcall(function() cdo = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary") end)
+    if not (cdo and cdo:IsValid()) then
+        print("[LivingBase] [probe-niagarafuncs] could not resolve NiagaraFunctionLibrary CDO.\n")
+        return
+    end
+    local cls
+    pcall(function() cls = cdo:GetClass() end)
+    local total = 0
+    while cls and cls:IsValid() do
+        local className = "?"
+        pcall(function() className = cls:GetFName():ToString() end)
+        local names = {}
+        pcall(function()
+            cls:ForEachFunction(function(fn)
+                local n = "?"
+                pcall(function() n = fn:GetFName():ToString() end)
+                names[#names + 1] = n
+            end)
+        end)
+        table.sort(names)
+        total = total + #names
+        print(string.format("[LivingBase] [probe-niagarafuncs] -- %s (%d functions) --\n", className, #names))
+        print("[LivingBase] [probe-niagarafuncs]   " .. table.concat(names, ", ") .. "\n")
+        local nextCls
+        pcall(function() nextCls = cls:GetSuperStruct() end)
+        cls = nextCls
+    end
+    print(string.format("[LivingBase] [probe-niagarafuncs] done, %d total.\n", total))
+end
+
+-- Spawner.ProbeCustomPrimitiveData() -- TEMP DEV TOOL (2026-08-21). RedFalcon's redirect after the
+-- Niagara crash: "is there a technique for changing tint of a mesh?" -- Custom Primitive Data is a
+-- per-COMPONENT numeric slot a material can read directly (if authored to), completely separate from
+-- material instances -- no swap, no restore problem, no duplicate actor needed if Windrose's own
+-- materials use it. Checks whether PrimitiveComponent actually exposes the Set*CustomPrimitiveData*
+-- functions in this build (pure reflection, no risk) and, if the last probed target has a mesh
+-- component, reads its CURRENT CustomPrimitiveData array (if any) so we can see whether it's already
+-- being fed something non-default (a sign the material actually consumes it).
+function Spawner.ProbeCustomPrimitiveData()
+    local pcCls
+    pcall(function() pcCls = StaticFindObject("/Script/Engine.PrimitiveComponent") end)
+    if not (pcCls and pcCls:IsValid()) then
+        print("[LivingBase] [probe-cpd] could not resolve PrimitiveComponent class.\n")
+        return
+    end
+    local names = {}
+    pcall(function()
+        pcCls:ForEachFunction(function(fn)
+            local n = "?"
+            pcall(function() n = fn:GetFName():ToString() end)
+            if n:lower():find("customprimitivedata", 1, true) then names[#names + 1] = n end
+        end)
+    end)
+    table.sort(names)
+    print("[LivingBase] [probe-cpd] PrimitiveComponent CustomPrimitiveData functions: " ..
+        (#names > 0 and table.concat(names, ", ") or "(none found)") .. "\n")
+
+    local target = Spawner._lastProbedActor
+    if not (target and target:IsValid()) then
+        print("[LivingBase] [probe-cpd] no probed target -- run lbprobe on something to also inspect its current data.\n")
+        return
+    end
+    local comp
+    pcall(function() comp = target.Mesh end)
+    if not (comp and comp:IsValid()) then
+        pcall(function()
+            local staticCls = StaticFindObject("/Script/Engine.StaticMeshComponent")
+            local comps = target:K2_GetComponentsByClass(staticCls)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            if n > 0 then
+                comp = comps[1]
+                if not comp then comp = comps:Get(1) end
+                pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+            end
+        end)
+    end
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [probe-cpd] target has no readable mesh component.\n")
+        return
+    end
+    pcall(function()
+        local cpd = comp.CustomPrimitiveData
+        if cpd == nil then
+            print("[LivingBase] [probe-cpd] target's CustomPrimitiveData: nil/not accessible this way.\n")
+            return
+        end
+        local dataArr
+        pcall(function() dataArr = cpd.Data end)
+        if not dataArr then
+            print("[LivingBase] [probe-cpd] CustomPrimitiveData.Data not accessible.\n")
+            return
+        end
+        local n = 0
+        pcall(function() n = dataArr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #dataArr end) end
+        print(string.format("[LivingBase] [probe-cpd] target's CustomPrimitiveData.Data: %d entries.\n", n))
+        for i = 1, n do
+            local v = nil
+            pcall(function() v = dataArr[i] end)
+            if v == nil then pcall(function() v = dataArr:Get(i) end) end
+            print(string.format("[LivingBase] [probe-cpd]   [%d] = %s\n", i - 1, tostring(v)))
+        end
+    end)
+end
+
+-- Spawner.ProbeNiagaraSpawnAttachedSignature() -- TEMP DEV TOOL (2026-08-21). Follow-up to
+-- ProbeNiagaraFunctions: confirmed "SpawnSystemAttached" exists in this build, but knowing the NAME
+-- isn't enough to call it safely -- wrong arg count/order/type on a native UFunction call is a real
+-- crash risk in this codebase (documented elsewhere in this file). A UFunction IS itself a UStruct,
+-- so its parameters are readable via the SAME ForEachProperty reflection already used safely on
+-- classes everywhere else -- this just points it at the FUNCTION object instead of a class, and for
+-- each param also tries to resolve what type of property it is (ObjectProperty/BoolProperty/etc.)
+-- and, for object params, which CLASS it expects (PropertyClass) -- e.g. confirming the first param
+-- really does want a NiagaraSystem and not something else. Still just reflection, nothing invoked.
+function Spawner.ProbeNiagaraSpawnAttachedSignature()
+    local cdo
+    pcall(function() cdo = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary") end)
+    if not (cdo and cdo:IsValid()) then
+        print("[LivingBase] [probe-niagarasig] could not resolve NiagaraFunctionLibrary CDO.\n")
+        return
+    end
+    local cls
+    pcall(function() cls = cdo:GetClass() end)
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [probe-niagarasig] could not resolve NiagaraFunctionLibrary class.\n")
+        return
+    end
+    local targetFn
+    pcall(function()
+        cls:ForEachFunction(function(fn)
+            if targetFn then return end
+            local n = "?"
+            pcall(function() n = fn:GetFName():ToString() end)
+            if n == "SpawnSystemAttached" then targetFn = fn end
+        end)
+    end)
+    if not (targetFn and targetFn:IsValid()) then
+        print("[LivingBase] [probe-niagarasig] SpawnSystemAttached not found on this class.\n")
+        return
+    end
+    print("[LivingBase] [probe-niagarasig] -- SpawnSystemAttached params --\n")
+    pcall(function()
+        targetFn:ForEachProperty(function(prop)
+            local pname = "?"
+            pcall(function() pname = prop:GetFName():ToString() end)
+            local ptype = "?"
+            pcall(function() ptype = prop:GetClass():GetFName():ToString() end)
+            local extra = ""
+            pcall(function()
+                local pc = prop.PropertyClass
+                if pc and pc:IsValid() then extra = " -> " .. pc:GetFName():ToString() end
+            end)
+            pcall(function()
+                if extra == "" then
+                    local st = prop.Struct
+                    if st and st:IsValid() then extra = " -> " .. st:GetFName():ToString() end
+                end
+            end)
+            pcall(function()
+                if extra == "" then
+                    local en = prop.Enum
+                    if en and en:IsValid() then extra = " -> " .. en:GetFName():ToString() end
+                end
+            end)
+            local flags = "?"
+            pcall(function() flags = tostring(prop.PropertyFlags) end)
+            print(string.format("[LivingBase] [probe-niagarasig]   %s : %s%s  (flags=%s)\n", pname, ptype, extra, flags))
+        end)
+    end)
+end
+
+-- Spawner.ProbeCPDIndexSignature() -- TEMP DEV TOOL (2026-08-21). Follow-up to ProbeCustomPrimitiveData
+-- -- GetCustomPrimitiveDataIndexForVectorParameter/ForScalarParameter can tell us, BY PARAMETER NAME,
+-- whether a specific material actually reads Custom Primitive Data at all (returns a real index) or
+-- doesn't (-1/INDEX_NONE), instead of guessing blind whether Windrose's materials support tinting this
+-- way. Much simpler function than SpawnSystemAttached (no structs/enums, just an object + a name), but
+-- still reflecting the signature first before calling anything, same caution as before the crash.
+function Spawner.ProbeCPDIndexSignature()
+    local pcCls
+    pcall(function() pcCls = StaticFindObject("/Script/Engine.PrimitiveComponent") end)
+    if not (pcCls and pcCls:IsValid()) then
+        print("[LivingBase] [probe-cpdsig] could not resolve PrimitiveComponent class.\n")
+        return
+    end
+    for _, fname in ipairs({ "GetCustomPrimitiveDataIndexForVectorParameter", "GetCustomPrimitiveDataIndexForScalarParameter" }) do
+        local targetFn
+        pcall(function()
+            pcCls:ForEachFunction(function(fn)
+                if targetFn then return end
+                local n = "?"
+                pcall(function() n = fn:GetFName():ToString() end)
+                if n == fname then targetFn = fn end
+            end)
+        end)
+        if not (targetFn and targetFn:IsValid()) then
+            print("[LivingBase] [probe-cpdsig] " .. fname .. " not found.\n")
+        else
+            print("[LivingBase] [probe-cpdsig] -- " .. fname .. " params --\n")
+            pcall(function()
+                targetFn:ForEachProperty(function(prop)
+                    local pname = "?"
+                    pcall(function() pname = prop:GetFName():ToString() end)
+                    local ptype = "?"
+                    pcall(function() ptype = prop:GetClass():GetFName():ToString() end)
+                    print(string.format("[LivingBase] [probe-cpdsig]   %s : %s\n", pname, ptype))
+                end)
+            end)
+        end
+    end
+end
+
+-- Spawner.ProbeCPDNames() -- TEMP DEV TOOL (2026-08-21). GetCustomPrimitiveDataIndexForVectorParameter
+-- only takes a ParameterName (FName) -> index -- it's a method ON the component itself (looks up
+-- against whatever material that component currently has assigned), and it's a pure read-only query
+-- (returns -1/INDEX_NONE for a name the material doesn't use, no risk either way) -- much lower risk
+-- than the crashed Niagara call: one simple string arg, no structs/enums/attach semantics. Tries a
+-- batch of plausible tint/highlight parameter names against Spawner._lastProbedActor's mesh component
+-- in one pass, including "Edge Color" (a real, CONFIRMED-existing VectorParameterValues name on the
+-- chest materials probed earlier this session -- worth trying since materials sometimes expose the
+-- same conceptual name both as a static per-instance override AND a runtime CPD hook).
+function Spawner.ProbeCPDNames()
+    -- DISABLED (2026-08-21): confirmed live to hard-crash the game (crash_2026_08_21_21_30_01),
+    -- faulting on the very first candidate name with ZERO output printed first -- meaning
+    -- GetCustomPrimitiveDataIndexForVectorParameter/ForScalarParameter themselves crash natively in
+    -- this build, not just SpawnSystemAttached. pcall did not (cannot) catch it. Two different native
+    -- UFunction CALLS have now hard-crashed this session despite looking simple beforehand -- treat
+    -- ANY unproven native call as high-risk here, not just structurally complex ones. Left in place,
+    -- disabled, for reference -- see the commented-out body below.
+    print("[LivingBase] [probe-cpdnames] DISABLED -- this call hard-crashed the game once already. See spawner.lua's own comment.\n")
+end
+--[[ Reference only, removed from the live function above (2026-08-21):
+
+local target = Spawner._lastProbedActor
+local comp = target.Mesh
+local candidates = {
+    "Edge Color", "AO Color", "Bottom Color", "Top Color",
+    "Tint", "TintColor", "Tint Color",
+    "Highlight", "Highlight Color", "HighlightColor",
+    "Selection", "Selection Color", "SelectionColor",
+    "Focus", "Focus Color", "InteractHighlight",
+}
+for _, name in ipairs(candidates) do
+    local idxV = comp:GetCustomPrimitiveDataIndexForVectorParameter(name)
+    local idxS = comp:GetCustomPrimitiveDataIndexForScalarParameter(name)
+end
+]]
+
+-- Spawner.TestSpawnNiagara() / TestSpawnNiagaraClear() -- TEMP DEV TOOL (2026-08-21). First-ever call
+-- into UNiagaraFunctionLibrary from this codebase, confirmed via ProbeNiagaraSpawnAttachedSignature's
+-- reflection dump to take (SystemTemplate, AttachToComponent, AttachPointName, Location, Rotation,
+-- LocationType, bAutoDestroy, PoolingMethod, bPreCullCheck) -> UNiagaraComponent. Isolated, manual
+-- on/off test on whatever lbprobe last cached -- NOT wired into the real hover-highlight flow yet.
+-- bAutoDestroy=false (manual control, matches TestSpawnNiagaraClear) since FX_PickUP_Chest_01 is a
+-- looping sparkle, not a one-shot burst. LocationType=0 (EAttachLocation::KeepRelativeOffset) with a
+-- zero Location offset -- functionally the same end result as a "snap to target" mode without needing
+-- to guess that enum's exact ordinal in this UE version. PoolingMethod=0 (None) -- simplest, no
+-- pooling. Genuinely first native call of its kind here, so pcall'd throughout and reported plainly if
+-- it fails -- pcall can't catch a hard native crash, only a Lua-level error.
+local NIAGARA_FX_CHEST_PICKUP = "/Game/FX/Particles/Environment/PickUP/FX_PickUP_Chest_01.FX_PickUP_Chest_01"
+function Spawner.TestSpawnNiagara()
+    -- DISABLED (2026-08-21): confirmed live to hard-crash the game (crash_2026_08_21_20_39_20) on
+    -- the 3rd attempt, once the arg COUNT was finally right (10 args, matching UE4SS's own
+    -- expected-params-minus-return-value math in LuaUObject.cpp) -- the crash happened inside the
+    -- native call itself, before any Lua-catchable error, meaning something about the actual
+    -- VALUES/types (not the count) faulted at the engine level. RedFalcon chose to abandon this
+    -- approach entirely rather than keep guessing at a call that's already proven it can hard-crash
+    -- (see project_build_ghost_preview.md memory) -- pursuing the duplicate-ghost-mesh overlay
+    -- instead. Left in place, disabled, rather than deleted, in case revisiting this is ever worth it
+    -- with a fresh angle (e.g. a UE-version-matched Niagara sample project to confirm exact expected
+    -- struct/enum marshalling instead of guessing).
+    print("[LivingBase] [test-niagara] DISABLED -- this call hard-crashed the game once already. See spawner.lua's own comment.\n")
+end
+--[[ Reference only, unreachable/removed from the live function above (2026-08-21) -- kept as a
+comment in case this approach is ever worth revisiting with a fresh angle. Last attempt (10 args,
+correct count per UE4SS's own expected-params-minus-return-value math) still hard-crashed natively
+inside the call itself, so whatever's wrong is in the VALUES/types, not the count:
+
+local target = Spawner._lastProbedActor
+local sys = resolveAsset(NIAGARA_FX_CHEST_PICKUP)
+local root = target.RootComponent
+local nfl = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
+local comp = nfl:SpawnSystemAttached(
+    sys, root, "",
+    { X = 0.0, Y = 0.0, Z = 0.0 }, { Pitch = 0.0, Yaw = 0.0, Roll = 0.0 },
+    0,      -- LocationType: EAttachLocation::KeepRelativeOffset
+    false,  -- bAutoDestroy
+    true,   -- bAutoActivate
+    0,      -- PoolingMethod: ENCPoolMethod::None
+    true    -- bPreCullCheck
+)
+]]
+
+function Spawner.TestSpawnNiagaraClear()
+    local comp = Spawner._testNiagaraComp
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [test-niagara] nothing to clear.\n")
+        return
+    end
+    pcall(function() comp:Deactivate() end)
+    pcall(function() comp:DestroyComponent(false) end)
+    Spawner._testNiagaraComp = nil
+    print("[LivingBase] [test-niagara] cleared.\n")
+end
+
+-- Spawner.TestSpawnNiagaraActor() / TestSpawnNiagaraActorClear() -- TEMP DEV TOOL (2026-08-21). After
+-- BOTH SpawnSystemAttached (crash_2026_08_21_20_39_20) and GetCustomPrimitiveDataIndexForVectorParameter
+-- (crash_2026_08_21_21_30_01) hard-crashed the game, RedFalcon asked to search the pak listing
+-- (Other\pakcontents.xlsx) for something spawnable instead -- no reusable generic FX Blueprint actor
+-- turned up (BP_Niagara_Bleeding is the only actor in the one "generic" FX folder, everything else is
+-- scenario-specific). Falls back to a stock, native UE class instead: NiagaraActor
+-- (/Script/Niagara.NiagaraActor) is a bare actor whose only job is holding one NiagaraComponent, with
+-- a plain settable `Asset` property -- this avoids calling EITHER crashed function entirely. Uses ONLY
+-- mechanisms already proven safe elsewhere in this exact file: Spawner._DoEngineSpawn (the same
+-- spawn helper Spawner.Spawn itself uses, with its own signature auto-detection), a preFinish hook
+-- (same pattern used for AIControllerClass overrides -- see its own comment), a plain property READ
+-- (actor.NiagaraComponent, the same pattern ProbeLootSparkle already used without issue) and a plain
+-- property WRITE (niag.Asset = sys, the SAME pattern _DoEngineSpawn's own aiClass override already
+-- uses: `deferred.AIControllerClass = aiClass`) -- no new UFunction CALL anywhere in this path.
+function Spawner.TestSpawnNiagaraActor(assetPath)
+    local target = Spawner._lastProbedActor
+    if not (target and target:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    assetPath = assetPath or NIAGARA_FX_CHEST_PICKUP
+    local sys = resolveAsset(assetPath)
+    if not (sys and sys:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] could not resolve " .. assetPath .. "\n")
+        return
+    end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] could not resolve NiagaraActor class.\n")
+        return
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] no GameplayStatics/World available.\n")
+        return
+    end
+    -- Scale + placement from the target's own bounds (2026-08-21, RedFalcon: "is it possible to
+    -- resize it to match the hitbox of the object?" then "it always spawns halfway up the actors")
+    -- -- GetActorBounds' 4-arg form (Origin/BoxExtent as pre-allocated Out-param tables) is already
+    -- proven safe elsewhere in this file (actorBoundsBottomZ/computeActorCenterOffset) -- reused
+    -- directly here rather than calling either of those (both declared much later in the file, so
+    -- calling them here would hit this file's own documented Lua forward-declaration scoping
+    -- gotcha). ONE bounds read now drives both: scale from horizontal extent only (tall, narrow
+    -- objects like statues/lampposts have Z as their LARGEST extent, which was driving the scale up
+    -- even though the effect should track the FOOTPRINT, not the height), and placement at the
+    -- bounding box's BOTTOM-CENTER (origin.X/Y, origin.Z - extent.Z) instead of the raw actor pivot
+    -- -- same root cause as the earlier decor "sits low"/statue anchor-offset bugs this session:
+    -- these actors' pivots sit mid-body, not at their visual base, so K2_GetActorLocation() alone put
+    -- the effect halfway up instead of grounded under the object. Falls back to
+    -- K2_GetActorLocation() only if bounds can't be read at all.
+    -- BUG FIX (2026-08-21, RedFalcon: "it still pops up halfway up a statue... It isnt changing
+    -- width though") -- NOT actually statue-specific: `local ok = target:GetActorBounds(...)`
+    -- captured GetActorBounds' own Lua return value as "ok" -- but GetActorBounds is a void
+    -- UFunction that only writes through its Origin/BoxExtent OUT-PARAMS, it has no real return
+    -- value, so `ok` was always nil/falsy and this whole branch silently never ran for ANYONE,
+    -- decor included -- see actorBoundsBottomZ's own proven pattern just above in this file, which
+    -- wraps the call in pcall() and uses PCALL's own success boolean as "ok", not the function's.
+    -- Decor only looked "fine" by coincidence: static prop pivots are usually already near their
+    -- base, so the fallback K2_GetActorLocation() happened to land close to the ground anyway;
+    -- statues' pivots sit mid-body, so the exact same silent failure looked completely different.
+    local scaleMul = 1.0
+    local loc
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.X and origin.Y and origin.Z and extent.X and extent.Y and extent.Z then
+            loc = { X = origin.X, Y = origin.Y, Z = origin.Z - extent.Z }
+            local radius = math.max(extent.X, extent.Y)
+            local base = Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU or 50.0
+            if radius > 0 and base > 0 then
+                scaleMul = radius / base
+                local minS, maxS = Config.NIAGARA_HIGHLIGHT_MIN_SCALE or 0.3, Config.NIAGARA_HIGHLIGHT_MAX_SCALE or 4.0
+                if scaleMul < minS then scaleMul = minS end
+                if scaleMul > maxS then scaleMul = maxS end
+            end
+        end
+    end)
+    if not loc then pcall(function() loc = target:K2_GetActorLocation() end) end
+    if not loc then
+        print("[LivingBase] [test-niagaraactor] could not read target location/bounds.\n")
+        return
+    end
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = scaleMul, Y = scaleMul, Z = scaleMul },
+    }
+    print(string.format("[LivingBase] [test-niagaraactor] scaleMul=%.2f loc=(%.1f,%.1f,%.1f)\n",
+        scaleMul, loc.X, loc.Y, loc.Z))
+    local preFinish = function(actor)
+        pcall(function()
+            local niag = actor.NiagaraComponent
+            if niag and niag:IsValid() then
+                niag.Asset = sys
+            end
+        end)
+    end
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, "TestNiagaraActor", preFinish, nil)
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] spawn failed.\n")
+        return
+    end
+    Spawner._testNiagaraActor = actor
+    print("[LivingBase] [test-niagaraactor] spawned OK at target's location. Run lbtestniagaraactorclear to remove it.\n")
+end
+
+function Spawner.TestSpawnNiagaraActorClear()
+    local actor = Spawner._testNiagaraActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [test-niagaraactor] nothing to clear.\n")
+        return
+    end
+    pcall(function() actor:K2_DestroyActor() end)
+    Spawner._testNiagaraActor = nil
+    print("[LivingBase] [test-niagaraactor] cleared.\n")
+end
+
+-- Spawner.SpawnHoverEffect(actor) / ClearHoverEffect() -- PRODUCTION hover-highlight for CHARACTER
+-- targets (statues, walkers, idle Senkamati -- anything with a SkeletalMeshComponent), replacing the
+-- material-swap ghost highlight for these specifically (2026-08-22, RedFalcon: "instead of the
+-- texture change, use the effect thing we were trying but us this effect halfway up their body
+-- (where the sparkle was originally appearing earlier). It loops, is small and is visible through
+-- objects"). Decor keeps the existing material-swap (applyHoverHighlight/restoreHoverMaterials) --
+-- it's static-mesh only and never had the skin/eye restore problem this whole detour was chasing.
+-- Reuses the exact proven-safe pattern from Spawner.TestSpawnNiagaraActor (NiagaraActor spawn via
+-- _DoEngineSpawn + a plain .Asset property write -- no risky function calls, same building blocks
+-- that already worked live with zero crashes). Placed at the RAW actor pivot
+-- (K2_GetActorLocation), NOT the bounds-bottom TestSpawnNiagaraActor uses for its own different
+-- ground-ring use case -- "halfway up their body" is RedFalcon's deliberate choice here, and matches
+-- where these actors' pivots naturally sit (mid-body, the same offset that was originally a bug for
+-- the ground-ring idea).
+local HOVER_EFFECT_FX_PATH = "/Game/FX/Particles/Mobs/Actions/Unblockable/FX_Unblockable_Attack_PreActionState.FX_Unblockable_Attack_PreActionState"
+-- Spawner.ComputeHoverEffectLoc(actor) -- pose-based height drop (2026-08-22, RedFalcon: "any of the
+-- ground sitting and squatting people, their pivot point is the same as the standing statues. they
+-- will need their position dropped 50%. Sleeping people would need it dropped 75%") -- floor/ground
+-- poses (SitterOnGround, LayOnGround -- confirmed real classPath substrings, see the statue
+-- manifest's own comment: "*_SitterOnGround / *_LayOnGround -- floor poses") share the SAME
+-- root-bone pivot height as a standing statue even though the actual pose sits much lower to the
+-- ground, so using the raw pivot puts the effect way too high on their now-much-shorter silhouette.
+-- Reduces the pivot's height ABOVE THE FLOOR by the given fraction (0% standing/unchanged, 50%
+-- ground-sitting/squatting, 75% sleeping) rather than an absolute Z offset, so it scales correctly
+-- regardless of how tall any given statue's pivot-to-floor gap actually is. Floor Z via the SAME
+-- proven GetActorBounds 4-arg pcall pattern used elsewhere in this file (actorBoundsBottomZ/
+-- computeActorCenterOffset). Shared by BOTH SpawnHoverEffect (initial placement) and
+-- UpdateHoverHighlight's per-tick reposition (same target, still hovering) -- the drop must be
+-- computed identically in both places, or the effect would visibly snap to the wrong height on the
+-- very next tick after spawning correctly.
+function Spawner.ComputeHoverEffectLoc(actor)
+    if not (actor and actor:IsValid()) then return nil end
+    local loc
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    if not loc then return nil end
+    local class
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then class = e.class; break end
+    end
+    local dropFraction = 0.0
+    if class then
+        if class:find("LayOnGround") then dropFraction = 0.75
+        elseif class:find("SitterOnGround") then dropFraction = 0.5 end
+    end
+    if dropFraction > 0 then
+        pcall(function()
+            local origin, extent = {}, {}
+            local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+            if ok and origin.Z and extent.Z then
+                local floorZ = origin.Z - extent.Z
+                loc.Z = floorZ + (loc.Z - floorZ) * (1.0 - dropFraction)
+            end
+        end)
+    end
+    return loc
+end
+
+function Spawner.SpawnHoverEffect(actor)
+    if not (actor and actor:IsValid()) then return false end
+    local sys = resolveAsset(HOVER_EFFECT_FX_PATH)
+    if not (sys and sys:IsValid()) then return false end
+    local loc = Spawner.ComputeHoverEffectLoc(actor)
+    if not loc then return false end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then return false end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then return false end
+    local scaleMul = Config.HOVER_EFFECT_SCALE or 0.6
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = scaleMul, Y = scaleMul, Z = scaleMul },
+    }
+    local preFinish = function(a)
+        pcall(function()
+            local niag = a.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    local effectActor = Spawner._DoEngineSpawn(gs, world, cls, transform, "HoverEffect", preFinish, nil)
+    if not (effectActor and effectActor:IsValid()) then return false end
+    Spawner._hoverEffectActor = effectActor
+    Spawner._hoverActor = actor
+    return true
+end
+
+-- Destroys the spawned effect actor if one exists. Deliberately does NOT touch Spawner._hoverActor
+-- itself -- UpdateHoverHighlight's own transition logic manages that centrally (both this and
+-- restoreHoverMaterials get called defensively on every transition/loss regardless of which path was
+-- actually active, so ordering there -- not here -- is what has to stay correct).
+function Spawner.ClearHoverEffect()
+    local e = Spawner._hoverEffectActor
+    Spawner._hoverEffectActor = nil
+    if e and e:IsValid() then
+        pcall(function() e:K2_DestroyActor() end)
+    end
+end
+
+-- Spawner.CycleTestNiagaraEffect() -- TEMP DEV TOOL (2026-08-21, RedFalcon: "i'm not sold on the
+-- sparkles" -- "just want to see other options"). Candidates pulled from Other\pakcontents.xlsx --
+-- other entries in the same Pickup family, plus FX_Boatswain_Visualization_Circle (a ground-projected
+-- ring/circle used for a boss-fight telegraph zone, which reads much more like a "this is targeted"
+-- selection indicator than a sparkle burst). Swaps the Asset on the ALREADY-spawned test actor
+-- (spawning one via TestSpawnNiagaraActor first if none exists yet) rather than respawning each time
+-- -- one more plain property write (niag.Asset = sys, the same proven-safe pattern used to set it the
+-- first time), no new native calls. Run repeatedly to step through the list.
+local NIAGARA_HIGHLIGHT_CANDIDATES = {
+    "/Game/FX/Particles/Environment/Pickup/FX_PickUP_Chest_01.FX_PickUP_Chest_01",
+    "/Game/FX/Particles/Environment/Pickup/FX_PickUP_Sparkles_01.FX_PickUP_Sparkles_01",
+    "/Game/FX/Particles/Environment/Pickup/FX_PickUP_Object_01.FX_PickUP_Object_01",
+    "/Game/FX/Particles/Bosses/CoastJungle/Boatswain/FX_Boatswain_Visualization_Circle.FX_Boatswain_Visualization_Circle",
+    "/Game/FX/Particles/Environment/InteractiveObjects/Pickup/FX_LootBox_Small.FX_LootBox_Small",
+    "/Game/FX/Particles/Environment/InteractiveObjects/Pickup/FX_LootBox_Medium.FX_LootBox_Medium",
+}
+-- NOT using a live .Asset swap + re-activate on the EXISTING actor -- that would need an extra
+-- method call (something like ActivateSystem) that's never been tried in this build, and today's two
+-- crashes both came from assuming an unfamiliar call was safe. Destroy + respawn instead, reusing
+-- Spawner.TestSpawnNiagaraActor's own fully-proven flow (spawn helper + K2_DestroyActor, both used
+-- constantly elsewhere in this file) with a different candidate asset each time -- slightly heavier
+-- than an in-place swap, but zero new native-call surface.
+Spawner._testNiagaraCandidateIdx = Spawner._testNiagaraCandidateIdx or 0
+function Spawner.CycleTestNiagaraEffect()
+    Spawner._testNiagaraCandidateIdx = (Spawner._testNiagaraCandidateIdx % #NIAGARA_HIGHLIGHT_CANDIDATES) + 1
+    local path = NIAGARA_HIGHLIGHT_CANDIDATES[Spawner._testNiagaraCandidateIdx]
+    print(string.format("[LivingBase] [test-niagaraactor] cycling to [%d/%d]: %s\n",
+        Spawner._testNiagaraCandidateIdx, #NIAGARA_HIGHLIGHT_CANDIDATES, path))
+    Spawner.TestSpawnNiagaraActorClear()
+    Spawner.TestSpawnNiagaraActor(path)
+end
+
+-- Spawner.TestSpawnNiagaraByPath(pathArg) -- TEMP DEV TOOL (2026-08-21, RedFalcon: "is there a way to
+-- make a function where i can enter an effect name or path and i can kinda work through some") --
+-- takes any /Game/... asset path pasted straight out of Other\pakcontents.xlsx, WITH or WITHOUT the
+-- trailing ".AssetName" (auto-derived from the last path segment if missing, the same
+-- Package.AssetName convention used everywhere else in this file), and spawns it the same
+-- proven-safe way as CycleTestNiagaraEffect (destroy old test actor if any, respawn fresh with the
+-- given asset) -- no name->path index built (that's a bigger, separate task, not needed for "let me
+-- paste a path and try it"); just paste the full path from the spreadsheet.
+function Spawner.TestSpawnNiagaraByPath(pathArg)
+    if not pathArg or pathArg == "" then
+        print("[LivingBase] [test-niagarapath] usage: lbtestniagarapath <full /Game/... asset path, dotted suffix optional>\n")
+        return
+    end
+    local path = pathArg
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+    Spawner.TestSpawnNiagaraActorClear()
+    Spawner.TestSpawnNiagaraActor(path)
+end
+
+-- Spawner.ProbeInteractionTargetParams() -- TEMP DEV TOOL (2026-08-21). RedFalcon found two native
+-- DataAssets that likely drive the game's OWN interaction-highlight system (the sparkle/prompt shown
+-- when looking at a lootable item or harvestable crop) -- an alternative to our hand-rolled
+-- material-swap ghost highlight, which is what's been causing the statue skin/eye white-restore
+-- saga (see this file's memory notes) in the first place:
+--   R5/Content/Gameplay/Interaction/Params/DA_InteractionTarget_Loot.uasset
+--   R5/Content/Gameplay/Interaction/Params/Farming/DA_InteractionTarget_Crop.uasset
+-- If these reference a reusable Niagara/decal/outline effect (rather than a material), we could
+-- spawn/attach THAT instead of ever touching the target's own materials -- sidesteps the whole
+-- restore problem structurally instead of skip-listing more slots. Read-only: resolves each
+-- DataAsset (same /Game/... .AssetName convention as DA_DID_Resource_Stone_T01 elsewhere in this
+-- file) and dumps its declared properties via dumpObjectProperties -- the same safe, non-drilling
+-- reflection walk Spawner.ProbeDumpProperties already uses on live actors, just pointed at a static
+-- DataAsset instead (no live component graph, so the one documented crash from THAT tool -- reflectively
+-- auto-drilling into a live R5CommonInteractionTargetComponent -- doesn't apply here).
+local INTERACTION_PARAMS_PATHS = {
+    "/Game/Gameplay/Interaction/Params/DA_InteractionTarget_Loot.DA_InteractionTarget_Loot",
+    "/Game/Gameplay/Interaction/Params/Farming/DA_InteractionTarget_Crop.DA_InteractionTarget_Crop",
+}
+function Spawner.ProbeInteractionTargetParams()
+    for _, path in ipairs(INTERACTION_PARAMS_PATHS) do
+        local obj = resolveClass(path)
+        if obj and obj:IsValid() then
+            print("[LivingBase] [probe-interact] resolved " .. path .. "\n")
+            dumpObjectProperties(obj, path)
+        else
+            print("[LivingBase] [probe-interact] could NOT resolve " .. path .. "\n")
+        end
     end
 end
 
@@ -3367,6 +4314,46 @@ local function dumpUnknownStruct(val, tag)
     end
 end
 
+-- dumpNamedStruct(val, tag) -- the OTHER struct shape (§10/2b's original recipe, distinct from
+-- dumpUnknownStruct's "UScriptStruct: <hex>" shape above): val:GetFullName() reports a real
+-- resolvable type path ("ScriptStruct /Script/Module.Type", e.g. R5EquippedSlotData), unlike the
+-- generic placeholder GetClass() returns for the other shape. Recipe proven on AnimationData/
+-- BodyMorph (probe-anim, this file): extract the path, StaticFindObject it as the struct
+-- DEFINITION, :ForEachProperty over THAT to enumerate declared field names, then read each field
+-- back by bracket-indexing the actual VALUE (val[fieldName]) -- never dot-access past the wrapper,
+-- confirmed elsewhere in this file to be what actually crashed once, not the struct read itself.
+local function dumpNamedStruct(val, structPath, tag)
+    local structDef = StaticFindObject(structPath)
+    if not (structDef and structDef:IsValid()) then
+        print("[LivingBase] [probe-struct] " .. tag .. ": StaticFindObject(" .. structPath .. ") failed.\n")
+        return
+    end
+    pcall(function()
+        structDef:ForEachProperty(function(prop)
+            local pname = "?"
+            pcall(function() pname = prop:GetFName():ToString() end)
+            local valStr = "<unreadable>"
+            local okv, fv = pcall(function() return val[pname] end)
+            if okv then
+                if fv == nil then
+                    valStr = "nil"
+                elseif type(fv) == "userdata" then
+                    local okFull, full = pcall(function() return fv:GetFullName() end)
+                    if okFull and full then
+                        valStr = full
+                    else
+                        local okStr, s = pcall(function() return fv:ToString() end)
+                        valStr = (okStr and s) and s or tostring(fv)
+                    end
+                else
+                    valStr = tostring(fv)
+                end
+            end
+            print(string.format("[LivingBase] [probe-struct]   %s.%s = %s\n", tag, pname, valStr))
+        end)
+    end)
+end
+
 -- dumpCustomizationMeshControllers(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked
 -- whether per-slot mesh controllers (GetCustomizationMeshControllers/
 -- SetCustomizationMeshControllerValue, found via dumpCompositeFunctions) offer more granular
@@ -3406,6 +4393,67 @@ local function dumpCustomizationMeshControllers(actor)
         end
     end
     print(string.format("[LivingBase] [probe-meshctrl] %d customization mesh controller(s) total.\n", n))
+end
+
+-- dumpBuildedCompositeMeshes(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked how the
+-- Gatherer/Herbalist render visible clothes at all when Spawner.ScanNearbyCustomization proved
+-- they have ZERO Armor.* controllers -- GetCustomizationMeshControllers only lists slots with
+-- MULTIPLE author-provided options to pick between, so a piece with just one authored look would
+-- never show up there even though it's still attached via the composite BUILD system (the same
+-- params-DataAsset mechanism this mod's whole reskinning approach already drives). This file
+-- already reads comp.BuildedCompositeMeshes in a few places (Spawner.ApplyBodySex/ApplyComposite/
+-- ApplyBodyType) but ONLY ever as a count (:GetArrayNum()) -- never dumped element-by-element.
+-- Element type CONFIRMED LIVE (2026-08-19, first real run on the Gatherer): each entry's
+-- :GetFullName() returns "ScriptStruct /Script/R5.R5EquippedSlotData" -- the dumpNamedStruct shape
+-- (a resolvable type path), NOT a plain UObject reference and NOT the "UScriptStruct: <hex>"
+-- shape dumpUnknownStruct handles. First cut of this function treated a successful GetFullName()
+-- as "good enough" and stopped there without drilling in -- that's exactly backwards for this
+-- shape, where GetFullName only ever reports the TYPE, never the per-instance field values (same
+-- trap probe-anim's own comment already documents for AnimationData). Fixed to detect the
+-- "ScriptStruct %S+" pattern specifically and route it through dumpNamedStruct; a real object
+-- path (GetFullName not matching that pattern) still prints directly, and dumpUnknownStruct
+-- remains the final fallback for the other struct shape, in case a different actor's composite
+-- ever holds something else in this array.
+local function dumpBuildedCompositeMeshes(actor)
+    if not (actor and actor:IsValid()) then return end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [probe-built] no CompositeMeshComponent on this actor.\n")
+        return
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        print("[LivingBase] [probe-built] BuildedCompositeMeshes not readable on this actor.\n")
+        return
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local tag = string.format("built[%d]", i)
+            local okFull, full = pcall(function() return el:GetFullName() end)
+            local structPath = okFull and full and full:match("^ScriptStruct%s+(%S+)")
+            if structPath then
+                print(string.format("[LivingBase] [probe-built] %s type: %s\n", tag, full))
+                dumpNamedStruct(el, structPath, tag)
+            elseif okFull then
+                local okPath, path = pcall(function() return el:GetPathName() end)
+                print(string.format("[LivingBase] [probe-built] %s: FullName=%s PathName=%s\n",
+                    tag, full, okPath and path or "?"))
+            else
+                dumpUnknownStruct(el, tag)
+            end
+        end
+    end
+    print(string.format("[LivingBase] [probe-built] %d BuildedCompositeMeshes entr%s total.\n",
+        n, n == 1 and "y" or "ies"))
 end
 
 -- dumpCustomizability(actor) -- TEMP DEV/PROBE TOOL (2026-08-13): the color-controller/ColorParams
@@ -3622,18 +4670,18 @@ end
 -- Adventurer_Female_*(2, the actual skin), Hair(3) on this body. Rather than hardcode a "correct"
 -- index that might not hold on every pawn, this now walks EVERY material slot via GetNumMaterials
 -- and dumps each one's parameters, so the skin material (whatever its index) is never missed.
-local function dumpMaterialParameters(actor)
-    if not (actor and actor:IsValid()) then return end
-    local mesh = nil
-    pcall(function() mesh = actor.Mesh end)
-    if not (mesh and mesh:IsValid()) then
-        print("[LivingBase] [probe-mat] no actor.Mesh to read a material from.\n")
-        return
-    end
+-- EXTENDED (2026-08-21, RedFalcon: chasing the native "crop turns blue" / "chest brightens when
+-- faced" highlight effect) -- this only ever read actor.Mesh (a SkeletalMeshComponent-specific
+-- property name), so it silently no-op'd ("no actor.Mesh") on any STATIC-mesh-based actor -- which
+-- a crop plant or a treasure chest almost certainly is. Now walks StaticMeshComponent AND
+-- SkeletalMeshComponent generically too, same K2_GetComponentsByClass sweep pattern
+-- applyHoverHighlight already uses safely, so this works on either kind of actor.
+local function dumpMatsOnMeshComponent(mesh, tag)
+    if not (mesh and mesh:IsValid()) then return end
     local nMats = 0
     pcall(function() nMats = mesh:GetNumMaterials() end)
     if nMats == 0 then
-        print("[LivingBase] [probe-mat] GetNumMaterials() returned 0.\n")
+        print(string.format("[LivingBase] [probe-mat] %s: GetNumMaterials() returned 0.\n", tag))
         return
     end
     for slot = 0, (nMats - 1) do
@@ -3721,6 +4769,46 @@ local function dumpMaterialParameters(actor)
                 print("[LivingBase] [probe-mat]   StaticParameters: not accessible this way.\n")
             end
         end
+    end
+end
+
+local function dumpMaterialParameters(actor)
+    if not (actor and actor:IsValid()) then return end
+    local found = 0
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if mesh and mesh:IsValid() then
+        found = found + 1
+        dumpMatsOnMeshComponent(mesh, "actor.Mesh")
+    end
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+                    -- actor.Mesh, if it exists, is ALSO one of the SkeletalMeshComponents this sweep
+                    -- would return -- skip re-dumping the same physical component twice.
+                    if comp and comp:IsValid() and comp ~= mesh then
+                        found = found + 1
+                        local compName = "?"
+                        pcall(function() compName = comp:GetFName():ToString() end)
+                        dumpMatsOnMeshComponent(comp, className .. ":" .. compName)
+                    end
+                end
+            end
+        end
+    end
+    if found == 0 then
+        print("[LivingBase] [probe-mat] no StaticMeshComponent/SkeletalMeshComponent/actor.Mesh found on this actor.\n")
     end
 end
 
@@ -3850,6 +4938,7 @@ function Spawner.ProbeDumpProperties()
     pcall(function() dumpMeshComponentNames(target) end)
     pcall(function() dumpColorControllers(target) end)
     pcall(function() dumpCustomizationMeshControllers(target) end)
+    pcall(function() dumpBuildedCompositeMeshes(target) end)
     pcall(function() dumpMaterialParameters(target) end)
     pcall(function() dumpArchetypeInfo(target) end)
     pcall(function() dumpCustomizability(target) end)
@@ -3857,6 +4946,464 @@ function Spawner.ProbeDumpProperties()
     pcall(function() dumpCompositeFunctions(target) end)
     pcall(function() dumpAnimInfo(target) end)
     print("[LivingBase] [probe-props] done.\n")
+end
+
+-- Spawner.ProbeCameraRig(say) -- TEMP DEV TOOL (2026-08-20, RedFalcon: native build mode raises/
+-- pulls back the camera for a better view; screenshots confirmed it -- wants to reproduce that while
+-- placing/relocating). Deliberately does NOT go anywhere near ConstructionContext/R5BuildingBrush --
+-- see Spawner.ProbeBuildAbility's own comment for why a reflective walk of THOSE specific objects
+-- crashed the game twice already. This targets a completely different, standard-engine object
+-- instead: the player pawn's own SpringArmComponent (every UE third-person camera rig has one), via
+-- the SAME typed GetComponentsByClass(KNOWN class) pattern Spawner.MakeMovable/ApplyGhostMaterial
+-- already use safely -- a targeted lookup for ONE specific engine class, not the generic
+-- ActorComponent-base sweep that's the actual documented crash (see dumpMeshComponentNames' own
+-- comment, a few hundred lines up, for that one). Reads only SocketOffset/TargetArmLength by name
+-- (known SpringArmComponent fields), not a reflective property walk. Run once normally, then again
+-- while actually holding the hammer in real build mode, and diff the two -- gives the EXACT native
+-- offset instead of guessing one from screenshots.
+function Spawner.ProbeCameraRig(say)
+    say = say or print
+    local pc, pawn, cam
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+        cam = pc and pc:IsValid() and pc.PlayerCameraManager
+    end)
+    if not (pawn and pawn:IsValid()) then
+        say("[LivingBase] [probecam] no player pawn.\n")
+        return
+    end
+    -- CONFIRMED LIVE (2026-08-20): the spring arm's own SocketOffset/TargetArmLength read IDENTICAL
+    -- in and out of real build mode -- whatever raises/pulls back the camera isn't touching the arm's
+    -- own config at all, so it must be happening downstream (a camera modifier, FOV change, or a
+    -- separate view-target blend). Reading the ACTUAL computed camera pose here too (what
+    -- PlayerCameraManager reports, same GetCameraLocation/GetCameraRotation calls the follow loop
+    -- already uses elsewhere in this file) -- also pawn-relative deltas, so the numbers are usable
+    -- directly as a follow-loop offset regardless of where you're standing when you probe.
+    local pawnLoc
+    pcall(function() pawnLoc = pawn:K2_GetActorLocation() end)
+    if pawnLoc then
+        say(string.format("[LivingBase] [probecam] PawnLocation=(%.1f, %.1f, %.1f)\n", pawnLoc.X, pawnLoc.Y, pawnLoc.Z))
+    end
+    if cam and cam:IsValid() then
+        local camLoc, camRot, fov
+        pcall(function() camLoc = cam:GetCameraLocation() end)
+        pcall(function() camRot = cam:GetCameraRotation() end)
+        pcall(function() fov = cam:GetFOVAngle() end)
+        if not fov then pcall(function() fov = cam.FOVAngle end) end
+        if camLoc then
+            say(string.format("[LivingBase] [probecam] CameraLocation=(%.1f, %.1f, %.1f)\n", camLoc.X, camLoc.Y, camLoc.Z))
+            if pawnLoc then
+                say(string.format("[LivingBase] [probecam] CameraMinusPawn=(dX=%.1f, dY=%.1f, dZ=%.1f)\n",
+                    camLoc.X - pawnLoc.X, camLoc.Y - pawnLoc.Y, camLoc.Z - pawnLoc.Z))
+            end
+        end
+        if camRot then say(string.format("[LivingBase] [probecam] CameraRotation=(Pitch=%.1f, Yaw=%.1f, Roll=%.1f)\n", camRot.Pitch, camRot.Yaw, camRot.Roll)) end
+        if fov then say(string.format("[LivingBase] [probecam] FOV=%.2f\n", fov)) end
+    else
+        say("[LivingBase] [probecam] no PlayerCameraManager.\n")
+    end
+    local springArmClass = StaticFindObject("/Script/Engine.SpringArmComponent")
+    if not (springArmClass and springArmClass:IsValid()) then
+        say("[LivingBase] [probecam] SpringArmComponent class not found via StaticFindObject.\n")
+        return
+    end
+    local comps
+    pcall(function() comps = pawn:GetComponentsByClass(springArmClass) end)
+    if not comps then pcall(function() comps = pawn:K2_GetComponentsByClass(springArmClass) end) end
+    local n = 0
+    pcall(function() n = comps and (comps.GetArrayNum and comps:GetArrayNum() or #comps) or 0 end)
+    if n == 0 then
+        say("[LivingBase] [probecam] no SpringArmComponent found on the pawn.\n")
+        return
+    end
+    say(string.format("[LivingBase] [probecam] %d SpringArmComponent(s) found:\n", n))
+    for i = 1, n do
+        local c = comps[i]
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local cls = "?"
+            pcall(function() cls = c:GetClass():GetFullName() end)
+            local so, tal
+            pcall(function() so = c.SocketOffset end)
+            pcall(function() tal = c.TargetArmLength end)
+            say(string.format("[LivingBase] [probecam] #%d class=%s TargetArmLength=%s SocketOffset=(%s, %s, %s)\n",
+                i, tostring(cls), tostring(tal),
+                so and tostring(so.X) or "?", so and tostring(so.Y) or "?", so and tostring(so.Z) or "?"))
+            local wloc, wrot
+            pcall(function() wloc = c:K2_GetComponentLocation() end)
+            pcall(function() wrot = c:K2_GetComponentRotation() end)
+            if wloc then say(string.format("[LivingBase] [probecam]    WorldLocation=(%.1f, %.1f, %.1f)\n", wloc.X, wloc.Y, wloc.Z)) end
+            if wrot then say(string.format("[LivingBase] [probecam]    WorldRotation=(Pitch=%.1f, Yaw=%.1f, Roll=%.1f)\n", wrot.Pitch, wrot.Yaw, wrot.Roll)) end
+        end
+    end
+end
+
+-- Spawner.ProbeBuildAbility() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview feasibility spike):
+-- lbprobe/lbprobedump aim via the camera+cone sweep over FindAllOf("Actor"), which -- CONFIRMED
+-- LIVE -- lands on GCA_BuildingCreate_C (a GameplayCueNotify_Actor, the one-shot "place" VFX/SFX
+-- cue), not the actual translucent ghost mesh that follows the reticle while still choosing a
+-- spot. That dump DID surface the real object graph though: BP_R5PlayerState_C holds an
+-- R5Ability_Building_MakeConstructCommand ability, which holds a ConstructionContext
+-- (R5BuildingConstructionContext) -- almost certainly where the live ghost actor/component and its
+-- valid/invalid materials actually live. Go straight at the ability by CLASS via FindAllOf instead
+-- of camera-sweeping for it (it's not necessarily a camera-visible Actor at all), then walk both it
+-- and its ConstructionContext with the same generic dumpObjectProperties this file already uses.
+-- Only meaningful while actively in build mode with a piece selected -- the ability instance may
+-- not exist (or its ConstructionContext may be empty) otherwise. Remove once the real ghost
+-- actor/material is identified -- same throwaway status as lbtickspike in main.lua.
+function Spawner.ProbeBuildAbility()
+    print("[LivingBase] [probe-buildctx] key received.\n")
+    local list
+    local ok = pcall(function() list = FindAllOf("R5Ability_Building_MakeConstructCommand") end)
+    if not ok or not list or #list == 0 then
+        print("[LivingBase] [probe-buildctx] no R5Ability_Building_MakeConstructCommand instance found -- are you actively in build mode with a piece selected?\n")
+        return
+    end
+    local ability = list[1]
+    if not (ability and ability:IsValid()) then
+        print("[LivingBase] [probe-buildctx] found an entry but it's not valid.\n")
+        return
+    end
+    pcall(function() dumpObjectProperties(ability, "BUILD_ABILITY") end)
+    local context
+    pcall(function() context = ability.ConstructionContext end)
+    if not (context and context:IsValid()) then
+        print("[LivingBase] [probe-buildctx] ConstructionContext is nil/invalid on this ability instance.\n")
+        print("[LivingBase] [probe-buildctx] done.\n")
+        return
+    end
+    pcall(function() dumpObjectProperties(context, "CONSTRUCTION_CONTEXT") end)
+
+    -- STOP HERE. context.Brush (an R5BuildingBrush) is named in the CONSTRUCTION_CONTEXT dump
+    -- above -- CONFIRMED LIVE (2026-08-19) that calling dumpObjectProperties(brush, ...) to walk
+    -- ITS OWN properties crashes the game (pcall does NOT catch it -- native crash, not a Lua
+    -- error): the log's last line both times was dumpObjectProperties' own "-- BRUSH: from
+    -- R5BuildingBrush --" header, immediately followed by a crash dump ~1ms later, i.e. it died on
+    -- the very first property read inside R5BuildingBrush's own ForEachProperty walk (not the
+    -- inherited base-class properties -- those are walked AFTER the leaf class, never reached).
+    -- Matches the crash class ProbeDumpProperties' own comment already documents ("a REAL crash
+    -- from reflectively walking a live component") -- R5BuildingBrush is apparently another one.
+    -- Do NOT re-add a generic dumpObjectProperties(brush, ...) or any method call on brush (e.g.
+    -- K2_GetComponentsByClass) without a safer, one-property-at-a-time approach first (see this
+    -- function's TEMP DEV TOOL header comment for the plan).
+    print("[LivingBase] [probe-buildctx] done.\n")
+end
+
+-- Spawner.ApplyGhostMaterial() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview spike, 3rd pass):
+-- RedFalcon's design call -- the real feature doesn't need collision/stability logic, just a clear
+-- "where is it" look while placing, and Windrose's own build-ghost material has a handy glow-in-
+-- the-dark on top of that, so worth reusing it as-is rather than hunting down its parameters.
+-- MI_Building_SimplifiedPreview (R5/Content/Environment/Gameplay/GDKit/Meshes/Building/, found via
+-- the exported pak content list -- ue4ss.log's live probe never actually reached it, that path
+-- crashed on R5BuildingBrush's own property walk before getting this far) is the candidate.
+-- Deliberately does NOT touch R5Ability_Building_MakeConstructCommand/ConstructionContext/Brush at
+-- all -- that reflective walk crashed the game twice already today. This only touches an actor WE
+-- spawned (via lbspawn/lblook, then lbprobe to select it), using the exact same resolveAsset() +
+-- SetMaterial() pattern Spawner.DeCorrupt's swaps already use safely on live actors.
+function Spawner.ApplyGhostMaterial()
+    print("[LivingBase] [probe-ghostmat] key received.\n")
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [probe-ghostmat] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    local GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
+    local mat = resolveAsset(GHOST_MAT_PATH)
+    if not (mat and mat:IsValid()) then
+        print("[LivingBase] [probe-ghostmat] could not resolve " .. GHOST_MAT_PATH .. " -- wrong path, or this piece isn't in a loaded pak.\n")
+        return
+    end
+    local touched = 0
+    local function applyTo(comp)
+        -- K2_GetComponentsByClass's array can hand back a RemoteUnrealParam wrapper rather than
+        -- the component directly -- CONFIRMED LIVE (2026-08-19): every call here failed with
+        -- "attempt to call a RemoteUnrealParam value (method 'IsValid')" until unwrapped, same fix
+        -- dumpMeshComponentNames already uses a few hundred lines up in this file.
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        if not (comp and comp:IsValid()) then return end
+        local n = 0
+        pcall(function() n = comp:GetNumMaterials() end)
+        for slot = 0, (n - 1) do
+            local ok = pcall(function() comp:SetMaterial(slot, mat) end)
+            if ok then touched = touched + 1 end
+        end
+    end
+    pcall(function() applyTo(actor.Mesh) end)
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    applyTo(comp)
+                end
+            end
+        end
+    end
+    print(string.format("[LivingBase] [probe-ghostmat] applied to %d material slot(s).\n", touched))
+end
+
+-- Spawner.ApplyGhostMaterialSolid() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview spike, 4th
+-- pass): Spawner.ApplyGhostMaterial (above) applies MI_Building_SimplifiedPreview AS-IS, which
+-- FModel's own property export shows has 4 color params (AltColor/MaxStabilityColor/
+-- MinStabilityColor/InstabilityColor) blended by some hidden per-instance "stability" value this
+-- codebase never feeds it -- CONFIRMED LIVE that produces inconsistent colors per object (glowing
+-- white skin, yellow/orange decor) since whatever drives the blend is uninitialized garbage on
+-- objects the real building system never touches. Fix: don't fight the hidden driver -- make it
+-- irrelevant. Create a per-slot MaterialInstanceDynamic and force ALL FOUR color params to the
+-- SAME value; whatever the blend factor is, interpolating/selecting among four identical colors
+-- always yields that color. Keeps the real asset (glow-in-the-dark, fresnel/rim shape definition
+-- RedFalcon confirmed from an actual in-game screenshot -- "velvety", not flat, even though the
+-- material is Unlit) without needing to know or reverse-engineer what feeds the stability blend.
+-- CreateDynamicMaterialInstance/SetVectorParameterValue are UNPROVEN in this codebase (nothing
+-- here has called them before) -- pcall'd throughout like everything else, but treat a FAILED
+-- result as genuinely uninformative about the FLinearColor table shape, not just "retry it."
+function Spawner.ApplyGhostMaterialSolid()
+    print("[LivingBase] [probe-ghostmat2] key received.\n")
+    -- DISABLED (2026-08-19) -- CONFIRMED LIVE: comp:CreateDynamicMaterialInstance(slot, mat, "")
+    -- crashes the game natively (pcall does NOT catch it) on the very first call, every time --
+    -- two crashes total from this function tonight (the first from a missing 3rd argument, a clean
+    -- Lua error; this one from passing "" as that argument, no longer a clean error at all). Do NOT
+    -- re-enable by just deleting this early return without trying a genuinely different argument
+    -- form first (e.g. nil instead of "", or omitting the 3rd arg entirely if a differently-typed
+    -- overload exists) -- two crashes is enough blind live iteration on one native call for one
+    -- night. lbghosttest (Spawner.ApplyGhostMaterial, plain SetMaterial, no dynamic instance) is
+    -- still the proven-safe fallback.
+    print("[LivingBase] [probe-ghostmat2] DISABLED -- CreateDynamicMaterialInstance crashed twice tonight. Use lbghosttest instead.\n")
+    return
+    --[[ DISABLED BELOW -- kept as reference for whoever re-attempts this, not live code.
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [probe-ghostmat2] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    local GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
+    local mat = resolveAsset(GHOST_MAT_PATH)
+    if not (mat and mat:IsValid()) then
+        print("[LivingBase] [probe-ghostmat2] could not resolve " .. GHOST_MAT_PATH .. " -- wrong path, or this piece isn't in a loaded pak.\n")
+        return
+    end
+    -- Bright cyan/blue, roughly matching the ~3.0-magnitude overbright scale FModel showed on
+    -- InstabilityColor/MaxStabilityColor -- deliberately NOT red/green/orange so it reads as "our
+    -- tool," not a native valid/invalid/stability state.
+    local GHOST_COLOR = { R = 0.3, G = 1.5, B = 3.0, A = 1.0 }
+    local PARAM_NAMES = { "AltColor", "MaxStabilityColor", "MinStabilityColor", "InstabilityColor" }
+    local touched, paramsSet = 0, 0
+    local function applyTo(comp)
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        if not (comp and comp:IsValid()) then return end
+        local n = 0
+        pcall(function() n = comp:GetNumMaterials() end)
+        for slot = 0, (n - 1) do
+            local dyn
+            -- CONFIRMED LIVE (2026-08-19): UE4SS's Lua binding does NOT apply this UFUNCTION's C++
+            -- default for OptionalName (NAME_None) -- "UFunction expected 4 parameters, received 2"
+            -- until passed explicitly. An empty string constructs to NAME_None same as the default.
+            local ok, err = pcall(function() dyn = comp:CreateDynamicMaterialInstance(slot, mat, "") end)
+            if not ok then
+                print("[LivingBase] [probe-ghostmat2] CreateDynamicMaterialInstance FAILED: " .. tostring(err) .. "\n")
+            elseif not (dyn and dyn:IsValid()) then
+                print("[LivingBase] [probe-ghostmat2] CreateDynamicMaterialInstance returned nil/invalid (no Lua error, just no result).\n")
+            end
+            if ok and dyn and dyn:IsValid() then
+                touched = touched + 1
+                for _, pname in ipairs(PARAM_NAMES) do
+                    local pok, perr = pcall(function() dyn:SetVectorParameterValue(pname, GHOST_COLOR) end)
+                    if pok then
+                        paramsSet = paramsSet + 1
+                    else
+                        print("[LivingBase] [probe-ghostmat2] SetVectorParameterValue(" .. pname .. ") FAILED: " .. tostring(perr) .. "\n")
+                    end
+                end
+            end
+        end
+    end
+    pcall(function() applyTo(actor.Mesh) end)
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    applyTo(comp)
+                end
+            end
+        end
+    end
+    print(string.format("[LivingBase] [probe-ghostmat2] %d dynamic instance(s) created, %d/%d parameter set(s) succeeded.\n",
+        touched, paramsSet, touched * #PARAM_NAMES))
+    ]]
+end
+
+-- Spawner.ToggleCustomDepthOutline() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview spike, 5th
+-- pass): RedFalcon's actual ask -- keep the real mesh (full texture/depth/lighting), layer a shader
+-- effect ON TOP, rather than replacing the material at all (which is what MI_Building_
+-- SimplifiedPreview always was, flat-Masked-Unlit limitations and all). Unreal's standard mechanism
+-- for exactly this is bRenderCustomDepth + a post-process outline material reading the CustomDepth
+-- buffer -- doesn't touch the object's own material/blend-mode/shading-model at all, so none of
+-- tonight's Masked/Unlit/BasePropertyOverrides limitations apply. Untested whether Windrose's
+-- rendering pipeline actually HAS an active outline post-process pass reading this buffer -- if it
+-- doesn't, this is a harmless no-op (nothing to see), which is why it's worth just trying live
+-- rather than more pak-archaeology first. SetRenderCustomDepth/SetCustomDepthStencilValue take a
+-- plain bool/int, not a struct -- much lower marshaling risk than CreateDynamicMaterialInstance.
+function Spawner.ToggleCustomDepthOutline()
+    print("[LivingBase] [probe-outline] key received.\n")
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [probe-outline] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    local touched = 0
+    local function applyTo(comp)
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        if not (comp and comp:IsValid()) then return end
+        local ok1 = pcall(function() comp:SetRenderCustomDepth(true) end)
+        local ok2 = pcall(function() comp:SetCustomDepthStencilValue(1) end)
+        if ok1 then touched = touched + 1 end
+        if not (ok1 and ok2) then
+            print(string.format("[LivingBase] [probe-outline] component call failed (SetRenderCustomDepth=%s, SetCustomDepthStencilValue=%s).\n", tostring(ok1), tostring(ok2)))
+        end
+    end
+    pcall(function() applyTo(actor.Mesh) end)
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    applyTo(comp)
+                end
+            end
+        end
+    end
+    print(string.format("[LivingBase] [probe-outline] SetRenderCustomDepth(true) on %d component(s) -- LOOK at the object now.\n", touched))
+end
+
+-- Spawner.StartFollowTest/StopFollowTest -- TEMP DEV TOOL (2026-08-19, build-ghost-preview spike,
+-- 6th pass): tests the ACTUAL risky operation (repeated K2_SetActorLocation), not just timing --
+-- lbtickspike only ever measured os.clock() gaps, never actually moved anything. There's a
+-- documented, UNRESOLVED crash already in this file from sustained rotation during
+-- LivingBaseSpawnMenu's move-panel repeat-hold (see Spawner.EditNearestInFront's own "OPEN ISSUE"
+-- comment, 2026-08-16) -- but that path ALSO does two full persist.txt reads plus one rewrite on
+-- EVERY call, so the crash may be disk I/O under rapid repeat, not SetActorLocation itself
+-- (RedFalcon's hypothesis). This moves the probed actor to follow the camera every tick with ZERO
+-- file I/O -- pure in-memory K2_SetActorLocation only -- to isolate that. Reuses the exact camera
+-- location/rotation math Spawner.ProbeNearestActor already uses safely. Calls Spawner.MakeMovable
+-- first -- otherwise a Static-mobility prop (most world decor) won't visibly move even though the
+-- calls succeed (see MakeMovable's own comment). lbfollowteststop sets a flag the loop checks each
+-- tick -- doesn't try to cancel a pending ExecuteWithDelay directly (no known API for that), just
+-- makes the next tick a no-op instead of rescheduling again.
+function Spawner.StartFollowTest(intervalMs, totalTicks, distance)
+    intervalMs = intervalMs or 33
+    totalTicks = totalTicks or 300
+    distance = distance or 300.0
+    print("[LivingBase] [followtest] key received.\n")
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [followtest] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    pcall(function() Spawner.MakeMovable(actor) end)
+    -- CONFIRMED LIVE (2026-08-19): RedFalcon reported the decor creeping toward the camera instead
+    -- of holding a static distance, UNLESS looking straight up (open air, nothing to collide with).
+    -- Physics simulation still active on the object -- K2_SetActorLocation correctly teleports the
+    -- logical transform, but if bSimulatePhysics is true the physics engine keeps resolving it back
+    -- out of whatever world geometry the target point now overlaps, fighting our teleport every
+    -- physics tick. Spawner.SetDecorSolid already exists in this file for exactly this reason ("a
+    -- physics-simulating prop got shoved... can never eject or drop") but ALSO force-enables
+    -- collision, which a live-following preview does NOT want (would shove the player / block
+    -- movement) -- so disable physics directly here instead of calling that.
+    pcall(function()
+        local root = actor:K2_GetRootComponent()
+        if root and root:IsValid() then pcall(function() root:SetSimulatePhysics(false) end) end
+    end)
+    pcall(function() forEachStaticMesh(actor, function(c) c:SetSimulatePhysics(false) end) end)
+    print(string.format("[LivingBase] [followtest] starting: nominal %dms x %d ticks (~%.1fs), %.0fuu in front of camera -- NO file I/O this whole time. Look around to see if it tracks.\n",
+        intervalMs, totalTicks, intervalMs * totalTicks / 1000.0, distance))
+    Spawner._followTestActive = true
+    local count, moved = 0, 0
+    local function tick()
+        if not Spawner._followTestActive then
+            print(string.format("[LivingBase] [followtest] stopped early by lbfollowteststop after %d/%d ticks (%d moved OK).\n", count, totalTicks, moved))
+            return
+        end
+        if not (actor and actor:IsValid()) then
+            print(string.format("[LivingBase] [followtest] target no longer valid after %d ticks -- stopping.\n", count))
+            Spawner._followTestActive = false
+            return
+        end
+        count = count + 1
+        local ok = pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            if not (pc and pc:IsValid()) then return end
+            local cam = pc.PlayerCameraManager
+            if not (cam and cam:IsValid()) then return end
+            -- FIXED (2026-08-19, RedFalcon's diagnosis): origin was the CAMERA's own position, which
+            -- this game's third-person spring-arm camera pulls in/out to avoid clipping through
+            -- nearby geometry -- including our own placed object once it got close to the character.
+            -- That created a feedback loop: object near character -> camera zooms in -> camera moves
+            -- -> our "300uu from camera" target moves with it -> still near character -> repeat. The
+            -- per-tick read-back proved the math was hitting exactly 300uu from wherever the camera
+            -- WAS each instant -- it was the camera itself oscillating, not our placement. Fix: anchor
+            -- the ORIGIN to the player PAWN's position (not moved by camera collision-avoidance),
+            -- keep the camera's ROTATION for direction so it still points wherever you're looking.
+            local pawn = pc.Pawn
+            if not (pawn and pawn:IsValid()) then return end
+            local loc = pawn:K2_GetActorLocation()
+            local rot = cam:GetCameraRotation()
+            local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
+            local cp = math.cos(pitch)
+            local fx, fy, fz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+            local target = { X = loc.X + fx * distance, Y = loc.Y + fy * distance, Z = loc.Z + fz * distance }
+            actor:K2_SetActorLocation(target, false, {}, true)
+            moved = moved + 1
+            if count <= 3 or count % 30 == 0 then
+                local actual = actor:K2_GetActorLocation()
+                local dx, dy, dz = actual.X - loc.X, actual.Y - loc.Y, actual.Z - loc.Z
+                local actualDist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                print(string.format("[LivingBase] [followtest]   tick %d: pawn=(%.0f,%.0f,%.0f) target=(%.0f,%.0f,%.0f) actual=(%.0f,%.0f,%.0f) actualDistFromPawn=%.0fuu\n",
+                    count, loc.X, loc.Y, loc.Z, target.X, target.Y, target.Z, actual.X, actual.Y, actual.Z, actualDist))
+            end
+        end)
+        if not ok then
+            print(string.format("[LivingBase] [followtest] tick FAILED at count=%d -- stopping (pcall caught it, not a crash).\n", count))
+            Spawner._followTestActive = false
+            return
+        end
+        if count < totalTicks then
+            ExecuteWithDelay(intervalMs, tick)
+        else
+            print(string.format("[LivingBase] [followtest] done: %d/%d ticks moved the actor successfully, no crash, zero file I/O.\n", moved, count))
+        end
+    end
+    ExecuteWithDelay(intervalMs, tick)
+end
+
+function Spawner.StopFollowTest()
+    Spawner._followTestActive = false
+    print("[LivingBase] [followtest] stop flag set -- will halt on its next tick instead of rescheduling.\n")
 end
 
 --------------------------------------------------------------------
@@ -4125,27 +5672,50 @@ end
 -- Re-spawn one persisted line. Returns (actor, classPath, look) or nil. Does NOT run the
 -- restore hook — post-processing is deferred until the world is stable (see below).
 local function restoreOne(line)
-    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel|pitch|roll
+    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel|pitch|roll|lootMesh
     -- (reskinTarget is a 2026-08-11 addition/field 12, instanceLabel a 2026-08-16 one/field 13,
-    -- pitch/roll a 2026-08-18 one/fields 14-15 -- any of these can be absent/nil on an older line,
-    -- same graceful-degradation contract as parsePersistLine above.)
+    -- pitch/roll a 2026-08-18 one/fields 14-15, lootMesh a 2026-08-19 one/field 16 -- any of these
+    -- can be absent/nil on an older line, same graceful-degradation contract as parsePersistLine
+    -- above.)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
     local cls, x, y, z, ai, yw, fr = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
     local lp, la, ls, lb, lr, storedLabel = parts[8], parts[9], parts[10], parts[11], parts[12], parts[13]
     local pitch, roll = tonumber(parts[14]) or 0.0, tonumber(parts[15]) or 0.0
+    local lootMesh = parts[16]
     if not (cls and x and y and z) then return end
     local loc = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) }
     local aiPath = (ai and ai ~= "") and ai or nil
     local yaw = tonumber(yw) or 0.0
     local friendly = (fr == "1")
     local look = nil
-    if (lp and lp ~= "") or (la and la ~= "") or (lb and lb ~= "") or (lr and lr ~= "") then
+    if (lp and lp ~= "") or (la and la ~= "") or (lb and lb ~= "") or (lr and lr ~= "")
+        or (lootMesh and lootMesh ~= "") then
         look = { params    = (lp and lp ~= "" and lp) or nil,
                  archetype = (la and la ~= "" and la) or nil,
                  sex       = (ls and ls ~= "" and tonumber(ls)) or nil,
                  bodyTypes = (lb and lb ~= "" and lb) or nil,
-                 reskinTarget = (lr and lr ~= "" and lr) or nil }
+                 reskinTarget = (lr and lr ~= "" and lr) or nil,
+                 lootMesh  = (lootMesh and lootMesh ~= "" and lootMesh) or nil }
+        -- AUTO-UPGRADE old-style walking-women lines (2026-08-19): a Letty/Marita/Merchant
+        -- persisted BEFORE they got their own real Config.FEMALE_CHARACTER_PARAMS outfit is still
+        -- carrying the OLD shared-composite params in this saved line -- and since composite pieces
+        -- are confirmed build-time-only this session (no live post-build lever exists, see
+        -- Spawner.ApplyCompositeOrdered's own dead-end note), the ONLY place that can fix her is
+        -- HERE, before Spawner.Spawn ever builds her, not afterward. Reuses the exact same
+        -- femaleCharacterKey suffix-strip rule testbed.lua's own copy uses (kept as a plain inline
+        -- pattern rather than a cross-module call -- spawner.lua doesn't require testbed.lua, and
+        -- never should, to avoid a circular require). A character with no dedicated params entry
+        -- (Woman, or anything not yet migrated) is untouched -- charParams.params is nil for those,
+        -- so the `and` short-circuits and look.params passes through exactly as persisted.
+        if look.reskinTarget then
+            local characterKey = look.reskinTarget:gsub("%s+Base%s+%d+$", "")
+            local charParams = Config.FEMALE_CHARACTER_PARAMS and Config.FEMALE_CHARACTER_PARAMS[characterKey]
+            if charParams and charParams.params and look.params ~= charParams.params then
+                log(string.format("restore: upgrading '%s' to her real outfit (was using the old shared composite).", look.reskinTarget))
+                look.params = charParams.params
+            end
+        end
     end
 
     -- Instance label (2026-08-16): reuse the stored one verbatim if this line has it (stable across
@@ -4193,6 +5763,21 @@ local function restoreOne(line)
         -- are 0 (the overwhelming common case) to avoid a pointless extra native call on every restore.
         if pitch ~= 0.0 or roll ~= 0.0 then
             pcall(function() a:K2_SetActorRotation({ Pitch = pitch, Yaw = yaw, Roll = roll }, false) end)
+        end
+        -- Item-drop decor mesh (2026-08-19 fix, RedFalcon's bug report). MUST be applied HERE,
+        -- inline/synchronous, not through a RESTORE_RULES/RestoreHook entry -- confirmed live that
+        -- an entry there is unreachable dead code for ANY decor-class actor: isStaticLine() routes
+        -- decor into the `statics` list, which spawnList() calls with collect=false ("Only MOVERS
+        -- get post-processing... so only collect them", right above this file's own restore-loop
+        -- comment) specifically so a statics-heavy base skips a no-op post-process pass -- postList
+        -- (and therefore Spawner.restoreHook/RestoreHook) never sees a decor actor at all. Same
+        -- immediate-not-deferred treatment the DECORATIONS block just above already gives every
+        -- decor actor (SetDecorSolid/MakeMovable) -- this is a plain SetSkeletalMeshAsset swap, not
+        -- crash-prone component surgery, so there's no reason it needs the deferred/staggered
+        -- pipeline movers require.
+        if look and look.lootMesh then
+            pcall(function() Spawner.SetLootMesh(a, look.lootMesh) end)
+            pcall(function() Spawner.MakeLootDecor(a) end)
         end
         return a, cls, look
     end
@@ -4873,11 +6458,15 @@ end
 -- since, so the fallback was dropped here). Re-reads the controller list from scratch afterward
 -- (not the same ctrl reference) to confirm it actually stuck, same "confirmed genuinely stuck"
 -- standard Spawner.ApplySexChangeToNearest already uses.
-function Spawner.SetCustomizationController(which, newValue, say)
+-- `actor` is an explicit parameter (2026-08-19, was Spawner._lastProbedActor internally) so
+-- non-console callers (e.g. the walking-women hair preload) can target a specific just-spawned
+-- actor without needing it to also be the current lbprobe target. The lbcustomnpc console command
+-- (main.lua) passes Spawner._lastProbedActor itself now -- same behavior as before for that
+-- caller, just the lookup moved to the call site.
+function Spawner.SetCustomizationController(actor, which, newValue, say)
     say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
-    local actor = Spawner._lastProbedActor
     if not (actor and actor:IsValid()) then
-        say("No valid probed target -- run lbprobe on something first.")
+        say("No valid target actor.")
         return
     end
     local name = "actor"
@@ -4921,6 +6510,328 @@ function Spawner.SetCustomizationController(which, newValue, say)
         (after == target) and "CHANGED as requested" or ((after == row.cur) and "NO CHANGE" or "changed to something else")))
 end
 
+-- Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say) -- swaps the SkeletalMesh asset on
+-- whichever BuildedCompositeMeshes entry matches the given BodyPart enum value (see
+-- ER5BLCompositeMeshBodyPartType_V0_8_0, decoded this session from UE4SS_ObjectDump.txt -- 13 =
+-- Legs, etc). Built (2026-08-19) for the "Merchant" walking-woman fix: her REAL DefaultParams
+-- bakes in a body-shape-mismatched Legs piece -- confirmed by config.lua's own
+-- Config.FEMALE_WALKER_OVERLAYS "Merchant" entry, which root-caused the identical symptom the
+-- same day for the OLD per-piece-replace system ("a real body-shape mismatch between the
+-- Walker's own skeleton and a mesh built to fit the Standing statue's body", fixed there by
+-- swapping in SK_Armor_Conquistador_02_Female_Legs). This is the direct per-slot equivalent for
+-- the NEW pre-build-params system, which bypasses that content-name-matched `replaces` rule
+-- entirely -- addressed by BodyPart enum instead of guessing a live component's current mesh
+-- name. Reuses the EXACT hide -> SetSkeletalMeshAsset/SetSkeletalMesh-fallback ->
+-- SetLeaderPoseComponent rebind -> show sequence Spawner.DeCorrupt's own `replaces` rule already
+-- proved safe (see its own comment, right above where didReplace is set) -- same risk profile,
+-- not a new one.
+function Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+    local mesh = resolveAsset(meshPath)
+    if not mesh then
+        say("mesh unresolved: " .. tostring(meshPath))
+        return false
+    end
+    pcall(function() target:SetVisibility(false, false) end)
+    local ok = pcall(function() target:SetSkeletalMeshAsset(mesh) end)
+    if not ok then ok = pcall(function() target:SetSkeletalMesh(mesh, false) end) end
+    if ok then
+        pcall(function()
+            local body = actor.Mesh
+            if body and body:IsValid() then
+                target:SetLeaderPoseComponent(body, false, false)
+            end
+        end)
+    end
+    pcall(function() target:SetVisibility(true, false) end)
+    say(string.format("BodyPart=%s mesh swap %s (%s)", tostring(bodyPart), ok and "OK" or "FAILED", meshPath))
+    return ok
+end
+
+-- Spawner.ProbeClassCustomization(classPath, say) -- backing function for "lbprobeclass". RedFalcon
+-- asked whether the Armor.* controller breakdown could be surveyed across the class roster WITHOUT
+-- spawning every actor into the world first. §7 (WINDROSE_MODDING_NOTES.md) already confirmed a
+-- buildable-trader's Class Default Object owns a real, populated R5CompositeMeshComponent -- same
+-- "Default__<ClassName>" object-naming trick this file already uses at getGameplayStatics()
+-- (StaticFindObject("/Script/Engine.Default__GameplayStatics")). Untested territory: whether that
+-- generalizes to actual PAWN classes, whose composite look this mod otherwise only ever builds via
+-- an explicit runtime SetCompositeParams/build call (see WINDROSE_MODDING_NOTES.md §9) rather than
+-- static class-default component setup. This function is the one cheap test for that -- resolves
+-- classPath's own CDO and reads its controllers directly, no SpawnActor call anywhere. An empty/
+-- zeroed result on a class that's known (via a live spawn) to have real controllers would prove the
+-- CDO route doesn't generalize past the buildable-trader case; a populated result would open up
+-- surveying the whole roster with zero world-load cost.
+function Spawner.ProbeClassCustomization(classPath, say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    if not (classPath and classPath ~= "") then
+        say("Usage: lbprobeclass <ShortName|ClassPath>")
+        return
+    end
+    local packagePath, className = classPath:match("^(.+)%.([^%.]+)$")
+    if not (packagePath and className) then
+        say("'" .. tostring(classPath) .. "' doesn't look like a full /Game/... object path (need Package.ClassName_C).")
+        return
+    end
+    -- Force the package into memory first (StaticFindObject alone misses anything not already
+    -- loaded, same reason resolveClass falls back to LoadAsset) -- the CDO can't resolve if the
+    -- class itself was never loaded.
+    resolveClass(classPath)
+    local cdoPath = packagePath .. ".Default__" .. className
+    local cdo = StaticFindObject(cdoPath)
+    if not (cdo and cdo:IsValid()) then
+        say("Could not resolve CDO at '" .. cdoPath .. "' -- class may not exist or isn't loadable this way.")
+        return
+    end
+    local comp = nil
+    pcall(function() comp = cdo.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(className .. "'s CDO has no (valid) CompositeMeshComponent.")
+        return
+    end
+    local rows = listCustomizationControllers(comp)
+    if #rows == 0 then
+        say(className .. " CDO: 0 customization controllers -- either genuinely none, or this class builds its composite at spawn-time rather than on the CDO; cross-check against a live lbprobe on an actual spawned instance before concluding either way.")
+        return
+    end
+    say(string.format("%s CDO: %d controller(s):", className, #rows))
+    for _, row in ipairs(rows) do
+        say(string.format("  %-38s index=%s current=%s options=0..%s selectable=%s",
+            row.tag or "(no category)", tostring(row.idx), tostring(row.cur), tostring(row.max), tostring(row.allowed)))
+    end
+end
+
+-- customization_survey.jsonl -- accumulated output of Spawner.ScanNearbyCustomization, ONE JSON
+-- object per line (JSON Lines, not a single JSON array) so a new scan can just APPEND -- no need to
+-- re-parse and rewrite the whole file to add records, same reasoning discoveryAppend/ledgerAppend
+-- already use `io.open(p, "a")` for their own accumulating logs. Same multi-candidate relative-path
+-- list every other file in this section uses (UE4SS's Lua CWD isn't consistent across contexts).
+local CUSTOM_SURVEY_PATHS = {
+    "ue4ss/Mods/LivingBase/customization_survey.jsonl",
+    "Mods/LivingBase/customization_survey.jsonl",
+    "customization_survey.jsonl",
+}
+local function customSurveyAppend(line)
+    for _, p in ipairs(CUSTOM_SURVEY_PATHS) do
+        local f = io.open(p, "a")
+        if f then f:write(line .. "\n"); f:close(); return true end
+    end
+    return false
+end
+-- Dedup key is CLASS+VARIANT, not the class alone (2026-08-19, RedFalcon's own catch: the first
+-- Gatherer scan turned out to be a Senkamati Caster reskin WEARING the Gatherer's base class, not a
+-- vanilla Gatherer -- same class, genuinely different composite state, and the class-only key would
+-- have silently thrown the vanilla one away as "already known" forever). "variant" is "vanilla" for
+-- anything not spawned through a recipe (wild NPCs, or a raw lbspawn of the class) or the recipe's
+-- own display label (e.g. "Herbalist Woman") when Spawner.spawned's hasLook flag says one was
+-- applied -- see the lookup in Spawner.ScanNearbyCustomization. Doesn't need a real JSON parser:
+-- this file is ONLY ever written by customSurveyAppend below in this exact shape, so a plain pattern
+-- match for the `"class"`/`"variant"` fields each line carries is enough to recover every key
+-- already on file. Old lines written before "variant" existed have no such field -- they default to
+-- "vanilla" here, matching what they actually were (this tool didn't distinguish recipes yet).
+local function readSurveyedClasses()
+    local seen = {}
+    for _, p in ipairs(CUSTOM_SURVEY_PATHS) do
+        local f = io.open(p, "r")
+        if f then
+            for line in f:lines() do
+                local cls = line:match('"class"%s*:%s*"([^"]+)"')
+                local variant = line:match('"variant"%s*:%s*"([^"]+)"') or "vanilla"
+                local bodySex = line:match('"bodySex"%s*:%s*"([^"]+)"') or "Unknown"
+                if cls then seen[cls .. "\1" .. variant .. "\1" .. bodySex] = true end
+            end
+            f:close()
+            break
+        end
+    end
+    return seen
+end
+-- comp:GetBodySex() -- same EBodySex encoding SetCharacterSex/SetCompositeParams already use
+-- elsewhere in this file (1=Male/2=Female, see Spawner.ApplyBodySex's own comment). RedFalcon asked
+-- to track this per record too (2026-08-19): a male- vs female-presenting spawn of the exact same
+-- class+variant can carry a genuinely different controller set -- WINDROSE_MODDING_NOTES.md §2c
+-- already confirmed SetCharacterSex rebuilds the whole list, not just the current picks -- so this
+-- folds into the dedup key alongside class/variant, not just a label on the same record.
+local function bodySexLabel(comp)
+    local ok, v = pcall(function() return comp:GetBodySex() end)
+    if not ok then return "Unknown" end
+    local n = tonumber(v)
+    if n == 1 then return "Male" end
+    if n == 2 then return "Female" end
+    return "Unknown(" .. tostring(v) .. ")"
+end
+-- Minimal escaper for the two string fields this file ever writes (class name, gameplay tag) --
+-- neither can contain control characters, only backslash/quote are realistically possible (a tag
+-- with a literal backslash has never been seen, guarded anyway since it's one line of code).
+local function jsonEscape(s)
+    return tostring(s):gsub('[\\"]', "\\%0")
+end
+
+-- Spawner.ScanNearbyCustomization(radius, say) -- backing function for "lbcustomscan". RedFalcon's
+-- follow-up to Spawner.ProbeClassCustomization's CDO dead-end: since a pawn's controller list only
+-- exists once something is actually spawned, survey whatever's ALREADY standing nearby (placed via
+-- lbspawn/lblook, or just wandering wild NPCs) in one pass instead of probing one at a time via
+-- lbprobe+lbcustomnpc. Deliberately a plain RADIUS sweep around the player pawn, not the camera-cone
+-- targeting findNearestSpawnInFront/ProbeNearestActor use -- this wants everything nearby, not just
+-- what's currently in view. Reuses the same FindAllOf("Actor")+exclude-Controllers sweep
+-- ProbeNearestActor already does (see that function's own comment for why Controllers must be
+-- excluded by IsA(), not by name). Records, per NEW class only (skips anything already in
+-- customization_survey.jsonl from a prior scan): every controller row (same shape as "lbcustomnpc
+-- get") PLUS the four IsX...Available() flags (dumpCustomizability's own set) -- folding sex-change
+-- availability into the same record since RedFalcon asked for it alongside the controller data,
+-- and it's a free read off the same component.
+function Spawner.ScanNearbyCustomization(radius, say)
+    say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    radius = tonumber(radius) or 5000.0
+
+    local pawn
+    local px, py, pz
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+        if pawn and pawn:IsValid() then
+            local l = pawn:K2_GetActorLocation()
+            px, py, pz = l.X, l.Y, l.Z
+        end
+    end)
+    if not px then
+        say("No player pawn available -- aborting.")
+        return
+    end
+
+    local controllerClass
+    pcall(function() controllerClass = StaticFindObject("/Script/Engine.Controller") end)
+
+    local list
+    local ok = pcall(function() list = FindAllOf("Actor") end)
+    if not (ok and list) then
+        say("FindAllOf('Actor') returned nothing.")
+        return
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+
+    local alreadySeen = readSurveyedClasses()
+    local seenThisRun = {}
+    local scanned, recorded, skippedDupe, skippedNoComp = 0, 0, 0, 0
+
+    for i = 1, n do
+        local a = list[i]
+        if not a then pcall(function() a = list:Get(i) end) end
+        local isController = false
+        if a and controllerClass then pcall(function() isController = a:IsA(controllerClass) end) end
+        if a and a:IsValid() and not isController then
+            local dist
+            pcall(function()
+                local l = a:K2_GetActorLocation()
+                local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            end)
+            if dist and dist <= radius then
+                local comp
+                pcall(function() comp = a.CompositeMeshComponent end)
+                if comp and comp:IsValid() then
+                    scanned = scanned + 1
+                    local className = "?"
+                    pcall(function() className = a:GetClass():GetFName():ToString() end)
+                    -- Was this actor spawned through one of this mod's own recipes, or is it vanilla
+                    -- (a wild NPC, or a raw lbspawn)? Spawner.spawned's hasLook flag (set at spawn
+                    -- time in Spawner.Spawn) is the precise signal -- not the label string, which
+                    -- exists for every tracked spawn regardless of whether a recipe was applied.
+                    local variant = "vanilla"
+                    for _, entry in ipairs(Spawner.spawned) do
+                        if entry.actor == a then
+                            if entry.hasLook and entry.label then variant = entry.label end
+                            break
+                        end
+                    end
+                    local bodySex = bodySexLabel(comp)
+                    local key = className .. "\1" .. variant .. "\1" .. bodySex
+                    if alreadySeen[key] or seenThisRun[key] then
+                        skippedDupe = skippedDupe + 1
+                    else
+                        seenThisRun[key] = true
+                        local rows = listCustomizationControllers(comp)
+                        local function callBool(name)
+                            local okc, v = pcall(function() return comp[name](comp) end)
+                            if not okc then return "null" end
+                            return v and "true" or "false"
+                        end
+                        local parts = {}
+                        for _, row in ipairs(rows) do
+                            parts[#parts + 1] = string.format(
+                                '{"tag":%s,"index":%s,"current":%s,"max":%s,"selectable":%s}',
+                                row.tag and ('"' .. jsonEscape(row.tag) .. '"') or "null",
+                                row.idx ~= nil and tostring(row.idx) or "null",
+                                row.cur ~= nil and tostring(row.cur) or "null",
+                                row.max ~= nil and tostring(row.max) or "null",
+                                row.allowed ~= nil and tostring(row.allowed) or "null")
+                        end
+                        local record = string.format(
+                            '{"class":"%s","variant":"%s","bodySex":"%s","scannedAt":"%s","distance":%d,'
+                            .. '"characterCustomizable":%s,"customizationEditActive":%s,'
+                            .. '"bodyTypeChangeAvailable":%s,"bodySexChangeAvailable":%s,"controllers":[%s]}',
+                            jsonEscape(className), jsonEscape(variant), jsonEscape(bodySex),
+                            os.date("%Y-%m-%d %H:%M:%S"), math.floor(dist),
+                            callBool("IsCharacterCustomizable"),
+                            callBool("IsCustomizationEditActive"),
+                            callBool("IsBodyTypeChangeAvailable"),
+                            callBool("IsBodySexChangeAvailable"),
+                            table.concat(parts, ","))
+                        if customSurveyAppend(record) then
+                            recorded = recorded + 1
+                            say(string.format("  + %s [%s/%s] (%d controller(s), %.0fuu)", className, variant, bodySex, #rows, dist))
+                        else
+                            say("  FAILED to write record for " .. className .. " -- could not open customization_survey.jsonl")
+                        end
+                    end
+                else
+                    skippedNoComp = skippedNoComp + 1
+                end
+            end
+        end
+    end
+
+    say(string.format("Scan done: %d actor(s) with a composite mesh within %.0fuu, %d new class(es) recorded, %d already-known class(es) skipped.",
+        scanned, radius, recorded, skippedDupe))
+end
+
 -- Spawner.ToggleTargetLock() — Num+ toggle (see Spawner.lockedTarget's own comment inside
 -- findNearestSpawnInFront for what a lock DOES). This function only decides ON vs OFF and picks
 -- what to lock onto; the actual "make every other action use it" behavior lives entirely in that one
@@ -4930,15 +6841,43 @@ end
 -- camera-based cone) — locking targets whatever those keys would already have hit, so there's no
 -- separate/different "what counts as in front of me" rule to learn. OFF: just clears the pin; every
 -- action goes back to picking fresh each press, same as before this feature existed.
+-- Raycast is now the ONLY source for acquiring a target lock (2026-08-20, RedFalcon: "with raytrace
+-- we dont need the cone. we're locking live edit to targets only" / "we should use ray trace as the
+-- visual truth now its faster and more accurate"). Previously fell back to findNearestSpawnInFront's
+-- cone/radius sweep whenever nothing was hovered -- a SECOND, independently-sourced pick with its own
+-- origin/range, which is exactly what made target-lock's effective reach diverge from hover-highlight's
+-- even with matching Config.LIVE_EDIT_MAX_DIST numbers (RedFalcon: "target and highlight should be
+-- synced both by source and by distance... it doesnt make sense otherwise"). With the raycast as the
+-- only source, that divergence can't happen: whatever's currently lit up (Spawner._hoverActor) IS the
+-- only thing + can lock onto. No fallback -- if nothing's hovered, there's nothing to lock onto, full
+-- stop. This only ever runs with the SpawnMenu window open anyway (targetLock is windowGatedAction'd),
+-- same gate hover-highlight itself runs under, so the raycast is always live by the time this is
+-- called. Deliberately NOT a change to findNearestSpawnInFront itself -- despawn/cycle still use it
+-- directly and are untouched by this. Returns the same (bestI, e) shape findNearestSpawnInFront does
+-- (bestI just a truthy marker here, not a real index -- nothing reads it as one).
+local function pickTargetPreferringHover()
+    local hovered = Spawner._hoverActor
+    if hovered and hovered:IsValid() then
+        local hoverPath = actorInstancePath(hovered)
+        if hoverPath then
+            for _, e in ipairs(Spawner.spawned) do
+                if e.actor and e.actor:IsValid() and actorInstancePath(e.actor) == hoverPath then
+                    return true, e
+                end
+            end
+        end
+    end
+    return false, nil
+end
+
 function Spawner.ToggleTargetLock()
     print("[LivingBase] target-lock key received.\n")
-    local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
     if Spawner.lockedTarget then
         -- Already locked: RedFalcon asked (2026-08-16) for pressing + on a DIFFERENT object to just
-        -- retarget in one press, instead of needing unlock-then-relock (two presses). ignoreLock=true
-        -- bypasses findNearestSpawnInFront's own lock short-circuit, so this is a genuinely fresh
-        -- cone/range pick, not just the same locked actor being handed back again.
-        local bestI, e = findNearestSpawnInFront(maxDist, true)
+        -- retarget in one press, instead of needing unlock-then-relock (two presses). Raycast-only pick
+        -- (see pickTargetPreferringHover's own comment), so this is whatever's hovered right now, not
+        -- the same locked actor being handed back again.
+        local bestI, e = pickTargetPreferringHover()
         if bestI and e.actor ~= Spawner.lockedTarget.actor then
             local oldLabel = Spawner.lockedTarget.label
             Spawner.lockedTarget = { actor = e.actor, label = e.label, class = e.class }
@@ -4957,9 +6896,9 @@ function Spawner.ToggleTargetLock()
         pcall(function() Spawner.Toast("Target lock OFF: " .. tostring(label), 2.5) end)
         return
     end
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = pickTargetPreferringHover()
     if not bestI then
-        print(string.format("[LivingBase] Target lock: nothing within %.0fuu ahead — walk closer / face it.\n", maxDist))
+        print("[LivingBase] Target lock: nothing hovered to lock onto.\n")
         pcall(function() Spawner.Toast("Target lock: nothing in front to lock onto.", 2.5) end)
         return
     end
@@ -5257,6 +7196,42 @@ function Spawner.PersistUpdateLabel(classPath, loc, newLabel)
     return true
 end
 
+-- Spawner.PersistUpdateLootMesh(classPath, loc, meshPath) — writes field 16 (2026-08-19, RedFalcon's
+-- bug report: "Drops decor is in persist.txt but doesn't load"). ROOT CAUSE: Testbed.placeDecorEntry
+-- calls Spawner.SetLootMesh AFTER Spawner.Spawn already returns and already wrote the persist line --
+-- persistAppend (called from inside Spawner.Spawn itself) has no way to know the mesh path at that
+-- point, so it was never recorded at all, and restoreOne/RestoreHook had nothing to reapply it from
+-- -- a restored drop-decor actor spawned as a bare, unresolved R5LootActor with NO mesh assigned,
+-- genuinely invisible (see Spawner.SetLootMesh's own comment: this class's mesh is normally only
+-- populated by a real drop event, never baked into the class itself). Same "match by classPath +
+-- nearest location, then rewrite one field" pattern as Spawner.PersistUpdatePose/PersistUpdateLabel
+-- above -- called separately, right after the live SetLootMesh call succeeds, to backfill the ALREADY-
+-- written persist line with the one piece of data it was missing.
+function Spawner.PersistUpdateLootMesh(classPath, loc, meshPath)
+    if not (classPath and loc and meshPath and meshPath ~= "") then return false end
+    local lines = persistReadLines()
+    local bestI, bestD, bestParts
+    for i, line in ipairs(lines) do
+        local parts = {}
+        for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
+        if parts[1] == classPath and tonumber(parts[2]) then
+            local x, y, z = tonumber(parts[2]), tonumber(parts[3]), tonumber(parts[4])
+            local d = (x - loc.X) ^ 2 + (y - loc.Y) ^ 2 + (z - loc.Z) ^ 2
+            if not bestD or d < bestD then bestI, bestD, bestParts = i, d, parts end
+        end
+    end
+    if not bestI then return false end
+    -- Fields 8-15 may not exist at all on an older line -- pad with empty strings first so setting
+    -- field 16 directly after never leaves a gap table.concat can't handle.
+    for f = 8, 15 do
+        if bestParts[f] == nil then bestParts[f] = "" end
+    end
+    bestParts[16] = meshPath
+    lines[bestI] = table.concat(bestParts, "|")
+    persistWriteLines(lines)
+    return true
+end
+
 --------------------------------------------------------------------
 -- Spawner.MakeMovable(actor) — flip an actor's scene components from Static to Movable so runtime
 -- SetActorLocation/Rotation actually moves the RENDERED mesh. World props (nests, mushrooms, wrecks)
@@ -5271,19 +7246,29 @@ function Spawner.MakeMovable(actor)
         local root = actor:K2_GetRootComponent()
         if root and root:IsValid() then root:SetMobility(2) end
     end)
-    -- Also any StaticMeshComponents that aren't the root (the visible mesh is often a child, and a
-    -- Static child ignores the parent's runtime move on the render thread too). Try both UE4SS method
-    -- spellings for the class lookup.
+    -- Also any StaticMeshComponents/SkeletalMeshComponents that aren't the root (the visible mesh is
+    -- often a child, and a Static child ignores the parent's runtime move on the render thread too).
+    -- SkeletalMeshComponent added 2026-08-21, extending the build-ghost-preview follow to statues
+    -- (AnimatedActor/QuestStatic classes -- see EditNearestInFront's own comment) -- their visible
+    -- mesh is a skeletal mesh, not a static one, so the original StaticMeshComponent-only sweep would
+    -- have silently missed it, same class of "mesh doesn't pick up the move" bug this function exists
+    -- to prevent, just for a different component type. Same dual-class pattern ApplyGhostMaterial
+    -- already uses for exactly this reason. Try both UE4SS method spellings for the class lookup.
     pcall(function()
-        local smcClass = StaticFindObject("/Script/Engine.StaticMeshComponent")
-        if not smcClass then return end
-        local comps
-        pcall(function() comps = actor:GetComponentsByClass(smcClass) end)
-        if not comps then pcall(function() comps = actor:K2_GetComponentsByClass(smcClass) end) end
-        if not comps then return end
-        for i = 1, #comps do
-            local c = comps[i]
-            if c and c:IsValid() then pcall(function() c:SetMobility(2) end) end
+        for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+            local mcClass = StaticFindObject("/Script/Engine." .. className)
+            if mcClass and mcClass:IsValid() then
+                local comps
+                pcall(function() comps = actor:GetComponentsByClass(mcClass) end)
+                if not comps then pcall(function() comps = actor:K2_GetComponentsByClass(mcClass) end) end
+                if comps then
+                    for i = 1, #comps do
+                        local c = comps[i]
+                        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                        if c and c:IsValid() then pcall(function() c:SetMobility(2) end) end
+                    end
+                end
+            end
         end
     end)
 end
@@ -5319,6 +7304,1175 @@ function Spawner.SetDecorSolid(actor)
     forEachStaticMesh(actor, function(c) c:SetSimulatePhysics(false) end)
 end
 
+-- setPlacementPhysics(actor, on) / PLACEMENT_MIN_PHYSICS_DIST -- shared by beginFollowLoop's tick
+-- and Spawner.TogglePlacementPhysics below -- declared here, ABOVE beginFollowLoop, so tick() can
+-- see it (Lua locals are only visible to code declared AFTER them in the file -- see this file's own
+-- "Lua scoping gotcha" precedent).
+-- REVERTED collision-toggles-with-physics (2026-08-20) -- briefly tried re-enabling collision
+-- alongside physics + a swept move so the object could actually react to the floor, CONFIRMED LIVE
+-- to make it "freak out, vibrate, and then stop moving" (see beginFollowLoop's own tick() comment for
+-- the full diagnosis: the physics engine and the per-tick forced move became two fighting authorities
+-- over the same transform). The swept move is reverted to a plain teleport; collision here is
+-- reverted right back to NOT toggling at all, staying off for the whole follow like it always did --
+-- an UNTESTED "collision-on but teleport-only" combination isn't worth risking live right after an
+-- actual instability, when the properly safe fix is a real redesign (see that same comment), not
+-- another quick toggle. This makes physics ON functionally inert again while still being
+-- followed -- confirmed stable, matches RedFalcon's very first test of this feature.
+local PLACEMENT_MIN_PHYSICS_DIST = 500.0
+local function setPlacementPhysics(actor, on)
+    Spawner._placementPhysicsOn = on
+    pcall(function()
+        local root = actor:K2_GetRootComponent()
+        if root and root:IsValid() then root:SetSimulatePhysics(on) end
+    end)
+    pcall(function() forEachStaticMesh(actor, function(c) c:SetSimulatePhysics(on) end) end)
+end
+
+-- Fixed GetActorBounds call (2026-08-21) -- CONFIRMED LIVE: the single-arg form
+-- (actor:GetActorBounds(false)) throws "UFunction expected 4 parameters, received 1" in this UE4SS
+-- build. Origin/BoxExtent are Out params (2nd/3rd of 4) that need pre-allocated tables passed in --
+-- same class of fix as the spring-arm SweepHitResult issue found earlier this session
+-- (Spawner.ApplyPlacementCameraOffset), just not yet worked out for THIS function. testbed.lua's
+-- playerFloorZ()/snapToFloor call the broken single-arg form too and have ALWAYS silently fallen
+-- through to a rough approximation instead (pawn Z minus ~90) -- which is why one statue floor-
+-- locked fine with that flat guess and another ("he's above the surface... none of the others have
+-- that issue") didn't: different statue poses bake in different pivot-to-feet offsets, so no single
+-- flat constant works for all of them. This does the real bounds read instead. Returns the actor's
+-- own bounding-box-bottom Z, or nil on failure.
+-- DECLARED HERE, above beginFollowLoop (2026-08-21) -- an earlier version of this and the three
+-- helpers below it were declared AFTER beginFollowLoop, which itself calls them from inside tick() --
+-- confirmed live to throw "attempt to call a nil value (global 'findFloorBelow')", the exact same
+-- "Lua scoping gotcha" this file's own history already documents elsewhere (a local is only visible
+-- to code declared AFTER it, textually, regardless of call order at runtime).
+local function actorBoundsBottomZ(actor)
+    if not (actor and actor:IsValid()) then return nil end
+    local origin, extent = {}, {}
+    local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+    if ok and origin.Z and extent.Z then return origin.Z - extent.Z end
+    return nil
+end
+
+-- How far the actor's VISUAL BOUNDS CENTER sits from its own pivot, in world-aligned axes (2026-08-21,
+-- RedFalcon: "the anchor that the object... is kind of off. Like i grab the chest... its a lot lower
+-- than the target point"). Decor placement/grab was setting the raw PIVOT to the aim point with zero
+-- compensation -- if an asset's pivot isn't at its visual center (common: pivot at the base, or
+-- wherever the original modeler put it), the aim point and the visible object drift apart by exactly
+-- that offset. RedFalcon's choice (asked directly): CENTER, not bottom like statues -- decor floats
+-- freely rather than floor-locking, so "the aim point is the middle of the object" is the more
+-- intuitive default here. Measured ONCE at grab/spawn time (same reasoning as
+-- computeStatueBottomOffset below) -- a fixed property of the mesh/pose at its current rotation, not
+-- the current position, and rotation doesn't change during a follow session.
+local function computeActorCenterOffset(actor)
+    local origin, extent = {}, {}
+    local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+    if not (ok and origin.X and origin.Y and origin.Z) then return nil end
+    local curLoc
+    pcall(function() curLoc = actor:K2_GetActorLocation() end)
+    if not curLoc then return nil end
+    return { X = origin.X - curLoc.X, Y = origin.Y - curLoc.Y, Z = origin.Z - curLoc.Z }
+end
+
+-- findFloorBelow (a separate downward-search-from-a-fixed-point raycast) was tried here and REMOVED
+-- (2026-08-21) -- superseded by beginFollowLoop's own forward raycast (see that tick()'s comment),
+-- which finds the actual surface in one step instead of computing a fixed-distance point and then
+-- searching down from it. Having TWO different position sources (forward-ray hit vs. this fallback)
+-- was itself the bug behind RedFalcon's "there seems to be a point at about 800uu where it jumps
+-- straight to the 1000uu" -- right at the edge of what the forward ray could reach, it would flicker
+-- between the two disagreeing sources. Don't reintroduce a second fallback source without also
+-- solving that discontinuity (the fix that shipped instead: hold the last successfully-landed
+-- position on a momentary miss, not fall back to a different calculation).
+
+-- Same statue-class check EditNearestInFront's own statueFrame already uses (AnimatedActor/
+-- QuestStatic) -- shared here (2026-08-21) so the follow loop's floor-lock (see its own comment)
+-- can tell statues apart from decor the same way live-edit already does.
+local function isStatueClass(class)
+    return (class and (string.find(class, "AnimatedActor", 1, true)
+        or string.find(class, "QuestStatic", 1, true))) and true or false
+end
+
+-- How far BELOW this actor's own pivot its visual bottom (bounding-box bottom) sits -- measured
+-- ONCE at grab/spawn time (not every tick, since it's a fixed property of the mesh/pose, not the
+-- current position) via the fixed actorBoundsBottomZ. The follow loop's floor-lock then does
+-- target.Z = floorSurfaceZ - thisOffset to rest the actor's bottom exactly on whatever surface
+-- findFloorBelow found, regardless of this statue's own pivot-to-feet quirk.
+local function computeStatueBottomOffset(actor)
+    local bottomZ = actorBoundsBottomZ(actor)
+    if not bottomZ then return nil end
+    local curZ
+    pcall(function() curZ = actor:K2_GetActorLocation().Z end)
+    if not curZ then return nil end
+    return bottomZ - curZ
+end
+
+-- Build-mode camera raise (2026-08-20, RedFalcon: native build mode raises/pulls back the camera for
+-- a better view -- wants the same while placing/relocating). CONFIRMED LIVE via lbprobecam (probe
+-- in and out of real build mode, same spot, same look direction): camera height +35uu relative to
+-- the pawn, and FOV 70 -> 76 (+6).
+-- HEIGHT RAISE + FOV, both now (2026-08-22, RedFalcon after confirming FOV works: "i did want the
+-- height we set, just not the backwards 100 of the sprintarm we tried") -- the height raise
+-- (spring-arm RelativeLocation, +35uu) is back; only the separate TargetArmLength "pullback"
+-- experiment (100uu, never worked, already removed) stays gone. Both the arm and the camera are now
+-- reached via plain NAMED properties -- `pawn.CameraBoom` / `pawn.FollowCamera` -- confirmed live by
+-- a reference UE4SS camera mod (Other\Camera Toggle System (UE4SS)-32-4-1-1778381431\...\main.lua),
+-- replacing the old class-search findPawnSpringArm()/findPawnCamera() lookups.
+--
+-- ROOT CAUSE of every earlier FOV failure, found by reading that mod: Windrose's FollowCamera has a
+-- settings-driven camera system (`CameraParams`) that keeps re-asserting its own FOV value UNLESS
+-- you explicitly detach from it first -- that mod's own `DetachCameraSystem` helper:
+--   cam.bUseSettingsFov = false
+--   cam.CameraParams = nil
+-- We never did either, which is almost certainly why both prior FieldOfView writes (
+-- PlayerCameraManager.FOVAngle, then CameraComponent.FieldOfView) got silently overridden/blended
+-- back. Both original values are saved here and restored exactly, since CameraParams likely drives
+-- other camera behavior outside placement mode (native zoom-avoid-clipping, camera lag, etc.) --
+-- permanently detaching without restoring would risk breaking that.
+local PLACEMENT_CAMERA_RAISE_UU = Config.PLACEMENT_CAMERA_RAISE_UU or 35.0
+local PLACEMENT_CAMERA_FOV_DELTA = Config.PLACEMENT_CAMERA_FOV_DELTA or 6.0
+function Spawner.ApplyPlacementCameraOffset()
+    local armOk, armErr = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local pawn = pc and pc:IsValid() and pc.Pawn
+        local arm = pawn and pawn:IsValid() and pawn.CameraBoom
+        if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
+        local rel = arm.RelativeLocation
+        if not rel then error("RelativeLocation read failed") end
+        Spawner._placementCamOrigArmZ = rel.Z
+        arm:K2_SetRelativeLocation({ X = rel.X, Y = rel.Y, Z = rel.Z + PLACEMENT_CAMERA_RAISE_UU }, false, {}, true)
+    end)
+    local fovOk, fovErr = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local pawn = pc and pc:IsValid() and pc.Pawn
+        local cam = pawn and pawn:IsValid() and pawn.FollowCamera
+        if not (cam and cam:IsValid()) then error("no pawn.FollowCamera") end
+        pcall(function() Spawner._placementCamOrigUseSettingsFov = cam.bUseSettingsFov end)
+        pcall(function() Spawner._placementCamOrigParams = cam.CameraParams end)
+        local curFov = cam.FieldOfView
+        if not curFov then error("FieldOfView read failed") end
+        Spawner._placementCamOrigFov = curFov
+        cam.bUseSettingsFov = false
+        cam.CameraParams = nil
+        cam.FieldOfView = curFov + PLACEMENT_CAMERA_FOV_DELTA
+    end)
+    print(string.format("[LivingBase] [placecam] apply: arm=%s (%s) fov=%s (%s)\n",
+        tostring(armOk), armOk and "ok" or tostring(armErr),
+        tostring(fovOk), fovOk and "ok" or tostring(fovErr)))
+end
+
+function Spawner.RestorePlacementCameraOffset()
+    if Spawner._placementCamOrigArmZ then
+        local ok, err = pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            local pawn = pc and pc:IsValid() and pc.Pawn
+            local arm = pawn and pawn:IsValid() and pawn.CameraBoom
+            if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
+            local rel = arm.RelativeLocation
+            if not rel then error("RelativeLocation read failed") end
+            arm:K2_SetRelativeLocation({ X = rel.X, Y = rel.Y, Z = Spawner._placementCamOrigArmZ }, false, {}, true)
+        end)
+        if not ok then print("[LivingBase] [placecam] restore: arm restore FAILED (" .. tostring(err) .. ") -- camera may stay raised until next reload.\n") end
+        Spawner._placementCamOrigArmZ = nil
+    end
+    if Spawner._placementCamOrigFov then
+        local ok, err = pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            local pawn = pc and pc:IsValid() and pc.Pawn
+            local cam = pawn and pawn:IsValid() and pawn.FollowCamera
+            if not (cam and cam:IsValid()) then error("no pawn.FollowCamera") end
+            cam.FieldOfView = Spawner._placementCamOrigFov
+            if Spawner._placementCamOrigParams ~= nil then cam.CameraParams = Spawner._placementCamOrigParams end
+            if Spawner._placementCamOrigUseSettingsFov ~= nil then cam.bUseSettingsFov = Spawner._placementCamOrigUseSettingsFov end
+        end)
+        if not ok then print("[LivingBase] [placecam] restore: FOV restore FAILED (" .. tostring(err) .. ") -- camera system may stay detached until next reload.\n") end
+        Spawner._placementCamOrigFov = nil
+        Spawner._placementCamOrigParams = nil
+        Spawner._placementCamOrigUseSettingsFov = nil
+    end
+end
+
+-- Spawner.StartPlacementPreview/ConfirmPlacement/CancelPlacement -- REAL FEATURE (2026-08-20): a
+-- just-spawned decor object follows the camera/reticle until confirmed (F5) or cancelled (F6),
+-- instead of landing wherever it happened to spawn. Built on the camera-follow mechanic proven safe
+-- 2026-08-19 (see memory/project_build_ghost_preview.md for the full crash-and-fix writeup this is
+-- based on): pawn-anchored origin (NOT the camera's own position -- this game's third-person
+-- spring-arm camera zooms to avoid clipping through nearby objects, including the one being placed,
+-- which created a feedback loop when the camera itself was used as the origin), zero file I/O per
+-- tick, physics disabled so it doesn't fight the teleport.
+--
+-- The object arrives here ALREADY solid/collision-on/ledger-written -- Testbed.placeDecorEntry (see
+-- testbed.lua) already ran Spawner.Spawn (which persists it) and Spawner.SetDecorSolid (collision +
+-- frozen physics) before pollSpawnMenuRequest ever sees it. This re-opens exactly what's needed for
+-- live movement (collision off so it doesn't shove the player while being dragged around; physics
+-- was already off) rather than redoing the whole spawn treatment.
+-- Shared by StartPlacementPreview (new spawn) and StartRelocatePreview (grab existing) -- same
+-- camera-follow tick loop either way, only how the actor GOT into follow-state differs.
+local function beginFollowLoop(distance)
+    -- Spawner._placementDistance (2026-08-20, RedFalcon: "be able to zoom it in and out... so we
+    -- aren't limited to either a set distance nor its starting distance") -- lives on Spawner, not as
+    -- a plain closure-captured local, specifically so Spawner.AdjustPlacementDistance (below) can
+    -- change it live from a completely different keypress while this loop keeps running. tick() reads
+    -- it fresh every iteration rather than closing over a fixed value.
+    -- Default bumped 300 -> Config.PLACEMENT_START_DIST_UU (2026-08-21, RedFalcon: matching native
+    -- build mode's ~1000uu placement range, now that floor-lock makes long-range statue placement
+    -- actually useful) -- applies to decor too (RedFalcon's explicit call, not statue-only), since
+    -- StartPlacementPreview never passed its own `distance` anyway (this fallback was always what
+    -- every fresh spawn from the menu actually used). StartRelocatePreview is unaffected -- it always
+    -- computes its own grabDistance from the actual camera-to-object distance, this fallback only
+    -- matters when that lookup fails.
+    Spawner._placementDistance = distance or Config.PLACEMENT_START_DIST_UU or 300.0
+    -- Camera raise/restore (2026-08-21): moved OFF this per-session lifecycle onto the SpawnMenu
+    -- window's own open/close transition -- see Spawner.ApplyPlacementCameraOffset's own comment.
+    -- By the time this runs, the window is already guaranteed open (StartPlacementPreview/
+    -- StartRelocatePreview are only ever reached via windowGatedAction), so the camera should already
+    -- be raised.
+    -- CONFIRMED LIVE (2026-08-20): the old version's pcall wrapped the WHOLE camera lookup + move,
+    -- and swallowed any failure completely silently -- no log, no state change -- while still
+    -- rescheduling the next tick regardless. If the pawn/camera lookup (or the move itself) started
+    -- failing for ANY reason -- even something as ordinary as a menu briefly stealing pawn
+    -- possession -- the loop would spin forever doing nothing, never moving the object again and
+    -- never clearing _placementActive, while looking completely healthy from the outside (no crash,
+    -- no error, nothing in the log). RedFalcon hit exactly this: an object stopped moving mid-
+    -- placement but F7/F5 kept saying "already placing" for 44 seconds. Fix: log the FIRST failure
+    -- (so a repeat is actually diagnosable) and count consecutive failures -- after too many in a
+    -- row, stop for real (clear _placementActive) instead of spinning inert forever. A few
+    -- transient failures are still tolerated (matches the same "don't overreact to one bad tick"
+    -- reasoning as the hover-highlight miss debounce), just not an unbounded silent hang.
+    local FOLLOW_FAIL_TOLERANCE = 30 -- ~1s at 33ms before giving up for real
+    local consecutiveFails = 0
+    local function tick()
+        if not Spawner._placementActive then return end
+        if not (Spawner._placementActor and Spawner._placementActor:IsValid()) then
+            Spawner._placementActive = false
+            return
+        end
+        local ok, err = pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            if not (pc and pc:IsValid()) then error("no PlayerController") end
+            local pawn = pc.Pawn
+            local cam = pc.PlayerCameraManager
+            if not (pawn and pawn:IsValid() and cam and cam:IsValid()) then error("no Pawn/PlayerCameraManager") end
+            -- CAMERA-anchored, not pawn-anchored (2026-08-21, RedFalcon: chest "a lot lower than the
+            -- target point" -- tried a 32uu pivot-to-center fix first, CONFIRMED LIVE it made zero
+            -- visible difference, meaning the real gap was much bigger). Root cause: this was pawn-
+            -- position + camera-direction -- the exact origin/direction MISMATCH this file's own
+            -- anti-pattern comment already documents as broken for anything directional (see
+            -- findNearestSpawnInFront's own comment, and the hover-highlight/statue-raycast history
+            -- earlier this session). Using the camera's ANGLE from the PAWN's LOWER starting point
+            -- traces a path that ends up below where the camera is actually looking, and that gap
+            -- grows with distance -- which lines up with today's much longer follow distances
+            -- (750-1800uu) making the old "close enough" pawn-anchored approximation clearly wrong.
+            -- Origin was pawn-anchored ON PURPOSE originally (2026-08-19) specifically to dodge a
+            -- DIFFERENT bug: third-person spring-arm collision-avoidance zooms the camera when the
+            -- FOLLOWED OBJECT gets close to it, and camera-anchoring fed that zoom back into the next
+            -- tick's own origin, creating a visible feedback loop ("object creeps toward the
+            -- camera"). That trigger needs the object to be close to the camera specifically -- at
+            -- today's much longer default distances this may no longer be reachable in normal use,
+            -- but hasn't been proven safe at CLOSE range (zoom all the way in with HOME) -- watch for
+            -- that old symptom specifically there if this regresses.
+            local loc = cam:GetCameraLocation()
+            local rot = cam:GetCameraRotation()
+            local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
+            local cp = math.cos(pitch)
+            local fx, fy, fz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+            local dist = Spawner._placementDistance or 300.0
+            local target = { X = loc.X + fx * dist, Y = loc.Y + fy * dist, Z = loc.Z + fz * dist }
+            -- Statues stay floor-locked while being dragged (2026-08-21, RedFalcon: "i'd be ok if the
+            -- statues stayed attached to the floor surface when moving. they are different from
+            -- decor") -- decor can go on shelves/tables/mid-air, but a statue floating at whatever
+            -- height the camera happens to be pitched at looks wrong; X/Y still follow the camera
+            -- normally, only Z gets overridden to the player's own floor height. Same "assume same
+            -- floor as the player" convention already used elsewhere in this file (the zBand/
+            -- DESPAWN_FRONT_Z_UU same-floor-only check in findNearestSpawnInFront) rather than a new
+            -- per-tick downward raycast -- cheaper, and consistent with how this codebase already
+            -- treats "which floor" everywhere else.
+            -- UPGRADED to a native-build-mode-style FORWARD raycast (2026-08-21, RedFalcon: "he
+            -- doesnt slide closer he just goes through the floor/ground. we need to figure out how
+            -- to let the distance be flexible so it doesnt drop through the floor"). The downward-
+            -- raycast-from-a-fixed-distance-point version (previous approach, still used as the
+            -- fallback below) had a real gap: X/Y always used the FULL configured distance along the
+            -- camera ray, even when the actual floor doesn't extend that far -- so aiming past the
+            -- edge of a platform put the search point over open air/a lower level entirely. Native
+            -- build mode instead effectively SHORTENS its reach to stay on solid ground -- replicated
+            -- here with ONE forward raycast along the camera's own view (origin AND direction both
+            -- from the camera -- this is a directional raycast, see this file's own documented
+            -- anti-pattern for why mixing pawn-position with camera-direction breaks this), capped at
+            -- the current Spawner._placementDistance. Wherever that ray actually hits solid geometry
+            -- IS the target -- X, Y, AND Z all come from the hit point directly, so it naturally
+            -- lands on a nearer table/ledge/floor edge instead of overshooting past it.
+            -- TRYING floor-lock on decor too (2026-08-21, RedFalcon: "real build mode is built on
+            -- camera too. Can we try floor snapping on the decor too to see how it behaves") --
+            -- experimental, gated purely on whether a bottom-offset was measured at grab/spawn time
+            -- (Spawner._placementStatueBottomOffset), no longer restricted to Spawner._placementIsStatue.
+            -- usedFloorLock tracked below so the separate center-anchor adjustment (further down, for
+            -- decor's own pivot-to-center fix) doesn't ALSO apply on top of this and double-adjust --
+            -- floor-lock already fully determines the pivot position itself when it engages.
+            local usedFloorLock = false
+            if Spawner._placementStatueBottomOffset then
+                local camLoc
+                pcall(function() camLoc = cam:GetCameraLocation() end)
+                if camLoc then
+                    local farPt = { X = camLoc.X + fx * dist, Y = camLoc.Y + fy * dist, Z = camLoc.Z + fz * dist }
+                    local KSL = UEHelpers.GetKismetSystemLibrary()
+                    local landed = false
+                    if KSL and KSL:IsValid() then
+                        local hitResult = {}
+                        local zero = { R = 0, G = 0, B = 0, A = 0 }
+                        local wasHit
+                        -- bTraceComplex=false (2026-08-21), unlike hover-highlight's own true --
+                        -- large floor/terrain/building geometry commonly only has SIMPLE collision
+                        -- defined (complex per-triangle collision on big level geometry is usually
+                        -- skipped for performance) -- a complex-only trace against that finds nothing.
+                        pcall(function()
+                            -- REVERTED to channel 0 (2026-08-21) -- channel 2 was tried on the theory
+                            -- it meant "Pawn" (matching LetFurniturePass's own comment), but CONFIRMED
+                            -- LIVE that broke targeting entirely, even for decor which worked fine on
+                            -- channel 0 -- that comment's channel numbering doesn't match this trace
+                            -- API's actual channel indices. Real fix went into LetFurniturePass itself
+                            -- instead (see its own comment) -- it now also blocks channel 0, the
+                            -- channel this trace has always actually used and confirmed working on.
+                            wasHit = KSL:LineTraceSingle(pawn, camLoc, farPt, 0, false, {}, 0, hitResult, true, zero, zero, 0.0)
+                        end)
+                        if wasHit then
+                            local hitLoc
+                            pcall(function() hitLoc = hitResult.Location end)
+                            if hitLoc then
+                                target.X, target.Y, target.Z = hitLoc.X, hitLoc.Y, hitLoc.Z - Spawner._placementStatueBottomOffset
+                                landed = true
+                            end
+                        end
+                    end
+                    -- Miss fallback (2026-08-21, RedFalcon: "if the ray trace is at or past the 1800
+                    -- limit it stays at 1800. That way if i'm placing near the edge... it will still
+                    -- move around that 1800 diameter instead of sticking, since we cant really tell
+                    -- what that diameter is while placing") -- rather than holding a stale position
+                    -- (tried and reported "sticky"/discontinuous earlier), just use the raw camera-ray
+                    -- endpoint at the current max distance, recomputed fresh every tick. Nothing to
+                    -- hit within reach in this direction just means it sits at the edge of that
+                    -- reach instead of on a real surface -- and since farPt tracks the camera live,
+                    -- it keeps sliding smoothly around that boundary as you look around, rather than
+                    -- freezing the instant nothing's hit.
+                    if not landed then
+                        target.X, target.Y, target.Z = farPt.X, farPt.Y, farPt.Z - Spawner._placementStatueBottomOffset
+                    end
+                    usedFloorLock = true
+                end
+            end
+            -- CONFIRMED LIVE (2026-08-20): the outer check a few lines up isn't enough on its own --
+            -- everything between it and here (GetPlayerController, camera reads, math) takes real
+            -- time, and a Confirm/Cancel keypress landing in that exact window can clear
+            -- _placementActor to nil before this line runs, throwing "attempt to index a nil value"
+            -- (caught by this pcall, logged, harmless, but worth closing). Re-check immediately
+            -- before use rather than trusting the earlier snapshot.
+            if not (Spawner._placementActive and Spawner._placementActor and Spawner._placementActor:IsValid()) then
+                error("state changed mid-tick (confirmed/cancelled concurrently) -- skipping this move")
+            end
+            local actor = Spawner._placementActor
+            -- REVERTED (2026-08-20) -- the swept move (bSweep=true, bTeleport=false) tried here for
+            -- physics-on was CONFIRMED LIVE to fight the physics simulation itself: with
+            -- SetSimulatePhysics(true) on, the physics engine has its own idea of where the object
+            -- should be every substep, and the sweep-teleport was ALSO forcing it somewhere else every
+            -- 33ms -- two independent authorities over the same transform, resolving a fresh collision
+            -- conflict every tick. RedFalcon's live result: "it freaked out, vibrated, and then stopped
+            -- moving" -- the follow loop's own tick log showed a "no PlayerController" failure moments
+            -- later, consistent with the object's physics reaction actually disrupting player control
+            -- state, not just a visual glitch. Back to a PLAIN TELEPORT always (bSweep=false,
+            -- bTeleport=true) regardless of physics state -- teleport skips collision/physics
+            -- resolution entirely, so it can't fight a simulating body this way. This makes
+            -- Spawner._placementPhysicsOn effectively cosmetic again while still being followed (matches
+            -- RedFalcon's FIRST test, physics-on-but-inert, which was stable) -- a real "drag with
+            -- physics reacting" would need the follow loop to stop forcing position altogether while
+            -- physics is on (hand full authority to the physics engine, no longer camera-tracking) --
+            -- a bigger, deliberate redesign, not a tweak to this move call. Don't re-add sweep here
+            -- without that redesign.
+            -- Center-anchor for decor (2026-08-21, see computeActorCenterOffset's own comment) --
+            -- `target` up to here represents where the PIVOT would go; shift it by the negative of
+            -- the measured pivot-to-center offset so the object's VISUAL CENTER (not its raw pivot)
+            -- ends up at the aim point instead. Skipped whenever floor-lock just ran (usedFloorLock)
+            -- -- floor-lock already fully determined the pivot position itself (bottom-anchored, via
+            -- its own hit-point-minus-bottomOffset math above), so applying a SEPARATE center-anchor
+            -- correction on top would double-adjust and fight it.
+            local moveTarget = target
+            if Spawner._placementCenterOffset and not usedFloorLock then
+                moveTarget = {
+                    X = target.X - Spawner._placementCenterOffset.X,
+                    Y = target.Y - Spawner._placementCenterOffset.Y,
+                    Z = target.Z - Spawner._placementCenterOffset.Z,
+                }
+            end
+            actor:K2_SetActorLocation(moveTarget, false, {}, true)
+        end)
+        if ok then
+            consecutiveFails = 0
+        else
+            consecutiveFails = consecutiveFails + 1
+            if consecutiveFails == 1 then
+                print("[LivingBase] [followloop] tick failed: " .. tostring(err) .. " (will retry, giving up after "
+                    .. FOLLOW_FAIL_TOLERANCE .. " in a row)\n")
+            end
+            if consecutiveFails >= FOLLOW_FAIL_TOLERANCE then
+                print(string.format("[LivingBase] [followloop] %d consecutive failures -- stopping instead of hanging silently.\n", consecutiveFails))
+                local strandedActor = Spawner._placementActor
+                Spawner._placementActive = false
+                -- Camera restore call REMOVED here (2026-08-21) -- the raise is no longer tied to
+                -- this per-session lifecycle at all (see Spawner.ApplyPlacementCameraOffset's own
+                -- comment), so there's nothing to restore on this path anymore either -- the window's
+                -- own close transition owns that now, independent of how any given follow session ends.
+                -- Re-solidify the stranded object too (2026-08-20, RedFalcon: "it got stuck and now
+                -- its sitting there like a ghost with no physics and is unselectable") -- this giveup
+                -- path used to leave the actor exactly as prepForFollow left it: collision OFF (so
+                -- dragging never shoves the player), never restored, since only Confirm/Cancel used to
+                -- call SetDecorSolid. With _placementActive already false, F5/F6 hit their own
+                -- "nothing currently being placed" guard, so neither could ever reach it either --
+                -- collision stayed off forever with no way back except a reload. Calling it directly
+                -- here means giving up still leaves a normal, solid, selectable object -- collision
+                -- back on and raycast-selectable again -- exactly like a completed placement, just at
+                -- wherever it last successfully moved to instead of wherever the player was aiming.
+                if strandedActor and strandedActor:IsValid() then
+                    pcall(function() Spawner.SetDecorSolid(strandedActor) end)
+                end
+                return
+            end
+        end
+        if Spawner._placementActive then
+            ExecuteWithDelay(33, tick)
+        end
+    end
+    ExecuteWithDelay(33, tick)
+end
+
+-- Spawner.AdjustPlacementDistance(delta) -- zoom the followed object closer/farther (2026-08-20,
+-- RedFalcon: "be able to zoom it in and out instead... so we aren't limited to either a set distance
+-- nor its starting distance"). Just adjusts Spawner._placementDistance -- beginFollowLoop's tick
+-- reads it fresh every iteration, so this takes effect on the very next tick with no restart needed.
+-- Clamped to a sane range (Config.PLACEMENT_ZOOM_MIN/MAX_UU) so it can't be zoomed to ~0 (right on
+-- top of the camera) or out to some absurd distance where confirming it is impractical.
+function Spawner.AdjustPlacementDistance(delta)
+    if not Spawner._placementActive then
+        print("[LivingBase] Zoom: nothing currently being placed.\n")
+        return
+    end
+    local minD = Config.PLACEMENT_ZOOM_MIN_UU or 100.0
+    local maxD = Config.PLACEMENT_ZOOM_MAX_UU or 2000.0
+    local newD = (Spawner._placementDistance or 300.0) + delta
+    if newD < minD then newD = minD end
+    if newD > maxD then newD = maxD end
+    Spawner._placementDistance = newD
+    print(string.format("[LivingBase] Placement distance: %.0fuu.\n", newD))
+    pcall(function() Spawner.Toast(string.format("Distance: %.0fuu", newD), 1.0) end)
+end
+
+-- Common "free it up for live movement" prep -- collision off (don't shove the player while being
+-- dragged around), Movable (Static mobility ignores runtime SetActorLocation on the render thread),
+-- physics off (fights the teleport otherwise, see this feature's own memory writeup for the full
+-- crash-and-fix history from 2026-08-19).
+local function prepForFollow(actor)
+    pcall(function() actor:SetActorEnableCollision(false) end)
+    pcall(function() Spawner.MakeMovable(actor) end)
+    pcall(function()
+        local root = actor:K2_GetRootComponent()
+        if root and root:IsValid() then pcall(function() root:SetSimulatePhysics(false) end) end
+    end)
+    pcall(function() forEachStaticMesh(actor, function(c) c:SetSimulatePhysics(false) end) end)
+    -- AI logic stop (2026-08-22, RedFalcon: "the senkamati, when i use the menu buttons they are
+    -- bumping into objects instead of clipping. the statues and the decor do not do that") --
+    -- SetActorEnableCollision(false) above stops the ACTOR's own collision from blocking anything,
+    -- but an AI-driven pawn's own StateTree/controller can still be actively trying to navigate
+    -- every tick regardless of that flag -- fighting our forced K2_SetActorLocation teleport looks
+    -- exactly like "bumping into things". Statues/decor have no AI controller at all, so nothing
+    -- fights them, which is why only AI pawns showed this. Reuses Spawner.SetAILogic (already
+    -- proven elsewhere -- StartLogic/StopLogic on the AR5AIController, used to stop crew fighting a
+    -- follow order) -- a no-op, harmless pcall for anything without a controller (statues/decor).
+    pcall(function() Spawner.SetAILogic(actor, false) end)
+    -- Stop falling when placed in the air (2026-08-22, RedFalcon: "putting them in the air makes
+    -- them drop... i want them to behave like statues when idle") -- SetSimulatePhysics(false) above
+    -- only stops the rigid-body physics engine; a Pawn/Character's own CharacterMovementComponent
+    -- applies gravity independently of that through its MovementMode logic (Walking/Falling), same
+    -- reason a real player falls even with ragdoll physics off. Zeroing GravityScale as a plain
+    -- property write is the SAME proven pattern Spawner.SetMaxWalkSpeed already uses successfully on
+    -- pawn.CharacterMovement -- no risky function call, just a value. Saves the original so
+    -- ConfirmPlacement/CancelPlacement can put it back. No-op for statues/decor (no
+    -- CharacterMovement component at all).
+    pcall(function()
+        local mv = actor.CharacterMovement
+        if mv and mv:IsValid() then
+            if Spawner._placementOrigGravityScale == nil then
+                pcall(function() Spawner._placementOrigGravityScale = mv.GravityScale end)
+            end
+            mv.GravityScale = 0.0
+        end
+    end)
+end
+
+function Spawner.StartPlacementPreview(actor, distance)
+    if not (actor and actor:IsValid()) then return end
+    if Spawner._placementActive then
+        print("[LivingBase] StartPlacementPreview: already placing/relocating something -- ignored.\n")
+        return
+    end
+    -- FIXED (2026-08-21): RedFalcon reported statues weren't floor-locking during follow, AND
+    -- couldn't be re-targeted after confirming -- both traced back to this. actor:GetClass():
+    -- GetFullName() returns a totally different string shape ("BlueprintGeneratedClass /Script/...")
+    -- than e.class elsewhere in this file (the literal spawn-time asset path, e.g.
+    -- "/Game/.../BP_XYZ_AnimatedActor.BP_XYZ_AnimatedActor_C" -- see Spawner.Spawn's own `classPath`
+    -- param, EditNearestInFront's statueFrame check, RetrackOrphans) -- isStatueClass's substring
+    -- search against the WRONG string silently always returned false, so floor-lock never engaged
+    -- and the statue ended up wherever the full 3D camera-direction math put it (potentially
+    -- floating well above/below normal statue height) -- which also explains the "can't re-target
+    -- it" report: aiming where a properly floor-placed statue would be simply wasn't aiming at it.
+    -- Fixed by reading class off the Spawner.spawned entry Spawner.Spawn already created for this
+    -- exact actor (same handle, so plain == is safe here -- not the cross-fetch wrapper-identity
+    -- pitfall documented elsewhere in this file) instead of re-deriving it a different way.
+    local class
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then class = e.class; break end
+    end
+    prepForFollow(actor)
+    Spawner._placementActor = actor
+    Spawner._placementActive = true
+    Spawner._placementMode = "NEW"
+    Spawner._placementPhysicsOn = false
+    Spawner._placementIsStatue = isStatueClass(class)
+    -- Floor-lock trial on decor too (2026-08-21, RedFalcon: "real build mode is built on camera too.
+    -- Can we try floor snapping on the decor too to see how it behaves") -- gated behind
+    -- Config.PLACEMENT_FLOOR_LOCK_DECOR so it's a one-line flip back to center-anchor-only if it
+    -- doesn't feel right, no code changes needed. Statues always get it regardless of this flag,
+    -- UNLESS free-build mode is on (F8, Spawner.ToggleFreeBuild) -- that overrides everything back to
+    -- the old center-anchored/static-distance behavior for both statues and decor.
+    local wantFloorLock = (not Spawner._placementFreeBuild) and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
+    Spawner._placementStatueBottomOffset = wantFloorLock and computeStatueBottomOffset(actor) or nil
+    Spawner._placementCenterOffset = (not wantFloorLock) and computeActorCenterOffset(actor) or nil
+    local co = Spawner._placementCenterOffset
+    print(string.format("[LivingBase] StartPlacementPreview: class=%s isStatue=%s freeBuild=%s bottomOffset=%s centerOffset=%s\n",
+        tostring(class), tostring(Spawner._placementIsStatue), tostring(Spawner._placementFreeBuild), tostring(Spawner._placementStatueBottomOffset),
+        co and string.format("(%.1f,%.1f,%.1f)", co.X, co.Y, co.Z) or "nil"))
+    -- Free-build spawns start at their own, much shorter distance (RedFalcon: "set the distance at
+    -- 350uu, that will be about one platform distance from the player") -- separate from the
+    -- non-free-build 1800uu default (Config.PLACEMENT_START_DIST_UU). Only applies when the caller
+    -- didn't already pass an explicit distance (main.lua's call site never does today).
+    local startDist = distance
+    if not startDist then
+        startDist = Spawner._placementFreeBuild and Config.PLACEMENT_FREEBUILD_START_DIST_UU or Config.PLACEMENT_START_DIST_UU
+    end
+    beginFollowLoop(startDist)
+    pcall(function() Spawner.Toast("Placing... F5 to confirm, F6 to cancel.", 2.5) end)
+end
+
+-- Spawner.StartRelocatePreview() -- REAL FEATURE (2026-08-20, RedFalcon's request): grab whatever's
+-- currently target-locked (Num+) and carry it with the camera the same way a fresh spawn follows,
+-- instead of only being able to nudge it with the live-edit keys. Unlike a fresh placement, CANCEL
+-- here means "put it back where it was," never destroy -- this is an EXISTING object, possibly one
+-- RedFalcon spent real effort placing/decorating already. Records the pre-grab transform up front so
+-- CancelPlacement has something to revert to.
+function Spawner.StartRelocatePreview()
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] Grab target: nothing target-locked -- Num+ it first.\n")
+        pcall(function() Spawner.Toast("Target-lock something first (Num +).", 2.5) end)
+        return
+    end
+    if Spawner._placementActive then
+        print("[LivingBase] Grab target: already placing/relocating something -- ignored.\n")
+        return
+    end
+    local loc, rot
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    pcall(function() rot = actor:K2_GetActorRotation() end)
+    if not loc then
+        print("[LivingBase] Grab target: could not read its current position.\n")
+        return
+    end
+    Spawner._placementOriginalLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
+    Spawner._placementOriginalRot = rot and { Pitch = rot.Pitch, Yaw = rot.Yaw, Roll = rot.Roll } or nil
+    -- Follow at the SAME distance it was already sitting at when grabbed (2026-08-20, RedFalcon:
+    -- "can we keep the item the same distance away from the camera as when it started?") --
+    -- beginFollowLoop's own 300uu default would otherwise SNAP the object to a fixed distance the
+    -- instant F7 is pressed, regardless of how far away it actually was (closer, or much farther for
+    -- something viewed across the room). Measuring once, here, at grab time, means the very first
+    -- follow tick reproduces its current on-screen position exactly -- no pop -- and only then does
+    -- it start tracking the camera at that distance.
+    -- REVERTED back to camera-measured (2026-08-21) -- briefly changed to pawn-measured to fix a
+    -- confirmed ~2-meter pop (grabDistance was camera-measured while the follow loop's own target
+    -- math was pawn-anchored, a real mismatch). Since then, beginFollowLoop's tick() itself switched
+    -- to CAMERA-anchored origin (see that function's own comment -- pawn-anchoring turned out to be
+    -- the real cause of a MUCH bigger "object sits a lot lower than where you're aiming" gap).
+    -- Measurement here must match whatever the follow loop actually anchors to, or the exact same
+    -- pop bug reappears with the origins swapped -- so this goes back to camera-measured to stay
+    -- consistent with tick()'s new camera-anchored math.
+    local grabDistance
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local cam = pc and pc:IsValid() and pc.PlayerCameraManager
+        if cam and cam:IsValid() then
+            local cl = cam:GetCameraLocation()
+            local dx, dy, dz = loc.X - cl.X, loc.Y - cl.Y, loc.Z - cl.Z
+            grabDistance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        end
+    end)
+    -- Free-build grab floor (2026-08-21, RedFalcon: "keep the original distance unless it reaches or
+    -- is less than 125uu from the camera -- that should be about when a camera zoom in will freak
+    -- out") -- ONLY applies in free-build mode. Non-free-build grabs stay untouched (RedFalcon: "for
+    -- non free build spawning and grabbing, keep it exactly as it is") -- no clamp at all there.
+    if Spawner._placementFreeBuild and grabDistance and grabDistance < (Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU or 125.0) then
+        grabDistance = Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU or 125.0
+    end
+    prepForFollow(actor)
+    Spawner._placementActor = actor
+    Spawner._placementActive = true
+    Spawner._placementMode = "RELOCATE"
+    Spawner._placementPhysicsOn = false
+    Spawner._placementIsStatue = isStatueClass(lt.class)
+    local wantFloorLock = (not Spawner._placementFreeBuild) and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
+    Spawner._placementStatueBottomOffset = wantFloorLock and computeStatueBottomOffset(actor) or nil
+    Spawner._placementCenterOffset = (not wantFloorLock) and computeActorCenterOffset(actor) or nil
+    local co = Spawner._placementCenterOffset
+    print(string.format("[LivingBase] StartRelocatePreview: class=%s isStatue=%s freeBuild=%s bottomOffset=%s centerOffset=%s\n",
+        tostring(lt.class), tostring(Spawner._placementIsStatue), tostring(Spawner._placementFreeBuild), tostring(Spawner._placementStatueBottomOffset),
+        co and string.format("(%.1f,%.1f,%.1f)", co.X, co.Y, co.Z) or "nil"))
+    beginFollowLoop(grabDistance)   -- nil falls back to beginFollowLoop's own 300uu default if the lookup failed
+    pcall(function() Spawner.Toast("Relocating... F5 to confirm, F6 to cancel (returns to original spot).", 2.5) end)
+end
+
+-- Confirm: stop following, re-solidify (matches how a normal decor spawn ends up), and rewrite the
+-- ALREADY-EXISTING persist.txt line (written back at spawn time for NEW, or wherever it was before
+-- for RELOCATE) to the FINAL followed-to position -- otherwise a reload would restore it back to the
+-- old spot, not where the player actually placed it. Same confirm behavior for both modes -- only
+-- CancelPlacement's two modes differ.
+function Spawner.ConfirmPlacement()
+    if not (Spawner._placementActive and Spawner._placementActor and Spawner._placementActor:IsValid()) then
+        print("[LivingBase] Confirm placement: nothing currently being placed.\n")
+        return
+    end
+    local actor = Spawner._placementActor
+    Spawner._placementActive = false
+    Spawner._placementActor = nil
+    Spawner._placementMode = nil
+    Spawner._placementOriginalLoc = nil
+    Spawner._placementOriginalRot = nil
+    Spawner._placementPhysicsOn = nil
+    Spawner._placementIsStatue = nil
+    Spawner._placementStatueBottomOffset = nil
+    Spawner._placementCenterOffset = nil
+    -- NOT restoring AI logic here (2026-08-22) -- tried it, REGRESSED: RedFalcon reported an idle
+    -- Senkamati started walking after being placed/moved. StartLogic() on confirm woke up whatever
+    -- default wander behavior its AI controller has -- wrong for something meant to stay put once
+    -- placed. Leaving logic stopped permanently once prepForFollow stops it for the drag is the
+    -- correct behavior for these "idle"/set-dressing NPCs; harmless no-op either way for
+    -- statues/decor (no AI controller to begin with).
+    -- Same call for GravityScale (2026-08-22, RedFalcon: "i want them to behave like statues when
+    -- idle") -- NOT restored either, for the same reasoning: a statue never falls once placed, so an
+    -- "idle" NPC that's supposed to behave like one shouldn't either. If "walking actors" (the
+    -- OTHER category, meant to keep wandering after placement -- see prepForFollow's own AI-logic
+    -- comment) turn out to need gravity back to move/settle naturally, that's the same open question
+    -- flagged there -- revisit both together once tested, don't fix one without the other.
+    pcall(function() Spawner.SetDecorSolid(actor) end)
+    local entry
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then entry = e; break end
+    end
+    if entry then
+        pcall(function()
+            local loc = actor:K2_GetActorLocation()
+            local rot = actor:K2_GetActorRotation()
+            local newLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
+            Spawner.PersistUpdatePose(entry.class, entry.home, newLoc, rot.Yaw, rot.Pitch, rot.Roll)
+            entry.home = newLoc
+            entry.yaw = rot.Yaw
+        end)
+    end
+    print("[LivingBase] Placement confirmed.\n")
+    pcall(function() Spawner.Toast("Placed.", 1.5) end)
+end
+
+-- Cancel: stop following. NEW mode -- fully remove it (Spawner.DespawnActor destroys the actor AND
+-- removes the persist.txt line Spawner.Spawn already wrote at spawn time, so nothing is left
+-- behind). RELOCATE mode -- put it back exactly where it was grabbed from, never destroy.
+function Spawner.CancelPlacement()
+    if not (Spawner._placementActive and Spawner._placementActor and Spawner._placementActor:IsValid()) then
+        print("[LivingBase] Cancel placement: nothing currently being placed.\n")
+        return
+    end
+    local actor = Spawner._placementActor
+    local mode = Spawner._placementMode
+    local origLoc, origRot = Spawner._placementOriginalLoc, Spawner._placementOriginalRot
+    Spawner._placementActive = false
+    Spawner._placementActor = nil
+    Spawner._placementMode = nil
+    Spawner._placementOriginalLoc = nil
+    Spawner._placementOriginalRot = nil
+    Spawner._placementPhysicsOn = nil
+    Spawner._placementIsStatue = nil
+    Spawner._placementStatueBottomOffset = nil
+    Spawner._placementCenterOffset = nil
+    -- NOT restoring AI logic here either (2026-08-22) -- see ConfirmPlacement's own comment, same
+    -- regression (idle Senkamati started walking again once logic restarted).
+    if mode == "RELOCATE" then
+        pcall(function()
+            if origLoc then actor:K2_SetActorLocation(origLoc, false, {}, true) end
+            if origRot then actor:K2_SetActorRotation(origRot, false) end
+        end)
+        pcall(function() Spawner.SetDecorSolid(actor) end)
+        print("[LivingBase] Relocation cancelled -- returned to original spot.\n")
+        pcall(function() Spawner.Toast("Returned to original spot.", 1.5) end)
+    else
+        pcall(function() Spawner.DespawnActor(actor) end)
+        print("[LivingBase] Placement cancelled.\n")
+        pcall(function() Spawner.Toast("Placement cancelled.", 1.5) end)
+    end
+end
+
+-- Spawner.TogglePlacementPhysics() -- EXPERIMENTAL (2026-08-20, RedFalcon: "I'd like to try turning
+-- [physics] back on with a key press... I want to see if it will behave like build mode and slide
+-- across the floor if I look down"). Re-enabling physics on a followed object bit this project once
+-- already -- an object simulating physics while overlapping the player's own collision capsule got
+-- violently shoved, "flying into the camera." Guard: refuse to turn physics ON unless the object is
+-- currently at least PLACEMENT_MIN_PHYSICS_DIST away from the CAMERA (matches how the flying-into-
+-- camera issue actually happened) -- turning it back OFF is always allowed regardless of distance,
+-- as an escape hatch if it does something unwanted. The follow loop's own per-tick safety check (see
+-- beginFollowLoop's tick()) keeps re-checking this same distance every tick while physics stays on,
+-- not just at the moment of this keypress -- see that check's own comment for why a one-time gate
+-- here wasn't enough on its own. Actual physics/collision toggling lives in setPlacementPhysics
+-- (declared above beginFollowLoop, shared with that per-tick auto-disable) -- this function is just
+-- the guard + user-facing feedback around calling it.
+function Spawner.TogglePlacementPhysics()
+    if not (Spawner._placementActive and Spawner._placementActor and Spawner._placementActor:IsValid()) then
+        print("[LivingBase] Toggle physics: nothing currently being placed.\n")
+        return
+    end
+    local actor = Spawner._placementActor
+    local turningOn = not Spawner._placementPhysicsOn
+    if turningOn then
+        local dist
+        pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            local cam = pc and pc:IsValid() and pc.PlayerCameraManager
+            if cam and cam:IsValid() then
+                local cl = cam:GetCameraLocation()
+                local al = actor:K2_GetActorLocation()
+                local dx, dy, dz = al.X - cl.X, al.Y - cl.Y, al.Z - cl.Z
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            end
+        end)
+        if not dist or dist < PLACEMENT_MIN_PHYSICS_DIST then
+            print(string.format("[LivingBase] Toggle physics: too close (%.0fuu) -- back up past %.0fuu first.\n", dist or 0.0, PLACEMENT_MIN_PHYSICS_DIST))
+            pcall(function() Spawner.Toast(string.format("Too close to enable physics -- back up past %.0fuu.", PLACEMENT_MIN_PHYSICS_DIST), 2.5) end)
+            return
+        end
+    end
+    setPlacementPhysics(actor, turningOn)
+    print("[LivingBase] Placement physics: " .. (turningOn and "ON" or "OFF") .. ".\n")
+    pcall(function() Spawner.Toast(turningOn and "Physics ON (experimental) -- collision back on too, try looking down." or "Physics OFF.", 2.5) end)
+end
+
+-- Free-build toggle (2026-08-21, RedFalcon: "a floor collision toggle so that items can also behave
+-- as they did before with the same static limit. That way if they want to free build they can.") --
+-- a GLOBAL mode flag, not per-placement: unlike _placementPhysicsOn this is deliberately NOT reset by
+-- ConfirmPlacement/CancelPlacement, so it persists across placements until toggled again. Read by
+-- StartPlacementPreview/StartRelocatePreview (kills floor-lock + swaps in the 350uu free-build start
+-- distance / 125uu grab floor) -- doesn't require an active placement to flip, unlike
+-- TogglePlacementPhysics above.
+function Spawner.ToggleFreeBuild()
+    -- Blocked mid-placement (2026-08-21, RedFalcon: "While in the middle of placing F8 should not be
+    -- allowed because it gets confusing as the current placing doesnt change") -- flipping the flag
+    -- only affects the NEXT StartPlacementPreview/StartRelocatePreview call (offsets are computed once
+    -- at grab/spawn time), so toggling mid-follow silently does nothing to what's currently being
+    -- placed -- confusing, since the toast still says it changed. F6/F5 out of the current placement
+    -- first, then F8.
+    if Spawner._placementActive then
+        print("[LivingBase] Free build toggle: finish or cancel the current placement first (F5/F6).\n")
+        pcall(function() Spawner.Toast("Confirm or cancel the current placement first.", 2.5) end)
+        return
+    end
+    Spawner._placementFreeBuild = not Spawner._placementFreeBuild
+    print("[LivingBase] Free build mode: " .. (Spawner._placementFreeBuild and "ON (no floor lock)" or "OFF (floor lock)") .. ".\n")
+    pcall(function() Spawner.Toast(Spawner._placementFreeBuild and "Free Build ON -- floor lock off." or "Free Build OFF -- floor lock on.", 2.5) end)
+end
+
+-- Spawner.UpdateHoverHighlight/ClearHoverHighlight -- REAL FEATURE (2026-08-20, RedFalcon's
+-- request): while nothing is target-locked and nothing is being placed/relocated, ghost-highlight
+-- whatever's under the reticle right now, so it's visually clear what WOULD get picked before
+-- committing to Num+/F7. Driven by a persistent poll loop in main.lua (gated on modEnabled there,
+-- since that flag is a main.lua-local this file can't see directly) -- this file only does the
+-- per-tick work: a proper line trace (GetKismetSystemLibrary():LineTraceSingle, confirmed working
+-- in this exact game via the bundled LineTraceMod/Scripts/main.lua reference implementation) rather
+-- than a FindAllOf("Actor") world sweep -- RedFalcon's own concern about continuous load was right
+-- to raise; a raycast against the physics engine's spatial structures is the cheap way to do this
+-- repeatedly, a full actor-list scan every tick would not have been.
+--
+-- Applies the same MI_Building_SimplifiedPreview material Spawner.ApplyGhostMaterial (2026-08-19
+-- spike) used, via the same proven-safe SetMaterial path -- but additionally records each touched
+-- component+slot's ORIGINAL material first, so the previous hover target can be restored exactly
+-- when the reticle moves to something else (or nothing).
+-- Consecutive-miss debounce (2026-08-20, RedFalcon's flicker report) -- see the check site's own
+-- comment below for why. hoverMissStreak resets to 0 both on a real hit and here on actual clear.
+-- Raised from 2 to 6 (2026-08-20) -- 2 (~300ms grace) wasn't enough, still flickered live.
+local HOVER_MISS_TOLERANCE = 6
+local hoverMissStreak = 0
+local function restoreHoverMaterials()
+    if Spawner._hoverOriginalMats then
+        for _, e in ipairs(Spawner._hoverOriginalMats) do
+            local ok, err = pcall(function()
+                if not (e.comp and e.comp:IsValid()) then error("comp invalid at restore time") end
+                if not (e.mat and e.mat:IsValid()) then error("saved mat invalid at restore time") end
+                e.comp:SetMaterial(e.slot, e.mat)
+                -- Render refresh attempt (2026-08-21, RedFalcon: "skin texture still stays white") --
+                -- both apply and restore diagnostics confirmed clean (every slot saved, every restore
+                -- call succeeds with a valid comp+mat, no thrown errors) -- so SetMaterial IS
+                -- correctly reassigning the exact original object back to the slot, yet it still
+                -- renders wrong. Trying the cheap, safe theory first: a skeletal mesh with a dynamic
+                -- material instance may just not be refreshing its render state on a runtime
+                -- SetMaterial the way a static mesh does. MarkRenderStateDirty is a standard, safe UE
+                -- call (unlike CreateDynamicMaterialInstance, which is confirmed to crash this game
+                -- natively and stays disabled elsewhere in this file) -- if this alone fixes it, no
+                -- need for the riskier "capture+reapply material parameters by hand" approach.
+                pcall(function() e.comp:MarkRenderStateDirty() end)
+            end)
+            -- TEMP DIAGNOSTIC (2026-08-21, remove once "skin doesn't turn back" is resolved) --
+            -- applyHoverHighlight's own diagnostic showed every slot saved fine, so if restore is
+            -- still failing, it has to be happening HERE -- either the component or the saved
+            -- material reference went stale between apply and restore (e.g. an animated statue's
+            -- render state refreshing), or SetMaterial itself threw. Nothing printed before now on
+            -- this specific failure path, so this is the missing half of the picture.
+            if not ok then
+                local compClass = "?"
+                pcall(function() compClass = e.comp:GetClass():GetFullName() end)
+                print(string.format("[LivingBase] [hover-mat] RESTORE FAILED comp=%s slot=%s: %s\n",
+                    compClass, tostring(e.slot), tostring(err)))
+            end
+        end
+    end
+    Spawner._hoverOriginalMats = nil
+    Spawner._hoverActor = nil
+    hoverMissStreak = 0
+end
+
+-- BUG FIX (2026-08-22, RedFalcon: "After targeting a person, the effect doesnt disable") -- this is
+-- the fallback the poll loop (main.lua's hoverHighlightLoop) calls INSTEAD of UpdateHoverHighlight
+-- once something becomes target-locked/the window closes/placement starts (see its own `eligible`
+-- check) -- only ever knew about the material-swap path, so a spawned hover-effect actor was never
+-- destroyed on that transition, left orphaned in the world. Now tears down both, same as
+-- UpdateHoverHighlight's own transition/loss branches already do.
+function Spawner.ClearHoverHighlight()
+    restoreHoverMaterials()
+    Spawner.ClearHoverEffect()
+end
+
+local HOVER_GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
+local function applyHoverHighlight(actor)
+    local mat = resolveAsset(HOVER_GHOST_MAT_PATH)
+    if not (mat and mat:IsValid()) then return end
+    -- TEMP ISOLATION TEST (2026-08-21, RedFalcon: "let's disable the other slot and see if it
+    -- doesn't change. if not then we know they're tied together") -- the log proved we only ever
+    -- touch 2 slots per statue (eye + skin), both already skipped, so there's no mystery "other
+    -- slot" left to disable individually. This flag disables ALL slots instead -- a full no-op
+    -- highlight -- so the statue never gets ANY material swapped during hover. If the white area
+    -- around the eyes still appears with this on, it's proven completely unrelated to our
+    -- highlight/restore code (nothing left for us to even be doing wrong). Flip back to false to
+    -- restore normal ghost-highlighting once the test is done.
+    local disableAllForTest = Config.HOVER_HIGHLIGHT_DISABLE_ALL_TEST
+    local saved = {}
+    local function applyTo(comp)
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        if not (comp and comp:IsValid()) then return end
+        local n = 0
+        pcall(function() n = comp:GetNumMaterials() end)
+        local compClass = "?"
+        pcall(function() compClass = comp:GetClass():GetFullName() end)
+        for slot = 0, (n - 1) do
+            local orig
+            local getOk = pcall(function() orig = comp:GetMaterial(slot) end)
+            -- Skip skin slots entirely (2026-08-21, RedFalcon: "maybe highlighting everything but
+            -- skin?") -- restoring a skin material back to its slot always succeeds (no error, valid
+            -- comp+mat) but renders white afterward anyway, meaning the material INSTANCE's own
+            -- parameters are what's wrong, not the slot assignment -- reapplying dynamic material
+            -- parameters is a real rabbit hole (this codebase's one attempt at creating/writing a
+            -- dynamic material instance, Spawner.ApplyGhostMaterialSolid, is disabled because
+            -- CreateDynamicMaterialInstance crashes the game natively). Simplest fix: never touch a
+            -- skin slot in the first place, so there's nothing to restore incorrectly.
+            -- CONFIRMED LIVE (2026-08-21) -- the word "skin" NEVER appears in the material's own
+            -- name; skin is named after the character archetype/body variant instead, e.g.
+            -- "MI_Albion_Male_Medium" (matches this codebase's own naming convention elsewhere --
+            -- config.lua builds skin material paths as "MI_" .. skinName .. "_" .. sex .. "_" ..
+            -- build). What DOES reliably distinguish it from armor/hair/weapons/eyes (all under
+            -- their own named subfolders) is the asset PATH: skin lives under
+            -- ".../Skeletal_Meshes/Human/..." specifically.
+            -- Eyes stay white after restore too (2026-08-21, RedFalcon: "the eyes stay white like
+            -- the skin") -- same root cause as skin (dynamic material instance parameters, not slot
+            -- assignment), same fix: never touch that slot. Per the memory doc, eyes live under their
+            -- own named subfolder alongside Human/Armor/Hairs/Weapons under Skeletal_Meshes, so match
+            -- "/eyes/" the same way as "/human/". TEMP: log origName whenever skipped so the actual
+            -- path can be confirmed/corrected if this guess is wrong.
+            local isSkin = disableAllForTest
+            local origName
+            if orig then
+                pcall(function() origName = orig:GetFullName() end)
+                if origName then
+                    local lower = origName:lower()
+                    if lower:find("/human/", 1, true) or lower:find("/eyes/", 1, true) or lower:find("/eye/", 1, true) then
+                        isSkin = true
+                    end
+                end
+            end
+            if isSkin then
+                print(string.format("[LivingBase] [hover-mat] SKIP %sslot comp=%s slot=%d path=%s\n",
+                    disableAllForTest and "(ALL-DISABLED TEST) " or "skin/eye ", compClass, slot, tostring(origName)))
+            end
+            if not isSkin then
+                local setOk = pcall(function() comp:SetMaterial(slot, mat) end)
+                if setOk and orig and orig:IsValid() then
+                    saved[#saved + 1] = { comp = comp, slot = slot, mat = orig }
+                    -- TEMP DIAGNOSTIC (2026-08-21, RedFalcon: "the skin around the eyes is also
+                    -- sticking white" -- reported AFTER the skin+eye skip above, with the log
+                    -- confirming both slots 0/2 were correctly skipped and zero restore failures
+                    -- anywhere -- so whatever's white isn't explained by the skip list yet. Logging
+                    -- every APPLIED (non-skipped) slot's path too, alongside the existing SKIP/NOT
+                    -- SAVED prints, gives full slot-by-slot visibility on the next test to find
+                    -- whichever slot actually corresponds to the area around the eyes.
+                    print(string.format("[LivingBase] [hover-mat] APPLY slot comp=%s slot=%d path=%s\n",
+                        compClass, slot, origName or "?"))
+                else
+                    -- TEMP DIAGNOSTIC (2026-08-21, remove once material-restore is confirmed clean
+                    -- for everything else) -- this slot got swapped to the ghost material (if setOk)
+                    -- but ISN'T going to be restored, since nothing valid was saved for it.
+                    print(string.format("[LivingBase] [hover-mat] NOT SAVED comp=%s slot=%d getOk=%s origIsValid=%s setOk=%s\n",
+                        compClass, slot, tostring(getOk), tostring(orig and orig:IsValid()), tostring(setOk)))
+                end
+            end
+        end
+    end
+    pcall(function() applyTo(actor.Mesh) end)
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    applyTo(comp)
+                end
+            end
+        end
+    end
+    Spawner._hoverActor = actor
+    Spawner._hoverOriginalMats = saved
+end
+
+-- Called on a poll loop from main.lua (only while gated conditions hold there). Traces from the
+-- camera out to Config.LIVE_EDIT_MAX_DIST -- excludes the player's own pawn/controller (same
+-- reasoning Spawner.ProbeNearestActor's own camera-manager exclusion uses: those sit at/near the
+-- camera transform and would otherwise "win" trivially). No-ops (and clears any stale highlight)
+-- if the caller's own gating already lapsed by the time this runs.
+-- Reads Config.LIVE_EDIT_MAX_DIST fresh on every call rather than caching it once (2026-08-20,
+-- RedFalcon: "make sure the light up matches the target distance") -- that's also
+-- pickTargetPreferringHover's own fallback range, so what lights up and what Num+ can actually
+-- reach now can't drift apart even if that config value changes again later.
+function Spawner.UpdateHoverHighlight()
+    -- CONFIRMED LIVE (2026-08-20): after any lbreload, Spawner.spawned starts EMPTY (a plain
+    -- in-memory table, wiped by the reload) even though the actual actors are still live in the
+    -- world -- confirmed via spawnedCount=0 on every diagnostic line despite genuinely hovering a
+    -- real placed prop. RetrackOrphans already exists for exactly this (re-associates live orphans
+    -- against the ledger) but isn't called automatically anywhere on reload -- only certain other
+    -- actions happen to trigger it. Calling it here is safe to do on every tick: it early-returns
+    -- immediately (a single length check) once Spawner.spawned is non-empty, so the real cost (a
+    -- full FindAllOf("Actor") world sweep) only happens once, right after a reload, not repeatedly.
+    pcall(Spawner.RetrackOrphans)
+    local ok, err = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        if not (pc and pc:IsValid()) then
+            restoreHoverMaterials(); return
+        end
+        local pawn = pc.Pawn
+        local cam = pc.PlayerCameraManager
+        if not (cam and cam:IsValid()) then
+            restoreHoverMaterials(); return
+        end
+        local KSL = UEHelpers.GetKismetSystemLibrary()
+        if not (KSL and KSL:IsValid()) then
+            restoreHoverMaterials(); return
+        end
+        -- REVERTED (2026-08-20) -- tried pawn-origin/camera-direction to match findNearestSpawnInFront's
+        -- reach, but that function's OWN comment already documents exactly why this specific mix is
+        -- broken for anything DIRECTIONAL: "Origin AND direction must both come from the camera, or
+        -- the cone points where the camera looks but starts from where the pawn's ROOT is... Mixing
+        -- them made every press miss (confirmed 2026-08-06: every single live-edit press failed...
+        -- even while visibly aimed at something)." findNearestSpawnInFront itself never actually
+        -- combines pawn-position with camera-direction into one ray -- it runs TWO separate,
+        -- non-directional checks (a plain distance-from-pawn radius, and an independent camera-cone
+        -- angle test). A raycast is directional, so mixing sources breaks it the same way -- CONFIRMED
+        -- LIVE: RedFalcon saw "look at it, doesn't highlight; look again, highlights briefly, stops"
+        -- after this change, exactly the "works sometimes, not where it should" signature that
+        -- comment describes. Camera origin + camera direction only, like before and like LineTraceMod's
+        -- own reference implementation -- the range mismatch this was trying to fix needs a different
+        -- solution that doesn't touch the ray's own math.
+        local loc = cam:GetCameraLocation()
+        local rot = cam:GetCameraRotation()
+        local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
+        local cp = math.cos(pitch)
+        local fx, fy, fz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+        local traceDist = Config.LIVE_EDIT_MAX_DIST or 200.0
+        local endPoint = { X = loc.X + fx * traceDist, Y = loc.Y + fy * traceDist, Z = loc.Z + fz * traceDist }
+        local hitResult = {}
+        local zero = { R = 0, G = 0, B = 0, A = 0 }
+        -- bTraceComplex=true (2026-08-20, was false matching LineTraceMod's example) -- RedFalcon's
+        -- flicker report. Decor props' SIMPLE collision (a rough box/capsule approximation) rarely
+        -- matches their actual visual silhouette closely -- a ray that looks like it's squarely on
+        -- the object can miss the simplified hull around curves/edges constantly, not just as rare
+        -- jitter. Complex (per-triangle, against the real render mesh) matches what you actually see
+        -- instead. Slightly more expensive per-trace, negligible at one trace per 150ms tick.
+        -- REVERTED to channel 0 (2026-08-21) -- channel 2 was tried on the theory it meant "Pawn"
+        -- (matching LetFurniturePass's own "Block Pawn" comment), CONFIRMED LIVE to break targeting
+        -- entirely, even for decor which had always worked fine on channel 0 -- that comment's
+        -- channel numbering doesn't match this trace API's actual indices. The real reason statues
+        -- couldn't be targeted (LetFurniturePass, Config.STATUE_IGNORE_FURNITURE, sets every
+        -- collision channel to Ignore at spawn time except its own "channel 2") is still valid --
+        -- just fixed at the SOURCE instead: LetFurniturePass now also blocks channel 0, the channel
+        -- THIS trace has always actually used and is confirmed working on, rather than changing the
+        -- trace to chase an unverified channel number.
+        local wasHit = KSL:LineTraceSingle(pawn, loc, endPoint, 0, true, {}, 0, hitResult, true, zero, zero, 0.0)
+        local hitActor
+        if wasHit then
+            -- Field name/depth for the hit actor moved across UE versions -- LineTraceMod's own
+            -- reference implementation documents the split; Windrose is confirmed 5.6 (>= 5.4).
+            pcall(function() hitActor = hitResult.HitObjectHandle.ReferenceObject:Get() end)
+            -- CONFIRMED LIVE (2026-08-20): in THIS build, ReferenceObject resolves to the hit
+            -- PRIMITIVE COMPONENT (e.g. "StaticMeshComponent ...StaticMesh"), not the owning Actor
+            -- -- contradicts what LineTraceMod's own reference implementation assumes for >=5.4,
+            -- but that's what the log showed every time. applyHoverHighlight/etc. all expect an
+            -- Actor (K2_GetComponentsByClass, .Mesh are Actor-level). Walk up via GetOwner() if
+            -- what we got back isn't already an Actor -- try it unconditionally rather than
+            -- branching on a class check, since components have GetOwner() and Actors don't, so
+            -- this is naturally a no-op (owner stays nil, pcall'd) when hitActor is already correct.
+            if hitActor and hitActor:IsValid() then
+                pcall(function()
+                    local owner = hitActor:GetOwner()
+                    if owner and owner:IsValid() then hitActor = owner end
+                end)
+            end
+        end
+        -- SCOPED to our own tracked spawns only (2026-08-20, RedFalcon: "we definitely only want to
+        -- target spawns as otherwise its confusing") -- the raw raycast hits ANY actor, native
+        -- Windrose building pieces included, which is why those were lighting up too. A hit on
+        -- something we didn't spawn is treated exactly like a miss (same debounce path below).
+        -- Compare by INSTANCE PATH, not raw actor reference (2026-08-20) -- `==` on two separately-
+        -- fetched UE4SS Lua actor handles isn't reliable even when they represent the exact same
+        -- underlying engine object (a known wrapper-identity pitfall this codebase already works
+        -- around elsewhere, e.g. the spawn ledger / Spawner.DespawnActor's own matching). Confirmed
+        -- live: a genuinely-spawned-this-session object still read isOurs=false under raw `==`.
+        -- trackedActor (2026-08-20): the STABLE reference from Spawner.spawned itself, not the raw
+        -- hitActor the raycast/GetOwner() freshly resolves every single tick. Same wrapper-identity
+        -- pitfall as the isOurs fix above bit the "is this still the same thing I'm already
+        -- highlighting" check too -- comparing hitActor ~= Spawner._hoverActor with TWO
+        -- independently-fetched handles was true on basically every tick even while steadily
+        -- aiming at one object, restoring-then-reapplying the material every 150ms -- CONFIRMED
+        -- LIVE as the actual cause of the flicker RedFalcon kept seeing even after the
+        -- bTraceComplex fix and the miss-tolerance debounce, neither of which touched this. Always
+        -- storing/comparing the SAME Spawner.spawned entry's own actor reference sidesteps the
+        -- wrapper-identity problem entirely, the same way actorInstancePath() does for isOurs.
+        local isOurs = false
+        local trackedActor = nil
+        if hitActor and hitActor:IsValid() then
+            local hitPath = actorInstancePath(hitActor)
+            if hitPath then
+                for _, e in ipairs(Spawner.spawned) do
+                    if e.actor and e.actor:IsValid() and actorInstancePath(e.actor) == hitPath then
+                        isOurs = true
+                        trackedActor = e.actor
+                        break
+                    end
+                end
+            end
+        end
+        -- (2026-08-21) Statue targeting confirmed fixed (RemoteUnrealParam unwrap in
+        -- Spawner.LetFurniturePass) -- removed the throttled per-tick wasHit/hitClass/isOurs
+        -- diagnostic that lived here during that hunt, since it printed continuously forever
+        -- otherwise. Reintroduce the same pattern if targeting regresses again.
+        -- REINTRODUCED, throttled (2026-08-22, RedFalcon: "walking actors, the idle senkamati, and
+        -- the drops decor need to be added to raytrace targeting because i cant target them
+        -- currently") -- the existing "RESTORE after N misses" print below only ever fires as a
+        -- TRANSITION away from an already-successful hover, so it says nothing for something that
+        -- never highlights in the first place. This fires at most once/second, only on a hit that
+        -- ISN'T tracked as ours, showing the raw hit actor's class/instance -- tells us whether the
+        -- raycast is even connecting at all (collision-channel issue, same root cause as the
+        -- original statue saga) vs. connecting but failing the Spawner.spawned lookup (an
+        -- untracked/orphaned-reference issue instead).
+        if wasHit and not isOurs and hitActor and hitActor:IsValid() then
+            local nowT = os.time()
+            if not Spawner._hoverMissLogAt or nowT ~= Spawner._hoverMissLogAt then
+                Spawner._hoverMissLogAt = nowT
+                local cls = "?"
+                pcall(function() cls = hitActor:GetClass():GetFullName() end)
+                print(string.format("[LivingBase] [hover-diag] hit NOT-OURS actor class=%s\n", cls))
+            end
+        end
+        if isOurs and trackedActor ~= pawn and trackedActor ~= pc then
+            hoverMissStreak = 0
+            if trackedActor ~= Spawner._hoverActor then
+                -- TEMP DIAGNOSTIC (2026-08-20, remove once flicker is confirmed fixed): RedFalcon
+                -- reports SPORADIC flicker even after bTraceComplex + the miss-tolerance debounce +
+                -- the wrapper-identity fix above -- log every actual apply/restore transition (not
+                -- every tick) so we can see the real timeline instead of guessing further blind.
+                print(string.format("[LivingBase] [hover-transition] APPLY (was %s)\n",
+                    Spawner._hoverActor and "something else" or "nothing"))
+                -- Dispatch by target TYPE (2026-08-22, RedFalcon: use the spawned effect instead of
+                -- the material swap for CHARACTER targets -- statues/walkers/Senkamati) -- tear down
+                -- BOTH possible previous states unconditionally (each is a safe no-op if it wasn't
+                -- the one actually active), then apply whichever path fits the NEW target. A
+                -- SkeletalMeshComponent (actor.Mesh) is what every one of the named categories has
+                -- in common and decor never does -- same distinguishing test this whole session's
+                -- skin/eye investigation kept coming back to.
+                restoreHoverMaterials()
+                Spawner.ClearHoverEffect()
+                local isCharacter = false
+                pcall(function()
+                    local m = trackedActor.Mesh
+                    isCharacter = (m ~= nil) and m:IsValid()
+                end)
+                if isCharacter then
+                    Spawner.SpawnHoverEffect(trackedActor)
+                else
+                    applyHoverHighlight(trackedActor)
+                end
+            elseif Spawner._hoverEffectActor and Spawner._hoverEffectActor:IsValid() then
+                -- Same target as last tick, effect-mode active -- keep it following (idle animation
+                -- drift, or a genuinely walking actor still moving while hovered). Plain
+                -- K2_SetActorLocation, the same proven-safe call used everywhere else in this file.
+                -- Reuses Spawner.ComputeHoverEffectLoc (2026-08-22) so the pose-based height drop
+                -- stays identical to whatever SpawnHoverEffect used at spawn time -- otherwise a
+                -- sitting/sleeping statue's effect would snap back up to the raw (too-high) pivot on
+                -- the very first reposition tick after spawning correctly.
+                pcall(function()
+                    local loc = Spawner.ComputeHoverEffectLoc(trackedActor)
+                    if loc then Spawner._hoverEffectActor:K2_SetActorLocation(loc, false, {}, true) end
+                end)
+            end
+        elseif Spawner._hoverActor then
+            -- CONFIRMED LIVE (2026-08-20): RedFalcon saw the highlight flicker -- briefly going back
+            -- to the real texture then reappearing -- while steadily aiming at one object. A raycast
+            -- misses for an isolated tick now and then (aim micro-jitter, or a small gap between the
+            -- visual mesh and its actual collision), and clearing on the FIRST miss made that one
+            -- dropped tick instantly visible. Require a couple consecutive misses before actually
+            -- restoring, so one bad tick doesn't flicker but genuinely looking away still clears
+            -- promptly (worst case ~2 extra ticks of latency, well under half a second at 150ms).
+            hoverMissStreak = hoverMissStreak + 1
+            if hoverMissStreak >= HOVER_MISS_TOLERANCE then
+                print(string.format("[LivingBase] [hover-transition] RESTORE after %d consecutive misses (isOurs=%s wasHit=%s)\n",
+                    hoverMissStreak, tostring(isOurs), tostring(wasHit)))
+                restoreHoverMaterials()
+                Spawner.ClearHoverEffect()
+            end
+        end
+    end)
+    if not ok then
+        print("[LivingBase] [hover] UpdateHoverHighlight FAILED: " .. tostring(err) .. "\n")
+        restoreHoverMaterials()
+    end
+end
+
 -- Is this class one of our decoration props? (used to solidify restored decorations, which don't carry
 -- the DECOR_ label.) Builds a lookup once from Config.DECOR_CATEGORIES.
 local decorPathSet
@@ -5343,6 +8497,103 @@ function Spawner.SolidifyDecor()
     end
     if n > 0 then print(string.format("[LivingBase] Decor collision ON for %d placed prop(s).\n", n)) end
     return n
+end
+
+-- Spawner.FixLastProbedGhost() -- TEMP DEV TOOL / recovery command (2026-08-20, RedFalcon: a follow
+-- session got stuck mid-drag and left an object "sitting there like a ghost with no physics and is
+-- unselectable" -- survived THREE separate SolidifyDecor sweeps across multiple reloads without ever
+-- getting fixed. Root cause: SolidifyDecor only re-solidifies actors it classifies AS DECOR (label
+-- prefix "DECOR_" or Spawner.IsDecorClass(e.class)) -- if this particular actor's class/label doesn't
+-- match either check, the sweep silently skips it every single time, reload after reload, no matter
+-- how many times it runs. This bypasses that classification entirely: run "lbprobe" (console command,
+-- pure distance/angle math, NOT a raycast -- works even with the ghost's collision disabled, unlike
+-- Num+/hover-highlight which need collision to detect anything) aimed at the ghost first, THEN this,
+-- and it force-solidifies whatever lbprobe cached as Spawner._lastProbedActor directly -- no
+-- classification check at all, same SetDecorSolid call SolidifyDecor itself uses per-object.
+function Spawner.FixLastProbedGhost()
+    local target = Spawner._lastProbedActor
+    if not (target and target:IsValid()) then
+        print("[LivingBase] [fixghost] no valid probed target -- run lbprobe aimed at it first.\n")
+        return
+    end
+    local label = "?"
+    pcall(function() label = target:GetFullName() end)
+    pcall(function() Spawner.SetDecorSolid(target) end)
+    print("[LivingBase] [fixghost] solidified: " .. tostring(label) .. "\n")
+end
+
+-- Spawner.ProbeRadius(radius, say) -- TEMP DEV TOOL (2026-08-20): "do we still have that command that
+-- lets me probe in a radius around me?" -- lbcustomscan exists but is scoped to actors with a
+-- composite mesh (character-type actors) for a totally different purpose, would miss a decor ghost
+-- entirely. This is the general-purpose version: lists EVERY actor within radius of the pawn, no type
+-- filter, sorted nearest-first, flagging whether each is currently TRACKED (present in
+-- Spawner.spawned, by the same actorInstancePath comparison used throughout this file) and whether
+-- its collision is currently enabled -- exactly the two questions this session's stuck-ghost hunt
+-- needs answered: is it still a real actor at all, and if so, is it one we've lost track of. Same
+-- FindAllOf("Actor") + ipairs sweep pattern as Spawner.RetrackOrphans (already proven safe), plain
+-- distance math only -- no reflection, no collision dependency, so a collision-less ghost still shows
+-- up like anything else.
+function Spawner.ProbeRadius(radius, say)
+    say = say or print
+    radius = tonumber(radius) or 500.0
+    local pc, pawn
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if not (pawn and pawn:IsValid()) then
+        say("[LivingBase] [proberadius] no player pawn.\n")
+        return
+    end
+    local origin
+    pcall(function() origin = pawn:K2_GetActorLocation() end)
+    if not origin then
+        say("[LivingBase] [proberadius] could not read pawn location.\n")
+        return
+    end
+    local trackedPaths = {}
+    for _, e in ipairs(Spawner.spawned or {}) do
+        if e.actor and e.actor:IsValid() then
+            local p = actorInstancePath(e.actor)
+            if p then trackedPaths[p] = true end
+        end
+    end
+    local actors
+    local ok = pcall(function() actors = FindAllOf("Actor") end)
+    if not (ok and actors) then
+        say("[LivingBase] [proberadius] FindAllOf('Actor') returned nothing.\n")
+        return
+    end
+    local hits = {}
+    for _, a in ipairs(actors) do
+        if a and a:IsValid() then
+            local l
+            pcall(function() l = a:K2_GetActorLocation() end)
+            if l then
+                local dx, dy, dz = l.X - origin.X, l.Y - origin.Y, l.Z - origin.Z
+                local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if d <= radius then
+                    local cls = "?"
+                    pcall(function() cls = a:GetClass():GetFullName() end)
+                    local path = actorInstancePath(a)
+                    local collision
+                    pcall(function() collision = a:GetActorEnableCollision() end)
+                    table.insert(hits, { dist = d, cls = cls, tracked = (path and trackedPaths[path]) or false, collision = collision })
+                end
+            end
+        end
+    end
+    table.sort(hits, function(x, y) return x.dist < y.dist end)
+    say(string.format("[LivingBase] [proberadius] %d actor(s) within %.0fuu:", #hits, radius))
+    local MAX_RESULTS = 60
+    for i = 1, math.min(#hits, MAX_RESULTS) do
+        local h = hits[i]
+        say(string.format("[LivingBase] [proberadius] #%d %.0fuu tracked=%s collision=%s class=%s",
+            i, h.dist, tostring(h.tracked), tostring(h.collision), tostring(h.cls)))
+    end
+    if #hits > MAX_RESULTS then
+        say(string.format("[LivingBase] [proberadius] ... %d more not shown (capped at %d).", #hits - MAX_RESULTS, MAX_RESULTS))
+    end
 end
 
 -- Spawner.EditNearestInFront(dZ, dYaw) — LIVE FINE-TUNE the placed object in front of you: raise/lower
@@ -5387,16 +8638,23 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight, dPitch, dRoll)
     print(string.format("[LivingBase] live-edit key: dZ=%.0f dYaw=%.0f dFwd=%.0f dRight=%.0f dPitch=%.0f dRoll=%.0f\n",
         dZ or 0.0, dYaw or 0.0, dFwd or 0.0, dRight or 0.0, dPitch or 0.0, dRoll or 0.0))
     local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
-    -- fx/fy here (the SLIDE frame for arrow-key movement) come from the PAWN'S OWN body rotation, not
-    -- the camera — mixing camera-facing with pawn-position made MOVEMENT worse (camera can look a fair
-    -- bit away from where the body actually is, offset/lag), so findNearestSpawnInFront always returns
-    -- pawn-based fx/fy regardless of how it internally picked the target. (Movement direction for
-    -- STATUES is separately overridden below to the statue's own facing anyway, so this only affects
-    -- non-statue decorations.) The TARGET PICK itself (which object counts as "in front") is a separate
-    -- concern handled inside findNearestSpawnInFront and now uses the camera's look direction (see its
-    -- comment) — picking and moving are allowed to use different facings; they answer different
-    -- questions ("what am I looking at" vs "which way should this slide").
-    local bestI, e, bestD, px, py, pz, fx, fy = findNearestSpawnInFront(maxDist)
+    -- Live-edit is now LOCK-ONLY (2026-08-20, RedFalcon: "we're locking live edit to targets only" --
+    -- raytrace replaces the cone as the visual truth for what's targetable, so there's no more
+    -- automatic "nearest thing in front" fallback here). No lock, no edit -- walk up and press Num+
+    -- (hover-highlight shows what that would grab) before nudging anything. findNearestSpawnInFront is
+    -- still called below, not reimplemented, since it already owns the lock-validity/leash-distance
+    -- check (Spawner.TargetLockDistanceCheck) shared with the periodic lock tick -- this just refuses
+    -- to let it fall through to ITS OWN cone/radius sweep by never calling it when unlocked.
+    if not Spawner.lockedTarget then
+        print("[LivingBase] Edit: no target locked.\n")
+        pcall(function() Spawner.Toast("Live-edit: no target locked -- press Num+ on something first.", 2.5) end)
+        return
+    end
+    -- findNearestSpawnInFront also returns a pawn-facing fx/fy pair (its own target-pick logic uses
+    -- the camera's look direction instead -- picking and moving were always allowed to use different
+    -- facings) -- no longer bound here since decor's own slide frame moved off the player's facing
+    -- entirely, onto a fixed world axis (2026-08-19, see the slide-frame comment below).
+    local bestI, e, bestD, px, py, pz = findNearestSpawnInFront(maxDist)
     if not px then
         print("[LivingBase] Edit: no player pawn.\n")
         pcall(function() Spawner.Toast("Live-edit: no player pawn found.", 2.5) end)
@@ -5413,16 +8671,20 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight, dPitch, dRoll)
     -- stays put on screen even though SetActorLocation succeeds (the bug RedFalcon kept hitting).
     Spawner.MakeMovable(e.actor)
     -- Slide frame: STATUES move along their OWN facing (so fwd/back/left/right track the pose the statue
-    -- is set to); DECORATIONS move in the player's frame. Statues are AnimatedActor/QuestStatic classes.
+    -- is set to); DECORATIONS move along a FIXED WORLD axis (2026-08-19, RedFalcon's request -- was the
+    -- player's own facing, which meant forward/right for an object silently changed direction depending
+    -- on which way you happened to be standing when you nudged it, making repeated edits inconsistent).
+    -- Statues are AnimatedActor/QuestStatic classes.
     local statueFrame = (e.class and (string.find(e.class, "AnimatedActor", 1, true)
         or string.find(e.class, "QuestStatic", 1, true))) and true or false
     local newX, newY, newZ, newYaw, newPitch, newRoll
     pcall(function()
         local l = e.actor:K2_GetActorLocation()
         local r = e.actor:K2_GetActorRotation()
-        -- Horizontal nudge: forward = frame facing; right = (-fwdY, fwdX). Player frame by default,
-        -- the statue's own facing when editing a statue.
-        local afx, afy = fx, fy
+        -- Horizontal nudge: forward = frame facing; right = (-fwdY, fwdX). Fixed world +X/+Y by
+        -- default (forward = world +X, right = world +Y), the statue's own facing when editing a
+        -- statue.
+        local afx, afy = 1.0, 0.0
         if statueFrame then local a = math.rad(r.Yaw); afx, afy = math.cos(a), math.sin(a) end
         local f, rt = (dFwd or 0.0), (dRight or 0.0)
         newX   = l.X + f * afx + rt * (-afy)

@@ -146,7 +146,93 @@ Config.LIVE_EDIT_MOVE_STEP   = 30.0   -- uu per press for arrow-key slide (was 1
 -- this radius/cone is bypassed by the shared picker (findNearestSpawnInFront, spawner.lua) in favor of
 -- the much more generous TARGET_LOCK_MAX_DIST below, so a locked object keeps getting hit after walking
 -- away or turning to look elsewhere, up to that larger leash.
-Config.LIVE_EDIT_MAX_DIST = 200.0
+-- Raised 200 -> 500 -> 600 (2026-08-20). Now shared by BOTH target-lock's cone/distance fallback
+-- AND the hover-highlight raycast (Spawner.UpdateHoverHighlight reads this same value) -- RedFalcon:
+-- "target and highlight should be synced both by source and by distance... it doesn't make sense
+-- otherwise" -- so this one number is the single source of truth for both. As of 2026-08-20 the
+-- raycast itself is now the ONLY source (target-lock no longer falls back to this file's cone sweep
+-- at all -- see pickTargetPreferringHover's own comment), so this value now purely tunes the
+-- raycast's reach. The raycast traces from the CAMERA (must stay that way -- see
+-- Spawner.UpdateHoverHighlight's own comment for why mixing pawn-position with camera-direction is a
+-- confirmed-broken anti-pattern here), and in third person the camera sits noticeably behind the
+-- player -- RedFalcon eyeballed that gap at ~100uu. 1100 (was 600) is the visual compensation for
+-- that offset, tuned live rather than computed, so the ray's effective forward reach FROM THE PLAYER
+-- roughly matches the old 600uu number. The separate "how far can a lock survive walking away"
+-- leash (Config.TARGET_LOCK_MAX_DIST, Spawner.TargetLockDistanceCheck) is untouched by this --
+-- that check is already pawn-based, not camera-based, per RedFalcon's explicit "target drop" ask.
+Config.LIVE_EDIT_MAX_DIST = 1100.0
+-- Placement zoom (2026-08-20): Spawner.AdjustPlacementDistance's step size and clamp range for
+-- Config.KEYS.placementZoomIn/Out. MIN keeps it off the camera's own near-clip / out of the pawn's
+-- own collision.
+-- MAX: 2000 -> lowered to 750 (2026-08-21) when RedFalcon reported the statue's forward raycast
+-- "freaks out" around 800uu -- then RAISED BACK to 1800 the same day once the real cause turned out
+-- to be aim angle, not a hard raycast distance limit (see beginFollowLoop's own comment): the ray
+-- follows the camera's exact view direction, so at longer range it needs MORE downward pitch to
+-- still reach the same relative floor point -- purely geometric, not a raycast breakdown. RedFalcon:
+-- "my brain was thinking max 1000 not 2000" (the original number when this was first bumped up from
+-- decor's old close-range default) -- 1800 splits the difference, comfortably under the old 2000
+-- ceiling while well past the ~1000 RedFalcon actually had in mind.
+Config.PLACEMENT_ZOOM_STEP_UU = 50.0
+Config.PLACEMENT_ZOOM_MIN_UU = 100.0
+Config.PLACEMENT_ZOOM_MAX_UU = 1800.0
+-- Starting follow distance for a FRESH spawn (F5 flow via the spawn menu) -- was a hardcoded 300uu
+-- fallback inside beginFollowLoop itself. Matched to the 1800uu max above (2026-08-21, RedFalcon:
+-- "i want to change that 750 to 1800, because as i said i misunderstood the distances we were
+-- working with before") -- starts at FULL reach immediately, no zooming needed to use the whole
+-- range; PAUSE/HOME (Spawner.AdjustPlacementDistance) can still pull it closer if wanted. Applies to
+-- decor AND statues (RedFalcon's explicit call). Doesn't affect StartRelocatePreview (F7) -- that
+-- always computes its own grab distance from where the object already was, this only matters for a
+-- brand new spawn.
+Config.PLACEMENT_START_DIST_UU = 1800.0
+-- Free-build mode (2026-08-21, RedFalcon: "a floor collision toggle so that items can also behave
+-- as they did before with the same static limit. That way if they want to free build they can.")
+-- -- F8 (Spawner.ToggleFreeBuild) flips the floor-lock raycast off entirely (statues AND decor) in
+-- favor of the pre-floor-lock center-anchored/static-distance behavior, unaffected by
+-- Config.PLACEMENT_FLOOR_LOCK_DECOR. START_DIST is its own separate spawn distance -- RedFalcon:
+-- "set the distance at 350uu, that will be about one platform distance from the player" -- NOT the
+-- same as the 1800uu non-free-build default above. MIN_GRAB_UU is a floor-build-only clamp on F7's
+-- grabDistance ("keep the original distance unless it reaches or is less than 125uu from the
+-- camera -- that should be about when a camera zoom in will freak out") -- non-free-build grabs are
+-- untouched by this (RedFalcon: "for non free build spawning and grabbing, keep it exactly as it
+-- is"), still measuring/using the real distance with no clamp at all.
+-- Both bumped +100uu (2026-08-21, RedFalcon: "the distance for spawning and minimum distance while
+-- moving in free build needs to be further. lets add 100 to the distance.") -- 350->450 spawn,
+-- 125->225 grab floor.
+Config.PLACEMENT_FREEBUILD_START_DIST_UU = 450.0
+Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU = 225.0
+-- NiagaraActor highlight scale (2026-08-21, RedFalcon: "is it possible to resize it to match the
+-- hitbox of the object?") -- BASE_RADIUS_UU is the object size the effect's default 1x scale was
+-- eyeballed against (largest half-extent axis of GetActorBounds) -- tune this once you've seen the
+-- scaled version live on a few different-sized objects. MIN/MAX_SCALE clamp so a tiny trinket or a
+-- huge statue can't produce a degenerate (invisible or absurdly huge) scale.
+Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU = 50.0
+Config.NIAGARA_HIGHLIGHT_MIN_SCALE = 0.3
+Config.NIAGARA_HIGHLIGHT_MAX_SCALE = 4.0
+-- PRODUCTION hover-highlight for character targets (2026-08-22, RedFalcon: "use the effect thing we
+-- were trying but us this effect halfway up their body... It loops, is small and is visible through
+-- objects") -- replaces the material-swap ghost highlight for statues/walkers/Senkamati (anything
+-- with a SkeletalMeshComponent); decor keeps the material swap. Fixed scale, not bounds-based like
+-- the test tooling's ground-ring use case -- this sits mid-body regardless of the target's size.
+Config.HOVER_EFFECT_SCALE = 0.6
+-- ISOLATION TEST RESULT (2026-08-21, RedFalcon: "let's disable the other slot and see if it
+-- doesn't change. if not then we know they're tied together") -- with this flag ON (full no-op,
+-- zero material slots touched on hover), the white area around the eyes still appeared exactly the
+-- same. CONFIRMED: not caused by our highlight/restore code -- same pre-existing root cause as the
+-- skin-white issue (RedFalcon: "i think we can go ahead and say they are connected"), just visible
+-- on the eye area too. Nothing left for our own code to fix here. Back to false -- normal
+-- highlighting restored (skin+eye slots still individually skipped, see applyHoverHighlight).
+Config.HOVER_HIGHLIGHT_DISABLE_ALL_TEST = false
+-- Placement camera raise + FOV widen (2026-08-22) -- height raise confirmed live via lbprobecam
+-- (in vs. out of real build mode): camera height +35uu relative to the pawn, FOV 70 -> 76 (+6).
+-- FOV now confirmed working too (RedFalcon: "fov works"), via a detach-first fix found by reading a
+-- reference UE4SS camera mod (Other\Camera Toggle System (UE4SS)-32-4-1-1778381431): Windrose's
+-- FollowCamera has a settings-driven camera system (CameraParams) that keeps re-asserting its own
+-- FOV unless you explicitly detach first (bUseSettingsFov = false, CameraParams = nil) -- see
+-- Spawner.ApplyPlacementCameraOffset's own comment for the full history. A separate camera-pullback
+-- (TargetArmLength) experiment was also tried and REMOVED -- RedFalcon: "not the backwards 100 of
+-- the sprintarm we tried" -- only the height raise + FOV ship now.
+Config.PLACEMENT_CAMERA_RAISE_UU = 35.0
+Config.PLACEMENT_CAMERA_FOV_DELTA = 6.0
 -- How tightly you must actually be LOOKING at an object (camera direction, pitch included — not just
 -- have it somewhere in front of your body) for findNearestSpawnInFront to consider it a candidate at
 -- all. Shared by despawn/live-edit/cycle-pose — they all pick their target through that one function.
@@ -175,7 +261,13 @@ Config.TARGET_MIN_VIEW_DOT = 0.90
 -- findNearestSpawnInFront (spawner.lua) against the PLAYER'S body position, same as every other
 -- distance check in that function — not the camera, for the same "how far can I actually reach"
 -- reasoning DESPAWN_FRONT_UU/LIVE_EDIT_MAX_DIST already use.
-Config.TARGET_LOCK_MAX_DIST = 1500.0
+-- Bumped 1500 -> 1900 (2026-08-22, RedFalcon: "since we have the max distance for spawning at
+-- 1800uu, but the untargeting limit is 1500, it gets untargeted during far placement... give some
+-- wiggle room") -- this is PAWN-based while Config.PLACEMENT_ZOOM_MAX_UU (1800) is CAMERA-based, so
+-- an object placed at the full 1800uu camera distance could exceed a pawn-based 1500uu leash before
+-- ever reaching it, auto-releasing the lock mid-placement. 1900 clears the max placement distance
+-- with margin to spare.
+Config.TARGET_LOCK_MAX_DIST = 1900.0
 -- How often (ms) the periodic tick (Spawner.StartTargetLockTick, started only while a lock is active
 -- and self-stopping the moment it isn't -- see that function's own comment) re-checks TARGET_LOCK_MAX_DIST
 -- against a locked target, so walking away releases the lock on its own without needing to press
@@ -293,6 +385,39 @@ Config.KEYS = {
   editRight = "RIGHT",       -- arrow right: slide it to your right
   facing    = "OEM_FIVE",  -- '\'  flip statue placement 180 deg (back-to-you / riflers face you)
   clear     = "DEL",       -- despawn ALL (clean house) — off the pad (destructive)
+
+  -- BUILD-GHOST-PREVIEW (2026-08-20): confirm/cancel a live-following placement started from the
+  -- LivingBaseSpawnMenu Spawn button (see main.lua's pollSpawnMenuRequest + Spawner.
+  -- ConfirmPlacement/CancelPlacement). F5/F6 were freed 2026-08-15 when their prior scaffolding
+  -- (testApplyPose/testApplyBodySex) was removed -- see that removal note a few lines below.
+  confirmPlacement = "F5", -- lock the currently-previewed object in place
+  cancelPlacement  = "F6", -- destroy the currently-previewed object, no trace left behind
+  -- Grab-and-relocate (2026-08-20, RedFalcon's request): pick up whatever's currently target-locked
+  -- (Num+) and carry it like a fresh placement -- F5/F6 above then confirm the new spot or put it
+  -- back where it was (never destroy -- see Spawner.CancelPlacement's RELOCATE branch).
+  grabTarget = "F7", -- start relocating the target-locked object
+  -- Physics toggle (2026-08-20, RedFalcon, EXPERIMENTAL): re-enable real physics simulation on the
+  -- object currently being placed/relocated, to see whether it then behaves like Windrose's own
+  -- build-mode ghost (settling on/sliding across the floor as you look around) instead of floating
+  -- exactly at the raycast point. Doesn't touch the follow loop itself, which keeps teleporting the
+  -- object to the camera-aim point every tick regardless -- this only flips SetSimulatePhysics, so
+  -- whatever happens is physics reacting in the brief window between teleports. NOT OEM_QUOTE (')
+  -- -- that's already decorCategory (fkeys.lua, RedFalcon caught the collision live before it ever
+  -- shipped). "END" is unused anywhere in this mod and isn't the console key (Tilde is).
+  togglePlacementPhysics = "END", -- toggle physics on the object being placed/relocated
+  -- Free-build toggle (2026-08-21, RedFalcon): flips floor-lock off/on globally -- see
+  -- Config.PLACEMENT_FREEBUILD_START_DIST_UU's comment above for the full behavior. F8 is free
+  -- (F5/F6/F7 already taken by confirm/cancel/grab, right next to it on the row).
+  toggleFreeBuild = "F8", -- toggle free-build mode (no floor lock, static distance)
+  -- Zoom (2026-08-20, RedFalcon: "be able to zoom it in and out... so we aren't limited to either a
+  -- set distance nor its starting distance") -- nudges Spawner._placementDistance, which the follow
+  -- loop reads live (see Spawner.AdjustPlacementDistance). Mouse wheel isn't an option here --
+  -- RegisterKeyBind is a button-press API in every confirmed use in this codebase, not an axis one,
+  -- so a scroll axis wouldn't register as a bind at all. PAGE_UP/PAGE_DOWN were already taken
+  -- (editUp/editDown); HOME/PAUSE were both free (previously used for now-removed HOME/PAUSE probe
+  -- diagnostics, so confirmed to bind cleanly in this build).
+  placementZoomIn  = "HOME",  -- pull the followed object closer
+  placementZoomOut = "PAUSE", -- push the followed object farther
 
   -- DEV-TOOL diagnostics (Spawner.ProbeNearestActor/ProbeDumpProperties) moved from HOME/PAUSE
   -- keybinds to the "lbprobe"/"lbprobedump" console commands (2026-08-18, RedFalcon's request) --
@@ -1596,6 +1721,87 @@ Config.FEMALE_WALKER_OVERLAYS = {
   -- skeleton. Question answered, nothing left to check for.
 }
 
+-- Config.FEMALE_CHARACTER_PARAMS (2026-08-19) -- REPLACES the old shared-"Brethren Woman"-
+-- params-plus-DeCorrupt-piece-overlay approach for Letty/Marita/Merchant specifically, now that a
+-- real cross-class pre-build DefaultParams swap is confirmed to render correctly (this session's
+-- investigation, see WINDROSE_MODDING_NOTES.md's composite section) -- no more per-piece replace/
+-- hide/forceHat rules, no more topless/bald settle-check retry loop, because the REAL outfit is
+-- correct from the moment the actor is built, not reconstructed piece-by-piece after the fact.
+-- `params` for Letty/Marita is their OWN real QuestStatic NPC's composite params, live-probed
+-- directly off the actual characters (not guessed/reused from something else) -- Merchant reuses
+-- Buccaneers Merchant 01's, the closest thematic fit among the confirmed-clean female-authored
+-- outfits surveyed this session. `hairs`/`eyebrows` are those SAME real NPCs' own live controller
+-- values (also live-probed) -- "preloaded" onto the spawned actor right after the composite swap
+-- (see Testbed.ApplyFemaleReskinTarget's own branch for these characters) because
+-- GetCustomizationMeshControllers() reflects whichever composite is CURRENTLY built, not the
+-- walker's own base body -- her carried-over index otherwise lands in the wrong pool for this new
+-- outfit's controller range (confirmed live this session: a stale index rendered a visibly wrong
+-- hairstyle until corrected). Keyed by femaleCharacterKey (testbed.lua) -- the character name with
+-- any trailing " Base N" stripped -- since the outfit/hair choice doesn't depend on which base
+-- body (Gatherer/Herbalist) is underneath, only which NAMED character this is.
+Config.FEMALE_CHARACTER_PARAMS = {
+  -- "Woman" (2026-08-19, RedFalcon's call, revised after his own live probe): the collapsed
+  -- replacement for the old separate "Woman With Hat"/"Woman With Hair" entries -- those two
+  -- produced IDENTICAL results once the ForceHeadwear/content-matched-replace/topless-retry
+  -- system was dropped (see below), so keeping 4 roster entries (x Base 1/2) for 2 real outcomes
+  -- was pure clutter. Now just "Woman Base 1"/"Woman Base 2" in Config.FEMALE_RESKIN_TARGETS.
+  -- Uses the SHARED Brethren Woman outfit (NOT the walker's own plain vanilla one -- that was
+  -- this entry's first draft, reverted same session). Two live lbcustomnpc-get probes of
+  -- BP_AnimatedActor_BotC_Female_Standing_01_C (shares this IDENTICAL DefaultParams asset)
+  -- showed 8 controllers total -- SIX different Armor.* slots (Head 0..8, Torso 0..9, Hands 0..6,
+  -- Legs 0..4, Feet 0..4, Belt 0..5), each locked from further live edits (selectable=false) but
+  -- with a genuinely different BUILD-TIME-RANDOM value each spawn, plus Facial.Eyebrows and Hairs
+  -- (both selectable) also varying spawn to spawn (19->28 seen live). So this shared composite
+  -- already randomizes essentially her WHOLE outfit for free, including whether she rolls
+  -- headwear at all -- confirmed live: same class, one spawn had a hat, another didn't. That's
+  -- WHY the old ForceHeadwear/content-matched-replace/topless-retry system existed in the first
+  -- place (reacting to/steering this pre-existing randomness) -- and why it can be dropped
+  -- entirely now that RedFalcon confirmed the randomness itself already produces a valid look:
+  -- no forcing needed, just spawn with this outfit and layer skin tone on top, same as before.
+  -- An EMPTY table here (no `.params`) is enough to trigger Testbed.ApplyFemaleReskinTarget's fast
+  -- path (skip the whole old overlay/retry system) while spawnFemaleWalkerTarget's own fallback
+  -- still resolves the actual outfit to Brethren Woman's params, same as it always has.
+  -- hairsRandomMax (2026-08-19, RedFalcon's live testing): the Armor.* build-time randomization
+  -- confirmed above does NOT extend to Hairs for this walking (CREW_CLASS-hosted) spawn, unlike
+  -- the Standing statue (AnimatedActor-hosted) probes which showed both varying -- confirmed live,
+  -- her hair stayed static across spawns even as hat/outfit varied. Fix confirmed live too:
+  -- `lbcustomnpc set hairs #` correctly picks a hat-COMPATIBLE hair variant even when a hat rolled
+  -- that spawn -- the controller write coordinates properly on its own, no risk of the old hair-
+  -- through-hat clipping bug forcing a value manually was worried about. 32 is this shared
+  -- composite's own confirmed real Hairs max (BP_AnimatedActor_BotC_Female_Standing_01_C probes),
+  -- NOT the vanilla Gatherer/Herbalist's own smaller 0..7 range used by Letty/Marita/Merchant's
+  -- controller preloads below -- different composite, different pool size.
+  Woman = { hairsRandomMax = 32 },
+  Letty = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/TortugaCitizen/CompositeMesh/Letty/",
+      "DA_NPC_QuestStatic_TortugaCitizen_Letty_CompositeMeshComponentParams"),
+    hairs = 16, eyebrows = 2,
+  },
+  Marita = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/Smugglers/CompositeMesh/MaritaSuares/",
+      "DA_NPC_QuestStatic_Smugglers_MaritaSuares_CompositeMeshComponentParams"),
+    hairs = 32, eyebrows = 2,
+  },
+  Merchant = {
+    params = objPath("/Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/",
+      "DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams"),
+    hairs = 23, eyebrows = 0,
+    -- meshFixes (2026-08-19): the SAME "booty sticks out of her pants" bug the old
+    -- FEMALE_WALKER_OVERLAYS "Merchant" entry already root-caused and fixed THIS SAME DAY --
+    -- her real DefaultParams genuinely bakes in SK_Armor_Conquistador_02_MALE_Legs (confirmed
+    -- via a live probe on her own real statue, not a wrong guess -- see that entry's own
+    -- comment) -- a real body-shape mismatch between the Walker's skeleton and a mesh built for
+    -- the Standing statue's body, not a simple wrong-sex-asset mistake. The old fix swapped in
+    -- SK_Armor_Conquistador_02_Female_Legs by content-matching the live component's mesh name;
+    -- this is the same fix, same target mesh, just applied via Spawner.SetBodyPartMesh's
+    -- BodyPart-enum lookup (13 = Legs, ER5BLCompositeMeshBodyPartType_V0_8_0) since the new
+    -- pre-build-params spawn path bypasses the old content-matched `replaces` rule entirely.
+    meshFixes = {
+      { bodyPart = 13, mesh = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Legs") },
+    },
+  },
+}
+
 -- Config.FEMALE_RESKIN_TARGETS -- the walking-women name roster (testbed.lua's
 -- Testbed.TestFemaleWalkerReskin/SpawnFemaleWalkerByName cycle/look up these exact strings against
 -- Config.FEMALE_WALKER_OVERLAYS above). MOVED HERE from a local table in testbed.lua (2026-08-16,
@@ -1607,8 +1813,9 @@ Config.FEMALE_WALKER_OVERLAYS = {
 -- suffix picks the body. Deliberately does NOT include "Female_Barbie" -- that one's lblook-only by
 -- design (Testbed.SpawnBarbieByName's own comment), not part of this rotation.
 Config.FEMALE_RESKIN_TARGETS = {
-    "Woman With Hat Base 1",  "Woman With Hat Base 2",
-    "Woman With Hair Base 1", "Woman With Hair Base 2",
+    -- "Woman With Hat"/"Woman With Hair" collapsed into plain "Woman" (2026-08-19) -- see
+    -- Config.FEMALE_CHARACTER_PARAMS' own "Woman" entry comment for why they became identical.
+    "Woman Base 1",           "Woman Base 2",
     "Merchant Base 1",        "Merchant Base 2",
     "Letty Base 1",           "Letty Base 2",
     "Marita Base 1",          "Marita Base 2",

@@ -1,6 +1,119 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v3.0.0 (2026-08-22) -- previous version: v2.1.5
+======================================================================
+
+ADDED -- Live placement preview for decor (F5 confirm / F6 cancel)
+- Newly spawned decor now follows your camera in real time before it's
+  actually placed, instead of landing instantly wherever you were
+  aiming. Zoom the preview closer/farther with Home/Pause, then F5 to
+  confirm it right where it's floating, or F6 to cancel and remove it.
+
+ADDED -- Grab and relocate anything already placed (F7)
+- Pick up an existing statue or decoration and carry it the same way
+  the live preview works, instead of despawning and re-placing from
+  scratch. F6 while relocating reverts it to exactly where it was
+  before you grabbed it; F5 confirms the new spot.
+
+ADDED -- Reticle hover-highlight
+- Whatever you're aiming at now visibly lights up before you commit to
+  targeting or grabbing it, so it's always clear what Num+ or F7 would
+  actually act on.
+
+ADDED -- Free-build toggle (F8)
+- By default, placement and relocation snap to the real floor/surface
+  under your reticle. F8 switches to open placement at a fixed
+  distance instead, for spots the floor-lock doesn't suit. Locked out
+  mid-placement on purpose -- switch before you start, not while
+  something is already following your camera.
+
+ADDED -- Statues can now be targeted, moved, and highlighted too
+- The preview/relocate/hover-highlight toolkit above -- previously
+  decor-only -- now covers every posed statue roster as well
+  (standing, seated, chair, and interactive statues).
+
+CHANGED -- Camera raises and widens while placing or with the GUI open
+- Matches the view the game's own native building mode uses: a slight
+  camera raise and a wider field of view, active while the spawn menu
+  window is open.
+
+FIXED -- Targeting now reaches walking crew, Senkamati, and drops decor
+- Aiming at a walking NPC, a friendly Senkamati, or placed "Drops"
+  decor could pass straight through it to whatever was standing behind
+  it instead of targeting/highlighting the actual object. Fixed for
+  all three.
+
+CHANGED -- Placed crew/Senkamati freeze in place like statues once positioned
+- Moving an NPC with the new preview/relocate tools used to leave it
+  fighting its own AI and physics afterward (bumping into nearby
+  objects, legs bending oddly, dropping if left in the air). Once
+  placed this way, it now stays frozen in position exactly like a
+  statue instead.
+
+REBUILT -- Letty, Marita, and the Merchant walking women
+- These three now spawn with their own real, distinct outfit instead
+  of sharing one generic look with a patched-on overlay. Letty and
+  Marita wear their actual in-game outfits; the Merchant wears a
+  proper female-fitted Buccaneers Merchant look, fixing a persistent
+  pants-clipping issue (a body-shape mismatch baked into her own
+  outfit, not a wrong-sex asset -- the earlier v2.1.5 fix for this
+  covered the old system only, not this new one).
+- Hair and skin tone are still randomized on every spawn, same as
+  before.
+- Any Letty/Marita/Merchant placed in an earlier version is upgraded
+  to her real outfit automatically the next time your save loads --
+  no need to despawn and re-place her.
+
+MERGED -- "Woman With Hat" and "Woman With Hair" into one "Woman"
+- These two used to be separate entries forcing a hat (or not) onto a
+  generic look. They're now a single "Woman" entry (still spawnable as
+  either base body) whose outfit, hat presence, hair, and skin tone
+  all vary naturally on their own -- no more forced hat logic, and a
+  wider range of genuine outfit variety than before.
+
+CHANGED -- Despawn (Num9) and Undo-Despawn (Num0) now work with
+In-Game Keys off
+- Both now stay reachable with the in-game keybind toggle switched
+  off, matching Target Lock (Num+) -- useful for a GUI-driven session
+  where the keyboard placement keys are deliberately disabled.
+
+CHANGED -- newly placed items are now the live Target Lock automatically
+- Placing anything now locks it as the current live-edit target
+  immediately (as if Num+ had just been pressed on it), instead of
+  only being available to the diagnostic probe commands. Adjust it
+  right away without a separate targeting step.
+
+FIXED -- rotation now respects the live-edit precision setting
+- Rotating an object (keyboard ','/'.' or the move window's rotate
+  buttons) always used a fixed step regardless of the precision level.
+  Now it scales with precision the same way movement already did --
+  normal speed rotates exactly like before, finer/coarser precision
+  levels now actually apply to rotation too.
+
+CHANGED -- decor/object nudging now moves along a fixed direction
+- Sliding a non-NPC object with the live-edit keys used to move it
+  relative to whichever way YOU were facing, so the same forward/back/
+  left/right press could shift it a different direction depending on
+  where you were standing. It now always moves the same fixed
+  direction regardless of your facing. Statues and NPCs are unchanged
+  -- they still slide along their own pose direction.
+
+CHANGED -- move window slowed to reduce movement-related instability
+- The GUI move window's rate of applying nudges is now slower (330ms
+  between updates instead of 100ms). Held movement now applies in
+  slightly larger, less frequent steps rather than continuous small
+  ones -- worth knowing if it feels a little different, but it should
+  meaningfully improve stability during heavy live-editing sessions.
+
+FIXED -- "Drops" decor not restoring after a reload
+- Placed drop-item decor (Stone/Wood/Leather/etc, and anything else in
+  that category) could show up in your save data but come back
+  invisible after a reload. The correct visual is now restored
+  properly on load. Anything placed before this fix will need to be
+  despawned and re-placed once to pick up the correction.
+
+======================================================================
 v2.1.5 (2026-08-18) -- previous version: v2.1.0
 ======================================================================
 

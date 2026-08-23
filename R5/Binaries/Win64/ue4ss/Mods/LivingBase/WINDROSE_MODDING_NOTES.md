@@ -145,6 +145,57 @@ plain `SetCustomizationMeshControllerValue` call made AFTER the swap has already
 completely normally (confirmed live again). Don't bother trying to preserve a look across a sex
 change; re-apply it after, not before.
 
+### 2d. `BuildedCompositeMeshes` — a second, always-populated mesh-attachment layer (2026-08-19)
+
+**Why an actor can render visible clothes despite having ZERO `Armor.*` customization controllers**
+(the Gatherer/Herbalist walker bodies both do this): the mesh-controllers list in §2c
+(`GetCustomizationMeshControllers()`) is a *pick list* — which option is currently selected per
+slot — not the thing actually attached to the skeleton. The real attachment array is a separate
+component property, `comp.BuildedCompositeMeshes`, and it's populated independent of whether that
+slot has any selectable controller at all. A class with 0 Armor controllers can still have 5+
+`BuildedCompositeMeshes` entries wearing a full outfit; the controller list only governs slots the
+game exposes as player-changeable, not everything actually rendered.
+
+Each entry is an `R5EquippedSlotData` struct (`GetFullName()` → `"ScriptStruct
+/Script/R5.R5EquippedSlotData"`, the *named*-struct shape from §10/2b — resolve via
+`StaticFindObject` + `:ForEachProperty`, not §2c's inline-`:GetFName()` shape; check which shape
+you've got before picking a recipe, same caveat as 2c). Key fields: `BodyPart` (an
+`ER5BLCompositeMeshBodyPartType_V0_8_0` enum value — decoded from `UE4SS_ObjectDump.txt`, e.g.
+`13` = Legs) and `EquippedMesh` (the live `SkeletalMeshComponent` actually attached for that slot —
+a real component, not an asset reference, so it takes the same `SetSkeletalMeshAsset`/
+`SetSkeletalMesh` calls any other mesh component does).
+
+**Confirmed dead, two independent tests, two call orderings**: mutating a `BuildedCompositeMeshes`
+entry (or its `EquippedMesh`) AFTER the composite has already built does not stick — same
+"reports success, rebuild count increments, rendered mesh never changes" signature as §2a's
+property-write dead end. **Confirmed working**: setting the composite's PRE-build params
+(`DefaultParams`/`ArchetypePreset`) so a *different class's* outfit/body bakes in at build time —
+this is the mechanism the walking-women outfit rebuild (Letty/Marita/Merchant, v2.1.7) actually
+ships on. Post-build mutation of the array itself is dead; pre-build substitution of what gets
+built is not.
+
+**`Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)`** (`spawner.lua`) is the general tool
+this unlocked: given a `BodyPart` enum value, it walks `BuildedCompositeMeshes` for the matching
+entry and swaps that ONE slot's `EquippedMesh` — hide → `SetSkeletalMeshAsset` (fallback
+`SetSkeletalMesh`) → `SetLeaderPoseComponent` rebind to the actor's own `Mesh` → show. Reuses the
+exact sequence `Spawner.DeCorrupt`'s content-name-matched `replaces` rule already proved safe, just
+addressed by `BodyPart` enum instead of guessing a live component's current mesh name — useful when
+a cross-class `DefaultParams` swap (the pre-build fix above) bakes in one body-shape-mismatched
+piece from the donor class (this fixed the Merchant walking-woman's leg-clipping: her real outfit's
+Legs piece was built for a different base skeleton than the Walker pawn wears).
+
+**CDO route confirmed dead for pawn classes, works for buildable-actor classes.** §7 already
+confirmed a buildable trader's Class Default Object (`Default__<ClassName>`, same trick used
+elsewhere in this file) owns a real, populated `R5CompositeMeshComponent` — readable with zero
+`SpawnActor` cost. Tested this session whether that generalizes to actual pawn classes (Letty,
+Marita, walker bodies, etc.): it does not. A pawn class's CDO resolves fine and has a valid
+`CompositeMeshComponent`, but `GetCustomizationMeshControllers()` on it reads back empty —
+confirming pawns build their composite at spawn time (an explicit runtime `SetCompositeParams`/
+build call, §9) rather than having it pre-populated on the class default like a buildable actor
+does. Surveying a pawn roster's customization options without paying a live-spawn cost isn't
+possible via this route; `Spawner.ProbeClassCustomization` (the `lbprobeclass` command) exists to
+make that distinction quickly, but still needs a live actor for any pawn class.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)
@@ -261,6 +312,100 @@ the same file — that mismatch (local declared, but Lua calls it a nil global) 
 file for two things — where the bare name is called, and where its `local function`/`local X =`
 declaration actually sits — before assuming the function itself is broken or missing.
 
+### 3l. INVOKING an unfamiliar UFunction is real crash risk, even when it looks simple (2026-08-21)
+Two DIFFERENT native calls hard-crashed the game the first time each was actually invoked, in the
+same session, both with **zero pcall-catchable warning**:
+- `UNiagaraFunctionLibrary::SpawnSystemAttached` (10 args, a struct/enum-heavy spawn-and-attach
+  call) — crashed on the first attempt where the argument COUNT was finally correct.
+- `PrimitiveComponent::GetCustomPrimitiveDataIndexForVectorParameter` — a trivially simple
+  single-`FName`-argument QUERY function, no structs, no enums, nothing that looked risky on paper.
+  Crashed on the very first candidate name tried.
+
+Both are genuine, real UFUNCTIONs, both resolve fine via reflection, both have obviously-correct
+argument shapes. Neither warning sign ("this call has a lot of args," "this is a mutating call")
+predicted the second crash. **Reflection is safe; invocation is not, and structural complexity is
+not a reliable predictor of which calls will crash.** `ForEachProperty`/`ForEachFunction` (reading a
+class's declared properties/functions, or a specific UFunction's own parameter list) has been 100%
+safe every time across many sessions — it never actually calls anything. The moment you cross from
+"reflecting on a function" to "invoking it," treat ANY function this codebase hasn't already called
+successfully before as a real crash risk, save first (or accept the game may need a hard restart),
+and don't let "it's just one float argument" talk you out of that caution.
+
+### 3m. A UFunction's OWN Lua return value can be meaningless — check pcall's success, not the function's return (2026-08-21)
+`GetActorBounds(bOnlyCollidingComponents, Origin, BoxExtent, bIncludeFromChildActors)` only
+communicates its result through the `Origin`/`BoxExtent` OUT-PARAMS (pre-allocated empty Lua tables
+passed in, populated by the call) — it has no meaningful Lua return value of its own. Code that did
+`local ok = actor:GetActorBounds(false, origin, extent, false)` and then checked `if ok and
+origin.X...` silently never entered that branch for ANYONE, on ANY actor, for the entire time it
+shipped — `ok` was always `nil`/falsy, because there was nothing there to assign. The correct
+pattern (already used elsewhere in this codebase, just not copied correctly this one time): wrap the
+call in `pcall` and use PCALL's OWN true/false as the success flag —
+`local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)` — then read
+`origin`/`extent` afterward. **Any function whose real output lives in Out-params, not its return
+value, needs this exact pattern; capturing `= obj:Func(...)` directly and checking THAT for
+truthiness will silently do nothing, forever, with no error to notice.**
+
+### 3n. `LineTraceSingle`'s channel argument is a DIFFERENT enum than `SetCollisionResponseToChannel`'s (2026-08-21)
+`LineTraceSingle`'s trace-channel parameter is `ETraceTypeQuery` (a Blueprint-only enum built from
+Project Settings → Collision → Trace Channels), NOT the raw `ECollisionChannel` enum
+`SetCollisionResponseToChannel` takes — they are two separate numbering systems that happen to
+overlap in low integers, which is exactly what makes a wrong guess look plausible. By Unreal's own
+default project settings (confirmed live in this game), `ETraceTypeQuery` index 0 ("Visibility")
+maps to raw `ECollisionChannel` index **3**, not 0. Three progressively-more-specific wrong guesses
+(assuming raw channel 2 = "Pawn," then raw channel 0, then a channel-numbering mismatch theory that
+turned out right in principle but was chasing the wrong root cause) all failed to change behavior AT
+ALL before landing on the real fix — which, in hindsight, was ALSO gated behind a separate
+`RemoteUnrealParam`-unwrap bug (§2b) silently no-op'ing every collision-response call regardless of
+which channel number was used. **Lesson inside the lesson**: when several independently-reasoned
+guesses all produce ZERO observable change (not "wrong value," but "nothing happened"), suspect the
+write itself is silently no-op'ing (wrapper unwrap, wrong object, etc.) before spending more guesses
+on the value.
+
+### 3o. Comparing two independently-fetched actor/object handles with `==` is unreliable, even for the identical underlying object (recurring)
+UE4SS Lua handles are wrapper objects, not the raw pointer — two SEPARATE calls that both resolve to
+the SAME underlying engine object (e.g. a raycast hit's owner vs. a tracked ledger's own stored
+actor reference) can still read as unequal under plain `==`, confirmed live more than once. Never
+compare "is this the same actor" via two independently-fetched handles; either (a) always store and
+re-use the SAME single fetched handle for later comparison (safe — this is same-handle identity, not
+cross-fetch), or (b) compare a derived STABLE key instead (e.g. the actor's own instance path string
+from `GetFullName()`/`GetPathName()`). Bit real features twice: a "is this the actor I'm already
+tracking" check that read false on every tick despite visibly aiming at the same object the whole
+time, and an "is this one of ours" ledger lookup that needed the same fix.
+
+### 3p. A property write can succeed with zero pcall error yet have no lasting (or any) visible effect, if a native settings/params system re-asserts it (2026-08-22)
+Distinct from 3i (a Static-mobility component silently not re-rendering) — this is a write that
+genuinely takes effect internally, confirmed because a DIFFERENT probe read it back changed, but the
+RENDERED result either never changes at all or eases back to some other value within about a second.
+Symptom of a native "desired value" system running downstream of the property you're writing (a
+camera modifier, a settings-driven params object, a per-frame recalculation) that keeps overwriting
+your one-time write on its own schedule. Fighting it by re-writing every poll tick can make it WORSE
+(visible pulsing, if your poll rate doesn't match the native system's own tick rate) rather than
+better. The real fix is finding and disabling whatever REFERENCES the params/settings object first —
+e.g. a camera component with `bUseSettingsFov`/`CameraParams` fields: setting `bUseSettingsFov =
+false` and `CameraParams = nil` BEFORE writing `FieldOfView` stopped it from being blended back,
+where writing `FieldOfView` alone (however many times) never stuck. **When a plain property write
+reports success but the screen doesn't agree, don't conclude the property is wrong — look for a
+sibling boolean/object field that opts the component OUT of whatever system keeps re-asserting it.**
+A reference mod for the same game (even an old, otherwise-outdated script version) can be the
+fastest way to find that specific detach mechanism, faster than reflecting blind.
+
+### 3q. How UE4SS actually counts arguments for a raw UFunction call with a return value (2026-08-21)
+Calling an arbitrary UFunction directly (`obj:SomeFunction(arg1, arg2, ...)`, not a `K2_`-prefixed
+convenience wrapper) throws `"UFunction expected N parameters, received M"` if the count is off —
+but N is NOT simply "however many parameters the function reflects." Confirmed by reading UE4SS's
+own bundled C++ source (`UE4SS/src/LuaType/LuaUObject.cpp`, `LuaUObject::call_ufunction_from_lua`):
+the function's total declared property count (`GetNumParms()`, which `ForEachProperty` on the
+UFunction object will also enumerate) INCLUDES the return value as one of those properties when the
+function has one — but `N` (what UE4SS actually expects you to SUPPLY) is that total **minus 1** in
+that case, since the return value isn't something you pass in. Concretely: a function reflecting 11
+total properties (10 real input params + 1 `ReturnValue`) expects exactly **10** supplied
+arguments, not 11 and not 9. Getting the return-adjustment wrong in either direction produces the
+exact same generic error message regardless of which count was actually wrong, so trust the formula
+(`declared properties, minus 1 if `GetReturnValueOffset()` isn't `0xFFFF``) over trial-and-error —
+and note a genuine RETURN value does NOT need (and, confirmed live, actively breaks the count if you
+add) an extra placeholder Out-param table the way a true Blueprint OUT parameter would (see 3m for
+that different, Out-param case) — the plain Lua return of the call already carries it.
+
 ---
 
 ## 4. Restore-on-load design (why it looks the way it does)
@@ -271,6 +416,16 @@ declaration actually sits — before assuming the function itself is broken or m
 - Wait for player pawn (`R5Character`), then wait for the player to **move** → world is live.
 - Split the save: **statues** (`AnimatedActor` / `QuestStatic`, no AI — fast) vs **movers** (each
   wakes an AI — pace them). Only movers get post-processing.
+- **Decor-class actors NEVER reach `RestoreHook`/`postList`/`RESTORE_RULES`, by design, not
+  oversight (2026-08-19).** Decor is spawned as part of the statics batch above with `collect=false`
+  — a deliberate perf optimization (no reason to track/post-process a static prop the way a mover
+  needs), but the consequence is that `RestoreHook`/`Spawner.restoreHook` and any `RESTORE_RULES`
+  entry keyed to a decor class is dead code that will never fire, no matter how correct its match
+  condition is (confirmed the hard way: a syntactically-correct `RESTORE_RULES` entry for restoring
+  Drops-decor mesh overrides matched the persisted data perfectly and simply never ran). **Any fixup
+  a decor actor needs on restore has to live inline in `restoreOne` itself**, alongside the other
+  immediate-apply decor corrections (`SetDecorSolid`/`MakeMovable`/pitch-roll), not in the
+  deferred/hook-based path movers use.
 - `persistAppend` is guarded by `Spawner.restoring` so restore doesn't re-record.
 - Ledger writes are **buffered during restore** and flushed once (was 1 file open per spawn).
 - Never fail silently — log both "waiting" and "gave up". Silence hid a total-restore-failure bug.

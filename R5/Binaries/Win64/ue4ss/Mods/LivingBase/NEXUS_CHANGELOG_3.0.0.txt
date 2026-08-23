@@ -1,0 +1,35 @@
+Living Base Enhanced v3.0.0 (previous version on Nexus: v2.1.5)
+
+===== NEW IN v3.0.0 =====
+
+- Live placement preview for decor (F5 confirm / F6 cancel): newly spawned decor now follows your camera in real time before it's actually placed, instead of landing instantly wherever you were aiming. Zoom the preview closer/farther with Home/Pause, then F5 to confirm it right where it's floating, or F6 to cancel and remove it.
+
+- Grab and relocate anything already placed (F7): pick up an existing statue or decoration and carry it the same way the live preview works, instead of despawning and re-placing from scratch. F6 while relocating reverts it to exactly where it was before you grabbed it; F5 confirms the new spot.
+
+- Reticle hover-highlight: whatever you're aiming at now visibly lights up before you commit to targeting or grabbing it, so it's always clear what Num+ or F7 would actually act on.
+
+- Free-build toggle (F8): by default, placement and relocation snap to the real floor/surface under your reticle. F8 switches to open placement at a fixed distance instead, for spots the floor-lock doesn't suit. Locked out mid-placement on purpose — switch before you start, not while something is already following your camera.
+
+- Statues can now be targeted, moved, and highlighted too: the preview/relocate/hover-highlight toolkit above — previously decor-only — now covers every posed statue roster as well (standing, seated, chair, and interactive statues).
+
+- Camera raises and widens while placing or with the GUI open, matching the view the game's own native building mode uses.
+
+- Fixed targeting so it reaches walking crew, Senkamati, and drops decor: aiming at one of these used to pass straight through to whatever was standing behind it instead of targeting/highlighting the actual object.
+
+- Placed crew/Senkamati now freeze in place like statues once positioned with the new preview/relocate tools, instead of fighting their own AI and physics afterward (bumping into nearby objects, legs bending oddly, dropping if left in the air).
+
+- Rebuilt Letty, Marita, and the Merchant walking women: each now spawns with her own real, distinct outfit instead of sharing one generic look with a patched-on overlay. Letty and Marita wear their actual in-game outfits; the Merchant wears a proper female-fitted Buccaneers Merchant look, fixing a persistent pants-clipping issue. Hair and skin tone are still randomized on every spawn. Anyone placed in an earlier version is upgraded to her real outfit automatically the next time your save loads — no need to despawn and re-place her.
+
+- Merged "Woman With Hat" and "Woman With Hair" into a single "Woman" entry (still spawnable as either base body), whose outfit, hat presence, hair, and skin tone all vary naturally on their own — a wider range of genuine variety than the old forced-hat system gave.
+
+- Despawn (Num9) and Undo-Despawn (Num0) now stay reachable with In-Game Keys off, matching Target Lock (Num+) — useful for a GUI-driven session where the keyboard placement keys are deliberately disabled.
+
+- Newly placed items are now the live Target Lock automatically, as if Num+ had just been pressed on them — adjust what you just placed right away, no separate targeting step.
+
+- Rotation (keyboard ','/'.' or the move window's rotate buttons) now respects the live-edit precision setting, the same way movement already did. Normal speed rotates exactly like before; the other precision levels now actually apply to rotation too.
+
+- Decor/object nudging now always moves along a fixed direction instead of relative to whichever way you're facing, so the same forward/back/left/right press always shifts an object the same way regardless of where you're standing. Statues and NPCs are unchanged — they still slide along their own pose direction.
+
+- The GUI move window's rate of applying nudges is slower now, to improve stability during heavy live-editing sessions. Held movement applies in slightly larger, less frequent steps rather than continuous small ones.
+
+- Fixed "Drops" decor (Stone/Wood/Leather/etc, and anything else in that category) coming back invisible after a reload. Anything placed before this fix will need to be despawned and re-placed once to pick up the correction.

@@ -148,6 +148,56 @@ local function modGate(name)
     return false
 end
 
+-- WINDOW STATE (2026-08-20): the first C++ -> Lua leg of this bridge (see MenuStatus::
+-- PublishWindowVisible's own comment on the C++ side) -- StandaloneWindow writes "1"/"0" here every
+-- frame the real IsWindowVisible(hwnd) state changes. Same multi-candidate path convention as every
+-- other cross-process file in this bridge -- see SPAWN_REQUEST_PATH_CANDIDATES's own comment
+-- (further down) for why a bare relative path is wrong here. Declared up here (not down by the
+-- hover-highlight loop that also uses it) so windowGate below -- and any KEY registered against it
+-- -- can see it too; RegisterKeyBind calls all happen in one synchronous pass and can only
+-- reference locals already declared by that point.
+local WINDOW_STATE_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/spawn_menu_window_state.txt",
+    "Mods/LivingBase/spawn_menu_window_state.txt",
+    "spawn_menu_window_state.txt",
+}
+local function isSpawnMenuWindowOpen()
+    for _, p in ipairs(WINDOW_STATE_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then
+            local content = f:read("*all")
+            f:close()
+            return content and content:match("1") ~= nil
+        end
+    end
+    return false -- file not written yet (C++ side not loaded, or hasn't polled once) -- assume closed
+end
+-- windowGate: restoreGate PLUS the SpawnMenu window's own open/closed state, mirroring modGate's
+-- shape exactly but checking window visibility instead of the In-Game-Keys toggle. RedFalcon's
+-- long-term direction (2026-08-20): "tie everything to that window... window visibility will
+-- become a mod active/inactive type toggle" -- this is the first action migrated onto it
+-- (targetLock, previously restoreGatedAction-only/"available as soon as the world is loaded").
+-- Expect more actions to move onto this gate over time as that direction plays out; this isn't a
+-- one-off special case for target-lock specifically.
+local function windowGate(name)
+    -- Silent when denied (2026-08-20, RedFalcon: "I'd rather it say nothing. It'll be a given.") --
+    -- unlike modGate's own per-press "ignored" message, the window being closed is meant to become
+    -- the ordinary/expected inactive state once more actions migrate onto this gate, not a surprise
+    -- worth explaining every single time. The one moment worth telling the player about is the
+    -- window ITSELF opening/closing -- see the toast in the hover-highlight loop below.
+    if not restoreGate(name) then return false end
+    return isSpawnMenuWindowOpen()
+end
+local function windowGatedAction(fn, name)
+    return function()
+        if not windowGate(name) then return end
+        ExecuteInGameThread(function()
+            local ok, err = pcall(fn)
+            if not ok then log(name .. " FAILED: " .. tostring(err)) end
+        end)
+    end
+end
+
 ------------------------------------------------------------
 -- KEY REGISTRATION
 -- Every key binds EXACTLY ONCE, synchronously, during this startup pass — off Config.KEYS, which
@@ -276,14 +326,40 @@ end
 local function restoreGatedAction(fn, name)
     -- Like directAction, but checks ONLY restoreGate, not the full modGate -- for actions that must
     -- stay reachable with In-Game Keys OFF (the GUI depends on them) but that DO touch real game
-    -- state, so the world-load restore lock must still apply. Currently just target lock (Num+) --
-    -- see its own registration comment below for why it's exempt from In-Game Keys specifically.
+    -- state, so the world-load restore lock must still apply. Target lock (Num+), and now
+    -- restoreLast/Num0 too (2026-08-19, RedFalcon's request, same reasoning) -- see targetLock's
+    -- own registration comment below for the original rationale.
     return function()
         if not restoreGate(name) then return end
         ExecuteInGameThread(function()
             local ok, err = pcall(fn)
             if not ok then log(name .. " FAILED: " .. tostring(err)) end
         end)
+    end
+end
+local function restoreGatedDebouncedAction(fn, name)
+    -- Like gatedAction, but checks ONLY restoreGate, not the full modGate -- for despawn/Num9
+    -- (2026-08-19, RedFalcon's request: reachable with In-Game Keys OFF, same as target lock
+    -- already is, since a live-edit session driven from the GUI still wants quick despawn access).
+    -- Keeps gatedAction's shared spawn-debounce, unlike plain restoreGatedAction -- a despawn
+    -- immediately followed by a respawn is exactly the "two composite builds in one frame" risk a
+    -- raw spawn already guards against, so this shouldn't drop that protection just to change gates.
+    return function()
+        if not restoreGate(name) then return end
+        if spawnBusy then
+            print("[LivingBase] '" .. tostring(name) .. "' ignored — shared spawn-debounce still active (" .. (Config.SPAWN_DEBOUNCE_MS or 300) .. "ms).\n")
+            return
+        end
+        spawnBusy = true
+        ExecuteInGameThread(function()
+            local ok, err = pcall(fn)
+            if not ok then log(name .. " FAILED: " .. tostring(err)) end
+        end)
+        if ExecuteWithDelay then
+            ExecuteWithDelay(Config.SPAWN_DEBOUNCE_MS or 300, function() spawnBusy = false end)
+        else
+            spawnBusy = false
+        end
     end
 end
 
@@ -302,7 +378,7 @@ register("plague",    gatedAction(Testbed.SpawnNextPlague,      "place Senkamati
 -- purged (NSFW risk from the archetype-reroll's flash-through, see config.lua's own removal note
 -- and CLAUDE.md). Both keys are free again.
 register("livestock", gatedAction(Testbed.SpawnNextLivestock,   "place farm animal (boar/goat)"))
-register("undo",      gatedAction(Testbed.DespawnInFront,       "despawn spawn in front (same floor)"))
+register("undo",      restoreGatedDebouncedAction(Testbed.DespawnInFront, "despawn spawn in front (same floor)"))
 -- TEMP DEV/TEST TOOL (2026-08-10) -- see Testbed.TestFemaleWalkerReskin's own comment.
 register("testFemaleWalkerReskin", gatedAction(Testbed.TestFemaleWalkerReskin, "test: female walker reskin (Brethren Woman look)"))
 -- F5/testApplyPose and F6/testApplyBodySex keys REMOVED (2026-08-15, same day) -- both were
@@ -311,6 +387,35 @@ register("testFemaleWalkerReskin", gatedAction(Testbed.TestFemaleWalkerReskin, "
 -- command (`lbsexchange`, below -- Spawner.ApplySexChangeToNearest) instead of a dev key; pose-
 -- porting's own test tools (Spawner.ApplyPose/ApplyBlueprintPose/MakePreBuildPoseSetter) are kept
 -- undeployed as documented reference, matching Config.TATTOO_TEST_PARAMS' own precedent.
+-- F5/F6 reused (2026-08-20) for the build-ghost-preview feature: confirm/cancel a live-following
+-- placement started from the LivingBaseSpawnMenu Spawn button. Not gatedAction -- these act on
+-- state that's already spawned (not spawning something new), so they shouldn't be queued behind
+-- the shared spawn debounce a fresh SPAWN request just set (would otherwise block an immediate
+-- confirm press for up to Config.SPAWN_DEBOUNCE_MS after the object first appears).
+-- windowGatedAction, not directAction/modGate (2026-08-20, RedFalcon: "can we separate f5 f6 and f7
+-- from the insert lock") -- this whole feature only ever starts from a SpawnMenu window action
+-- (Spawn button, or Num+ target-lock which is itself windowGatedAction'd already) and target-lock
+-- can only be raycast-acquired while the window's open (see pickTargetPreferringHover's own
+-- comment), so there was never a real path to reach these with In-Game Keys off but the window
+-- closed anyway -- modGate's Insert dependency was just an extra, unnecessary way for these to get
+-- silently blocked. Same gate target-lock already uses; matches the stated long-term direction of
+-- the window becoming the real active/inactive toggle.
+register("confirmPlacement", windowGatedAction(Spawner.ConfirmPlacement, "confirm placement"))
+register("cancelPlacement",  windowGatedAction(Spawner.CancelPlacement,  "cancel placement"))
+-- Grab-and-relocate (2026-08-20): windowGatedAction, same reasoning as confirm/cancel above.
+register("grabTarget", windowGatedAction(function() Spawner.StartRelocatePreview() end, "grab target for relocation"))
+-- Physics toggle (2026-08-20, EXPERIMENTAL, RedFalcon): windowGatedAction, same reasoning as the
+-- other placement keys above -- see Spawner.TogglePlacementPhysics's own comment for what it does
+-- and the 500uu-from-camera guard against a repeat of the "flew into the camera" issue.
+register("togglePlacementPhysics", windowGatedAction(Spawner.TogglePlacementPhysics, "toggle placement physics"))
+-- Free-build toggle (2026-08-21, RedFalcon): windowGatedAction, same reasoning as the other
+-- placement keys above -- see Spawner.ToggleFreeBuild's own comment. Unlike confirmPlacement/
+-- cancelPlacement/grabTarget/togglePlacementPhysics, this doesn't require an active placement --
+-- it's a standing mode flag read the next time a placement/grab starts.
+register("toggleFreeBuild", windowGatedAction(Spawner.ToggleFreeBuild, "toggle free build mode"))
+-- Zoom (2026-08-20): windowGatedAction, same reasoning as the other placement keys above.
+register("placementZoomIn",  windowGatedAction(function() Spawner.AdjustPlacementDistance(-(Config.PLACEMENT_ZOOM_STEP_UU or 50.0)) end, "placement zoom in"))
+register("placementZoomOut", windowGatedAction(function() Spawner.AdjustPlacementDistance(Config.PLACEMENT_ZOOM_STEP_UU or 50.0) end, "placement zoom out"))
 -- F4/testApplyBodyType key REMOVED (2026-08-15, same day) -- CONFIRMED to crash the game natively.
 -- Two live tests, two crashes (crash_2026_08_15_00_37_57 and _00_41_27), both immediately
 -- following an F4 press -- UE4SS.log shows ZERO [LivingBase:BodyType] output either time (that
@@ -330,7 +435,9 @@ register("testFemaleWalkerReskin", gatedAction(Testbed.TestFemaleWalkerReskin, "
 
 -- Undo (restore last despawn / DEL clean-house), Num0. No shared debounce — this is the "I made a
 -- mistake" key, so it shouldn't be at risk of getting swallowed right when you need it.
-register("restoreLast", directAction(function() Spawner.UndoDespawn() end, "undo"))
+-- restoreGatedAction, not directAction (2026-08-19, RedFalcon's request) -- exempt from In-Game
+-- Keys, same as targetLock/undo above.
+register("restoreLast", restoreGatedAction(function() Spawner.UndoDespawn() end, "undo"))
 
 -- Cycle the targeted statue OR decoration through its own roster (']' forward / '[' backward) —
 -- auto-detecting which kind of roster the targeted actor's class belongs to. No shared debounce — a
@@ -437,11 +544,28 @@ if Config.LIVE_EDIT then
     -- Z=Yaw) -- checked live at call time (same "read Spawner.editPrecisionScale live" reasoning
     -- editAction's closure above already uses), so cycling the axis takes effect on the very next
     -- press, no re-registration needed.
+    -- Precision-scaled (2026-08-19, RedFalcon's request) -- previously always unscaled regardless
+    -- of axis count, a deliberate choice when precision was translation-only (see editAction's own
+    -- comment), but RedFalcon wants rotation to respect it too now that it's a real 3-axis control.
+    -- NORMALIZED against the "1x (normal)" precision level (0.25, PRECISION_LEVELS[4] below,
+    -- precisionIdx starts at 4) rather than multiplying the raw scale directly the way editAction
+    -- does for translation -- RedFalcon confirmed the CURRENT unscaled amount (Config.
+    -- LIVE_EDIT_ROTATE_STEP, 15 deg) is exactly right at normal speed, so 0.25 must map to a 1.0
+    -- multiplier here, not editAction's literal 0.25 (which would quarter it at "normal"). Keep
+    -- this 0.25 in sync with PRECISION_LEVELS[4].scale/precisionIdx's own starting value below if
+    -- that table's baseline is ever rebased again (same "keep in sync" caveat already noted for
+    -- the GUI slider's own duplicate of this table).
     local function editRotAction(name, amt)
         return directAction(function()
-            if rotateAxis == "X" then Spawner.EditNearestInFront(0, 0, 0, 0, 0, amt)
-            elseif rotateAxis == "Y" then Spawner.EditNearestInFront(0, 0, 0, 0, amt, 0)
-            else Spawner.EditNearestInFront(0, amt, 0, 0, 0, 0) end
+            -- Fresh local, NEVER reassign the outer `amt` parameter here -- it's captured by
+            -- reference (an upvalue), not copied, and this inner function is called once per
+            -- keypress, so mutating `amt` itself would compound the scale on every repeated press
+            -- instead of always scaling the same original step.
+            local scale = (Spawner.editPrecisionScale or 0.25) / 0.25
+            local scaledAmt = amt * scale
+            if rotateAxis == "X" then Spawner.EditNearestInFront(0, 0, 0, 0, 0, scaledAmt)
+            elseif rotateAxis == "Y" then Spawner.EditNearestInFront(0, 0, 0, 0, scaledAmt, 0)
+            else Spawner.EditNearestInFront(0, scaledAmt, 0, 0, 0, 0) end
         end, name)
     end
     register("editUp",    editAction("editUp",    hs, 0, 0, 0))
@@ -492,12 +616,14 @@ if Config.LIVE_EDIT then
     -- Num9/undo/cycle: it only ever matters in combination with live-edit, and while it also affects
     -- despawn/cycle, those simply behave exactly as before (unlocked) when LIVE_EDIT is off, since the
     -- lock can never be set without this key to set it.
-    -- restoreGatedAction, NOT directAction (2026-08-16, RedFalcon: "+ for targeting as its needed for
-    -- the GUI") -- the GUI window's own Despawn/Replace/Coords/D-pad actions all require a locked
-    -- target first, and there's no GUI button to CREATE a lock, only this key -- so it stays exempt
-    -- from the In-Game Keys toggle (joining Insert/'='/'-'), but still respects the restore lock
-    -- since it does touch real game state (unlike those three).
-    register("targetLock", restoreGatedAction(function() Spawner.ToggleTargetLock() end, "targetLock"))
+    -- windowGatedAction (2026-08-20, was restoreGatedAction) -- RedFalcon: "instead of being
+    -- available as soon as the world is loaded, it should be available when the spawn window is
+    -- open" -- the first key migrated onto the window-open gate as part of the stated long-term
+    -- direction of tying activation to the SpawnMenu window instead of the In-Game-Keys toggle. The
+    -- GUI-needs-a-way-to-create-a-lock reasoning that originally exempted this from modGate still
+    -- holds (still exempt from THAT toggle) -- just now requires the window itself to be open
+    -- rather than being reachable the instant the world loads regardless of window state.
+    register("targetLock", windowGatedAction(function() Spawner.ToggleTargetLock() end, "targetLock"))
 
     print("[LivingBase] Live edit ON: PageUp/PageDown = height | ',' '.' = rotate | Num/ = rotate 45\194\176 | Num* = rotate 180\194\176 | arrows = slide fwd/back/left/right | Num- = cycle precision (1/8, 1/4, 1/2, 1x normal, 2x, 4x) | Num+ = toggle target lock (pins despawn/cycle/live-edit to one object)  (object in front, persists).\n")
 end
@@ -670,6 +796,60 @@ SPAWN_MENU_HANDLERS.LIVESTOCK = function(index)
     return Testbed.SpawnLivestockByName(row.name)
 end
 
+------------------------------------------------------------
+-- FRIENDLY SPAWN LABELS (2026-08-19, RedFalcon's request): spawn_menu.ini's hand-curated
+-- `label = ...` per roster/index entry -- the tree reorganization from v2.1.5 -- becomes the
+-- ACTUAL toast/target-name/persist.txt label for that entry everywhere it's placed (keyboard
+-- cycling, lblook/lbspawn, the GUI tree itself), not just something the ImGui window displays
+-- while Lua goes on using its own mechanical "STANDING_People of Tortuga 1"-style label. Built
+-- ONCE here from spawnmenu_manifest.lua's M.ReadLabels() (spawn_menu.ini only changes via a hand-
+-- edit + restart, same one-time-INI-read pattern modsettings.lua's own EnsureSavedDefaults uses),
+-- reusing every roster/index/row resolution this section already built above rather than
+-- duplicating it a third time. Keyed by each roster's own IDENTITY string -- the exact same one
+-- its by-name lookup already uses (short class name for statues via spawnMenuStatueShortName,
+-- `.name` for crew/townsfolk/decor/livestock, Testbed.SenkaShortKey for Senkamati, the plain
+-- string itself for walking women) -- so testbed.lua's placement functions can look themselves up
+-- with zero roster/index plumbing threaded through at call time. Stored on Spawner (not a local
+-- here) since testbed.lua already requires that module and is where every placement function
+-- actually lives.
+------------------------------------------------------------
+Spawner.FriendlyLabels = {}
+do
+    local ok, SpawnMenuManifest = pcall(require, "spawnmenu_manifest")
+    local byRoster = ok and SpawnMenuManifest.ReadLabels() or {}
+
+    for index, label in pairs(byRoster.FACTION_VISITOR_LOOKS or {}) do
+        local row = Config.FACTION_VISITOR_LOOKS and Config.FACTION_VISITOR_LOOKS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.TOWNSFOLK_CLASSES or {}) do
+        local row = Config.TOWNSFOLK_CLASSES and Config.TOWNSFOLK_CLASSES[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.SENKAMATI_LOOKS or {}) do
+        local row = Config.SENKAMATI_LOOKS and Config.SENKAMATI_LOOKS[index]
+        if row then Spawner.FriendlyLabels[Testbed.SenkaShortKey(row)] = label end
+    end
+    for index, label in pairs(byRoster.FEMALE_RESKIN_TARGETS or {}) do
+        local name = Config.FEMALE_RESKIN_TARGETS and Config.FEMALE_RESKIN_TARGETS[index]
+        if name then Spawner.FriendlyLabels[name] = label end
+    end
+    for index, label in pairs(byRoster.DECOR or {}) do
+        local row = SPAWN_MENU_DECOR_ROWS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.LIVESTOCK or {}) do
+        local row = SPAWN_MENU_LIVESTOCK_ROWS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for roster, def in pairs(SPAWN_MENU_STATUE_ROSTERS) do
+        for index, label in pairs(byRoster[roster] or {}) do
+            local row = def.list and def.list[index]
+            if row then Spawner.FriendlyLabels[spawnMenuStatueShortName(row.path)] = label end
+        end
+    end
+end
+
 local function pollSpawnMenuRequest()
     local path = findSpawnRequestPath()
     if not path then return end
@@ -703,13 +883,26 @@ local function pollSpawnMenuRequest()
     end
     spawnBusy = true
     ExecuteInGameThread(function()
-        local ok, err = pcall(function()
+        local ok, result = pcall(function()
             if verb == "REPLACE" then
                 return Spawner.ReplaceNearestInFront(function() return handler(index) end)
             end
             return handler(index)
         end)
-        if not ok then log("spawn menu " .. verb .. " " .. roster .. " FAILED: " .. tostring(err)) end
+        if not ok then
+            log("spawn menu " .. verb .. " " .. roster .. " FAILED: " .. tostring(result))
+        elseif verb == "SPAWN" and result and result.IsValid and result:IsValid()
+               and (roster == "DECOR" or SPAWN_MENU_STATUE_ROSTERS[roster]) then
+            -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues): decor was first
+            -- because crew/townsfolk/Senkamati go through DeCorrupt/composite-build treatment whose
+            -- "already fully finished spawning" timing relative to this callback wasn't verified.
+            -- STATUES don't have that problem -- checked testbed.lua's spawnPosed (the function
+            -- behind all four SPAWN_MENU_STATUE_ROSTERS handlers): Spawner.Spawn + snapToFloor, then
+            -- return, fully synchronous, no ExecuteWithDelay/deferred work at all. Safe to extend the
+            -- same way decor already works. Crew/townsfolk/Senkamati/livestock remain NOT extended --
+            -- still an open question for those, not blindly widened.
+            pcall(function() Spawner.StartPlacementPreview(result) end)
+        end
     end)
     if ExecuteWithDelay then
         ExecuteWithDelay(Config.SPAWN_DEBOUNCE_MS or 300, function() spawnBusy = false end)
@@ -727,6 +920,73 @@ if ExecuteWithDelay then
     end
     spawnMenuPollLoop()
     print("[LivingBase] Spawn menu bridge armed — watching for spawn_request.txt from LivingBaseSpawnMenu.\n")
+end
+
+------------------------------------------------------------
+-- HOVER HIGHLIGHT (2026-08-20, RedFalcon's request): ghost-highlight whatever's under the reticle
+-- while the LivingBaseSpawnMenu window is open and nothing is target-locked/being placed, so it's
+-- clear what Num+/F7 would grab before committing. Deliberately gated on the WINDOW being open, not
+-- the unrelated In-Game-Keys toggle (modEnabled) -- RedFalcon's own point: only pay for the raycast
+-- when the feature driving it is actually up. isSpawnMenuWindowOpen() reads the file
+-- MenuStatus::PublishWindowVisible writes on the C++ side (the first C++ -> Lua leg of this bridge
+-- -- see that function's own comment) -- needs the LivingBaseSpawnMenu.dll rebuild from the same
+-- session this comment was added in; a Lua-only reload does NOT pick up a stale DLL that predates
+-- this. Spawner.UpdateHoverHighlight does the actual per-tick raycast/material work. 150ms, not the
+-- 33ms the active placement-follow loop uses -- a hover highlight doesn't need frame-perfect
+-- tracking the way carrying an object does, and this one runs continuously whenever the window's
+-- open (not just during a brief placement window), so a gentler cadence is the more conservative
+-- choice for an always-on loop.
+-- nil (not false) on purpose -- the FIRST poll after mod load shouldn't toast (that's just
+-- discovering the window's already-existing state, not a transition RedFalcon's Insert/'-' caused).
+local lastWindowOpenState = nil
+if ExecuteWithDelay then
+    local function hoverHighlightLoop()
+        ExecuteWithDelay(150, function()
+            local hasLock = Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid()
+            local windowOpen = isSpawnMenuWindowOpen()
+            -- "Living Base Controls Active/Inactive" toast on the window's own open/close transition
+            -- (2026-08-20, RedFalcon: since windowGate now denies silently, the window toggling
+            -- itself is the one moment worth telling the player about, not every gated action after).
+            -- Camera raise/restore now rides the SAME transition (2026-08-21, RedFalcon: "when
+            -- building the camera changes and stays elevated as long as you are in building mode...
+            -- let's link the change to opening and closing the menu, similar to the highlights") --
+            -- see Spawner.ApplyPlacementCameraOffset's own comment. Deliberately only fires on a REAL
+            -- detected transition (lastWindowOpenState ~= nil), not on the first poll after a
+            -- load/lbreload, even if the window happens to already be open then -- this module's own
+            -- Spawner._placementCamOrigArmZ baseline is fresh/nil at that point, so applying blind
+            -- would ADD the raise on top of whatever the live camera already is (possibly already
+            -- raised from before the reload), doubling it. The narrower cost of NOT applying here --
+            -- if the window was already open across an lbreload, the raise could go unrestored on the
+            -- next close until a full restart -- is a smaller, quieter bug than a visibly doubled
+            -- camera height, so that's the tradeoff being made on purpose.
+            if lastWindowOpenState ~= nil and windowOpen ~= lastWindowOpenState then
+                pcall(function() Spawner.Toast(windowOpen and "Living Base Controls Active" or "Living Base Controls Inactive", 2.5) end)
+                if windowOpen then
+                    pcall(Spawner.ApplyPlacementCameraOffset)
+                else
+                    pcall(Spawner.RestorePlacementCameraOffset)
+                end
+            end
+            lastWindowOpenState = windowOpen
+            -- REMOVED the per-tick MaintainPlacementFov call (2026-08-22) -- was added when the FOV
+            -- write appeared to have zero effect at all (wrong property target: PlayerCameraManager
+            -- instead of the pawn's CameraComponent, since fixed). Once the CORRECT property was
+            -- found, re-applying it every 150ms tick instead FOUGHT the game's own continuous
+            -- FOV/zoom adjustment -- RedFalcon: "the FOV is constantly changing now" -- visible as a
+            -- pulse against whatever dynamic system the game runs every frame. The one-time apply on
+            -- the open/close transition below is enough now, same as the height raise (also a
+            -- one-time set that sticks fine, never needed per-tick maintenance).
+            local eligible = windowOpen and not restoreLockActive and not hasLock and not Spawner._placementActive
+            if eligible then
+                pcall(Spawner.UpdateHoverHighlight)
+            elseif Spawner._hoverActor then
+                pcall(Spawner.ClearHoverHighlight)
+            end
+            hoverHighlightLoop()
+        end)
+    end
+    hoverHighlightLoop()
+    print("[LivingBase] Hover highlight armed — ghosts whatever's under the reticle when nothing's targeted.\n")
 end
 
 ------------------------------------------------------------
@@ -914,8 +1174,8 @@ end
 local MOVE_MENU_MAX_ACTIONS_PER_DRAIN = 20
 
 -- Pending accumulator: drainMoveMenuQueue() (fast, 100ms) adds to this; flushMoveMenuQueue()
--- (slow, 250ms -- see its own comment) is the ONLY thing that ever reads it and calls
--- Spawner.EditNearestInFront, then resets it to zero.
+-- (slow, 330ms as of 2026-08-19 -- see its own loop's comment) is the ONLY thing that ever reads
+-- it and calls Spawner.EditNearestInFront, then resets it to zero.
 local movePendingZ, movePendingYaw, movePendingFwd, movePendingRight = 0.0, 0.0, 0.0, 0.0
 local movePendingPitch, movePendingRoll = 0.0, 0.0
 local movePendingCount = 0
@@ -943,6 +1203,12 @@ local function drainMoveMenuQueue()
     local rs = Config.LIVE_EDIT_ROTATE_STEP or 15.0
     local ms = Config.LIVE_EDIT_MOVE_STEP or 10.0
     local scale = Spawner.editPrecisionScale or 1.0
+    -- Rotation precision scaling (2026-08-19) -- same fix/reasoning as editRotAction's own comment
+    -- (main.lua, the keyboard ','/'.' path): normalized against "1x (normal)" (0.25) rather than
+    -- multiplying `scale` directly, so the CURRENT unscaled rs (15 deg) still comes out unchanged
+    -- at normal precision, matching what RedFalcon confirmed already feels right. Keep in sync with
+    -- editRotAction's own copy of this same 0.25 baseline if PRECISION_LEVELS is ever rebased again.
+    local rotScale = scale / 0.25
     local count, skipped = 0, 0
     -- Line-by-line, not one gmatch over the whole file: MoveMenu.cpp can now send THREE distinct
     -- line shapes in the same file (spatial "MOVE:<ACTION>", one-shot "ACTION:<NAME>", and
@@ -960,11 +1226,11 @@ local function drainMoveMenuQueue()
                 local d = MOVE_MENU_ACTIONS[spatialAction]
                 if d then
                     movePendingZ     = movePendingZ     + d[1] * hs * scale
-                    movePendingYaw   = movePendingYaw   + d[2] * rs
+                    movePendingYaw   = movePendingYaw   + d[2] * rs * rotScale
                     movePendingFwd   = movePendingFwd   + d[3] * ms * scale
                     movePendingRight = movePendingRight + d[4] * ms * scale
-                    movePendingPitch = movePendingPitch + d[5] * rs
-                    movePendingRoll  = movePendingRoll  + d[6] * rs
+                    movePendingPitch = movePendingPitch + d[5] * rs * rotScale
+                    movePendingRoll  = movePendingRoll  + d[6] * rs * rotScale
                     movePendingCount = movePendingCount + 1
                     count = count + 1
                 end
@@ -1032,19 +1298,21 @@ if ExecuteWithDelay then
         end)
     end
     moveMenuDrainLoop()
-    -- 100ms (matches the drain rate above, so there's no artificial lag beyond it) = at most 10
-    -- Spawner.EditNearestInFront calls/sec. CONFIRMED (2026-08-16) the crash's real cause was
-    -- EditNearestInFront's per-edit SetActorHiddenInGame toggle (spawner.lua, now disabled, see
-    -- that function's own comment), not raw call rate -- a controlled test held up at 250ms with
-    -- only the toggle disabled, after a stricter 500ms throttle alone had NOT been enough. persist.txt
-    -- itself (the other per-call cost, two reads + one rewrite) is only ~50 entries / ~11KB on this
-    -- base -- negligible even at high frequency -- so there's no remaining reason to throttle this
-    -- hard; kept at 100ms rather than removed entirely purely as cheap insurance against
-    -- MOVE_MENU_MAX_ACTIONS_PER_DRAIN's own race-window worst case (see that constant's comment).
-    -- If persist.txt ever grows dramatically (hundreds+ entries) and nudging starts to feel
-    -- hitchy, that's the first thing to revisit.
+    -- FLUSH RATE (2026-08-19, RedFalcon: "movement causing crashing is a bit persnickety") --
+    -- SLOWED, down from the actual 100ms this was running. History: the 2026-08-16 crash
+    -- investigation traced the real cause to EditNearestInFront's per-edit SetActorHiddenInGame
+    -- toggle (spawner.lua, since disabled) and confirmed a controlled test held up fine at 250ms
+    -- with just that toggle fix -- the comment here used to conclude call rate alone was never the
+    -- real problem and kept 100ms purely as cheap insurance, not because it was re-tested and
+    -- confirmed safe at that speed. It wasn't -- RedFalcon is seeing renewed instability at 100ms.
+    -- First tried 1000ms (a full second, deliberately well below the known-good 250ms rather than
+    -- guessing a small reduction); RedFalcon then asked to try 330ms instead -- roughly a third of
+    -- a second, still meaningfully slower than 100ms and close to the previously-validated 250ms,
+    -- to see if a lighter slowdown is enough before committing to the choppier 1000ms feel. If
+    -- 330ms doesn't fully resolve it, the toggle-disable fix itself (or something new since
+    -- 2026-08-16) needs re-examining, not just another rate reduction.
     local function moveMenuFlushLoop()
-        ExecuteWithDelay(100, function()
+        ExecuteWithDelay(330, function()
             flushMoveMenuQueue()
             moveMenuFlushLoop()
         end)
@@ -1476,6 +1744,144 @@ else
     log("lbspawn unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+------------------------------------------------------------
+-- SPIKE (2026-08-19, RedFalcon's build-ghost-preview feasibility check): "lbtickspike
+-- [intervalMs] [ticks]" -- throwaway diagnostic, NOT part of the real feature. Every
+-- self-rescheduling ExecuteWithDelay loop already in this file (spawnMenuPollLoop,
+-- moveMenuFlushLoop, etc.) runs at 300-400ms; nothing has ever asked it to hold a ~60fps
+-- (16ms) cadence, which is what a camera-following ghost actor would need to look smooth.
+-- This just fires N reschedules at the requested nominal interval and reports the REAL
+-- elapsed gap between callbacks (min/max/avg), so we know whether ExecuteWithDelay drifts
+-- badly at that speed before building anything on top of it. Delete once the ghost-preview
+-- feature either lands or gets shelved -- this has no purpose beyond that one decision.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler and ExecuteWithDelay then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtickspike", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [tickspike] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local intervalMs = tonumber(Parameters and Parameters[1]) or 16
+            local totalTicks = tonumber(Parameters and Parameters[2]) or 120
+            say(string.format("starting: nominal %dms x %d ticks (~%.1fs) -- watch for the 'done' line", intervalMs, totalTicks, intervalMs * totalTicks / 1000.0))
+            local samples = {}
+            local lastClock = os.clock()
+            local count = 0
+            local function tick()
+                local now = os.clock()
+                local dt = (now - lastClock) * 1000.0
+                lastClock = now
+                count = count + 1
+                -- First callback's "dt" is time-since-command-issued, not a tick-to-tick gap -- not
+                -- a real sample, would skew min/avg low if kept.
+                if count > 1 then
+                    table.insert(samples, dt)
+                end
+                if count < totalTicks then
+                    ExecuteWithDelay(intervalMs, tick)
+                else
+                    local sum, lo, hi = 0.0, math.huge, 0.0
+                    for _, v in ipairs(samples) do
+                        sum = sum + v
+                        if v < lo then lo = v end
+                        if v > hi then hi = v end
+                    end
+                    local avg = #samples > 0 and (sum / #samples) or 0.0
+                    -- CONFIRMED LIVE (2026-08-19): NOT a plain print() -- say() touches Ar (the
+                    -- console command's FOutputDevice), which is only valid for the SYNCHRONOUS
+                    -- duration of the command handler that received it. Calling say() from in here
+                    -- (an ExecuteWithDelay callback firing seconds later, well after the handler
+                    -- already returned) crashed on the exact instant this line ran, three times in a
+                    -- row across two different test structures -- a stale-Ar use-after-free, not a
+                    -- scheduling problem. Plain print() only, same as every other tick() call above.
+                    print(string.format("[LivingBase] [tickspike] done: %d samples, avg=%.2fms min=%.2fms max=%.2fms (nominal %dms) -- os.clock() is CPU time, treat as an approximation\n", #samples, avg, lo, hi, intervalMs))
+                end
+            end
+            ExecuteWithDelay(intervalMs, tick)
+            return true
+        end)
+    end)
+    log("Console command registered: lbtickspike [intervalMs=16] [ticks=120] -- diagnostic, see comment above")
+else
+    log("lbtickspike unavailable -- RegisterConsoleCommandHandler or ExecuteWithDelay missing in this UE4SS build.")
+end
+
+------------------------------------------------------------
+-- "lbtickspike2 [intervalMs] [ticks]" -- lbtickspike (above) crashed TWICE tonight, both times at
+-- the exact same instant as its own "done" line (crash dump timestamp within 0.15ms of it) -- once
+-- at tick 120/16ms (~2s total), once at tick 500/50ms (~25s total). Different tick counts, different
+-- total durations, same result: crash lands on the ONE callback that breaks the chain (stops calling
+-- ExecuteWithDelay and does something else instead), never on any of the hundreds of callbacks that
+-- keep rescheduling. That rules out both "too fast" and "too many iterations" as the cause -- points
+-- specifically at whatever happens when a self-rescheduling ExecuteWithDelay chain stops
+-- rescheduling. Testing the fix: NEVER take that branch -- always call ExecuteWithDelay again,
+-- unconditionally, forever; use a flag to make it a no-op past totalTicks instead of actually
+-- stopping. If this survives past its own totalTicks without crashing, that confirms the theory AND
+-- gives the real feature's camera-follow loop a concrete pattern to use (never let it stop
+-- rescheduling itself while armed -- only flip a flag that makes each tick a no-op).
+-- WARNING: unlike lbtickspike, this does NOT stop on its own -- it keeps ticking silently forever
+-- once its sample window is done. Fine for a one-off live test right before a relaunch; do not leave
+-- running.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler and ExecuteWithDelay then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtickspike2", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [tickspike2] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local intervalMs = tonumber(Parameters and Parameters[1]) or 16
+            local totalTicks = tonumber(Parameters and Parameters[2]) or 120
+            say(string.format("starting: nominal %dms x %d ticks (~%.1fs) -- NEVER stops rescheduling, watch for 'done'", intervalMs, totalTicks, intervalMs * totalTicks / 1000.0))
+            local samples = {}
+            local lastClock = os.clock()
+            local count = 0
+            local reported = false
+            local function tick()
+                if count < totalTicks then
+                    local now = os.clock()
+                    local dt = (now - lastClock) * 1000.0
+                    lastClock = now
+                    count = count + 1
+                    if count > 1 then
+                        table.insert(samples, dt)
+                    end
+                end
+                if count >= totalTicks and not reported then
+                    reported = true
+                    local sum, lo, hi = 0.0, math.huge, 0.0
+                    for _, v in ipairs(samples) do
+                        sum = sum + v
+                        if v < lo then lo = v end
+                        if v > hi then hi = v end
+                    end
+                    local avg = #samples > 0 and (sum / #samples) or 0.0
+                    -- Same stale-Ar fix as lbtickspike -- see that one's own comment. This test's
+                    -- 3rd crash (identical timing signature despite NEVER breaking the reschedule
+                    -- chain) is what proved it's Ar, not scheduling structure.
+                    print(string.format("[LivingBase] [tickspike2] done: %d samples, avg=%.2fms min=%.2fms max=%.2fms (nominal %dms) -- still ticking silently, chain never stops -- restart the game when finished testing\n", #samples, avg, lo, hi, intervalMs))
+                end
+                -- ALWAYS reschedules, even past totalTicks -- this is the actual thing under test.
+                ExecuteWithDelay(intervalMs, tick)
+            end
+            ExecuteWithDelay(intervalMs, tick)
+            return true
+        end)
+    end)
+    log("Console command registered: lbtickspike2 [intervalMs=16] [ticks=120] -- diagnostic, see comment above")
+else
+    log("lbtickspike2 unavailable -- RegisterConsoleCommandHandler or ExecuteWithDelay missing in this UE4SS build.")
+end
+
 -- Console command "lblook <name>" (2026-08-13) -- spawn one of LivingBase's own NAMED composite
 -- looks (a base engine class PLUS the specific reskin/de-corrupt/pacify recipe that makes it
 -- "walking Letty", a masked Warrior, a Buccaneers Musketeer, a tamed Boar, etc.), not a raw
@@ -1712,6 +2118,144 @@ else
     log("lbtestswapbodysex unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestparamswap" (2026-08-19) -- THROWAWAY DEV TEST. RedFalcon asked whether an
+-- ALREADY-SPAWNED actor with an empty slot (e.g. the Gatherer, no Headgear entry in
+-- BuildedCompositeMeshes) could have a piece added live, instead of needing to respawn with
+-- different composite params -- which is how every reskin in this mod has worked so far. Turns out
+-- this was ALREADY answered: Spawner.ApplyComposite's own dead-end note (right above
+-- Spawner.ApplyBodySex, spawner.lua) says its `paramsPath` argument (== DefaultParams, the outfit)
+-- is "the proven, working half" post-build -- only `archetypePath` (body/skin/hair) was ever
+-- confirmed dead. ApplyComposite itself was never wired to a console command though (only ever
+-- called from other dev-test code), so this is just that missing wrapper -- targets whatever
+-- lbprobe last aimed at, same as lbtestswapbodysex. Full /Game/... path required (no short-name
+-- index for composite-params DataAssets), e.g. the Buccaneers Merchant 01's own DefaultParams:
+-- /Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/
+-- DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams.
+-- DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestparamswap", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestparamswap] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsPath = Parameters and Parameters[1]
+            if not paramsPath then
+                say("Usage: lbtestparamswap <full /Game/... DefaultParams DataAsset path> -- run lbprobe on a target first.")
+                return true
+            end
+            local actor = Spawner._lastProbedActor
+            if not (actor and actor:IsValid()) then
+                say("No valid probed target -- run lbprobe on something first.")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.ApplyComposite(actor, paramsPath) end)
+            if not ok then say("lbtestparamswap FAILED: " .. tostring(err)) end
+            say("Done -- see ue4ss.log ([LivingBase:Composite] lines) for the before/after readback.")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestparamswap")
+else
+    log("lbtestparamswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestparamswap2" (2026-08-19) -- THROWAWAY DEV TEST, second variant. See
+-- Spawner.ApplyCompositeOrdered's own comment: lbtestparamswap's first attempt left
+-- BuildedCompositeMeshes unchanged (5 -> 5, no actual rebuild) even though the DefaultParams
+-- property write itself landed -- this wraps the write+rebuild INSIDE the StartCharacterEdit/
+-- EndCharacterEdit session instead of firing the rebuild before the session opens, to see if call
+-- ORDER was the reason nothing rebuilt. Same targeting/usage shape as lbtestparamswap.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestparamswap2", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestparamswap2] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsPath = Parameters and Parameters[1]
+            if not paramsPath then
+                say("Usage: lbtestparamswap2 <full /Game/... DefaultParams DataAsset path> -- run lbprobe on a target first.")
+                return true
+            end
+            local actor = Spawner._lastProbedActor
+            if not (actor and actor:IsValid()) then
+                say("No valid probed target -- run lbprobe on something first.")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.ApplyCompositeOrdered(actor, paramsPath, say) end)
+            if not ok then say("lbtestparamswap2 FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestparamswap2")
+else
+    log("lbtestparamswap2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestprebuildparams" (2026-08-19) -- THROWAWAY DEV TEST. lbtestparamswap/
+-- lbtestparamswap2 both confirmed POST-build DefaultParams swapping is dead (BuildedCompositeMeshes
+-- never rebuilds on an already-spawned actor, see Spawner.ApplyCompositeOrdered's own dead-end
+-- note). This is the control test done the RIGHT way: spawns a BRAND NEW actor with the override
+-- DefaultParams set in the pre-build deferred window -- the exact same compositeLook.params
+-- mechanism Spawner.SetCompositeParams already runs safely dozens of times a session (Senkamati/
+-- Warrior cross-skeleton reskins, every crew/townsfolk look) -- no new engine surface, no new
+-- crash risk. Answers: does a cross-class DefaultParams override (e.g. Gatherer body + Buccaneers
+-- Merchant outfit) actually render correctly when set at the only time this component reads it, or
+-- does the cross-skeleton/cross-archetype mismatch block it regardless of timing? Same ShortName|
+-- ClassPath resolution as lbspawn. Spawns as a plain (non-friendly) raw validation spawn, same as
+-- lbspawn -- not tracked into any roster.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestprebuildparams", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestprebuildparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local input = Parameters and Parameters[1]
+            local paramsPath = Parameters and Parameters[2]
+            if not (input and paramsPath) then
+                say("Usage: lbtestprebuildparams <ShortName|ClassPath> <full /Game/... DefaultParams DataAsset path>")
+                say("  e.g. lbtestprebuildparams BP_NPC_Handyman_Gatherer /Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/CompositeMesh/Merchant/DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams.DA_NPC_AnimatedActor_Buccaneers_Merchant_01_CompositeMeshComponentParams")
+                return true
+            end
+            local classPath = input
+            if not input:match("^/") then
+                classPath = ClassIndex[input] or ClassIndexLower[input:lower()]
+                if not classPath then
+                    say("Unknown short name: " .. input .. " (pass the full /Game/... path instead)")
+                    return true
+                end
+            end
+            local ok, actor = pcall(function()
+                return Spawner.Spawn(classPath, "PrebuildParamsTest_" .. input, nil, nil, nil, nil, false,
+                    { params = paramsPath })
+            end)
+            if ok and actor and actor:IsValid() then
+                say("Spawned " .. input .. " with DefaultParams override -- check BuildedCompositeMeshes via lbprobe+lbprobedump.")
+            else
+                say("FAILED to spawn: " .. classPath .. " (see ue4ss.log SPAWN FAILED / [LivingBase:Composite] lines)")
+            end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestprebuildparams")
+else
+    log("lbtestprebuildparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbcustomnpc" (2026-08-19) -- DEV TOOL, see Spawner.ListCustomizationControllers/
 -- Spawner.SetCustomizationController's own comments. General-purpose replacement for the earlier
 -- throwaway lbtestsethair -- RedFalcon asked for a proper get/set pair to explore the
@@ -1746,7 +2290,7 @@ if RegisterConsoleCommandHandler then
                     usage()
                     return true
                 end
-                ok, err = pcall(function() Spawner.SetCustomizationController(which, newValue, say) end)
+                ok, err = pcall(function() Spawner.SetCustomizationController(Spawner._lastProbedActor, which, newValue, say) end)
             else
                 usage()
                 return true
@@ -1758,6 +2302,77 @@ if RegisterConsoleCommandHandler then
     log("Console command registered: lbcustomnpc")
 else
     log("lbcustomnpc unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeclass" (2026-08-19) -- DEV TOOL, see Spawner.ProbeClassCustomization's
+-- own comment. Reads a class's customization controllers straight off its Class Default Object --
+-- NO SpawnActor call -- to test whether the Armor.*/Facial.*/Hairs breakdown can be surveyed across
+-- the roster without loading every actor into the world. Same ShortName|ClassPath resolution as
+-- lbspawn (reuses the same class_index.lua lookup), since this is the "read-only, no spawn" sibling
+-- of that command.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobeclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local input = Parameters and Parameters[1]
+            if not input then
+                say("Usage: lbprobeclass <ShortName|ClassPath>  e.g. lbprobeclass BP_AnimatedActor_TortugaCitizen_Combatant_CrossHands")
+                return true
+            end
+            local classPath = input
+            if not input:match("^/") then
+                classPath = ClassIndex[input] or ClassIndexLower[input:lower()]
+                if not classPath then
+                    say("Unknown short name: " .. input .. " (not in the index of 2,562 known BP_ classes"
+                        .. " -- check spelling, run 'lbspawn list' to browse LivingBase's own roster,"
+                        .. " or pass the full /Game/... path instead)")
+                    return true
+                end
+            end
+            local ok, err = pcall(function() Spawner.ProbeClassCustomization(classPath, say) end)
+            if not ok then say("lbprobeclass FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeclass")
+else
+    log("lbprobeclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbcustomscan" (2026-08-19) -- DEV TOOL, see Spawner.ScanNearbyCustomization's
+-- own comment. lbprobeclass's CDO route proved a dead end for pawn classes (controller list is only
+-- built at spawn time), so this is the practical fallback: place a handful of actors (lbspawn/
+-- lblook, or just use whatever's already wandering nearby), run this once, and every NEW class
+-- within range gets its full controller breakdown + sex/body/customizable flags appended to
+-- customization_survey.jsonl -- already-recorded classes are skipped automatically, so repeated runs
+-- after placing more actors and despawning the old ones only grow the file, never duplicate it.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcustomscan", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbcustomscan] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local radius = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.ScanNearbyCustomization(radius, say) end)
+            if not ok then say("lbcustomscan FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcustomscan")
+else
+    log("lbcustomscan unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbdecorloot" (2026-08-17) -- converts the dropped item (R5LootActor) nearest in
@@ -1803,6 +2418,253 @@ else
     log("lbprobestone unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbprobeinteract" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.ProbeInteractionTargetParams' own comment. Read-only diagnostic dumping
+-- DA_InteractionTarget_Loot/Crop's declared properties, to see if the game's own native
+-- interaction-highlight system references a reusable effect we could spawn instead of our
+-- material-swap ghost highlight.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeinteract", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeInteractionTargetParams() end)
+            if not ok then print("[LivingBase] [lbprobeinteract] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeinteract")
+else
+    log("lbprobeinteract unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobesparkle" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeLootSparkle's own
+-- comment. Read-only diagnostic: drop any item, face it, run this -- prints the NiagaraSystem asset
+-- reference behind the native "lootable" sparkle, a candidate reusable effect for targeting statues.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobesparkle", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobesparkle] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.ProbeLootSparkle(say) end)
+            if not ok then say("lbprobesparkle FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobesparkle")
+else
+    log("lbprobesparkle unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobechestfx" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeChestFX's own
+-- comment. Read-only diagnostic: run lbprobe on a chest POI first, then this -- dumps
+-- DA_ChestFXParams and the live SpawnedChestVFX NiagaraComponent's Asset reference.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobechestfx", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeChestFX() end)
+            if not ok then print("[LivingBase] [lbprobechestfx] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobechestfx")
+else
+    log("lbprobechestfx unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeniagarafuncs" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.ProbeNiagaraFunctions' own comment. Read-only diagnostic: lists every function
+-- UNiagaraFunctionLibrary declares, so we know the real spawn-attached function name/signature in
+-- this UE version before attempting to call it.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeniagarafuncs", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeNiagaraFunctions() end)
+            if not ok then print("[LivingBase] [lbprobeniagarafuncs] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeniagarafuncs")
+else
+    log("lbprobeniagarafuncs unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeniagarasig" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.ProbeNiagaraSpawnAttachedSignature's own comment. Read-only diagnostic: dumps
+-- SpawnSystemAttached's actual parameter list/types so it can be called correctly, not guessed.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeniagarasig", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeNiagaraSpawnAttachedSignature() end)
+            if not ok then print("[LivingBase] [lbprobeniagarasig] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeniagarasig")
+else
+    log("lbprobeniagarasig unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbtestniagara"/"lbtestniagaraclear" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.TestSpawnNiagara's own comment. First live test of spawning/attaching the confirmed
+-- FX_PickUP_Chest_01 NiagaraSystem onto whatever lbprobe last cached. Manual on/off, NOT wired into
+-- the real hover-highlight flow yet.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagara", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.TestSpawnNiagara() end)
+            if not ok then print("[LivingBase] [lbtestniagara] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagara")
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraclear", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.TestSpawnNiagaraClear() end)
+            if not ok then print("[LivingBase] [lbtestniagaraclear] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraclear")
+else
+    log("lbtestniagara/lbtestniagaraclear unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobecpd" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCustomPrimitiveData's
+-- own comment. Read-only diagnostic: checks whether PrimitiveComponent exposes Custom Primitive Data
+-- functions in this build, and (if lbprobe cached something) dumps its current values.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobecpd", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeCustomPrimitiveData() end)
+            if not ok then print("[LivingBase] [lbprobecpd] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobecpd")
+else
+    log("lbprobecpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobecpdsig" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCPDIndexSignature's
+-- own comment. Read-only diagnostic: dumps the parameter list for the CPD index-lookup functions.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobecpdsig", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeCPDIndexSignature() end)
+            if not ok then print("[LivingBase] [lbprobecpdsig] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobecpdsig")
+else
+    log("lbprobecpdsig unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobecpdnames" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCPDNames' own
+-- comment. Pure read-only query, low risk: run lbprobe on a chest/statue/decor first, then this --
+-- tries a batch of plausible tint/highlight parameter names and prints which ones (if any) resolve
+-- to a real Custom Primitive Data index on that target's material.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobecpdnames", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeCPDNames() end)
+            if not ok then print("[LivingBase] [lbprobecpdnames] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobecpdnames")
+else
+    log("lbprobecpdnames unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbtestniagaraactor"/"lbtestniagaraactorclear" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.TestSpawnNiagaraActor's own comment. Spawns a stock NiagaraActor at the probed target's
+-- location instead of calling either of the two functions that already crashed the game today --
+-- uses only the proven-safe actor-spawn helper plus plain property read/write.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraactor", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.TestSpawnNiagaraActor() end)
+            if not ok then print("[LivingBase] [lbtestniagaraactor] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraactor")
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraactorclear", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+            if not ok then print("[LivingBase] [lbtestniagaraactorclear] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraactorclear")
+else
+    log("lbtestniagaraactor/lbtestniagaraactorclear unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagaracycle" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.CycleTestNiagaraEffect's own comment. Destroys and respawns the test actor with the next
+-- candidate effect from the pak-listing search each time -- run it repeatedly to compare options.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaracycle", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.CycleTestNiagaraEffect() end)
+            if not ok then print("[LivingBase] [lbtestniagaracycle] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaracycle")
+else
+    log("lbtestniagaracycle unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagarapath <path>" (2026-08-21) -- TEMP DEV TOOL, see
+-- Spawner.TestSpawnNiagaraByPath's own comment. Paste any /Game/... asset path found in
+-- Other\pakcontents.xlsx (dotted .AssetName suffix optional) to try it live on the last lbprobe'd
+-- target, same Parameters[1] argument-reading pattern lbspawn already uses.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagarapath", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSpawnNiagaraByPath(arg1) end)
+            if not ok then print("[LivingBase] [lbtestniagarapath] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagarapath")
+else
+    log("lbtestniagarapath unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbfixraytrace" (2026-08-22) -- see Spawner.FixAllRaytraceChannels' own comment.
+-- Retroactively fixes raytrace targeting on every already-placed tracked spawn (walking actors,
+-- Senkamati, statues, decor) without needing a reload.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfixraytrace", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbfixraytrace] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.FixAllRaytraceChannels(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbfixraytrace")
+else
+    log("lbfixraytrace unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbprobelootmesh" (2026-08-17) -- TEMP DEV TOOL, see
 -- Spawner.ProbeNearestLootMesh's own comment. Follow-up to lbprobestone dead-ending on an opaque
 -- TSoftObjectPtrUserdata: reads the mesh straight off a REAL dropped item instead. Drop any item,
@@ -1826,6 +2688,31 @@ if RegisterConsoleCommandHandler then
     log("Console command registered: lbprobelootmesh")
 else
     log("lbprobelootmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobecam" (2026-08-20) -- TEMP DEV TOOL, see Spawner.ProbeCameraRig's own
+-- comment. Reads the pawn's own SpringArmComponent (SocketOffset/TargetArmLength/world transform) --
+-- run once normally, then again while actually holding the hammer in real build mode, and diff the
+-- two to get the exact native camera-raise offset instead of guessing one from screenshots.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobecam", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print(msg)
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.ProbeCameraRig(say) end)
+            if not ok then say("[LivingBase] [probecam] lbprobecam FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobecam")
+else
+    log("lbprobecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console commands "lbdumpobj" / "lbdumpact" / "lbdumpmesh" (2026-08-13) -- thin wrappers around
@@ -1871,6 +2758,18 @@ else
     log("lbdumpobj/lbdumpact/lbdumpmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- "lbdumpusmap" (2026-08-19, FModel spike) -- FModel can't read Windrose's UE5 packages without a
+-- .usmap mapping file ("Package has unversioned properties but mapping file is missing"). UE4SS
+-- can generate one itself (DumpUSMAP() -> Mappings.usmap next to the .exe) -- its default keybind
+-- is Ctrl+Numpad6, which is very likely the same native-keybind conflict class already documented
+-- for Ctrl+J/Ctrl+R above (Ctrl is Windrose's own Dodge), so wrap it as a console command instead,
+-- same reasoning lbdumpobj/lbdumpact/lbdumpmesh are already built on.
+if RegisterConsoleCommandHandler and DumpUSMAP then
+    registerDumpCommand("lbdumpusmap", function() DumpUSMAP() end, "DumpUSMAP")
+else
+    log("lbdumpusmap unavailable -- RegisterConsoleCommandHandler or DumpUSMAP missing in this UE4SS build.")
+end
+
 -- Console commands "lbprobe" / "lbprobedump" (2026-08-18) -- replace the old HOME/PAUSE diagnostic
 -- keybinds (RedFalcon's request: console commands over physical keys for these). Same two-step
 -- design as before, same functions, just triggered by typing instead of pressing a key: lbprobe
@@ -1885,6 +2784,101 @@ if RegisterConsoleCommandHandler then
     registerDumpCommand("lbprobedump", function() Spawner.ProbeDumpProperties() end, "ProbeDumpProperties")
 else
     log("lbprobe/lbprobedump unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbfixghost" (2026-08-20) -- recovery command for a stuck-follow object SolidifyDecor's automatic
+-- sweep keeps skipping (see Spawner.FixLastProbedGhost's own comment). Run lbprobe aimed at the
+-- ghost first, then this.
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbfixghost", function() Spawner.FixLastProbedGhost() end, "FixLastProbedGhost")
+else
+    log("lbfixghost unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbproberadius [radius]" (2026-08-20) -- "do we still have that command that lets me probe in a
+-- radius around me?" -- see Spawner.ProbeRadius's own comment for why lbcustomscan doesn't cover
+-- this. Optional radius arg, uu, defaults to 500.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbproberadius", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print(msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local radius = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.ProbeRadius(radius, say) end)
+            if not ok then say("[LivingBase] [proberadius] FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbproberadius")
+else
+    log("lbproberadius unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbdumpbuildctx" (2026-08-19, build-ghost-preview spike) -- lbprobe caught the wrong actor
+-- (GCA_BuildingCreate_C, the one-shot place VFX cue) when aimed at a native building ghost; this
+-- goes straight at R5Ability_Building_MakeConstructCommand's ConstructionContext instead, by class
+-- rather than camera sweep. See Spawner.ProbeBuildAbility's own comment in spawner.lua.
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbdumpbuildctx", function() Spawner.ProbeBuildAbility() end, "ProbeBuildAbility")
+else
+    log("lbdumpbuildctx unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbghosttest" (2026-08-19, build-ghost-preview spike, 3rd pass) -- run lbprobe on some already-
+-- spawned object first to select it, then this slaps Windrose's own MI_Building_SimplifiedPreview
+-- onto every material slot so we can just LOOK at it (translucent ghost look + glow-in-the-dark).
+-- Does not touch the game's live building-ability objects at all -- see Spawner.ApplyGhostMaterial's
+-- own comment in spawner.lua for why (those crashed the game twice already today).
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbghosttest", function() Spawner.ApplyGhostMaterial() end, "ApplyGhostMaterial")
+else
+    log("lbghosttest unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbghosttest2" (2026-08-19, build-ghost-preview spike, 4th pass) -- same idea as lbghosttest, but
+-- forces a consistent solid color via a per-slot dynamic material instance instead of applying
+-- MI_Building_SimplifiedPreview's raw (inconsistent) default colors. See
+-- Spawner.ApplyGhostMaterialSolid's own comment in spawner.lua.
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lbghosttest2", function() Spawner.ApplyGhostMaterialSolid() end, "ApplyGhostMaterialSolid")
+else
+    log("lbghosttest2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lboutlinetest" (2026-08-19, build-ghost-preview spike, 5th pass) -- tests whether Windrose's
+-- rendering pipeline has an active CustomDepth outline post-process pass at all, by enabling
+-- bRenderCustomDepth on the probed actor's mesh components. See Spawner.ToggleCustomDepthOutline's
+-- own comment in spawner.lua.
+if RegisterConsoleCommandHandler then
+    registerDumpCommand("lboutlinetest", function() Spawner.ToggleCustomDepthOutline() end, "ToggleCustomDepthOutline")
+else
+    log("lboutlinetest unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbfollowtest [intervalMs=33] [ticks=300] [distance=300]" / "lbfollowteststop" (2026-08-19,
+-- build-ghost-preview spike, 6th pass) -- tests repeated K2_SetActorLocation with zero file I/O,
+-- isolating whether the documented EditNearestInFront rotate crash was disk I/O or the actor-move
+-- call itself. See Spawner.StartFollowTest's own comment in spawner.lua.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfollowtest", function(FullCommand, Parameters, Ar)
+            local intervalMs = tonumber(Parameters and Parameters[1])
+            local ticks = tonumber(Parameters and Parameters[2])
+            local distance = tonumber(Parameters and Parameters[3])
+            Spawner.StartFollowTest(intervalMs, ticks, distance)
+            return true
+        end)
+    end)
+    registerDumpCommand("lbfollowteststop", function() Spawner.StopFollowTest() end, "StopFollowTest")
+    log("Console command registered: lbfollowtest [intervalMs=33] [ticks=300] [distance=300], lbfollowteststop")
+else
+    log("lbfollowtest/lbfollowteststop unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestfemalereskin" (2026-08-18) -- console-command twin of the existing

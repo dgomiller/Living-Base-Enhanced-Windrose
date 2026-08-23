@@ -1,6 +1,26 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v2.1.7.1 (2026-08-23) -- previous version: v2.1.7 -- Legacy branch
+======================================================================
+
+FIXED -- spawn tree showing the wrong/mismatched entry for several
+Walking Women looks
+- The bundled spawn_menu.ini still referenced the old pre-2.1.7 roster
+  layout (separate Woman With Hat/Woman With Hair entries, old index
+  numbers for Merchant/Letty/Marita). Clicking one of those entries
+  could spawn a different character than the one labeled. Rebuilt to
+  match the current 8-entry roster.
+
+FIXED -- idle (frozen) Senkamati visibly walked around for several
+seconds after a world reload before finally freezing in place
+- They eventually settled into their correct frozen pose, but the
+  freeze call was gated behind the same ~8 second delay used for
+  crash-sensitive de-corrupt/passivity post-processing, which it never
+  actually needed. Now applied immediately, same frame as the restore
+  spawn -- no more visible walking window.
+
+======================================================================
 v2.1.7 (2026-08-19) -- previous version: v2.1.5
 ======================================================================
 

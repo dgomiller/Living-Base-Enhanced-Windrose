@@ -892,15 +892,25 @@ local function pollSpawnMenuRequest()
         if not ok then
             log("spawn menu " .. verb .. " " .. roster .. " FAILED: " .. tostring(result))
         elseif verb == "SPAWN" and result and result.IsValid and result:IsValid()
-               and (roster == "DECOR" or SPAWN_MENU_STATUE_ROSTERS[roster]) then
-            -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues): decor was first
-            -- because crew/townsfolk/Senkamati go through DeCorrupt/composite-build treatment whose
-            -- "already fully finished spawning" timing relative to this callback wasn't verified.
-            -- STATUES don't have that problem -- checked testbed.lua's spawnPosed (the function
-            -- behind all four SPAWN_MENU_STATUE_ROSTERS handlers): Spawner.Spawn + snapToFloor, then
-            -- return, fully synchronous, no ExecuteWithDelay/deferred work at all. Safe to extend the
-            -- same way decor already works. Crew/townsfolk/Senkamati/livestock remain NOT extended --
-            -- still an open question for those, not blindly widened.
+               and (roster == "DECOR" or roster == "TOWNSFOLK_CLASSES" or roster == "FACTION_VISITOR_LOOKS"
+                    or roster == "LIVESTOCK" or roster == "FEMALE_RESKIN_TARGETS" or roster == "SENKAMATI_LOOKS"
+                    or SPAWN_MENU_STATUE_ROSTERS[roster]) then
+            -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues, 2026-08-24 to
+            -- townsfolk/crew/livestock/female-walkers/Senkamati). Briefly pulled the four humanoid
+            -- rosters back out same day chasing a leg-bend/lift IK glitch, suspecting this
+            -- live-preview path itself -- WRONG LEAD: confirmed live the glitch reproduced on FRESH
+            -- spawns that had never been through this path at all, on EVERY roster including
+            -- livestock (which stayed enabled the whole time) and even wild/vanilla NPCs standing
+            -- near a mod spawn. Real root cause: Spawner.EnsureRaytraceChannel (2026-08-22) forcing
+            -- every mod spawn to Block the Visibility collision channel so THIS panel's own
+            -- targeting raycast could hit them -- which also made every mod spawn register as solid
+            -- "ground" to any OTHER pawn's own foot-IK trace. Fixed at the source (see
+            -- EnsureRaytraceChannel's own "TEMPORARILY DISABLED" comment and UpdateHoverHighlight's
+            -- own comment on switching to LineTraceSingleForObjects) -- targeting now hits pawns via
+            -- their native Pawn-channel collision instead, so EnsureRaytraceChannel's Visibility-
+            -- block is unnecessary and stays permanently disabled. All five rosters restored here
+            -- once that fix was confirmed live -- nothing about spawn-time live-placement itself was
+            -- ever the problem.
             pcall(function() Spawner.StartPlacementPreview(result) end)
         end
     end)
@@ -2486,6 +2496,24 @@ if RegisterConsoleCommandHandler then
     log("Console command registered: lbprobechestfx")
 else
     log("lbprobechestfx unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeksl" (2026-08-24) -- TEMP DEV TOOL, see Spawner.ProbeKSLTraceFunctions'
+-- own comment. Read-only diagnostic: lists every KismetSystemLibrary function whose name contains
+-- "Trace" or "Object", so the real object-type-trace function name can be read directly instead of
+-- guessed again (LineTraceSingleByObjectType, the first guess, confirmed live NOT to exist as
+-- called).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeksl", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.ProbeKSLTraceFunctions() end)
+            if not ok then print("[LivingBase] [lbprobeksl] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeksl")
+else
+    log("lbprobeksl unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbprobeniagarafuncs" (2026-08-21) -- TEMP DEV TOOL, see

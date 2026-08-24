@@ -323,10 +323,18 @@ local function spawnCreature(candidates, label, aiPath, disable)
             -- stripped so they don't initiate.
             pacifyCreature(a, label, disable)
             announceCreatureClass(label, path)
-            return true
+            -- Return the actor itself, not a bare `true` (2026-08-24, RedFalcon's request: wire
+            -- LIVESTOCK into the same spawn-time live-placement-preview decor/statues/townsfolk/
+            -- crew already use). Testbed.SpawnNextLivestock's own `if not spawnCreature(...) then`
+            -- check only cares about truthy/falsy -- a real actor userdata is truthy, so that
+            -- caller's behavior is unchanged. Testbed.SpawnLivestockByName (the console/spawn-menu
+            -- path) just returns this value straight through, so it now hands the real actor back
+            -- to main.lua's spawn-menu bridge instead of a plain `true` it couldn't hand to
+            -- Spawner.StartPlacementPreview.
+            return a
         end
     end
-    return false
+    return nil
 end
 
 -- LIVESTOCK (NUM_8): all "tame like pets" creatures on one key. Cycles boar family -> goats ->
@@ -935,8 +943,8 @@ local function spawnSenkaEntry(s)
         local look = { params = s.params, archetype = arche, sex = s.sex, reskinTarget = senkaRowKey(s) }
         local baseClass = s.baseClass or Config.WARRIOR_BASE_CLASS or Config.CREW_CLASS
         local ai = Config.SENKAMATI_HANDYMAN and Config.HANDYMAN_AI_CLASS or nil
-        local actor = Spawner.Spawn(baseClass, rowLabel, frontSpot(300), nil, ai, nil, false, look)
-        if not (actor and actor:IsValid()) then return false end
+        local actor = Spawner.Spawn(baseClass, rowLabel, frontSpot(300), nil, ai, nil, false, look, nil, s.idle)
+        if not (actor and actor:IsValid()) then return nil end
         -- `idle` (2026-08-15, RedFalcon's request) -- frozen counterpart to the normal walking
         -- crew row, added specifically as an NSFW-safer comparison option: the "posed" statue rows
         -- (the now-REMOVED Senkamati Statues feature) could flash bare skin/nipples repeatedly
@@ -960,17 +968,22 @@ local function spawnSenkaEntry(s)
         -- with another Senkamati/female-walker's own de-corrupt/reskin work -- see that
         -- function's own comment for the crash this fixes.
         Spawner.RunSerialized(function(done) senkaCrewFix(actor, s.name, s.helmet, done) end)
-        return true
+        -- Return the actor, not a bare `true` (2026-08-24, RedFalcon's request: wire
+        -- SENKAMATI_LOOKS into the same spawn-time live-placement-preview every other roster now
+        -- has). Testbed.SpawnSenkaByKey/spawnCleanSenkamati's own callers only ever checked
+        -- truthy/falsy, unaffected by this -- see Testbed.SpawnLivestockByName's own identical fix
+        -- earlier today for the precedent.
+        return actor
     elseif s.kind == "mob" or s.kind == "corrupted" then
         -- Both spawn the raw mob class (native Senkamati skeleton); "mob" still de-corrupts
         -- (clean skin/hair, original zombie-gait stance), "corrupted" skips that entirely (see
         -- senkaMobFix's own comment) to show the untouched, pre-de-corrupt appearance.
         local friendly = Config.MAKE_CREATURES_FRIENDLY == true
         local actor = Spawner.Spawn(s.mob, rowLabel, frontSpot(300), nil, nil, nil, friendly,
-            { reskinTarget = senkaRowKey(s) })
+            { reskinTarget = senkaRowKey(s) }, nil, s.idle)
         if not (actor and actor:IsValid()) then
             log("mob spawn FAILED (class unresolved?)")
-            return false
+            return nil
         end
         snapToFloor(actor, playerFloorZ())
         -- `idle` (2026-08-15) -- see the crew branch's own comment above for why. The mob body is
@@ -984,10 +997,11 @@ local function spawnSenkaEntry(s)
         Spawner.RunSerialized(function(done)
             senkaMobFix(actor, s.name, shortName, s.helmet, s.kind == "corrupted", done)
         end)
-        return true
+        -- Return the actor, not a bare `true` -- see the crew branch's own comment above.
+        return actor
     end
     log("Unknown Senkamati kind: " .. tostring(s.kind))
-    return false
+    return nil
 end
 
 local senkaIdx = 0

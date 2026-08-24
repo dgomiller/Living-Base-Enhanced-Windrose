@@ -525,6 +525,18 @@ end
 -- LineTraceSingle's channel arg is TraceTypeQuery index 0, which maps to raw channel 3 by Unreal's
 -- default project settings) to Block, WITHOUT touching any other channel's existing response --
 -- additive, not a wipe-and-rebuild like LetFurniturePass.
+-- TEMPORARILY DISABLED (2026-08-24, diagnostic) -- RedFalcon reported wild NPCs' legs bending/
+-- lifting near a mod-spawned NPC (including mod-spawned vs. mod-spawned -- "they behave the same
+-- to each other"), confirmed live to reproduce on FRESH spawns never touched by F7/placement, so
+-- unrelated to today's placement-preview work. Leading theory: this function's own
+-- SetCollisionResponseToChannel(3, 2) below -- forcing raw Visibility to Block on every primitive
+-- component of every mod spawn, added 2026-08-22 so raycast-targeting (Num+/hover-highlight/
+-- lbprobe, which also traces on that same channel) could hit walking NPCs/idle Senkamati/drops --
+-- is ALSO exactly the kind of channel a character's own foot-IK/ground-detection trace commonly
+-- uses, so any OTHER pawn now blocking it registers as solid ground under its feet. The actual
+-- SetCollisionResponseToChannel call is commented out below so RedFalcon can confirm this live
+-- before a permanent (more surgical) fix goes in -- raycast-targeting on walkers/idle Senkamati/
+-- drops will regress back to pass-through while this is disabled, same as before 2026-08-22.
 function Spawner.EnsureRaytraceChannel(actor)
     if not (actor and actor:IsValid()) then return false end
     local cls = StaticFindObject("/Script/Engine.PrimitiveComponent")
@@ -539,7 +551,7 @@ function Spawner.EnsureRaytraceChannel(actor)
             pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
             if c and c:IsValid() then
                 touched = touched + 1
-                pcall(function() c:SetCollisionResponseToChannel(3, 2) end)  -- Block Visibility (raw ECC 3)
+                -- pcall(function() c:SetCollisionResponseToChannel(3, 2) end)  -- Block Visibility (raw ECC 3) -- DIAGNOSTIC DISABLE, see above
             end
         end
     end)
@@ -733,7 +745,14 @@ end
 -- auto-numbering `label` -- restoreOne is the only caller that passes this (the label it read back
 -- from, or just migrated into, persist.txt). Every existing call site leaves this nil and gets a
 -- freshly auto-numbered label as before, no changes needed at those call sites.
-function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook, presetInstanceLabel)
+-- markIdle (2026-08-24, RedFalcon's request): threads config.lua's own `s.idle` flag (Senkamati
+-- frozen-look rows, see testbed.lua's spawnSenkaEntry) through onto the generic Spawner.spawned
+-- entry, so the placement-preview system (ConfirmPlacement/CancelPlacement -- see their own
+-- comments) can tell "this is meant to stay frozen" apart from "this is a normal walking actor"
+-- without guessing from class name. nil/false for every OTHER call site in this file (crew/
+-- townsfolk/decor/livestock/statues never pass this) -- they're walking by default, which is the
+-- correct default for ConfirmPlacement's own idle check below.
+function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook, presetInstanceLabel, markIdle)
     local cls = resolveClass(classPath)
     if not cls then
         always("SPAWN FAILED (class unresolved): " .. classPath)
@@ -856,7 +875,8 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     -- by caller (lbspawn passes the raw typed input, lblook passes the recipe's own display name)
     -- and was never a reliable "was a look actually applied" signal on its own.
     table.insert(Spawner.spawned, { actor = actor, label = finalLabel, class = classPath,
-        hasLook = hasLook and true or false, home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed })
+        hasLook = hasLook and true or false, home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed,
+        idle = markIdle and true or false })
     ledgerAppend(actor)
     persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
@@ -3358,6 +3378,49 @@ function Spawner.ProbeChestFX()
     end)
 end
 
+-- Spawner.ProbeKSLTraceFunctions() -- TEMP DEV TOOL (2026-08-24). LineTraceSingleByObjectType
+-- (guessed by analogy with the already-proven-working LineTraceSingle -- see UpdateHoverHighlight's
+-- own comment for why an object-type trace was worth trying at all: it lets pawn-targeting work off
+-- their ALREADY-existing native Pawn-channel collision instead of EnsureRaytraceChannel's own
+-- Visibility-block, which turned out to make every mod spawn register as "ground" to another pawn's
+-- foot-IK) CONFIRMED LIVE to fail at the method-resolution stage itself ("Tried calling a member
+-- function but the UObject instance is nullptr" -- i.e. the name/binding doesn't exist as guessed),
+-- not a bad-argument or a miss. Same "read reflection FIRST rather than guess another call" lesson
+-- ProbeNiagaraFunctions' own comment already documents -- should have started here. Lists every
+-- UFunction on KismetSystemLibrary whose name contains "Trace" or "Object" (case-insensitive), so
+-- the real name (and, from its own signature/param count if the Lua binding exposes that) can be
+-- read directly instead of guessed again.
+function Spawner.ProbeKSLTraceFunctions()
+    local cdo
+    pcall(function() cdo = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary") end)
+    if not (cdo and cdo:IsValid()) then
+        print("[LivingBase] [probe-kslfuncs] could not resolve KismetSystemLibrary CDO.\n")
+        return
+    end
+    local cls
+    pcall(function() cls = cdo:GetClass() end)
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [probe-kslfuncs] could not resolve KismetSystemLibrary class.\n")
+        return
+    end
+    local names = {}
+    pcall(function()
+        cls:ForEachFunction(function(fn)
+            local n = "?"
+            pcall(function() n = fn:GetFName():ToString() end)
+            local lower = n:lower()
+            if lower:find("trace") or lower:find("object") then
+                names[#names + 1] = n
+            end
+        end)
+    end)
+    table.sort(names)
+    print(string.format("[LivingBase] [probe-kslfuncs] %d matching function(s):\n", #names))
+    for _, n in ipairs(names) do
+        print("[LivingBase] [probe-kslfuncs]   " .. n .. "\n")
+    end
+end
+
 -- Spawner.ProbeNiagaraFunctions() -- TEMP DEV TOOL (2026-08-21). Next step after confirming a real,
 -- reusable NiagaraSystem (FX_PickUP_Chest_01, off a live chest's SpawnedChestVFX component) --
 -- RedFalcon wants to try spawning/attaching this ourselves onto a targeted statue/decor object
@@ -5658,8 +5721,21 @@ function Spawner.RetrackOrphans()
                     -- toast right after an lbreload (RetrackOrphans is what re-populates Spawner.spawned
                     -- after a hot-reload wipes it -- see findNearestSpawnInFront's own call site above).
                     local label = (cls and tostring(cls):match("([%w_]+)%.[%w_]+$")) or "unknown"
+                    -- idle (2026-08-24 fix, same regression/reasoning as restoreOne's own markIdle
+                    -- comment above -- RedFalcon: "idles lose the ai lock after moving") -- an
+                    -- orphan re-tracked after an lbreload/Ctrl+R has no `look`/reskinTarget of its
+                    -- own to read (this function only scans live actors + the ledger, neither
+                    -- carries it), so cross-reference persist.txt by class+position -- the SAME
+                    -- record restoreOne itself would read on a real world-load restore -- purely to
+                    -- recover its reskinTarget for the same "::true$" check.
+                    local idle = false
+                    if cls and home then
+                        local persisted = Spawner.PersistFindMatching(cls, home)
+                        idle = (persisted and persisted.look and persisted.look.reskinTarget
+                            and tostring(persisted.look.reskinTarget):match("::true$")) and true or false
+                    end
                     table.insert(Spawner.spawned,
-                        { actor = a, label = label, class = cls, home = home })
+                        { actor = a, label = label, class = cls, home = home, idle = idle })
                     n = n + 1
                 end
             end
@@ -5738,8 +5814,15 @@ local function restoreOne(line)
         needsMigration = true
     end
 
+    -- markIdle (2026-08-24 fix, RedFalcon: "idles lose the ai lock after moving" -- a RESTORED idle
+    -- Senkamati's entry.idle came back false, since this call never threaded it through, so
+    -- ConfirmPlacement/CancelPlacement's releasePlacementMobility -- see their own comments -- wrongly
+    -- restored its AI after a relocate). Same "::true$" detection the idle-freeze fix a few lines
+    -- below already uses on this exact reskinTarget string -- reused here instead of duplicated, so
+    -- the two can never drift out of sync with each other.
+    local markIdle = look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") and true or false
     local ok, a = pcall(function()
-        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel)
+        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel, markIdle)
     end)
     if ok and a and a:IsValid() then
         if needsMigration then
@@ -7628,6 +7711,19 @@ local function beginFollowLoop(distance)
             -- floor-lock already fully determines the pivot position itself when it engages.
             local usedFloorLock = false
             if Spawner._placementStatueBottomOffset then
+                -- Snapshot into a local (2026-08-24 fix, RedFalcon's crash-on-exit investigation):
+                -- CONFIRMED LIVE in ue4ss.log -- "attempt to perform arithmetic on a nil value
+                -- (field '_placementStatueBottomOffset')" -- the SAME reentrancy this block's own
+                -- later mid-tick re-check already documents (a Confirm/Cancel keypress landing
+                -- WHILE a native call here, e.g. GetCameraLocation/LineTraceSingle, is still on the
+                -- stack) can clear this field between this `if` passing and its OWN later use
+                -- further down in this same block. That re-check only guards
+                -- Spawner._placementActive/_placementActor, not this field, so re-reading the live
+                -- global below was still exposed. A plain Lua error here is pcall-caught by tick()'s
+                -- own wrapper (harmless -- one skipped move, not a crash), but closing it removes
+                -- one candidate contributor while the actual native crash-on-exit is still being
+                -- isolated.
+                local bottomOffset = Spawner._placementStatueBottomOffset
                 local camLoc
                 pcall(function() camLoc = cam:GetCameraLocation() end)
                 if camLoc then
@@ -7656,7 +7752,7 @@ local function beginFollowLoop(distance)
                             local hitLoc
                             pcall(function() hitLoc = hitResult.Location end)
                             if hitLoc then
-                                target.X, target.Y, target.Z = hitLoc.X, hitLoc.Y, hitLoc.Z - Spawner._placementStatueBottomOffset
+                                target.X, target.Y, target.Z = hitLoc.X, hitLoc.Y, hitLoc.Z - bottomOffset
                                 landed = true
                             end
                         end
@@ -7672,7 +7768,7 @@ local function beginFollowLoop(distance)
                     -- it keeps sliding smoothly around that boundary as you look around, rather than
                     -- freezing the instant nothing's hit.
                     if not landed then
-                        target.X, target.Y, target.Z = farPt.X, farPt.Y, farPt.Z - Spawner._placementStatueBottomOffset
+                        target.X, target.Y, target.Z = farPt.X, farPt.Y, farPt.Z - bottomOffset
                     end
                     usedFloorLock = true
                 end
@@ -7936,6 +8032,12 @@ function Spawner.StartRelocatePreview()
     if Spawner._placementFreeBuild and grabDistance and grabDistance < (Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU or 125.0) then
         grabDistance = Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU or 125.0
     end
+    -- Grab-point-at-raycast-intersection (2026-08-24) -- TRIED AND REVERTED SAME DAY, RedFalcon:
+    -- "moving a multipart decor item risks meshes separating during moving while still grabbing it
+    -- from the bottom." A decor actor built from several separate mesh components apparently
+    -- doesn't tolerate being dragged by an off-center/off-pivot offset the way a single-mesh object
+    -- does -- back to the plain bottom/center-anchor behavior below for RELOCATE too, unconditionally.
+    -- If this gets revisited, it needs to be SCOPED to single-mesh actors only, not blanket-applied.
     prepForFollow(actor)
     Spawner._placementActor = actor
     Spawner._placementActive = true
@@ -7951,6 +8053,32 @@ function Spawner.StartRelocatePreview()
         co and string.format("(%.1f,%.1f,%.1f)", co.X, co.Y, co.Z) or "nil"))
     beginFollowLoop(grabDistance)   -- nil falls back to beginFollowLoop's own 300uu default if the lookup failed
     pcall(function() Spawner.Toast("Relocating... F5 to confirm, F6 to cancel (returns to original spot).", 2.5) end)
+end
+
+-- releasePlacementMobility(actor, entry) -- shared by ConfirmPlacement/CancelPlacement's RELOCATE
+-- branch (2026-08-24, RedFalcon: "moving a mobile object removes its AI when placing... should be
+-- reenabled on placement"). prepForFollow (see its own comment) always stops AI logic and zeroes
+-- gravity for the duration of a follow/drag -- this undoes that, but ONLY for entries NOT marked
+-- idle (Spawner.Spawn's markIdle param -- see its own comment -- set from config.lua's Senkamati
+-- `idle` rows). Gated this way specifically because blindly restoring for EVERYTHING already
+-- regressed once (2026-08-22): an idle Senkamati started walking again the instant StartLogic()
+-- ran (see the history this replaced, below). entry.idle stays false/nil for every other roster
+-- (crew/townsfolk/animals/statues/decor), so this is exactly "walking actors" -- the category
+-- prepForFollow's own AI-logic comment already names as the one meant to keep wandering.
+-- Always clears _placementOrigGravityScale, restored or not -- it's a one-shot capture from
+-- prepForFollow for THIS actor; leaving it set would feed a stale value into the NEXT placement
+-- session's own restore.
+local function releasePlacementMobility(actor, entry)
+    local orig = Spawner._placementOrigGravityScale
+    Spawner._placementOrigGravityScale = nil
+    if not (entry and not entry.idle) then return end
+    pcall(function() Spawner.SetAILogic(actor, true) end)
+    pcall(function()
+        local mv = actor.CharacterMovement
+        if mv and mv:IsValid() and orig ~= nil then
+            mv.GravityScale = orig
+        end
+    end)
 end
 
 -- Confirm: stop following, re-solidify (matches how a normal decor spawn ends up), and rewrite the
@@ -7973,23 +8101,16 @@ function Spawner.ConfirmPlacement()
     Spawner._placementIsStatue = nil
     Spawner._placementStatueBottomOffset = nil
     Spawner._placementCenterOffset = nil
-    -- NOT restoring AI logic here (2026-08-22) -- tried it, REGRESSED: RedFalcon reported an idle
-    -- Senkamati started walking after being placed/moved. StartLogic() on confirm woke up whatever
-    -- default wander behavior its AI controller has -- wrong for something meant to stay put once
-    -- placed. Leaving logic stopped permanently once prepForFollow stops it for the drag is the
-    -- correct behavior for these "idle"/set-dressing NPCs; harmless no-op either way for
-    -- statues/decor (no AI controller to begin with).
-    -- Same call for GravityScale (2026-08-22, RedFalcon: "i want them to behave like statues when
-    -- idle") -- NOT restored either, for the same reasoning: a statue never falls once placed, so an
-    -- "idle" NPC that's supposed to behave like one shouldn't either. If "walking actors" (the
-    -- OTHER category, meant to keep wandering after placement -- see prepForFollow's own AI-logic
-    -- comment) turn out to need gravity back to move/settle naturally, that's the same open question
-    -- flagged there -- revisit both together once tested, don't fix one without the other.
     pcall(function() Spawner.SetDecorSolid(actor) end)
     local entry
     for _, e in ipairs(Spawner.spawned) do
         if e.actor == actor then entry = e; break end
     end
+    -- RESTORED (2026-08-24) -- was previously never restored at all (see git history / the
+    -- modding notes for the 2026-08-22 regression this now works around via entry.idle instead of
+    -- an all-or-nothing switch). Deliberately AFTER the entry lookup above, and before the
+    -- persist-rewrite below, so ordering matches prepForFollow -> drag -> release -> persist.
+    releasePlacementMobility(actor, entry)
     if entry then
         pcall(function()
             local loc = actor:K2_GetActorLocation()
@@ -8024,17 +8145,26 @@ function Spawner.CancelPlacement()
     Spawner._placementIsStatue = nil
     Spawner._placementStatueBottomOffset = nil
     Spawner._placementCenterOffset = nil
-    -- NOT restoring AI logic here either (2026-08-22) -- see ConfirmPlacement's own comment, same
-    -- regression (idle Senkamati started walking again once logic restarted).
     if mode == "RELOCATE" then
         pcall(function()
             if origLoc then actor:K2_SetActorLocation(origLoc, false, {}, true) end
             if origRot then actor:K2_SetActorRotation(origRot, false) end
         end)
         pcall(function() Spawner.SetDecorSolid(actor) end)
+        -- RESTORED (2026-08-24) -- see releasePlacementMobility's own comment (ConfirmPlacement,
+        -- above). A cancelled RELOCATE puts a walking actor back at its original spot but it's
+        -- still a live, ongoing object afterward -- same reasoning as confirm, just a different
+        -- final position. NEW-mode cancel (the `else` branch below) skips this entirely: the actor
+        -- is destroyed outright, nothing left to restore mobility on.
+        local entry
+        for _, e in ipairs(Spawner.spawned) do
+            if e.actor == actor then entry = e; break end
+        end
+        releasePlacementMobility(actor, entry)
         print("[LivingBase] Relocation cancelled -- returned to original spot.\n")
         pcall(function() Spawner.Toast("Returned to original spot.", 1.5) end)
     else
+        Spawner._placementOrigGravityScale = nil
         pcall(function() Spawner.DespawnActor(actor) end)
         print("[LivingBase] Placement cancelled.\n")
         pcall(function() Spawner.Toast("Placement cancelled.", 1.5) end)
@@ -8354,7 +8484,34 @@ function Spawner.UpdateHoverHighlight()
         -- just fixed at the SOURCE instead: LetFurniturePass now also blocks channel 0, the channel
         -- THIS trace has always actually used and is confirmed working on, rather than changing the
         -- trace to chase an unverified channel number.
-        local wasHit = KSL:LineTraceSingle(pawn, loc, endPoint, 0, true, {}, 0, hitResult, true, zero, zero, 0.0)
+        -- Pawn-native targeting (2026-08-24, RedFalcon's request) -- FIRST ATTEMPT, UNTESTED LIVE
+        -- YET. Replaces the channel-based LineTraceSingle(..., 0, ...) above (TraceTypeQuery 0 =
+        -- Visibility) with LineTraceSingleByObjectType, which queries by OBJECT TYPE instead of
+        -- trace channel. Why: EnsureRaytraceChannel's own Visibility-block (added 2026-08-22 so
+        -- THIS trace could hit walking NPCs/idle Senkamati/drops at all) turned out to also make
+        -- every mod-spawned actor register as solid "ground" to any OTHER pawn's own foot-IK trace
+        -- -- confirmed live, both wild-vs-mod and mod-vs-mod -- causing a visible leg-lift glitch.
+        -- An object-type query can hit a pawn via its ALREADY-existing native Pawn-channel collision
+        -- (every Character blocks Pawn by default -- no per-actor setup needed) and hit decor/
+        -- statues via their existing WorldStatic/WorldDynamic collision, without ever touching
+        -- Visibility or requiring EnsureRaytraceChannel's per-component modification at all -- so
+        -- that function can stay permanently disabled once this is confirmed working, no tradeoff
+        -- needed. Same call shape as LineTraceSingle otherwise (this file's own confirmed-working
+        -- params), just the single channel enum swapped for an ObjectTypes array. Values assumed at
+        -- Unreal's own default project-settings numbering (1=WorldStatic, 2=WorldDynamic, 3=Pawn) --
+        -- same "assume defaults, confirm live" approach already proven right for TraceTypeQuery
+        -- elsewhere in this file (LetFurniturePass's own comment). NOT YET LIVE-CONFIRMED -- if this
+        -- misses everything, errors, or only hits some of {pawns, decor, statues}, the fallback is
+        -- reverting this one line back to `KSL:LineTraceSingle(pawn, loc, endPoint, 0, true, {}, 0,
+        -- hitResult, true, zero, zero, 0.0)` and re-enabling EnsureRaytraceChannel's commented-out
+        -- SetCollisionResponseToChannel call (accepting the IK glitch back) rather than guessing
+        -- blind at more object-type numbers.
+        -- CORRECTED (2026-08-24) -- `LineTraceSingleByObjectType` doesn't exist in this UE4SS build
+        -- (CONFIRMED LIVE: nullptr on the method call itself). `lbprobeksl` (Spawner.
+        -- ProbeKSLTraceFunctions, see its own comment) dumped KismetSystemLibrary's real function
+        -- list -- the actual name is `LineTraceSingleForObjects` (older UE4-style naming), same
+        -- argument shape otherwise.
+        local wasHit = KSL:LineTraceSingleForObjects(pawn, loc, endPoint, {1, 2, 3}, true, {}, 0, hitResult, true, zero, zero, 0.0)
         local hitActor
         if wasHit then
             -- Field name/depth for the hit actor moved across UE versions -- LineTraceMod's own

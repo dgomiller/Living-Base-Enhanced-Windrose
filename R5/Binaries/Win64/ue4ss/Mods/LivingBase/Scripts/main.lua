@@ -965,6 +965,18 @@ if ExecuteWithDelay then
                     pcall(Spawner.ApplyPlacementCameraOffset)
                 else
                     pcall(Spawner.RestorePlacementCameraOffset)
+                    -- Cancel an in-progress (unfinalized) placement on window close (2026-08-23,
+                    -- RedFalcon's request) -- F5/F6 both go through windowGatedAction, so once the
+                    -- window is closed the player has no way left to confirm OR cancel a placement
+                    -- that's still following the camera; it would otherwise sit stuck forever.
+                    -- Spawner.CancelPlacement (F6's own handler, called directly here rather than via
+                    -- the gated wrapper since the window being closed is exactly the point) already
+                    -- does the right thing for both modes -- despawns a fresh NEW-mode spawn with no
+                    -- trace, or teleports a RELOCATE-mode grab back to its original transform -- see
+                    -- its own comment in spawner.lua.
+                    if Spawner._placementActive then
+                        pcall(Spawner.CancelPlacement)
+                    end
                 end
             end
             lastWindowOpenState = windowOpen

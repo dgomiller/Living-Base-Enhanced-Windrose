@@ -1268,3 +1268,47 @@ mouse (an ordinary, already-reflected getter, no extra machinery). A real click'
 some OTHER widget essentially never does. **When a real, hard-won signal exists but isn't specific
 enough on its own, look for a second cheap, independent, per-instance check to combine it with
 before abandoning the whole mechanism for something unproven.**
+
+### 12x: A C++ mod's `on_update()` call rate can silently decay from ~180/sec to ~1/sec over the first ~90 seconds of every session, for a cause not yet root-caused — and Lua's `ExecuteWithDelay` timing is NOT a reliable proxy for whether it's affected (2026-08-23)
+Real-time interactivity added to a companion C++ mod (held-repeat buttons, polled via `on_update()`)
+felt sluggish and unreliable compared to an existing ImGui panel doing the equivalent thing. Direct
+measurement (a counter + 1-second logging window inside `on_update()` itself) showed why: the call
+rate starts healthy right at launch (~180/sec, matching a normal frame rate) and PROGRESSIVELY DECAYS
+over roughly 60-90 seconds down to a steady ~1/sec, where it stays for the rest of the session. This
+happens **before any companion window/panel is even opened** — it is not triggered by, or specific to,
+using the new feature; it's a property of the session's age. The mod's own `on_update()` body was
+separately timed (wrapping it in a steady-clock start/end) and stays fast throughout — a consistent
+18-25ms every single call, no growth over time — ruling out "our own code is slow" as the cause.
+
+**Ruled out, with evidence, not guessing:**
+- The other C++ mods in the same install (temporarily disabled together via `mods.txt`, one full
+  relaunch+retest) — rate was still exactly ~1/sec, identical body timing. Not them.
+- Lua's own async scheduler — an existing diagnostic console command in this codebase
+  (`lbtickspike`, built for an unrelated earlier investigation, see its own header comment) measures
+  REAL elapsed time between `ExecuteWithDelay` reschedules. Run well after the ~90-second decay
+  point (confirmed via the SAME session's `on_update()` counter still reading ~1/sec at that exact
+  wall-clock time), it reported 120 ticks at nominal 16ms completing in ~2.24 REAL seconds, avg
+  18.66ms, min 15ms, max 22ms — indistinguishable from healthy. If the whole engine or the shared
+  UE4SS event-processing loop were bogged down, Lua's own timers (which ride the same underlying
+  async infrastructure) would show it too. They didn't. Not a shared scheduler/event-queue backlog,
+  and not general engine slowdown (the game itself was never reported as stuttering).
+
+**Not yet root-caused**: `mod->fire_update()` (which calls `on_update()`) is invoked from a
+single-threaded loop in UE4SS's own `UE4SSProgram.cpp`, sleeping only 5ms between iterations —
+nominally capable of ~180+/sec, matching what's actually observed at session start. Something specific
+to how that loop calls THIS mod's `fire_update()` — not the loop's overall iteration rate, not the
+other C++ mods sharing it, not Lua's own scheduling — degrades over the first ~90 seconds of a
+session and then plateaus. Investigating further would require inspecting UE4SS's OWN compiled
+internals (not just this mod's code) or attaching a real profiler/debugger, neither available on this
+machine (see §12h — even minidump analysis here relies on extracting `cdb.exe` by hand).
+
+**Practical lesson regardless of root cause**: a companion window on its own independent OS thread
+(see §12e) is immune to this entirely — it was never discovered until a feature was built that, for a
+correctness reason (native `ProcessEvent`/UObject calls must happen on the game thread), NEEDED
+`on_update()`'s cadence for the first time in this project's history. **Before depending on a
+shared per-frame hook's call RATE for real-time feel (not just "eventually gets called"), measure
+that rate directly and early** — don't assume it matches the
+game's own frame rate just because the underlying loop's sleep interval suggests it should. A working
+diagnostic console command already in the codebase (`lbtickspike`) is reusable for checking whether
+a NEW suspected timing issue is this same phenomenon or something else — run it well into a session,
+not just at launch, since this decays rather than starting broken.

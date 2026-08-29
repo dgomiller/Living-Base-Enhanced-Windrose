@@ -1,28 +1,20 @@
 --[[
- LivingBase / fkeys.lua — decor placement key bindings and category data.
+ LivingBase / fkeys.lua — decor category data.
 
- 2026-08-13: replaced the original F1-F8 layout (one physical key per decor category, plus the
- Blackbeard raid flag/trigger) with a 2-key "active category" design so the mod never touches the
- F-row at all. Some other mods (e.g. WeatherControl, Shift+F1-F12) also bind the F-row, and this
- UE4SS build's 3-arg modifier bind (Shift+Fx) doesn't reliably distinguish itself from plain Fx, so
- two mods binding the same physical F-key both fire on every press -- moving off the F-row entirely
- sidesteps that class of conflict by construction rather than by picking keys and hoping.
-
- Design: ';' (decorSpawn) always places from whichever category is currently ACTIVE; ''' (
- decorCategory) advances which category is active (wraps through Config.DECOR_ORDER, announced via
- toast/log) without spawning anything itself. See testbed.lua's Testbed.CycleDecorCategory /
- Testbed.SpawnActiveDecorCategory, and main.lua's registration of both keys.
+ Originally also held the ';'/''' decor placement keybinds (decorSpawn/decorCategory) -- REMOVED
+ (2026-08-24, numpad-only keybind rebuild) along with every other keybound spawn action; decor
+ placement is GUI-only now (the LivingBaseSpawnMenu window's own tree + Spawn/Replace buttons).
+ FKeys.KEYS is kept as an empty table (rather than removed outright) so config.lua's merge loop
+ (`for k, v in pairs(FKeys.KEYS) do ... end`) stays a no-op instead of needing its own removal.
 
  Isolated in its own file (rather than inline in config.lua) purely to keep config.lua from getting
- any bigger -- Config.KEYS still gets these merged in by config.lua's require of this file.
+ any bigger -- Config.DECOR_CATEGORIES/Config.DECOR_ORDER still get merged in by config.lua's
+ require of this file, and are still real data: the GUI tree generator (spawnmenu_manifest.lua)
+ reads both.
 ]]
 local FKeys = {}
 
--- Which physical key each action binds.
-FKeys.KEYS = {
-  decorSpawn    = "OEM_SEMICOLON", -- ';'  place one from the ACTIVE category
-  decorCategory = "OEM_QUOTE",     -- '''  advance the active category (no spawn)
-}
+FKeys.KEYS = {}
 
 -- Cycle order for the active decor category (Testbed.CycleDecorCategory steps forward through
 -- this list, wrapping around). Any subset/reordering of Config.DECOR_CATEGORIES' keys is valid.

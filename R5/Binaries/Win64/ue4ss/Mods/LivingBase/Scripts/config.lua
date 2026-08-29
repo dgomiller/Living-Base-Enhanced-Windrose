@@ -21,15 +21,13 @@ Config.DECOR_COLLISION = true
 -- loaded data assets, which reset each launch, so it never affects the save. See unlockbuild.lua.
 Config.UNLOCK_HIDDEN_BUILDING = false
 
--- Whether every key this mod binds (numpad, F-row, DEL, '\', live-edit -- collectively "In-Game
--- Keys") starts ON or OFF when the game launches. false (default, 2026-08-16) = starts OFF, so the
--- mod's keys don't interfere with anything until you explicitly press the toggle key
--- (Config.KEYS.toggleMod, "INS" by default) to turn them on -- now that the LivingBaseSpawnMenu
--- window is reachable at any time via '-' (Config.KEYS.toggleWindow, itself always active
--- regardless of this setting), there's less reason to have every in-game key live by default; opt
--- in each session instead. true = ready to use immediately, the old default. Purely a starting
--- state; the toggle key still flips it either way at runtime regardless of this setting.
-Config.KEYS_ENABLED_ONSTART = false
+-- Config.KEYS_ENABLED_ONSTART / the "In-Game Keys" on-off toggle concept REMOVED (2026-08-24,
+-- numpad-only keybind rebuild) -- every in-game key is numpad now, and every numpad key (other
+-- than Config.KEYS.toggleWindow itself, which has to stay reachable to open the window in the
+-- first place) is gated purely on the LivingBaseSpawnMenu window being open, via windowGatedAction
+-- (main.lua) -- the same gate confirmPlacement/cancelPlacement/grabTarget/targetLock already used.
+-- There's no longer a separate "enabled" concept to toggle: closing the window IS turning the keys
+-- off. Config.KEYS.toggleMod ('INS') is removed for the same reason -- nothing left to toggle.
 
 -- Auto-restore the saved crowd on world load?
 --   true  = your placed base repopulates automatically when you load in (default).
@@ -127,10 +125,14 @@ Config.WARRIOR_SHIELD_ROTATION = { Pitch = 90.0, Yaw = 165.0, Roll = -15.0 }
 -- re-assert the attachment + tuned rotation when he LEAVES combat, checked on this slow tick.
 Config.SHIELD_REASSERT_MS = 2000
 
--- LIVE EDIT (dev): raise/lower + rotate the placed object in front of you, in place and persistently,
--- to fine-tune sitters and decorations in the base. Rotate step + height step per keypress. The log
--- prints the running yaw offset (bake into a sitter's `yaw`) and height. Enable in config.txt.
-Config.LIVE_EDIT = false
+-- LIVE EDIT: raise/lower + rotate the placed object in front of you, in place and persistently, to
+-- fine-tune sitters and decorations in the base. Rotate step + height step per keypress. The log
+-- prints the running yaw offset (bake into a sitter's `yaw`) and height.
+-- Config.LIVE_EDIT (the on/off flag this used to require) REMOVED (2026-08-24, numpad-only keybind
+-- rebuild) -- this functionality is unconditionally registered now, gated purely on the
+-- LivingBaseSpawnMenu window being open (windowGatedAction, main.lua) like everything else, same
+-- as Config.KEYS_ENABLED_ONSTART's own removal note above. The step-size constants below are still
+-- read live by the new numpad move/rotate handlers.
 Config.LIVE_EDIT_ROTATE_STEP = 15.0   -- deg per press (45 was too strong; 15 = finer control)
 -- Bumped from 8/10: ue4ss.log confirmed targeting + accumulation are both correct (right object every
 -- time, offsets add up correctly press to press) — the "unresponsive" feel is that a lot of keydown
@@ -276,6 +278,25 @@ Config.TARGET_LOCK_MAX_DIST = 1900.0
 -- for a value (position) that only changes as fast as the player walks.
 Config.TARGET_LOCK_CHECK_MS = 2000
 
+-- SHIP RIDER TICK (2026-08-25) -- how often a non-Character actor "moored" to a ship
+-- (Spawner.AddShipRider/ShipRiderTick) has its position/rotation re-synced to the ship's
+-- CURRENT transform. Exists because the real engine attach (Spawner.AttachActorToShip)
+-- CONFIRMED CRASHES THE GAME LIVE (CLAUDE.md item 71) -- this is the safe fallback: recompute
+-- world position each tick from a fixed local (forward/right/up) offset via the same proven
+-- Spawner.ShipLocalToWorld math §13 already confirmed holds through real sailing/turning, then
+-- K2_SetActorLocation/K2_SetActorRotation (both already proven safe everywhere else in this
+-- file) -- no attach call at all.
+-- 200ms (5/sec) CONFIRMED LIVE (2026-08-25) as too slow -- RedFalcon reported visible jitter: the
+-- statue sits frozen while the ship's own bob/sail motion (rendered every frame) moves out from
+-- under it, then snaps back, 5 times a second. Raised to 40ms (25/sec) -- still two plain
+-- transform writes per tick, same trivial cost reasoning as before (see TARGET_LOCK_CHECK_MS's
+-- own comment for the "cheap either way" baseline), just paid 5x more often. This is a discrete
+-- teleport either way, never truly continuous like a real attach would be -- expect SOME residual
+-- stepping is possible at this rate too; if 40ms still isn't smooth enough, the next lever is a
+-- shorter interval still (UE4SS's own timer resolution is the real floor, not cost), not a
+-- fundamentally different mechanism.
+Config.SHIP_RIDER_TICK_MS = 40
+
 -- INVINCIBLE LIVESTOCK. makeSetDressing() already sets bCanBeDamaged=false, but damage in this
 -- game flows through the GAS ability system, not UE's damage path -- which is why boars and goats
 -- still die in raids. GE_Mob_ImmuneToDamage is the game's own mob immunity effect. Its /Game/ path
@@ -292,166 +313,59 @@ Config.IMMUNE_GE_CANDIDATES = {
 Config.WARRIOR_POSTFIX_MS = 1500
 
 ------------------------------------------------------------
--- KEYBINDS — remap freely. Values are UE4SS key names (no CTRL added):
--- function keys "F1".."F9", letters "A".."Z", "DEL", "INS", "HOME", etc.
+-- KEYBINDS — remap freely. Values are UE4SS key names (no CTRL added).
 -- If a name is invalid, the mod falls back to the default and prints a note.
--- Each key drops ONE actor in front of you (Num 0 = undo, DEL = clean house).
 ------------------------------------------------------------
--- NOTE: F10/F11/F12 are avoided — they collide with the game chat window,
--- windowed-mode toggle, and Steam screenshot respectively. The raid keys use F7/F8.
--- PLACEMENT KEYS moved to the NUMPAD (2026-07-10, RedFalcon's layout). One coherent cluster for the
--- hand, freeing the whole F-row. ⚠ NumLock must be ON — with it OFF, Windows remaps the numpad to
--- navigation keys (1->End, 2->Down, ...) before UE4SS ever sees them, and the binds go dead.
+-- NUMPAD-ONLY SCHEME (2026-08-24 rebuild, RedFalcon: "in game we should only be using the numpad
+-- now" -- minimize in-game footprint/mod-collision risk now that the LivingBaseSpawnMenu window
+-- covers all spawning). Every key below is gated on that window being open (windowGatedAction,
+-- main.lua) except toggleWindow itself, which has to stay reachable to open the window in the
+-- first place. ⚠ NumLock must be ON — with it OFF, Windows remaps the numpad to navigation keys
+-- (1->End, 2->Down, ...) before UE4SS ever sees them, and the binds go dead -- this matters MORE
+-- now than it used to, since every placement/movement control lives here, not just spawning.
+--
+-- Dual-purpose direction keys (7/8/4/6/5): MOVE (translate) by default, ROTATE (per-axis) once
+-- Numpad 2 toggles Spawner.placementMode to "ROTATE" -- see spawner.lua's own comment on
+-- Spawner.placementMode/TogglePlacementMode, and this file's numpadMoveOrRotate builder in the KEY
+-- REGISTRATION section, for how these dispatch. Entering an active placement/relocate session
+-- auto-forces Rotate mode (movement doesn't make sense on an object the follow loop is already
+-- repositioning every tick from camera aim); confirming/cancelling forces back to Move.
+-- 5/2 SWAPPED from the original numpad rebuild (2026-08-24, RedFalcon: "swapping 5 and 2 would
+-- give more of a WASD feel and remove the chance to accidentally change mode based on
+-- mispressing") -- 8/4/5/6 now sit in the same plus-shape as W/A/S/D (5 directly below 8, same as
+-- S below W), and Change Mode moves off the key you're most likely to rest a finger on/reach
+-- through during normal movement onto the far corner key instead.
 Config.KEYS = {
-  -- Place a crew pawn, cycling forward one look per press through Config.FACTION_VISITOR_LOOKS
-  -- (index 1 = plain default crew, the other 12 = Buccaneers/Smugglers/Tortuga/Brethren re-skins).
-  -- Was its own separate key (Num+/NUM_ADD) briefly on 2026-08-07 while being proven out; merged
-  -- into this key the same day once nothing else needed NUM_ADD, freeing it back up.
-  crew      = "NUM_ONE",
-  townsman  = "NUM_TWO",   -- place a townsman (wanders + uses furniture)
-  standing  = "NUM_THREE", -- STANDING statue — merchants, chat, cross-hands, woman, + quest folk
-  seated    = "NUM_FOUR",  -- FLOOR sitter (SitterOnGround / LayOnGround) — sits on the ground
-  chairseat = "NUM_FIVE",  -- CHAIR/STOOL sitter (SitterOnStool / Sitting) — place a stool yourself
-  interact  = "NUM_SIX",   -- INTERACTIVE statue (rifling a chest/equipment)
-  plague    = "NUM_SEVEN", -- friendly Senkamati tribal human (cycles looks)
-  livestock = "NUM_EIGHT", -- friendly farm animal (cycles boar / GoatF / GoatM)
-  undo      = "NUM_NINE",  -- despawn the spawn in front of you, ON YOUR FLOOR (walk up + press)
-  restoreLast = "NUM_ZERO", -- undo: respawn the last despawned object(s) (single despawn or DEL batch) at their exact spot
-  -- Cycle the targeted statue OR decoration through its own roster (statue pose roster / decoration
-  -- category) -- Spawner.CycleNearestInFront auto-detects which kind is targeted. Was a single
-  -- forward-only Num+ key until 2026-08-07; changed to a bidirectional pair on request. Tried ']'/'['
-  -- first, moved to 'O'/'U' once the user's own control list showed ']'/'[' are the GAME's "Change
-  -- Target" bind (combat) -- then moved BACK to ']'/'[' the same day: more intuitive, and the
-  -- collision is low-risk in practice (Insert can disable every mod key outright, and building/
-  -- cycling isn't happening mid-combat anyway).
-  cycleNext = "OEM_RIGHT_BRACKET", -- ']'  cycle forward
-  cyclePrev = "OEM_LEFT_BRACKET",  -- '['  cycle backward
+  numpadUp    = "NUM_SEVEN",  -- Move: Up       | Rotate: X-
+  numpadFwd   = "NUM_EIGHT",  -- Move: Forward  | Rotate: Y-
+  numpadDown  = "NUM_NINE",   -- Move: Down     | Rotate: X+
+  numpadLeft  = "NUM_FOUR",   -- Move: Left     | Rotate: Z-
+  changeMode  = "NUM_TWO",    -- toggle Move <-> Rotate
+  numpadRight = "NUM_SIX",    -- Move: Right    | Rotate: Z+
+  numpadBack  = "NUM_FIVE",   -- Move: Backward | Rotate: Y+
   -- Steals OS focus for the LivingBaseSpawnMenu window (SetForegroundWindow, C++ side --
-  -- StandaloneWindow.cpp). SIMPLIFIED (2026-08-16, RedFalcon: "just have it steal focus on = press
-  -- and that's it") -- an earlier version also toggled the player controller's mouse cursor/
-  -- camera-look via bShowMouseCursor/SetIgnoreLookInput; dropped entirely, this key now does exactly
-  -- one thing. Only takes effect if the window is already visible (see main.lua's own
-  -- publishSpawnMenuStatusIfChanged / StandaloneWindow.cpp's FocusStealSeq() check).
-  releaseMouse = "OEM_EQUALS", -- '='  steal focus for the spawn menu window
-  -- Opens/closes the LivingBaseSpawnMenu window (starts CLOSED by default, 2026-08-16). Always
-  -- active, same as Insert and '=' -- works regardless of In-Game Keys being on/off, since you need
-  -- a way to get the window open even with everything else toggled off. Reaching the window's own
-  -- buttons still requires actually opening it, but the buttons' disabled state is unaffected by
-  -- whether the window itself is open -- see MoveMenu.cpp's own In-Game Keys checkbox.
-  toggleWindow = "OEM_MINUS", -- '-'  open/close the spawn menu window
-  toggleMod = "INS", -- toggle EVERY key this mod binds (numpad, F-row, DEL, '\', live-edit) on/off at
-                      -- runtime, so any of them is free for other uses when you're not actively using
-                      -- the mod. Always active itself (not gated by the toggle it controls). Off the
-                      -- F-row on purpose: F-keys are the most likely to be claimed by other mods/
-                      -- overlays (F9 collided with one). "INS" (not "INSERT") is this build's confirmed
-                      -- key name — see the HOME/INS in-world probe keys in ASSET_CATALOG.md. Remap here
-                      -- if this one conflicts too.
-  -- Decor placement keys (decorSpawn/decorCategory) + Blackbeard raid keys live in fkeys.lua --
-  -- see the require/merge below Config.KEYS's closing brace.
-  -- LIVE EDIT (LIVE_EDIT): fine-tune the object in front of you. RedFalcon asked for [/] + '+/-', but '['
-  -- and numpad-0 don't register binds in this build (the game eats them), so these use the proven
-  -- shield-tuner keys instead. Rotate: ',' / '.'   Height: PageUp / '-'.
-  editUp    = "PAGE_UP",     -- raise
-  editDown  = "PAGE_DOWN",   -- lower
-  editRotL  = "OEM_COMMA",   -- ','  rotate left (whichever axis is currently selected, see below)
-  editRotR  = "OEM_PERIOD",  -- '.'  rotate right (whichever axis is currently selected, see below)
-  -- Full 3-axis rotation (2026-08-18): ',' '.' stay the only two rotate keys instead of growing to
-  -- six -- this key cycles which axis they act on (X -> Y -> Z -> X, X/Y = Roll/Pitch, Z = Yaw),
-  -- toast-confirmed each press. Starts on Z, so ',' '.' behave exactly as before (yaw-only) until
-  -- this is pressed at least once. The PLAIN '/' key, not NUM_DIVIDE (numpad '/', still the fixed
-  -- 45-degree-rotate key right below, untouched) -- confirmed those are two genuinely different
-  -- keys in this UE4SS build, not the same physical key under two names. Shared with the
-  -- LivingBaseSpawnMenu window's own '/' shortcut -- same underlying Lua state either way, so the
-  -- keyboard and the GUI window can never disagree about which axis is currently selected.
-  toggleRotateAxis = "OEM_SLASH",
-  editRot45 = "NUM_DIVIDE",  -- numpad '/'  rotate a fixed 45 deg (not scaled by LIVE_EDIT_ROTATE_STEP)
-  editRot180 = "NUM_MULTIPLY", -- numpad '*'  rotate a fixed 180 deg (flip the object in front of you)
-  editPrecisionToggle = "NUM_SUBTRACT", -- numpad '-'  cycle slide/height precision: full -> 1/2 -> 1/4 -> 1/8 -> 2x -> full
-  -- Target lock (2026-08-13): pins despawn/cycle/live-edit to ONE tracked actor instead of re-picking
-  -- "nearest in front" on every press -- lets you back away/turn to check an angle, or work on a spawn
-  -- that's momentarily outside the normal targeting cone, without losing it. Toggle on/off; toast-
-  -- confirmed each way. NUM_ADD was free (see the removed-reloadTest comment in main.lua's own history
-  -- for its prior two brief uses) -- numpad '+' rounds out the operator cluster next to '/'  (45°),
-  -- '*' (180°), and '-' (precision).
+  -- StandaloneWindow.cpp) -- was OEM_EQUALS ('=') before the numpad rebuild.
+  releaseCursor = "NUM_ONE",
+  -- Despawn whatever's in front of you -- was NUM_NINE ("undo") before the numpad rebuild freed
+  -- that slot for numpadDown.
+  despawn = "NUM_THREE",
+  -- Target lock (2026-08-13): pins despawn/live-edit to ONE tracked actor instead of re-picking
+  -- "nearest in front" on every press -- lets you back away/turn to check an angle without losing
+  -- it. UNCHANGED by the 2026-08-24 numpad rebuild.
   targetLock = "NUM_ADD",
-  -- Slide keys: arrows are NOT in this build's Key[] table at all (see VK_FALLBACK in main.lua) — they
-  -- only work via a raw-Windows-virtual-key workaround. Tried I/J/K/L (which should go through the normal
-  -- Key[] path) but they didn't bind AT ALL in this game — meaning this game's Key[] table doesn't have
-  -- plain single-letter entries either, so that's a dead end here. Back to arrows, which at least
-  -- partially work via the VK fallback.
-  editFwd   = "UP",          -- arrow up:    slide the prop AWAY from you (along your facing)
-  editBack  = "DOWN",        -- arrow down:  slide it TOWARD you
-  editLeft  = "LEFT",        -- arrow left:  slide it to your left
-  editRight = "RIGHT",       -- arrow right: slide it to your right
-  facing    = "OEM_FIVE",  -- '\'  flip statue placement 180 deg (back-to-you / riflers face you)
-  clear     = "DEL",       -- despawn ALL (clean house) — off the pad (destructive)
-
   -- BUILD-GHOST-PREVIEW (2026-08-20): confirm/cancel a live-following placement started from the
   -- LivingBaseSpawnMenu Spawn button (see main.lua's pollSpawnMenuRequest + Spawner.
-  -- ConfirmPlacement/CancelPlacement). F5/F6 were freed 2026-08-15 when their prior scaffolding
-  -- (testApplyPose/testApplyBodySex) was removed -- see that removal note a few lines below.
-  confirmPlacement = "F5", -- lock the currently-previewed object in place
-  cancelPlacement  = "F6", -- destroy the currently-previewed object, no trace left behind
-  -- Grab-and-relocate (2026-08-20, RedFalcon's request): pick up whatever's currently target-locked
-  -- (Num+) and carry it like a fresh placement -- F5/F6 above then confirm the new spot or put it
-  -- back where it was (never destroy -- see Spawner.CancelPlacement's RELOCATE branch).
-  grabTarget = "F7", -- start relocating the target-locked object
-  -- Physics toggle (2026-08-20, RedFalcon, EXPERIMENTAL): re-enable real physics simulation on the
-  -- object currently being placed/relocated, to see whether it then behaves like Windrose's own
-  -- build-mode ghost (settling on/sliding across the floor as you look around) instead of floating
-  -- exactly at the raycast point. Doesn't touch the follow loop itself, which keeps teleporting the
-  -- object to the camera-aim point every tick regardless -- this only flips SetSimulatePhysics, so
-  -- whatever happens is physics reacting in the brief window between teleports. NOT OEM_QUOTE (')
-  -- -- that's already decorCategory (fkeys.lua, RedFalcon caught the collision live before it ever
-  -- shipped). "END" is unused anywhere in this mod and isn't the console key (Tilde is).
-  togglePlacementPhysics = "END", -- toggle physics on the object being placed/relocated
-  -- Free-build toggle (2026-08-21, RedFalcon): flips floor-lock off/on globally -- see
-  -- Config.PLACEMENT_FREEBUILD_START_DIST_UU's comment above for the full behavior. F8 is free
-  -- (F5/F6/F7 already taken by confirm/cancel/grab, right next to it on the row).
-  toggleFreeBuild = "F8", -- toggle free-build mode (no floor lock, static distance)
-  -- Zoom (2026-08-20, RedFalcon: "be able to zoom it in and out... so we aren't limited to either a
-  -- set distance nor its starting distance") -- nudges Spawner._placementDistance, which the follow
-  -- loop reads live (see Spawner.AdjustPlacementDistance). Mouse wheel isn't an option here --
-  -- RegisterKeyBind is a button-press API in every confirmed use in this codebase, not an axis one,
-  -- so a scroll axis wouldn't register as a bind at all. PAGE_UP/PAGE_DOWN were already taken
-  -- (editUp/editDown); HOME/PAUSE were both free (previously used for now-removed HOME/PAUSE probe
-  -- diagnostics, so confirmed to bind cleanly in this build).
-  placementZoomIn  = "HOME",  -- pull the followed object closer
-  placementZoomOut = "PAUSE", -- push the followed object farther
-
-  -- DEV-TOOL diagnostics (Spawner.ProbeNearestActor/ProbeDumpProperties) moved from HOME/PAUSE
-  -- keybinds to the "lbprobe"/"lbprobedump" console commands (2026-08-18, RedFalcon's request) --
-  -- see main.lua's own registration comment for why. No Config.KEYS entry needed anymore.
-  -- TEMP DEV/TEST TOOL (2026-08-10) -- see Testbed.TestFemaleWalkerReskin's own comment. Reuses the
-  -- slot the now-settled SpawnCompareMobCaster tool had (and, briefly, the failed
-  -- TestFemaleStatueAI attempt). NUM_DECIMAL needs the VK_FALLBACK raw-virtual-key treatment,
-  -- same as every other numpad operator key in this build (see main.lua's own VK_FALLBACK
-  -- table/comment).
-  testFemaleWalkerReskin = "NUM_DECIMAL",
-  -- testApplyBodySex ("F6") REMOVED (2026-08-15) -- was scaffolding for confirming Spawner.
-  -- ApplyBodySex's post-build sex change actually renders (it does -- CLAUDE.md item 64). That
-  -- capability lives on as the `lbsexchange` console command instead of a dev key. F6 is free
-  -- again.
-  -- testApplyPose ("F5") REMOVED (2026-08-15) -- was scaffolding for the pose-porting
-  -- investigation, now CLOSED (item 63/65). F5 is free again.
-  -- testApplyBodyType ("F4") REMOVED (2026-08-15, same day it was added) -- CONFIRMED to crash the
-  -- game natively (comp:SetBody call, two live tests, two crashes, zero Lua-side trace either
-  -- time). See main.lua's own removal note at the old register() call site, and CLAUDE.md item 64,
-  -- for the full writeup. F4 is free again, but don't reuse it for another SetBody test without a
-  -- genuinely new theory about the crash.
-  -- testColorRandomization ("SCROLL_LOCK") REMOVED (2026-08-11) -- its dev/test tool
-  -- concluded and was removed; see Testbed.lua's own note at the old call site for
-  -- findings. SCROLL_LOCK is free again.
-  -- reloadTest ("NUM_ADD") REMOVED (2026-08-13) -- temp key confirmed lbreload alone picks up a
-  -- keybind change with no world-load/menu round-trip needed (RegisterKeyBind runs unconditionally
-  -- at top-level module load). Confirmed live, tool removed. NUM_ADD is free again -- its brief
-  -- reuse for a "Female_Barbie" test key (same day) was retired in favor of making that an
-  -- lblook-only named look instead (Testbed.SpawnBarbieByName) -- no numpad key needed.
-  -- senkaStatue ('=')/senkaStatueStanding ('-') REMOVED (2026-08-15) -- the entire Senkamati
-  -- Statues feature was purged (RedFalcon: the archetype-reroll mechanism could flash through
-  -- other body types -- bare skin/nipples -- on the way to a good one, an NSFW risk not worth
-  -- keeping once Num7's own frozen "idle" rows cover the same "see a static look" need safely).
-  -- See CLAUDE.md for the full writeup. Both keys are free again.
+  -- ConfirmPlacement/CancelPlacement). Moved off F5/F6/F7/F8 onto the numpad (2026-08-24).
+  cancelPlacement  = "NUM_DIVIDE",   -- was F6 -- destroy the currently-previewed object, no trace
+  -- Grab-and-relocate (2026-08-20): pick up whatever's currently target-locked (Num+) and carry it
+  -- like a fresh placement.
+  grabTarget       = "NUM_MULTIPLY", -- was F7 -- start relocating the target-locked object
+  -- Opens/closes the LivingBaseSpawnMenu window. The ONE key that stays reachable even while the
+  -- window is closed -- there'd be no way to open it otherwise. Was OEM_MINUS ('-').
+  toggleWindow     = "NUM_SUBTRACT",
+  confirmPlacement = "NUM_ZERO",     -- was F5 -- lock the currently-previewed object in place
+  -- Free-build/floor-clipping toggle (2026-08-21) -- flips floor-lock off/on globally. Was F8.
+  toggleFreeBuild  = "NUM_DECIMAL",
 }
 
 -- Decor key bindings + category data live in fkeys.lua (see that file's own header) -- merge them
@@ -1052,6 +966,49 @@ Config.SENKA_UNDERWEAR_LEGS_M =
   "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Underwear/Meshes/SK_Armor_Underwear_02_Male_Legs.SK_Armor_Underwear_02_Male_Legs"
 Config.SENKA_UNDERWEAR_LEGS_F =
   "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Underwear/Meshes/SK_Armor_Underwear_02_Female_Legs.SK_Armor_Underwear_02_Female_Legs"
+-- Torso sibling (2026-08-28), added for the Senkamati Torso/Legs fit-compatibility fallback in
+-- Spawner.TestApplyClothingPiece -- same underwear family already swept into Config.CUSTOM_CLOTHES
+-- ("Underwear" family, "Set 1" Torso) as a Female-only unisexPath entry, no Male Torso variant was
+-- found in the catalog, so there's no _M sibling to add here.
+Config.SENKA_UNDERWEAR_TORSO_F =
+  "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Underwear/Meshes/SK_Armor_Underwear_01_Female_Torso.SK_Armor_Underwear_01_Female_Torso"
+
+-- Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES -- live-tested by RedFalcon (2026-08-28): "all the
+-- named women, the buccaneer merchant, and albion + Adventure standing/sitting women can wear the
+-- senkamati torso and legs without major clipping" -- everything else clips badly. Matches item
+-- 61's own already-confirmed finding (the Senkamati armor was rigged for exactly one archetype and
+-- doesn't deform correctly onto the other 5) -- this is that same compatibility limit, now applied
+-- generically via Custom > Clothes instead of only the removed Senkamati Statues roster. The named
+-- women (Letty/Marita, "Woman With Hair Base 1") already resolve to SK_Adventure_Female_01, so
+-- they're covered by this allowlist automatically -- no separate name/class check needed. Checked
+-- by Spawner.TestApplyClothingPiece against the target's OWN current body mesh.
+-- Same-day follow-up: RedFalcon also confirmed the Herbalist and Gatherer both work -- a live
+-- probedump (probedump_20260828_104940.txt) confirms the Herbalist-based walker ALSO reads
+-- SK_Adventure_Female_01 (identical to the Gatherer), so both were already covered without a code
+-- change. The one genuine addition needed: the RAW Senkamati Witch body herself
+-- (SK_Senkamati_Witch_01_Female) -- obviously compatible, this is literally her own native armor,
+-- but she wasn't in the list since the fallback logic only ever checked for pieces being applied
+-- ONTO an unrelated body, never considered the trivial case of applying her own armor back onto
+-- her own body.
+Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES = {
+  "SK_Adventure_Female_01", "SK_Albion_Female_01", "SK_Senkamati_Witch_01_Female",
+}
+
+-- Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_CLASSES -- an UNCONDITIONAL pass by class name,
+-- independent of body mesh (2026-08-28, same day). RedFalcon confirmed "Marita and buccaneer
+-- merchant woman" also fit -- probe dumps showed these are NOT the walking Handyman-based
+-- re-skins (already covered via body mesh above): "Marita" here is the real base-game quest NPC
+-- (body mesh SK_Fable_Female_01 -- Fable, not in the mesh allowlist), and the Buccaneers Merchant
+-- was caught on SK_Orient_Female_01 this time (also not in the allowlist, and different from
+-- Adventure/Albion she's rolled in earlier probes -- her body genuinely randomizes per spawn,
+-- item 57). Since both fit regardless of which archetype mesh they happen to be wearing, this
+-- isn't archetype-dependent for these two specific classes -- something about their OWN
+-- composite/outfit build apparently avoids the clipping. Checked via
+-- actor:GetClass():GetFName():ToString() in Spawner.TestApplyClothingPiece.
+Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_CLASSES = {
+  "BP_NPC_QuestStatic_Smugglers_MaritaSuares_C",
+  "BP_AnimatedActor_Buccaneers_Merchant_01_C",
+}
 
 -- SENKAMATI STATUE PELVIS GAP / SENKA_STATUE_BODY_SWAP_TEST REMOVED (2026-08-15) -- both were
 -- specific to the now-removed Senkamati Statues feature. See config.lua's earlier removal note
@@ -1162,6 +1119,7 @@ Config.DECORRUPT_CREW_FEMALE = {
 -- Sailor legs are "_Legs_Long" and have NO female variant, so women use a
 -- female-fitted set. Rules are chosen by the pawn's BodySex at spawn.
 local ARM = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/"
+local ARMC = "/Game/Character/Skeletal_Meshes/Armor/ArmorCreature/"
 
 
 -- MEN: bare chest, sailor pants, barefoot, no facial hair.
@@ -1506,6 +1464,7 @@ local ARM   = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/"
 local HMN   = "/Game/Character/Skeletal_Meshes/Human/Regular/"
 local BROW  = "/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/"
 local HAIRD = "/Game/Character/Skeletal_Meshes/Hair/Female/"
+local HAIRM = "/Game/Character/Skeletal_Meshes/Hair/Male/"
 
 -- Config.SKIN_FAMILIES / Config.SkinFamilySwapRules(family, sex) — "skin tone" for this
 -- game's human bodies. Confirmed via probe (2026-08-10, during the tattoo investigation)
@@ -1535,6 +1494,81 @@ function Config.SkinFamilySwapRules(family, sex)
   end
   return rules
 end
+
+-- Config.CorruptedSkinSwapRules(sex) -- an 8th "Custom > Skin Tones" entry (2026-08-28,
+-- RedFalcon's request: "including the corrupted skin"). Swaps a HUMAN-bodied actor's skin TO the
+-- Senkamati mob's own native skin material -- the reverse direction of Config.DECORRUPT_MOB's
+-- swaps above (which go corrupted -> clean), same underlying mechanism either way.
+-- Confirmed via pakcontents.xlsx (NOT guessed) that this material lives at
+-- `Human/Regular/Senkamati/Materials/MI_Senkamati_<Sex>_<Build>` -- the SAME folder shape as every
+-- other family above (`Human/Regular/<Family>/Materials/...`), meaning it's a genuine
+-- ethnicity-style asset authored for the human body/UVs, NOT the "Senkamati MESH" case the comment
+-- earlier in this file warns about (painting a human skin onto the native SENKAMATI skeletal mesh
+-- maps garbage) -- this only ever targets a human-skeleton actor, same as every other family here.
+-- Asset availability is UNEVEN, also confirmed via the catalog rather than assumed: only a Medium
+-- build exists for Female (Small/Large do not), so all three Female match patterns swap TO that
+-- same Medium asset regardless of the target's actual build -- may look slightly off-scale on a
+-- Small/Large-build target, but it's the only Female corrupted-skin asset that exists. Male ships
+-- a genuine per-build set under the "Feather" sub-family (Warrior/Hunter's own default).
+function Config.CorruptedSkinSwapRules(sex)
+  sex = sex or "Female"
+  local dir = "/Game/Character/Skeletal_Meshes/Human/Regular/Senkamati/Materials/"
+  local rules = {}
+  if sex == "Male" then
+    for _, size in ipairs({ "Large", "Medium", "Small" }) do
+      table.insert(rules, {
+        match = "MI_%a+_Male_" .. size,
+        to = objPath(dir, "MI_Senkamati_Feather_Male_" .. size),
+      })
+    end
+  else
+    for _, size in ipairs({ "Large", "Medium", "Small" }) do
+      table.insert(rules, {
+        match = "MI_%a+_Female_" .. size,
+        to = objPath(dir, "MI_Senkamati_Female_Medium"),
+      })
+    end
+  end
+  return rules
+end
+
+-- Config.CorruptedWoodSkinSwapRules(sex) -- a second Senkamati corrupted-skin option (2026-08-28).
+-- The earlier comment above (before this addition) said a "Wood" male variant was referenced by
+-- Config.DECORRUPT_MOB but wasn't found in the catalog -- a re-check of pakcontents.xlsx found it
+-- after all: `MI_Senkamati_Wood_Male_Medium` genuinely exists, just as a SINGLE Medium-only asset
+-- (no Small/Large Wood variant, same one-size-fits-all situation as the Female corrupted skin
+-- above) rather than the full per-build "Feather" set. Female has no Wood equivalent at all, so
+-- this falls back to the identical Female Medium asset Config.CorruptedSkinSwapRules already uses
+-- for that sex -- "Corrupted (Wood)" and "Corrupted" render identically on a Female target, only
+-- Male actually differs between the two.
+function Config.CorruptedWoodSkinSwapRules(sex)
+  sex = sex or "Female"
+  local dir = "/Game/Character/Skeletal_Meshes/Human/Regular/Senkamati/Materials/"
+  local rules = {}
+  if sex == "Male" then
+    for _, size in ipairs({ "Large", "Medium", "Small" }) do
+      table.insert(rules, {
+        match = "MI_%a+_Male_" .. size,
+        to = objPath(dir, "MI_Senkamati_Wood_Male_Medium"),
+      })
+    end
+  else
+    for _, size in ipairs({ "Large", "Medium", "Small" }) do
+      table.insert(rules, {
+        match = "MI_%a+_Female_" .. size,
+        to = objPath(dir, "MI_Senkamati_Female_Medium"),
+      })
+    end
+  end
+  return rules
+end
+
+-- Config.CUSTOM_SKIN_TONES -- flat name list for the "Custom > Skin Tones" GUI branch
+-- (spawn_menu.ini, via spawnmenu_manifest.lua) -- the 7 confirmed human ethnicity families plus
+-- "Corrupted"/"Corrupted (Wood)" (Config.CorruptedSkinSwapRules/CorruptedWoodSkinSwapRules above).
+-- Spawner.TestApplySkinFamily(name) is what actually applies one -- see its own comment for the
+-- sex auto-detection this needs that lbtestpose/lbtestarmor's simpler path-only testers never did.
+Config.CUSTOM_SKIN_TONES = { "Adventurer", "African", "Albion", "Fable", "Native", "Orient", "Scum", "Corrupted", "Corrupted (Wood)" }
 
 -- Config.FEMALE_HAIR_STYLES — "hair style": a MESH swap, not a tint. One entry per
 -- hairstyle FAMILY (the game's own folder grouping under Hair/Female/), each pointing at
@@ -1609,6 +1643,1016 @@ Config.FEMALE_HAIR_STYLES = {
   { name = "Wick",             path = objPath(HAIRD .. "Wick/",             "SK_Hair_Wick_01_Default_Female") },
   { name = "Wig",              path = objPath(HAIRD .. "Wig/",              "SK_Hair_Wig_01_Default_Female") },
 }
+
+-- Config.CUSTOM_HAIR -- "Custom > Hair" GUI branch (2026-08-28, revised AGAIN same day). The
+-- previous revision added Headband/Bandana variants but still collapsed each family down to ONE
+-- representative numbered mesh (e.g. "Wig" always meant Wig_01) -- RedFalcon caught that this
+-- still didn't cover Marita's own hair: her real mesh is specifically `Wig_02_SuspendedBandana`,
+-- not `Wig_01`, since several families genuinely ship MULTIPLE numbered sub-styles (Afro has 5,
+-- Shag/Pixie/Wavy have 3, Bun/Wick/Wig have 2) that are real, visually distinct looks, not
+-- interchangeable copies of the same style the way "pick any one to represent the family" assumed.
+-- Rebuilt to expose every numbered sub-style as its own named entry ("Wig 1"/"Wig 2", "Afro 1".."Afro
+-- 5", etc.) -- families with only one real style keep their bare name (e.g. "ShortBob"). Also
+-- surfaced a genuine naming collision the earlier per-family sweep silently lost: LayeredBob ships
+-- TWO distinct meshes both nominally "01" under the SAME folder -- plain `LayeredBob_01_...` and a
+-- separate `LayeredBobDecor_01_...` -- now kept as "LayeredBob" and "LayeredBob Decor" instead of
+-- one silently overwriting the other. One confirmed real asymmetry excluded rather than guessed
+-- around: Male Shag ships 3 extra numbered variants (04/05/06) that Female Shag doesn't have at
+-- all -- since this table needs both sexes' paths for the same entry (sex is auto-detected at
+-- apply time), those 3 Male-only numbers aren't included; every other family/number is
+-- confirmed present for both sexes via pakcontents.xlsx before being added.
+-- `variant`/femalePath/malePath/Spawner.TestApplyHairStyle's own sex-auto-detection are otherwise
+-- unchanged from the previous revision -- see that function's own comment.
+Config.CUSTOM_HAIR = {
+  { name = "Afro 1", variant = "Default", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_01_Default_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_01_Default_Male") },
+  { name = "Afro 1", variant = "Headband", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_01_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_01_SuspendedHeadband_Male") },
+  { name = "Afro 2", variant = "Default", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_02_Default_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_02_Default_Male") },
+  { name = "Afro 2", variant = "Hat", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_02_SuspendedHat_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_02_SuspendedHat_Male") },
+  { name = "Afro 2", variant = "Headband", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_02_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_02_SuspendedHeadband_Male") },
+  { name = "Afro 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_02_SuspendedBandana_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_02_SuspendedBandana_Male") },
+  { name = "Afro 3", variant = "Default", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_03_Default_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_03_Default_Male") },
+  { name = "Afro 3", variant = "Hat", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_03_SuspendedHat_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_03_SuspendedHat_Male") },
+  { name = "Afro 3", variant = "Headband", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_03_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_03_SuspendedHeadband_Male") },
+  { name = "Afro 3", variant = "Bandana", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_03_SuspendedBandana_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_03_SuspendedBandana_Male") },
+  { name = "Afro 4", variant = "Default", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_04_Default_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_04_Default_Male") },
+  { name = "Afro 4", variant = "Headband", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_04_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_04_SuspendedHeadband_Male") },
+  { name = "Afro 5", variant = "Default", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_05_Default_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_05_Default_Male") },
+  { name = "Afro 5", variant = "Hat", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_05_SuspendedHat_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_05_SuspendedHat_Male") },
+  { name = "Afro 5", variant = "Headband", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_05_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_05_SuspendedHeadband_Male") },
+  { name = "Afro 5", variant = "Bandana", femalePath = objPath(HAIRD .. "Afro/", "SK_Hair_Afro_05_SuspendedBandana_Female"), malePath = objPath(HAIRM .. "Afro/", "SK_Hair_Afro_05_SuspendedBandana_Male") },
+  { name = "Braid", variant = "Default", femalePath = objPath(HAIRD .. "Braid/", "SK_Hair_Braid_01_Default_Female"), malePath = objPath(HAIRM .. "Braid/", "SK_Hair_Braid_01_Default_Male") },
+  { name = "Braid", variant = "Hat", femalePath = objPath(HAIRD .. "Braid/", "SK_Hair_Braid_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Braid/", "SK_Hair_Braid_01_SuspendHat_Male") },
+  { name = "Braid", variant = "Headband", femalePath = objPath(HAIRD .. "Braid/", "SK_Hair_Braid_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Braid/", "SK_Hair_Braid_01_SuspendHeadband_Male") },
+  { name = "Braid", variant = "Bandana", femalePath = objPath(HAIRD .. "Braid/", "SK_Hair_Braid_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Braid/", "SK_Hair_Braid_01_SuspendBandana_Male") },
+  { name = "Bristle", variant = "Default", femalePath = objPath(HAIRD .. "Bristle/", "SK_Hair_Bristle_01_Default_Female"), malePath = objPath(HAIRM .. "Bristle/", "SK_Hair_Bristle_01_Default_Male") },
+  { name = "Bun 1", variant = "Default", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_01_Default_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_01_Default_Male") },
+  { name = "Bun 1", variant = "Hat", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_01_SuspendHat_Male") },
+  { name = "Bun 1", variant = "Headband", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_01_SuspendHeadband_Male") },
+  { name = "Bun 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_01_SuspendBandana_Male") },
+  { name = "Bun 2", variant = "Default", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_02_Default_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_02_Default_Male") },
+  { name = "Bun 2", variant = "Hat", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_02_SuspendHat_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_02_SuspendHat_Male") },
+  { name = "Bun 2", variant = "Headband", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_02_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_02_SuspendHeadband_Male") },
+  { name = "Bun 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Bun/", "SK_Hair_Bun_02_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Bun/", "SK_Hair_Bun_02_SuspendBandana_Male") },
+  { name = "LayeredBob", variant = "Default", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBob_01_Default_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBob_01_Default_Male") },
+  { name = "LayeredBob", variant = "Hat", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendHat_Male") },
+  { name = "LayeredBob", variant = "Headband", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendHeadband_Male") },
+  { name = "LayeredBob", variant = "Bandana", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBob_01_SuspendBandana_Male") },
+  { name = "LayeredBob Decor", variant = "Default", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_Default_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_Default_Male") },
+  { name = "LayeredBob Decor", variant = "Hat", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendHat_Male") },
+  { name = "LayeredBob Decor", variant = "Headband", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendHeadband_Male") },
+  { name = "LayeredBob Decor", variant = "Bandana", femalePath = objPath(HAIRD .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "LayeredBob/", "SK_Hair_LayeredBobDecor_01_SuspendBandana_Male") },
+  { name = "Mohawk", variant = "Default", femalePath = objPath(HAIRD .. "Mohawk/", "SK_Hair_Mohawk_01_Default_Female"), malePath = objPath(HAIRM .. "Mohawk/", "SK_Hair_Mohawk_01_Default_Male") },
+  { name = "Mohawk", variant = "Headband", femalePath = objPath(HAIRD .. "Mohawk/", "SK_Hair_Mohawk_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Mohawk/", "SK_Hair_Mohawk_01_SuspendHeadband_Male") },
+  { name = "PartialDreadlocks", variant = "Default", femalePath = objPath(HAIRD .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Default_Female"), malePath = objPath(HAIRM .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Default_Male") },
+  { name = "PartialDreadlocks", variant = "Hat", femalePath = objPath(HAIRD .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Hat_Female"), malePath = objPath(HAIRM .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Hat_Male") },
+  { name = "PartialDreadlocks", variant = "Headband", femalePath = objPath(HAIRD .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Headband_Female"), malePath = objPath(HAIRM .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Headband_Male") },
+  { name = "PartialDreadlocks", variant = "Bandana", femalePath = objPath(HAIRD .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Bandana_Female"), malePath = objPath(HAIRM .. "PartialDreadlocks/", "SK_Hair_PartialDreadlocks_01_Bandana_Male") },
+  { name = "Pixie 1", variant = "Default", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_01_Default_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_01_Default_Male") },
+  { name = "Pixie 1", variant = "Hat", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_01_SuspendHat_Male") },
+  { name = "Pixie 1", variant = "Headband", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_01_SuspendHeadband_Male") },
+  { name = "Pixie 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_01_SuspendBandana_Male") },
+  { name = "Pixie 2", variant = "Default", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_02_Default_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_02_Default_Male") },
+  { name = "Pixie 2", variant = "Hat", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_02_SuspendHat_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_02_SuspendHat_Male") },
+  { name = "Pixie 2", variant = "Headband", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_02_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_02_SuspendHeadband_Male") },
+  { name = "Pixie 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_02_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_02_SuspendBandana_Male") },
+  { name = "Pixie 3", variant = "Default", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_03_Default_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_03_Default_Male") },
+  { name = "Pixie 3", variant = "Hat", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_03_SuspendHat_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_03_SuspendHat_Male") },
+  { name = "Pixie 3", variant = "Headband", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_03_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_03_SuspendHeadband_Male") },
+  { name = "Pixie 3", variant = "Bandana", femalePath = objPath(HAIRD .. "Pixie/", "SK_Hair_Pixie_03_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Pixie/", "SK_Hair_Pixie_03_SuspendBandana_Male") },
+  { name = "Ponytail", variant = "Default", femalePath = objPath(HAIRD .. "Ponytail/", "SK_Hair_Ponytail_01_Default_Female"), malePath = objPath(HAIRM .. "Ponytail/", "SK_Hair_Ponytail_01_Default_Male") },
+  { name = "Ponytail", variant = "Hat", femalePath = objPath(HAIRD .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendHat_Male") },
+  { name = "Ponytail", variant = "Headband", femalePath = objPath(HAIRD .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendHeadband_Male") },
+  { name = "Ponytail", variant = "Bandana", femalePath = objPath(HAIRD .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Ponytail/", "SK_Hair_Ponytail_01_SuspendBandana_Male") },
+  { name = "Shag 1", variant = "Default", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_Default_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_Default_Male") },
+  { name = "Shag 1", variant = "Hat", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_SuspendHat_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_SuspendHat_Male") },
+  { name = "Shag 1", variant = "Headband", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_SuspendHeadband_Male") },
+  { name = "Shag 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_SuspendBandana_Male") },
+  { name = "Shag 2", variant = "Default", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_02_Default_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_02_Default_Male") },
+  { name = "Shag 2", variant = "Hat", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_02_SuspendHat_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_02_SuspendHat_Male") },
+  { name = "Shag 2", variant = "Headband", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_02_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_02_SuspendHeadband_Male") },
+  { name = "Shag 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_02_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_02_SuspendBandana_Male") },
+  { name = "Shag 3", variant = "Default", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_03_Default_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_03_Default_Male") },
+  { name = "Shag 3", variant = "Hat", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_03_SuspendHat_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_03_SuspendHat_Male") },
+  { name = "Shag 3", variant = "Headband", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_03_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_03_SuspendHeadband_Male") },
+  { name = "Shag 3", variant = "Bandana", femalePath = objPath(HAIRD .. "Shag/", "SK_Hair_Shag_03_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Shag/", "SK_Hair_Shag_03_SuspendBandana_Male") },
+  { name = "ShortBob", variant = "Default", femalePath = objPath(HAIRD .. "ShortBob/", "SK_Hair_ShortBob_Default_Female"), malePath = objPath(HAIRM .. "ShortBob/", "SK_Hair_ShortBob_Default_Male") },
+  { name = "ShortBob", variant = "Hat", femalePath = objPath(HAIRD .. "ShortBob/", "SK_Hair_ShortBob_SuspendHat_Female"), malePath = objPath(HAIRM .. "ShortBob/", "SK_Hair_ShortBob_SuspendHat_Male") },
+  { name = "ShortBob", variant = "Headband", femalePath = objPath(HAIRD .. "ShortBob/", "SK_Hair_ShortBob_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "ShortBob/", "SK_Hair_ShortBob_SuspendHeadband_Male") },
+  { name = "ShortBob", variant = "Bandana", femalePath = objPath(HAIRD .. "ShortBob/", "SK_Hair_ShortBob_SuspendBandana_Female"), malePath = objPath(HAIRM .. "ShortBob/", "SK_Hair_ShortBob_SuspendBandana_Male") },
+  { name = "Slickback", variant = "Default", femalePath = objPath(HAIRD .. "Slickback/", "SK_Hair_Slickback_Default_Female"), malePath = objPath(HAIRM .. "Slickback/", "SK_Hair_Slickback_Default_Male") },
+  { name = "Slickback", variant = "Hat", femalePath = objPath(HAIRD .. "Slickback/", "SK_Hair_Slickback_SuspendHat_Female"), malePath = objPath(HAIRM .. "Slickback/", "SK_Hair_Slickback_SuspendHat_Male") },
+  { name = "Slickback", variant = "Headband", femalePath = objPath(HAIRD .. "Slickback/", "SK_Hair_Slickback_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Slickback/", "SK_Hair_Slickback_SuspendHeadband_Male") },
+  { name = "Slickback", variant = "Bandana", femalePath = objPath(HAIRD .. "Slickback/", "SK_Hair_Slickback_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Slickback/", "SK_Hair_Slickback_SuspendBandana_Male") },
+  { name = "Undercut", variant = "Default", femalePath = objPath(HAIRD .. "Undercut/", "SK_Undercut_01_Default_Female"), malePath = objPath(HAIRM .. "Undercut/", "SK_Undercut_01_Default_Male") },
+  { name = "Undercut", variant = "Headband", femalePath = objPath(HAIRD .. "Undercut/", "SK_Undercut_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Undercut/", "SK_Undercut_01_SuspendHeadband_Male") },
+  { name = "Wavy 1", variant = "Default", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_01_Default_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_01_Default_Male") },
+  { name = "Wavy 1", variant = "Hat", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_01_SuspendHat_Male") },
+  { name = "Wavy 1", variant = "Headband", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_01_SuspendHeadband_Male") },
+  { name = "Wavy 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_01_SuspendBandana_Male") },
+  { name = "Wavy 2", variant = "Default", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_02_Default_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_02_Default_Male") },
+  { name = "Wavy 2", variant = "Hat", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_02_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_02_SuspendHat_Male") },
+  { name = "Wavy 2", variant = "Headband", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_02_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_02_SuspendHeadband_Male") },
+  { name = "Wavy 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_02_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_02_SuspendBandana_Male") },
+  { name = "Wavy 3", variant = "Default", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_03_Default_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_03_Default_Male") },
+  { name = "Wavy 3", variant = "Hat", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_03_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_03_SuspendHat_Male") },
+  { name = "Wavy 3", variant = "Headband", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_03_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_03_SuspendHeadband_Male") },
+  { name = "Wavy 3", variant = "Bandana", femalePath = objPath(HAIRD .. "Wavy/", "SK_Hair_Wavy_03_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wavy/", "SK_Hair_Wavy_03_SuspendBandana_Male") },
+  { name = "Wick 1", variant = "Default", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_01_Default_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_01_Default_Male") },
+  { name = "Wick 1", variant = "Hat", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_01_SuspendHat_Male") },
+  { name = "Wick 1", variant = "Headband", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_01_SuspendHeadband_Male") },
+  { name = "Wick 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_01_SuspendBandana_Male") },
+  { name = "Wick 2", variant = "Default", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_02_Default_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_02_Default_Male") },
+  { name = "Wick 2", variant = "Hat", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_02_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_02_SuspendHat_Male") },
+  { name = "Wick 2", variant = "Headband", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_02_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_02_SuspendHeadband_Male") },
+  { name = "Wick 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Wick/", "SK_Hair_Wick_02_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wick/", "SK_Hair_Wick_02_SuspendBandana_Male") },
+  { name = "Wig 1", variant = "Default", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_01_Default_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_01_Default_Male") },
+  { name = "Wig 1", variant = "Hat", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_01_SuspendHat_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_01_SuspendHat_Male") },
+  { name = "Wig 1", variant = "Headband", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_01_SuspendHeadband_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_01_SuspendHeadband_Male") },
+  { name = "Wig 1", variant = "Bandana", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_01_SuspendBandana_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_01_SuspendBandana_Male") },
+  { name = "Wig 2", variant = "Default", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_02_Default_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_02_Default_Male") },
+  { name = "Wig 2", variant = "Hat", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_02_SuspendedHat_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_02_SuspendedHat_Male") },
+  { name = "Wig 2", variant = "Headband", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_02_SuspendedHeadband_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_02_SuspendedHeadband_Male") },
+  { name = "Wig 2", variant = "Bandana", femalePath = objPath(HAIRD .. "Wig/", "SK_Hair_Wig_02_SuspendedBandana_Female"), malePath = objPath(HAIRM .. "Wig/", "SK_Hair_Wig_02_SuspendedBandana_Male") },
+}
+-- Config.CUSTOM_CLOTHES -- "Custom > Clothes" GUI branch (2026-08-28). Swept `Character/
+-- Skeletal_Meshes/Armor/ArmorRegular/` in pakcontents.xlsx the same way Config.CUSTOM_HAIR swept
+-- Hair/ -- 25 family folders, 401 real (SK_-prefixed, non-PHYS_, non-SM_Drop_) mesh files, parsed
+-- into (family, slot, number, sex) and grouped. Genuinely messier than hair turned out to be:
+-- - The "Belt" folder is actually FOUR separate accessory types (Belt/Frog/Sling/Strap) named
+--   `SK_<Type>_<NN>_<Sex>` -- a completely different filename shape from every other family
+--   (`SK_Armor_<Family>_[NN_]?[Sex_]?<Slot>[_<style>]`) -- split into their own pseudo-families
+--   here rather than forced into one "Belt" bucket.
+-- - Two casing-duplicate family pairs confirmed in the catalog (same content, different pak
+--   chunks, same "WorkBenches"/"Workbenches" class of quirk documented in WINDROSE_MODDING_NOTES.md
+--   §14): `BlackBeard_Musketeer`/`Blackbeard_Musketeer` and `BlackSmith`/`Blacksmith` -- the
+--   capitalized duplicates are dropped here, only the lowercase-b versions are kept.
+-- - Sex pairing is NOT always symmetric, confirmed real rather than assumed: Dogface has no Female
+--   content at all (a male-only NPC type); Jeweler's Torso/Waist pieces have a genuine content
+--   asymmetry (Female gets 3 torso shape sub-variants per outfit "set", Male gets 1); Flibustier
+--   Set 1's Male torso and Female torso use DIFFERENT style tokens (plain vs "_Long") for what's
+--   presumably the same conceptual look. Rather than guess which asymmetric entries "should" pair
+--   with which, every (family, slot, number, style) combination that has BOTH a Female and Male
+--   file with the EXACT SAME style token gets one femalePath/malePath row (sex auto-detected at
+--   apply time, same as hair/skin); anything that only exists for one sex (or has no sex token at
+--   all, e.g. Musketeer/Combatant/Dogface's own generally single-sex-styled pieces) becomes a
+--   single `unisexPath` row instead, applied regardless of the target's detected sex -- this can
+--   read as slightly wrong-cut on the "other" sex for a genuinely asymmetric piece, but that's an
+--   honest reflection of what the asset catalog actually has, not a guessed workaround.
+-- `name` is a best-effort readable label ("Set 2 Long 3" etc.) built mechanically from the
+-- filename's own number+style tokens -- some of the more deeply-nested Jeweler names read a
+-- little clunky as a direct result, not worth hand-polishing 242 entries individually before any
+-- of them have been tried live.
+-- Spawner.TestApplyClothingPiece finds the CURRENT component to replace by SLOT (parsing ITS
+-- current mesh's own name the same way this table was built, looking for a recognized slot token
+-- anywhere in the name) rather than a single fixed substring -- deliberately avoiding the exact
+-- class of bug the Undercut hairstyle exposed (a component becoming permanently unmatchable once
+-- one specific naming convention lands on it): as long as whatever's currently equipped contains
+-- ANY of the recognized slot tokens somewhere in its name, re-matching keeps working regardless of
+-- which specific family is currently applied.
+-- Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE -- WALKED BACK (2026-08-28, same day it shipped).
+-- Originally: live-tuned by RedFalcon via lbtestscale to fix regular clothes reading undersized on
+-- the raw Senkamati Witch body (SK_Senkamati_Witch_01_Female) at scale 1.0, auto-applied by
+-- Spawner.TestApplyClothingPiece. RedFalcon then reported "setting scale doesn't work, so I want
+-- to look at a different direction" -- the auto-apply call was removed from
+-- TestApplyClothingPiece; this constant is kept only as a documented, no-longer-called record
+-- (same treatment this file gives other confirmed-inadequate levers) -- do not re-wire it without
+-- a genuinely different approach than "just scale the component."
+Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE = { X = 1.5, Y = 1.1, Z = 1.0 }
+
+-- Config.CLOTHING_REMOVABLE_SLOTS -- the "Custom > Clothes > Remove" GUI branch (2026-08-28,
+-- RedFalcon: "can we have a clothes section for 'remove' where it has each slot available as well
+-- as a remove all... and it hides the item in that slot"). Same canonical slot vocabulary as
+-- spawner.lua's own CLOTHING_SLOT_TOKENS list (kept in sync manually -- if a new slot token is
+-- ever added there, add its canonical name here too). Spawner.TestRemoveClothingPiece hides
+-- (SetVisibility(false)), not swaps to nil -- clearing a component's mesh entirely would make
+-- clothingSlotOf unable to re-identify that slot afterward (it matches by the CURRENT mesh name),
+-- breaking the ability to dress that slot again later.
+Config.CLOTHING_REMOVABLE_SLOTS = {
+  "Headgear", "Torso", "TorsoCloth", "Legs", "Hands", "Feet", "Head", "Neck",
+  "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap",
+}
+
+-- Config.CLOTHES_REMOVE -- flat roster feeding "Custom > Clothes > Remove" (one entry per
+-- Config.CLOTHING_REMOVABLE_SLOTS, plus one "All"), consumed by spawnmenu_manifest.lua's
+-- custom_clothes_remove_path_and_label and SPAWN_MENU_HANDLERS.CLOTHES_REMOVE (main.lua), which
+-- both just call Spawner.TestRemoveClothingPiece(row.slot).
+Config.CLOTHES_REMOVE = {}
+for _, slotName in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
+  table.insert(Config.CLOTHES_REMOVE, { slot = slotName })
+end
+table.insert(Config.CLOTHES_REMOVE, { slot = "All" })
+
+-- Women's-clothing fit rules (2026-08-28) -- see Spawner.TestApplyClothingPiece's own comment for
+-- the full mechanism. "Senkamati women just can't wear regular torso or legs. Others slots seem
+-- ok. For the rest of the female actors, only the torso is of concern."
+
+-- Config.CLOTHES_UNLOCK_ALL -- off-by-default escape hatch (lbunlockclothes). When true, bypasses
+-- every rule below entirely -- RedFalcon's own framing: "these outfits and poses have not been
+-- reviewed and many likely will not work or look improper."
+Config.CLOTHES_UNLOCK_ALL = false
+
+-- Body-group classification (by CLASS, RedFalcon's own call -- Gatherer and Herbalist share the
+-- identical SK_Adventure_Female_01 body mesh, so mesh alone can't tell them apart). Native BotC
+-- statue classes ALSO count as Group2, but only when the specific instance's rolled body is
+-- Adventure or Albion -- checked separately in Spawner.getFemaleBodyGroup since one statue class
+-- covers all 7 archetypes (item 57).
+Config.CLOTHES_BODY_GROUP1_CLASSES = { "BP_NPC_Handyman_Gatherer_C", "BP_NPC_QuestStatic_Smugglers_MaritaSuares_C" }
+Config.CLOTHES_BODY_GROUP2_CLASSES = { "BP_NPC_Handyman_Herbalist_C", "BP_NPC_QuestStatic_Letty_C" }
+
+-- Per-body-group scale+offset, live-tuned by RedFalcon (2026-08-28) for the RESIZED family list
+-- below -- a NEW, separate use of lbtestscale's mechanism from the walked-back Senkamati-Witch
+-- auto-scale (that one is dead; this one is a fresh, confirmed-by-testing value for a different
+-- body/family combination).
+Config.CLOTHES_BODY_GROUP_SCALE = {
+  Group1 = { scale = { X = 1.03, Y = 1.05, Z = 1.0 }, offset = { X = 0.0, Y = 1.5, Z = -1.0 } },
+  Group2 = { scale = { X = 1.03, Y = 1.05, Z = 1.0 }, offset = { X = 0.0, Y = 2.5, Z = -1.0 } },
+}
+
+-- Families gated by the SAME compatible-bodies check as real Senkamati Torso/Legs pieces
+-- (Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES/CLASSES) -- RedFalcon: "only those allowed to
+-- wear the senkamati clothes can wear this."
+Config.CLOTHES_SENKAMATI_GATED_FAMILIES = { "Conquistador" }
+
+-- Unisex-only families explicitly allowed on a woman's Torso with NO change at all (fits fine as
+-- authored). CORRECTED (2026-08-28, same day): the original "allow sailors torsos" reading (add
+-- Blackbeard_Sailor here) was wrong -- RedFalcon clarified "blackbeard sailor torsos should only
+-- be allowed for women in unlocked mode, otherwise replace with underwear." Blackbeard_Sailor is
+-- entirely unisex-cut (confirmed: every row in Config.CUSTOM_CLOTHES has femalePath=nil), so
+-- simply NOT listing it here (and not in CLOTHES_RESIZED_FAMILIES_WOMEN either) already gives the
+-- exact wanted behavior via Mechanism B's own default-deny path: Remove (-> underwear on women)
+-- unless Config.CLOTHES_UNLOCK_ALL is on -- no special-case code needed, just the omission itself.
+Config.CLOTHES_ALLOWED_ASIS_FAMILIES_WOMEN = {}
+
+-- Unisex-only families that need the per-body-group resize above rather than being blocked
+-- outright. `true` = every piece in the family; a table = only those specific piece names.
+Config.CLOTHES_RESIZED_FAMILIES_WOMEN = {
+  Musketeer = true,
+  Flibustier = { "Set 1" },
+  Dogface = true,
+  DrGalen = true,
+  Ksante = true,
+  Blackbeard_Grenadier = true,
+  Blackbeard_Musketeer = true,
+  Combatant = true,
+}
+
+-- Config.CLOTHES_MALE_ONLY_LEGS_FAMILIES -- "Male Only Pants" (2026-08-28, same day, RedFalcon's
+-- correction: the earlier lists above were Torso-only; this is the separate, explicit list for
+-- LEGS). Unisex-cut families whose Legs piece is male-only unless unlocked -- same "block unless
+-- unlocked, else apply raw" treatment as Mechanism B's resize-list families, but with NO scale
+-- correction at all (none was given for Legs) -- unlocked just applies the piece as requested.
+-- Deliberately an EXPLICIT list, not a default-deny-everything-unisex rule like Torso has -- any
+-- OTHER unisex-only Legs family not listed here is untouched/normal.
+Config.CLOTHES_MALE_ONLY_LEGS_FAMILIES = {
+  "Musketeer", "Blackbeard_Sailor", "Dogface", "Blackbeard_WolfTamer",
+  "DrGalen", "Ksante", "Blackbeard_Grenadier", "Blackbeard_Musketeer", "Combatant",
+}
+
+Config.CUSTOM_CLOTHES = {
+  { family = "Brigant", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Hat"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Hat"), unisexPath = nil },
+  { family = "Brigant", slot = "Hands", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Hands"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Hands"), unisexPath = nil },
+  { family = "Brigant", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Feet_Long"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Feet_Long"), unisexPath = nil },
+  { family = "Brigant", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Torso"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Torso"), unisexPath = nil },
+  { family = "Brigant", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Waist"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Waist"), unisexPath = nil },
+  { family = "Brigant", slot = "Feet", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Feet"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Feet"), unisexPath = nil },
+  { family = "Brigant", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Legs"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Legs"), unisexPath = nil },
+  { family = "Brigant", slot = "Hands", name = "Default Long", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Hands_Long"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Hands_Long"), unisexPath = nil },
+  { family = "Brigant", slot = "Legs", name = "Default Long", femalePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Female_Legs_Long"), malePath = objPath(ARM .. "Brigant/Meshes/", "SK_Armor_Brigant_Male_Legs_Long"), unisexPath = nil },
+  { family = "Belt", slot = "Belt", name = "Set 2", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_02_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_02_Male"), unisexPath = nil },
+  { family = "Frog", slot = "Frog", name = "Set 4", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_04_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_04_Male"), unisexPath = nil },
+  { family = "Sling", slot = "Sling", name = "Set 1", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_01_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_01_Male"), unisexPath = nil },
+  { family = "Sling", slot = "Sling", name = "Set 3", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_03_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_03_Male"), unisexPath = nil },
+  { family = "Belt", slot = "Belt", name = "Set 3", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_03_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_03_Male"), unisexPath = nil },
+  { family = "Sling", slot = "Sling", name = "Set 4", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_04_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Sling_04_Male"), unisexPath = nil },
+  { family = "Belt", slot = "Belt", name = "Set 4", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_04_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_04_Male"), unisexPath = nil },
+  { family = "Belt", slot = "Belt", name = "Set 1", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_01_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Belt_01_Male"), unisexPath = nil },
+  { family = "Strap", slot = "Strap", name = "Set 4", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_04_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_04_Male"), unisexPath = nil },
+  { family = "Frog", slot = "Frog", name = "Set 3", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_03_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_03_Male"), unisexPath = nil },
+  { family = "Strap", slot = "Strap", name = "Set 1", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_01_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_01_Male"), unisexPath = nil },
+  { family = "Strap", slot = "Strap", name = "Set 3", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_03_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Strap_03_Male"), unisexPath = nil },
+  { family = "Frog", slot = "Frog", name = "Set 1", femalePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_01_Female"), malePath = objPath(ARM .. "Belt/Meshes/", "SK_Frog_01_Male"), unisexPath = nil },
+  { family = "Jeweler", slot = "Headgear", name = "Set 2 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Bandana_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Bandana_01"), unisexPath = nil },
+  { family = "Jeweler", slot = "Cape", name = "Set 1 03", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Cape_03"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Cape_03"), unisexPath = nil },
+  { family = "Jeweler", slot = "Hands", name = "Set 1", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Hands"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Hands"), unisexPath = nil },
+  { family = "Jeweler", slot = "Feet", name = "Set 2 Long", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Feet_Long"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Feet_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Hands", name = "Set 2", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Hands"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Hands"), unisexPath = nil },
+  { family = "Jeweler", slot = "Headgear", name = "Set 3", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Hat"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Hat"), unisexPath = nil },
+  { family = "Jeweler", slot = "Hands", name = "Set 3", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Hands"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Hands"), unisexPath = nil },
+  { family = "Jeweler", slot = "Headgear", name = "Set 1 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_BandanaHat_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_BandanaHat_01"), unisexPath = nil },
+  { family = "Jeweler", slot = "Legs", name = "Set 2", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Legs"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Legs"), unisexPath = nil },
+  { family = "Jeweler", slot = "Feet", name = "Set 1 Long", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Feet_Long"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Feet_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Feet", name = "Set 3 Long", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Feet_Long"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Feet_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Headgear", name = "Set 1 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_BandanaHat_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_BandanaHat_02"), unisexPath = nil },
+  { family = "Jeweler", slot = "Legs", name = "Set 3", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Legs"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Legs"), unisexPath = nil },
+  { family = "Jeweler", slot = "Headgear", name = "Set 2 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Bandana_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Bandana_02"), unisexPath = nil },
+  { family = "Jeweler", slot = "Legs", name = "Set 1", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Legs"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Legs"), unisexPath = nil },
+  { family = "Jeweler", slot = "Cape", name = "Set 2", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Cape"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Cape"), unisexPath = nil },
+  { family = "Jeweler", slot = "Cape", name = "Set 1 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Cape_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Cape_02"), unisexPath = nil },
+  { family = "Musketeer", slot = "Hands", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer02_Hands_Long") },
+  { family = "Musketeer", slot = "Head", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer01_Head") },
+  { family = "Musketeer", slot = "Legs", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer03_Legs") },
+  { family = "Musketeer", slot = "Torso", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer02_Torso") },
+  { family = "Musketeer", slot = "Torso", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer01_Torso_Long") },
+  { family = "Musketeer", slot = "Feet", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Musketeer/Meshes/", "SK_Armor_Musketeer02_Feet_Long") },
+  { family = "Bandit", slot = "Hands", name = "Default Long", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Hands_Long"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Hands_Long"), unisexPath = nil },
+  { family = "Bandit", slot = "Torso", name = "Default Long", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Torso_Long"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Torso_Long"), unisexPath = nil },
+  { family = "Bandit", slot = "Feet", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Feet"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Feet"), unisexPath = nil },
+  { family = "Bandit", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Hat"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Hat"), unisexPath = nil },
+  { family = "Bandit", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Torso"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Torso"), unisexPath = nil },
+  { family = "Bandit", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Feet_Long"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Feet_Long"), unisexPath = nil },
+  { family = "Bandit", slot = "Hands", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Hands"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Hands"), unisexPath = nil },
+  { family = "Bandit", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Waist"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Waist"), unisexPath = nil },
+  { family = "Bandit", slot = "Legs", name = "Default Long", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Legs_Long"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Legs_Long"), unisexPath = nil },
+  { family = "Bandit", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Female_Legs"), malePath = objPath(ARM .. "Bandit/Meshes/", "SK_Armor_Bandit_Male_Legs"), unisexPath = nil },
+  { family = "Flibustier", slot = "Headgear", name = "Set 1", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Bandana"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Bandana"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Set 2 Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Hands_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Hands_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Set 2", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Hands"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Hands"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Set 1 Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Hands_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Hands_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 2 Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Torso_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Torso_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Feet", name = "Set 2 Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Feet_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Feet_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_03_Female_Legs") },
+  { family = "Flibustier", slot = "Headgear", name = "Set 3", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_03_Female_BandanaHat"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_03_Male_BandanaHat"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 4", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_04_Female_Torso"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_04_Male_Torso"), unisexPath = nil },
+  { family = "Flibustier", slot = "Legs", name = "Set 1", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Legs"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Legs"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Set 1", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Hands"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Hands"), unisexPath = nil },
+  { family = "Flibustier", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Legs"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Legs"), unisexPath = nil },
+  { family = "Flibustier", slot = "Waist", name = "Set 1", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Waist"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Waist"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Torso") },
+  { family = "Flibustier", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Torso"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Torso"), unisexPath = nil },
+  { family = "Flibustier", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Torso_Waist"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Waist"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 2", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Torso"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Torso"), unisexPath = nil },
+  { family = "Flibustier", slot = "Feet", name = "Set 1 Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Feet_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Feet_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Feet_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Feet_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 3", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_03_Female_Torso"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_03_Male_Torso"), unisexPath = nil },
+  { family = "Flibustier", slot = "Headgear", name = "Set 2", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Headband"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Headband"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Default", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Hands"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Hands"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 5", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_05_Female_Torso"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_05_Male_Torso"), unisexPath = nil },
+  { family = "Flibustier", slot = "Legs", name = "Set 2", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_Legs"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_Legs"), unisexPath = nil },
+  { family = "Flibustier", slot = "Hands", name = "Default Long", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Female_Hands_Long"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_Adventurer_Male_Hands_Long"), unisexPath = nil },
+  { family = "Flibustier", slot = "Cape", name = "Set 1", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Cape"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Male_Cape"), unisexPath = nil },
+  { family = "Flibustier", slot = "Torso", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_01_Female_Torso_Long") },
+  { family = "Flibustier", slot = "Headgear", name = "Set 2", femalePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Female_BandanaHat"), malePath = objPath(ARM .. "Flibustier/Meshes/", "SK_Armor_Flibustier_02_Male_BandanaHat"), unisexPath = nil },
+  { family = "Blackbeard_Sailor", slot = "Hands", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Hands_Long") },
+  { family = "Blackbeard_Sailor", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Legs") },
+  { family = "Blackbeard_Sailor", slot = "Feet", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Feet") },
+  { family = "Blackbeard_Sailor", slot = "Waist", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Waist") },
+  { family = "Blackbeard_Sailor", slot = "Waist", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Waist") },
+  { family = "Blackbeard_Sailor", slot = "Hands", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Hands_Long") },
+  { family = "Blackbeard_Sailor", slot = "Legs", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Legs_Long") },
+  { family = "Blackbeard_Sailor", slot = "Scarf", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Scarf") },
+  { family = "Blackbeard_Sailor", slot = "Scarf", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Scarf") },
+  { family = "Blackbeard_Sailor", slot = "Scarf", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Scarf") },
+  { family = "Blackbeard_Sailor", slot = "Torso", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Torso_Long") },
+  { family = "Blackbeard_Sailor", slot = "Legs", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Legs_Long") },
+  { family = "Blackbeard_Sailor", slot = "Headgear", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Headband") },
+  { family = "Blackbeard_Sailor", slot = "Feet", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Feet_Long") },
+  { family = "Blackbeard_Sailor", slot = "Torso", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Torso") },
+  { family = "Blackbeard_Sailor", slot = "Headgear", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Bandana") },
+  { family = "Blackbeard_Sailor", slot = "Hands", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Hands_Long") },
+  { family = "Blackbeard_Sailor", slot = "Feet", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_02_Feet") },
+  { family = "Blackbeard_Sailor", slot = "Torso", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_03_Torso") },
+  { family = "Blackbeard_Sailor", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Sailor/Meshes/", "SK_Armor_Blackbeard_Sailor_01_Torso") },
+  { family = "Dogface", slot = "Feet", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_02_Male_Feet") },
+  { family = "Dogface", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_01_Male_Torso") },
+  { family = "Dogface", slot = "Legs", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_01_Male_Legs") },
+  { family = "Dogface", slot = "Legs", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_02_Male_Legs") },
+  { family = "Dogface", slot = "Head", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_01_Male_Head") },
+  { family = "Dogface", slot = "Torso", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_03_Male_Torso") },
+  { family = "Dogface", slot = "Feet", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_01_Male_Feet") },
+  { family = "Dogface", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_03_Male_Legs") },
+  { family = "Dogface", slot = "Head", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_02_Male_Head") },
+  { family = "Dogface", slot = "Torso", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_02_Male_Torso") },
+  { family = "Dogface", slot = "Feet", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_03_Male_Feet") },
+  { family = "Dogface", slot = "Head", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Dogface/Meshes/", "SK_Armor_Dogface_03_Male_Head") },
+  { family = "Vanilla", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_BandanaHat"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_BandanaHat"), unisexPath = nil },
+  { family = "Vanilla", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_Feet_Long"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_Feet_Long"), unisexPath = nil },
+  { family = "Vanilla", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_Torso"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_Torso"), unisexPath = nil },
+  { family = "Vanilla", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_Waist"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_Waist"), unisexPath = nil },
+  { family = "Vanilla", slot = "Hands", name = "Default Long", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_Hands_Long"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_Hands_Long"), unisexPath = nil },
+  { family = "Vanilla", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Female_Legs"), malePath = objPath(ARM .. "Vanilla/Meshes/", "SK_Armor_Vanilla_Male_Legs"), unisexPath = nil },
+  { family = "Blackbeard_WolfTamer", slot = "Legs", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_WolfTamer/Meshes/", "SK_Armor_Blackbeard_WolfTamer_01_Legs") },
+  { family = "DrGalen", slot = "Legs", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "DrGalen/Meshes/", "SK_Armor_DrGalen_Legs") },
+  { family = "DrGalen", slot = "Cape", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "DrGalen/Meshes/", "SK_Armor_DrGalen_Cape") },
+  { family = "DrGalen", slot = "Feet", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "DrGalen/Meshes/", "SK_Armor_DrGalen_Feet_Long") },
+  { family = "DrGalen", slot = "Torso", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "DrGalen/Meshes/", "SK_Armor_DrGalen_Torso_Long") },
+  { family = "Ksante", slot = "Cape", name = "Default 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Ksante/Meshes/", "SK_Armor_Ksante_Cape_01") },
+  { family = "Ksante", slot = "Legs", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Ksante/Meshes/", "SK_Armor_Ksante_Legs") },
+  { family = "Ksante", slot = "Torso", name = "Default Torn", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Ksante/Meshes/", "SK_Armor_Ksante_Torso_Torn") },
+  { family = "Ksante", slot = "Hands", name = "Default", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Ksante/Meshes/", "SK_Armor_Ksante_Hands") },
+  { family = "Ksante", slot = "Feet", name = "Default Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Ksante/Meshes/", "SK_Armor_Ksante_Feet_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_01_Torso") },
+  { family = "Blackbeard_Grenadier", slot = "Feet", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_03_Feet_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Hands", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_02_Hands_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Headgear", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_01_Bandana") },
+  { family = "Blackbeard_Grenadier", slot = "Torso", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_02_Torso") },
+  { family = "Blackbeard_Grenadier", slot = "Headgear", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_02_Bandana") },
+  { family = "Blackbeard_Grenadier", slot = "Torso", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_03_Torso") },
+  { family = "Blackbeard_Grenadier", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_03_Legs") },
+  { family = "Blackbeard_Grenadier", slot = "Hands", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_03_Hands_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Legs", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_02_Legs") },
+  { family = "Blackbeard_Grenadier", slot = "Feet", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_01_Feet_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Headgear", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_03_Bandana") },
+  { family = "Blackbeard_Grenadier", slot = "Feet", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_02_Feet_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Hands", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_01_Hands_Long") },
+  { family = "Blackbeard_Grenadier", slot = "Legs", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Grenadier/Meshes/", "SK_Armor_Blackbeard_Grenadier_01_Legs") },
+  { family = "Blackbeard_Musketeer", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Legs") },
+  { family = "Blackbeard_Musketeer", slot = "Feet", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_01_Feet") },
+  { family = "Blackbeard_Musketeer", slot = "Hands", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_01_Hands_Long") },
+  { family = "Blackbeard_Musketeer", slot = "Feet", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Feet") },
+  { family = "Blackbeard_Musketeer", slot = "Feet", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Feet") },
+  { family = "Blackbeard_Musketeer", slot = "Torso", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Torso") },
+  { family = "Blackbeard_Musketeer", slot = "Hands", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Hands") },
+  { family = "Blackbeard_Musketeer", slot = "Legs", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_01_Legs") },
+  { family = "Blackbeard_Musketeer", slot = "Headgear", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Hat") },
+  { family = "Blackbeard_Musketeer", slot = "Hands", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Hands_Long") },
+  { family = "Blackbeard_Musketeer", slot = "Headgear", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Hat") },
+  { family = "Blackbeard_Musketeer", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_01_Torso") },
+  { family = "Blackbeard_Musketeer", slot = "Torso", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Torso") },
+  { family = "Blackbeard_Musketeer", slot = "Legs", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Legs") },
+  { family = "Blackbeard_Musketeer", slot = "Headgear", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_01_Hat") },
+  { family = "Blackbeard_Musketeer", slot = "Feet", name = "Set 2 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_02_Feet_Long") },
+  { family = "Blackbeard_Musketeer", slot = "Feet", name = "Set 3 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Blackbeard_Musketeer/Meshes/", "SK_Armor_Blackbeard_Musketeer_03_Feet_Long") },
+  { family = "Conquistador", slot = "Cape", name = "Set 1", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Female_Cape"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Male_Cape"), unisexPath = nil },
+  { family = "Conquistador", slot = "Legs", name = "Set 2", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Legs"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Male_Legs"), unisexPath = nil },
+  { family = "Conquistador", slot = "Torso", name = "Set 1", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Female_Torso"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Male_Torso"), unisexPath = nil },
+  { family = "Conquistador", slot = "Cape", name = "Set 3", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Female_Cape"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Male_Cape"), unisexPath = nil },
+  { family = "Conquistador", slot = "Hands", name = "Set 1 Long", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Female_Hands_Long"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Male_Hands_Long"), unisexPath = nil },
+  { family = "Conquistador", slot = "Headgear", name = "Set 3", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Female_Helmet"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Male_Helmet"), unisexPath = nil },
+  { family = "Conquistador", slot = "Feet", name = "Set 2 Long", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Feet_Long"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Male_Feet_Long"), unisexPath = nil },
+  { family = "Conquistador", slot = "Torso", name = "Set 3", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Female_Torso"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_03_Male_Torso"), unisexPath = nil },
+  { family = "Conquistador", slot = "Legs", name = "Set 1", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Female_Legs"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Male_Legs"), unisexPath = nil },
+  { family = "Conquistador", slot = "Hands", name = "Set 2", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Female_Hands"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_02_Male_Hands"), unisexPath = nil },
+  { family = "Conquistador", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_Female_Waist"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_Male_Waist"), unisexPath = nil },
+  { family = "Conquistador", slot = "Feet", name = "Set 1 Long", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Female_Feet_Long"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_01_Male_Feet_Long"), unisexPath = nil },
+  { family = "Conquistador", slot = "Headgear", name = "Set 4", femalePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_04_Female_Helmet"), malePath = objPath(ARM .. "Conquistador/Meshes/", "SK_Armor_Conquistador_04_Male_Helmet"), unisexPath = nil },
+  { family = "Starter", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Torso"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Torso"), unisexPath = nil },
+  { family = "Starter", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Headband"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Headband"), unisexPath = nil },
+  { family = "Starter", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Legs"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Legs"), unisexPath = nil },
+  { family = "Starter", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Feet_Long"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Feet_Long"), unisexPath = nil },
+  { family = "Starter", slot = "Hands", name = "Default Long", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Hands_Long"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Hands_Long"), unisexPath = nil },
+  { family = "Starter", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Female_Waist"), malePath = objPath(ARM .. "Starter/Meshes/", "SK_Armor_Starter_Male_Waist"), unisexPath = nil },
+  { family = "Mercenary", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Hat"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Hat"), unisexPath = nil },
+  { family = "Mercenary", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Waist"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Waist"), unisexPath = nil },
+  { family = "Mercenary", slot = "Legs", name = "Default Long", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Legs_Long"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Legs_Long"), unisexPath = nil },
+  { family = "Mercenary", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Headband"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Headband"), unisexPath = nil },
+  { family = "Mercenary", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Legs"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Legs"), unisexPath = nil },
+  { family = "Mercenary", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Feet_Long"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Feet_Long"), unisexPath = nil },
+  { family = "Mercenary", slot = "Hands", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Hands"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Hands"), unisexPath = nil },
+  { family = "Mercenary", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Torso"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Torso"), unisexPath = nil },
+  { family = "Mercenary", slot = "Headgear", name = "Default", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Bandana"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Bandana"), unisexPath = nil },
+  { family = "Mercenary", slot = "Torso", name = "Default Long", femalePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Female_Torso_Long"), malePath = objPath(ARM .. "Mercenary/Meshes/", "SK_Armor_Mercenary_Male_Torso_Long"), unisexPath = nil },
+  { family = "Restored", slot = "Feet", name = "Default Long", femalePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Female_Feet_Long"), malePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Male_Feet_Long"), unisexPath = nil },
+  { family = "Restored", slot = "Legs", name = "Default", femalePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Female_Legs"), malePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Male_Legs"), unisexPath = nil },
+  { family = "Restored", slot = "Torso", name = "Default", femalePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Female_Torso"), malePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Male_Torso"), unisexPath = nil },
+  { family = "Restored", slot = "Waist", name = "Default", femalePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Female_Waist"), malePath = objPath(ARM .. "Restored/Meshes/", "SK_Armor_Restored_Male_Waist"), unisexPath = nil },
+  { family = "Combatant", slot = "Feet", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_03_Feet") },
+  { family = "Combatant", slot = "Legs", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_02_Legs") },
+  { family = "Combatant", slot = "Head", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_02_Head") },
+  { family = "Combatant", slot = "Hands", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_03_Hands") },
+  { family = "Combatant", slot = "Torso", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_03_Torso") },
+  { family = "Combatant", slot = "Legs", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_01_Legs") },
+  { family = "Combatant", slot = "Feet", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_01_Feet") },
+  { family = "Combatant", slot = "Hands", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_02_Hands") },
+  { family = "Combatant", slot = "Head", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_03_Head") },
+  { family = "Combatant", slot = "Legs", name = "Set 3", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_03_Legs") },
+  { family = "Combatant", slot = "Hands", name = "Set 1 Long", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_01_Hands_Long") },
+  { family = "Combatant", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_01_Torso") },
+  { family = "Combatant", slot = "Feet", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_02_Feet") },
+  { family = "Combatant", slot = "Torso", name = "Set 2", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Combatant/Meshes/", "SK_Armor_Combatant_02_Torso") },
+  { family = "Underwear", slot = "Torso", name = "Set 1", femalePath = nil, malePath = nil, unisexPath = objPath(ARM .. "Underwear/Meshes/", "SK_Armor_Underwear_01_Female_Torso") },
+  { family = "Underwear", slot = "Legs", name = "Set 2", femalePath = objPath(ARM .. "Underwear/Meshes/", "SK_Armor_Underwear_02_Female_Legs"), malePath = objPath(ARM .. "Underwear/Meshes/", "SK_Armor_Underwear_02_Male_Legs"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 Long 03", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_Long_03"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 Long 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_Long_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 Long 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_Long_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Waist", name = "Set 2 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Waist_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Waist"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 03", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_03"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 1 Long 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Torso_Long_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 Long 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_Long_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 03", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_03"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 2 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Female_Torso_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_02_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Waist", name = "Set 1 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Waist_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Waist"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 Long 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_Long_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Waist", name = "Set 1 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Waist_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Waist"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 1 02", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Torso_02"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Torso"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 1 Long 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Torso_Long_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 3 Long 03", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Female_Torso_Long_03"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_03_Male_Torso_Long"), unisexPath = nil },
+  { family = "Jeweler", slot = "Torso", name = "Set 1 01", femalePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Female_Torso_01"), malePath = objPath(ARM .. "Jeweler/Meshes/", "SK_Armor_Jeweler_01_Male_Torso"), unisexPath = nil },
+  { family = "Senkamati Hunter", slot = "Feet", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_01_Feet_Long") },
+  { family = "Senkamati Hunter", slot = "Feet", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_02_Feet_Long") },
+  { family = "Senkamati Hunter", slot = "Feet", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_03_Feet_Long") },
+  { family = "Senkamati Hunter", slot = "Hands", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_01_Hands_Long") },
+  { family = "Senkamati Hunter", slot = "Hands", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_02_Hands_Long") },
+  { family = "Senkamati Hunter", slot = "Hands", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_03_Hands_Long") },
+  { family = "Senkamati Hunter", slot = "Head", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_01_Head") },
+  { family = "Senkamati Hunter", slot = "Head", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_02_Head") },
+  { family = "Senkamati Hunter", slot = "Head", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_03_Head") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_01_Legs") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_02_Legs") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_03_Legs") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Wood 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Wood_01_Legs") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Wood 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Wood_02_Legs") },
+  { family = "Senkamati Hunter", slot = "Legs", name = "Wood 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Wood_03_Legs") },
+  { family = "Senkamati Hunter", slot = "Torso", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_01_Torso") },
+  { family = "Senkamati Hunter", slot = "Torso", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_02_Torso") },
+  { family = "Senkamati Hunter", slot = "Torso", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Hunter/Meshes/", "SK_ArmorCreature_Senkamati_Hunter_Feather_03_Torso") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_01_Feet_Long") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_02_Feet") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_03_Feet_Long") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Wood 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_01_Feet_Long") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Wood 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_02_Feet_Long") },
+  { family = "Senkamati Thrall", slot = "Feet", name = "Wood 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_03_Feet_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_01_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_02_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_03_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Wood 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_01_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Wood 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_02_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Hands", name = "Wood 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_03_Hands_Long") },
+  { family = "Senkamati Thrall", slot = "Head", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_01_Head") },
+  { family = "Senkamati Thrall", slot = "Head", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_02_Head") },
+  { family = "Senkamati Thrall", slot = "Head", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_03_Head") },
+  { family = "Senkamati Thrall", slot = "Head", name = "Feather 04", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_04_Head") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_01_Legs") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_02_Legs") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_03_Legs") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Wood 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_01_Legs") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Wood 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_02_Legs") },
+  { family = "Senkamati Thrall", slot = "Legs", name = "Wood 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Wood_03_Legs") },
+  { family = "Senkamati Thrall", slot = "Torso", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_01_Torso") },
+  { family = "Senkamati Thrall", slot = "Torso", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_02_Torso") },
+  { family = "Senkamati Thrall", slot = "Torso", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Thrall/Meshes/", "SK_ArmorCreature_Senkamati_Thrall_Feather_03_Torso") },
+  { family = "Senkamati Warrior", slot = "Feet", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_01_Feet_Long") },
+  { family = "Senkamati Warrior", slot = "Feet", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_02_Feet_Long") },
+  { family = "Senkamati Warrior", slot = "Feet", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_03_Feet_Long") },
+  { family = "Senkamati Warrior", slot = "Hands", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_01_Hands_Long") },
+  { family = "Senkamati Warrior", slot = "Hands", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_02_Hands_Long") },
+  { family = "Senkamati Warrior", slot = "Hands", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_03_Hands_Long") },
+  { family = "Senkamati Warrior", slot = "Head", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_01_Head") },
+  { family = "Senkamati Warrior", slot = "Head", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_02_Head") },
+  { family = "Senkamati Warrior", slot = "Head", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_03_Head") },
+  { family = "Senkamati Warrior", slot = "Legs", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_01_Legs") },
+  { family = "Senkamati Warrior", slot = "Legs", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_02_Legs") },
+  { family = "Senkamati Warrior", slot = "Legs", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_03_Legs") },
+  { family = "Senkamati Warrior", slot = "Torso", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_01_Torso") },
+  { family = "Senkamati Warrior", slot = "Torso", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_02_Torso") },
+  { family = "Senkamati Warrior", slot = "Torso", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Warrior/Meshes/", "SK_ArmorCreature_Senkamati_Warrior_Feather_03_Torso") },
+  { family = "Senkamati Witch", slot = "Feet", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Feet") },
+  { family = "Senkamati Witch", slot = "Feet", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Feet") },
+  { family = "Senkamati Witch", slot = "Hands", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Hands") },
+  { family = "Senkamati Witch", slot = "Hands", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Hands") },
+  { family = "Senkamati Witch", slot = "Head", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Head") },
+  { family = "Senkamati Witch", slot = "Head", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Head") },
+  { family = "Senkamati Witch", slot = "Head", name = "Feather 03", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_03_Head") },
+  { family = "Senkamati Witch", slot = "Legs", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Legs") },
+  { family = "Senkamati Witch", slot = "Legs", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Legs") },
+  { family = "Senkamati Witch", slot = "Neck", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Neck") },
+  { family = "Senkamati Witch", slot = "Neck", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Neck") },
+  { family = "Senkamati Witch", slot = "Torso", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_Torso") },
+  { family = "Senkamati Witch", slot = "Torso", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_Torso") },
+  { family = "Senkamati Witch", slot = "TorsoCloth", name = "Feather 01", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_01_TorsoCloth") },
+  { family = "Senkamati Witch", slot = "TorsoCloth", name = "Feather 02", femalePath = nil, malePath = nil, unisexPath = objPath(ARMC .. "Senkamati_Witch/Mesh/", "SK_ArmorCreature_Senkamati_Witch_Feather_02_TorsoCloth") },
+}
+
+-- Config.CUSTOM_FACIAL -- "Custom > Face" (2026-08-28). Same shape as Config.
+-- CUSTOM_CLOTHES (family/slot/name/femalePath/malePath/unisexPath), swept from
+-- Character/Skeletal_Meshes/Facial/ the same way. "Eyebrows" is a genuine sex-paired family
+-- (Female has 5 numbered variants, Male has 4 -- paired by matching number, Female 05 left as
+-- female-only since no Male 05 exists). Every OTHER family (Bristle/HalfPonytail/Hungover/Jag/
+-- Nordic/RoyalMarine/Shag/Sparse/BlackSmith) is a Beard-folder style with up to three
+-- INDEPENDENT slots -- Beard/Mustache/Whiskers -- confirmed genuinely male-only (no female
+-- facial-hair assets exist anywhere in the catalog), so femalePath is nil for all of them.
+-- BlackSmith/Blacksmith casing-duplicate folders (same pattern documented in
+-- WINDROSE_MODDING_NOTES.md #14) collapsed to one. Not every style has all three slots (e.g.
+-- Bristle only has a Beard piece) -- reflects the real catalog, not an assumed symmetry.
+-- Spawner.TestApplyFacialPiece finds the current component to replace by SLOT the same way
+-- TestApplyClothingPiece does for clothing (facialSlotOf on each component's current mesh
+-- name), a separate token list from clothing's own since these live in a different folder.
+Config.CUSTOM_FACIAL = {
+  { family = "Eyebrows", slot = "Eyebrows", name = "01", femalePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/", "SK_Eyebrows_Female_01"), malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Eyebrows/Meshes/", "SK_Eyebrows_Male_01"), unisexPath = nil },
+  { family = "Eyebrows", slot = "Eyebrows", name = "02", femalePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/", "SK_Eyebrows_Female_02"), malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Eyebrows/Meshes/", "SK_Eyebrows_Male_02"), unisexPath = nil },
+  { family = "Eyebrows", slot = "Eyebrows", name = "03", femalePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/", "SK_Eyebrows_Female_03"), malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Eyebrows/Meshes/", "SK_Eyebrows_Male_03"), unisexPath = nil },
+  { family = "Eyebrows", slot = "Eyebrows", name = "04", femalePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/", "SK_Eyebrows_Female_04"), malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Eyebrows/Meshes/", "SK_Eyebrows_Male_04"), unisexPath = nil },
+  { family = "Eyebrows", slot = "Eyebrows", name = "05", femalePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Female/Eyebrows/Meshes/", "SK_Eyebrows_Female_05"), malePath = nil, unisexPath = nil },
+  { family = "BlackSmith", slot = "Beard", name = "BlackSmith", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/BlackSmith/", "SK_Beard_BlackSmith"), unisexPath = nil },
+  { family = "BlackSmith", slot = "Eyebrows", name = "BlackSmith", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/BlackSmith/", "SK_Eyebrow_BlackSmith"), unisexPath = nil },
+  { family = "BlackSmith", slot = "Mustache", name = "BlackSmith", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/BlackSmith/", "SK_Mustache_BlackSmith"), unisexPath = nil },
+  { family = "Bristle", slot = "Beard", name = "Bristle 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Bristle/", "SK_Beard_Bristle_01"), unisexPath = nil },
+  { family = "HalfPonytail", slot = "Beard", name = "HalfPonytail", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/HalfPonytail/", "SK_Beard_HalfPonytail_Adventurer_Male"), unisexPath = nil },
+  { family = "HalfPonytail", slot = "Mustache", name = "HalfPonytail", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/HalfPonytail/", "SK_Mustache_HalfPonytail_Adventurer_Male"), unisexPath = nil },
+  { family = "HalfPonytail", slot = "Whiskers", name = "HalfPonytail", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/HalfPonytail/", "SK_Whiskers_HalfPonytail_Adventurer_Male"), unisexPath = nil },
+  { family = "Hungover", slot = "Beard", name = "Hungover", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Hungover/", "SK_Beard_Hungover"), unisexPath = nil },
+  { family = "Hungover", slot = "Mustache", name = "Hungover", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Hungover/", "SK_Mustaches_Hungover"), unisexPath = nil },
+  { family = "Hungover", slot = "Whiskers", name = "Hungover", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Hungover/", "SK_Whiskers_Hungover"), unisexPath = nil },
+  { family = "Jag", slot = "Beard", name = "Jag 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Beard_Jag_01"), unisexPath = nil },
+  { family = "Jag", slot = "Beard", name = "Jag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Beard_Jag_02"), unisexPath = nil },
+  { family = "Jag", slot = "Mustache", name = "Jag 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Mustache_Jag_01"), unisexPath = nil },
+  { family = "Jag", slot = "Mustache", name = "Jag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Mustache_Jag_02"), unisexPath = nil },
+  { family = "Jag", slot = "Whiskers", name = "Jag 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Whiskers_Jag_01"), unisexPath = nil },
+  { family = "Jag", slot = "Whiskers", name = "Jag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Jag/", "SK_Whiskers_Jag_02"), unisexPath = nil },
+  { family = "Nordic", slot = "Beard", name = "Nordic", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Nordic/", "SK_Beard_Nordic_Adventurer_Male"), unisexPath = nil },
+  { family = "Nordic", slot = "Mustache", name = "Nordic", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Nordic/", "SK_Mustache_Nordic_Adventurer_Male"), unisexPath = nil },
+  { family = "Nordic", slot = "Whiskers", name = "Nordic", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Nordic/", "SK_Whiskers_Nordic_Adventurer_Male"), unisexPath = nil },
+  { family = "RoyalMarine", slot = "Beard", name = "RoyalMarine", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/RoyalMarine/", "SK_Beard_RoyalMarine_Adventurer_Male"), unisexPath = nil },
+  { family = "RoyalMarine", slot = "Mustache", name = "RoyalMarine", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/RoyalMarine/", "SK_Mustaches_RoyalMarine_Adventurer_Male"), unisexPath = nil },
+  { family = "RoyalMarine", slot = "Whiskers", name = "RoyalMarine", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/RoyalMarine/", "SK_Whiskers_RoyalMarine_Adventurer_Male"), unisexPath = nil },
+  { family = "Shag", slot = "Beard", name = "Shag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Beard_Shag_02"), unisexPath = nil },
+  { family = "Shag", slot = "Beard", name = "Shag 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Beard_Shag_03"), unisexPath = nil },
+  { family = "Shag", slot = "Beard", name = "Shag 04", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Beard_Shag_04"), unisexPath = nil },
+  { family = "Shag", slot = "Beard", name = "Shag 05", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Beard_Shag_05"), unisexPath = nil },
+  { family = "Shag", slot = "Mustache", name = "Shag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Mustache_Shag_02"), unisexPath = nil },
+  { family = "Shag", slot = "Mustache", name = "Shag 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Mustache_Shag_03"), unisexPath = nil },
+  { family = "Shag", slot = "Mustache", name = "Shag 04", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Mustache_Shag_04"), unisexPath = nil },
+  { family = "Shag", slot = "Mustache", name = "Shag 05", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Mustache_Shag_05"), unisexPath = nil },
+  { family = "Shag", slot = "Whiskers", name = "Shag 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Whiskers_Shag_02"), unisexPath = nil },
+  { family = "Shag", slot = "Whiskers", name = "Shag 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Whiskers_Shag_03"), unisexPath = nil },
+  { family = "Shag", slot = "Whiskers", name = "Shag 04", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Whiskers_Shag_04"), unisexPath = nil },
+  { family = "Shag", slot = "Whiskers", name = "Shag 05", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Shag/", "SK_Whiskers_Shag_05"), unisexPath = nil },
+  { family = "Sparse", slot = "Beard", name = "Sparse 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Beard_Sparse_01"), unisexPath = nil },
+  { family = "Sparse", slot = "Beard", name = "Sparse 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Beard_Sparse_02"), unisexPath = nil },
+  { family = "Sparse", slot = "Beard", name = "Sparse 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Beard_Sparse_03"), unisexPath = nil },
+  { family = "Sparse", slot = "Mustache", name = "Sparse 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Mustache_Sparse_01"), unisexPath = nil },
+  { family = "Sparse", slot = "Mustache", name = "Sparse 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Mustache_Sparse_02"), unisexPath = nil },
+  { family = "Sparse", slot = "Mustache", name = "Sparse 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Mustache_Sparse_03"), unisexPath = nil },
+  { family = "Sparse", slot = "Whiskers", name = "Sparse 01", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Whiskers_Sparse_01"), unisexPath = nil },
+  { family = "Sparse", slot = "Whiskers", name = "Sparse 02", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Whiskers_Sparse_02"), unisexPath = nil },
+  { family = "Sparse", slot = "Whiskers", name = "Sparse 03", femalePath = nil, malePath = objPath("/Game/Character/Skeletal_Meshes/Facial/Male/Beard/Sparse/", "SK_Whiskers_Sparse_03"), unisexPath = nil },
+}
+
+-- Config.CUSTOM_COMPOSITE_PIECES (2026-08-29) -- catalog of the game's own native per-piece
+-- 'CompositeMeshData' DataAssets (R5CompositeMeshParams), swept from pakcontents.xlsx the same
+-- way Config.CUSTOM_CLOTHES was built from raw meshes -- but these are a DIFFERENT, higher-level
+-- asset than a plain SkeletalMesh: each one is the game's own wrapper around one piece (mesh +
+-- any socket-attached extras + baked color indices), the exact building block a real
+-- R5CompositeMeshGroup references (see Marita's own real Equipment group, item 111's
+-- investigation). 354 entries across 33 families -- a partially different catalog from
+-- Config.CUSTOM_CLOTHES' own 25 families (some overlap -- Dogface/Musketeer/Jeweler/Flibustier --
+-- some new: BlackBeard_Grenadier/Huntsman/Sergeant, Combatant, Crafter, Default, Drowned,
+-- Drowned_Armored, the Senkamati_*_Feather/Wood families, the NPC_*/Set_* families, and two
+-- head-only oddities T01_Head_SoloPlayer/T03_Head_MaskSenkamati). `name` is just the piece's own
+-- numbered suffix ("01"/"02"/...) or "Default" for an un-numbered/None variant -- not hand-
+-- polished, expect some rough names. Built as reference data for constructing a custom
+-- R5CompositeMeshGroup (mixing pieces from different families into one bundle) -- not yet wired
+-- into anything; see Spawner.TestBuildCustomOutfit's own comment for the actual construction
+-- experiment this feeds.
+Config.CUSTOM_COMPOSITE_PIECES = {
+  { family = "BlackBeard_Grenadier", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Grenadier_Feet_01_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Grenadier_Feet_02_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Grenadier_Feet_03_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Grenadier_Hands_01_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Grenadier_Hands_02_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Grenadier_Hands_03_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_01_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_02_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_03_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Grenadier_Legs_01_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Grenadier_Legs_02_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Grenadier_Legs_03_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Grenadier_Torso_01_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Grenadier_Torso_02_CompositeMeshData" },
+  { family = "BlackBeard_Grenadier", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Grenadier_Torso_03_CompositeMeshData" },
+  { family = "BlackBeard_Huntsman", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Huntsman/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Huntsman_Legs_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_01_Long_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_02_Long_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_03_Long_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_02_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Musketeer_Feet_03_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Musketeer_Hands_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Musketeer_Hands_02_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Musketeer_Hands_03_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_02_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_03_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Musketeer_Legs_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Musketeer_Legs_02_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Musketeer_Legs_03_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Musketeer_Torso_01_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Musketeer_Torso_02_CompositeMeshData" },
+  { family = "BlackBeard_Musketeer", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Musketeer_Torso_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sailor_Feet_None_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sailor_Feet_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sailor_Feet_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sailor_Feet_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Hands", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sailor_Hands_None_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sailor_Hands_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sailor_Hands_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sailor_Hands_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Head", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_None_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sailor_Legs_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sailor_Legs_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sailor_Legs_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Mask", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Mask/DA_Armor_Regular_BlackBeard_Sailor_Mask_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Mask", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Mask/DA_Armor_Regular_BlackBeard_Sailor_Mask_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Mask", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Mask/DA_Armor_Regular_BlackBeard_Sailor_Mask_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sailor_Torso_01_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sailor_Torso_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sailor_Torso_03_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Waist", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Waist/DA_Armor_Regular_BlackBeard_Sailor_Waist_02_CompositeMeshData" },
+  { family = "BlackBeard_Sailor", slot = "Waist", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Waist/DA_Armor_Regular_BlackBeard_Sailor_Waist_03_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sergeant_Feet_01_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sergeant_Feet_02_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Feets/DA_Armor_Regular_BlackBeard_Sergeant_Feet_03_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sergeant_Hands_01_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sergeant_Hands_02_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Hands/DA_Armor_Regular_BlackBeard_Sergeant_Hands_03_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_01_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_02_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_03_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sergeant_Legs_01_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sergeant_Legs_02_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Legs/DA_Armor_Regular_BlackBeard_Sergeant_Legs_03_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sergeant_Torso_01_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sergeant_Torso_02_CompositeMeshData" },
+  { family = "BlackBeard_Sergeant", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Torso/DA_Armor_Regular_BlackBeard_Sergeant_Torso_03_CompositeMeshData" },
+  { family = "Combatant", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Feets/DA_Armor_Regular_Combatant_Feet_01_CompositeMeshData" },
+  { family = "Combatant", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Feets/DA_Armor_Regular_Combatant_Feet_02_CompositeMeshData" },
+  { family = "Combatant", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Feets/DA_Armor_Regular_Combatant_Feet_03_CompositeMeshData" },
+  { family = "Combatant", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Hands/DA_Armor_Regular_Combatant_Hands_01_CompositeMeshData" },
+  { family = "Combatant", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Hands/DA_Armor_Regular_Combatant_Hands_02_CompositeMeshData" },
+  { family = "Combatant", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Hands/DA_Armor_Regular_Combatant_Hands_03_CompositeMeshData" },
+  { family = "Combatant", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_01_CompositeMeshData" },
+  { family = "Combatant", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_02_CompositeMeshData" },
+  { family = "Combatant", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_03_CompositeMeshData" },
+  { family = "Combatant", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Legs/DA_Armor_Regular_Combatant_Legs_01_CompositeMeshData" },
+  { family = "Combatant", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Legs/DA_Armor_Regular_Combatant_Legs_02_CompositeMeshData" },
+  { family = "Combatant", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Legs/DA_Armor_Regular_Combatant_Legs_03_CompositeMeshData" },
+  { family = "Combatant", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Torso/DA_Armor_Regular_Combatant_Torso_01_CompositeMeshData" },
+  { family = "Combatant", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Torso/DA_Armor_Regular_Combatant_Torso_02_CompositeMeshData" },
+  { family = "Combatant", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Torso/DA_Armor_Regular_Combatant_Torso_03_CompositeMeshData" },
+  { family = "Crafter", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Crafter/CompositeMeshData/Legs/DA_Armor_Regular_Crafter_Legs_01_CompositeMeshData" },
+  { family = "Crafter", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Crafter/CompositeMeshData/Legs/DA_Armor_Regular_Crafter_Legs_02_CompositeMeshData" },
+  { family = "Crafter", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Crafter/CompositeMeshData/Legs/DA_Armor_Regular_Crafter_Legs_03_CompositeMeshData" },
+  { family = "Default", slot = "Belt", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Default/CompositeMeshData/Belt/DA_Armor_Regular_Character_Belt_01_CompositeMeshData" },
+  { family = "Default", slot = "Frog", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Default/CompositeMeshData/Frog/DA_Armor_Regular_Character_Frog_01_CompositeMeshData" },
+  { family = "Default", slot = "Sling", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Default/CompositeMeshData/Sling/DA_Armor_Regular_Character_Sling_01_CompositeMeshData" },
+  { family = "Default", slot = "Strap", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Default/CompositeMeshData/Strap/DA_Armor_Regular_Character_Strap_01_CompositeMeshData" },
+  { family = "Dogface", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Feets/DA_Armor_Regular_Dogface_Feet_01_CompositeMeshData" },
+  { family = "Dogface", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Feets/DA_Armor_Regular_Dogface_Feet_02_CompositeMeshData" },
+  { family = "Dogface", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Feets/DA_Armor_Regular_Dogface_Feet_03_CompositeMeshData" },
+  { family = "Dogface", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_01_CompositeMeshData" },
+  { family = "Dogface", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_02_CompositeMeshData" },
+  { family = "Dogface", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_03_CompositeMeshData" },
+  { family = "Dogface", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Legs/DA_Armor_Regular_Dogface_Legs_01_CompositeMeshData" },
+  { family = "Dogface", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Legs/DA_Armor_Regular_Dogface_Legs_02_CompositeMeshData" },
+  { family = "Dogface", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Legs/DA_Armor_Regular_Dogface_Legs_03_CompositeMeshData" },
+  { family = "Dogface", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Torso/DA_Armor_Regular_Dogface_Torso_01_CompositeMeshData" },
+  { family = "Dogface", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Torso/DA_Armor_Regular_Dogface_Torso_02_CompositeMeshData" },
+  { family = "Dogface", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Torso/DA_Armor_Regular_Dogface_Torso_03_CompositeMeshData" },
+  { family = "Drowned", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Feet_01_CompositeMeshData" },
+  { family = "Drowned", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Feet_02_CompositeMeshData" },
+  { family = "Drowned", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Feet_03_CompositeMeshData" },
+  { family = "Drowned", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Hands_01_CompositeMeshData" },
+  { family = "Drowned", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Hands_02_CompositeMeshData" },
+  { family = "Drowned", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Hands_03_CompositeMeshData" },
+  { family = "Drowned", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_01_CompositeMeshData" },
+  { family = "Drowned", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_02_CompositeMeshData" },
+  { family = "Drowned", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_03_CompositeMeshData" },
+  { family = "Drowned", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Legs_01_CompositeMeshData" },
+  { family = "Drowned", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Legs_02_CompositeMeshData" },
+  { family = "Drowned", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Legs_03_CompositeMeshData" },
+  { family = "Drowned", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Torso_01_CompositeMeshData" },
+  { family = "Drowned", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Torso_02_CompositeMeshData" },
+  { family = "Drowned", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Torso_03_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Armored_Feet_01_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Armored_Feet_02_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Feets/DA_Armor_Regular_Drowned_Armored_Feet_03_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Armored_Hands_01_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Armored_Hands_02_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Hands/DA_Armor_Regular_Drowned_Armored_Hands_03_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_01_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_02_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_03_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Armored_Legs_01_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Armored_Legs_02_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Legs/DA_Armor_Regular_Drowned_Armored_Legs_03_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Armored_Torso_01_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Armored_Torso_02_CompositeMeshData" },
+  { family = "Drowned_Armored", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Torso/DA_Armor_Regular_Drowned_Armored_Torso_03_CompositeMeshData" },
+  { family = "Flibustier", slot = "Cape", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Cape/DA_Armor_Regular_Flibustier_Cape_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Feet/DA_Armor_Regular_Flibustier_Feet_01_CompositeMeshData" },
+  { family = "Flibustier", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Feet/DA_Armor_Regular_Flibustier_Feet_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Hands", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Flibustier_Hands_01_Long_CompositeMeshData" },
+  { family = "Flibustier", slot = "Hands", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Flibustier_Hands_02_Long_CompositeMeshData" },
+  { family = "Flibustier", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Flibustier_Hands_01_CompositeMeshData" },
+  { family = "Flibustier", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Flibustier_Hands_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_01_CompositeMeshData" },
+  { family = "Flibustier", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_03_CompositeMeshData" },
+  { family = "Flibustier", slot = "Head", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_04_CompositeMeshData" },
+  { family = "Flibustier", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Flibustier_Legs_01_CompositeMeshData" },
+  { family = "Flibustier", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Flibustier_Legs_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Flibustier_Legs_03_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_02_Long_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_01_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_02_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_03_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_04_CompositeMeshData" },
+  { family = "Flibustier", slot = "Torso", name = "05", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_05_CompositeMeshData" },
+  { family = "Flibustier", slot = "Waist", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Waist/DA_Armor_Regular_Flibustier_Waist_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Cape", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Cape/DA_Armor_Regular_Jeweler_Cape_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Cape", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Cape/DA_Armor_Regular_Jeweler_Cape_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Cape", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Cape/DA_Armor_Regular_Jeweler_Cape_04_CompositeMeshData" },
+  { family = "Jeweler", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Feet/DA_Armor_Regular_Jeweler_Feet_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Feet/DA_Armor_Regular_Jeweler_Feet_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Feet/DA_Armor_Regular_Jeweler_Feet_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Hands/DA_Armor_Regular_Jeweler_Hands_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Hands/DA_Armor_Regular_Jeweler_Hands_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Hands/DA_Armor_Regular_Jeweler_Hands_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_None_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_04_CompositeMeshData" },
+  { family = "Jeweler", slot = "Head", name = "07", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_07_CompositeMeshData" },
+  { family = "Jeweler", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Legs/DA_Armor_Regular_Jeweler_Legs_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Legs/DA_Armor_Regular_Jeweler_Legs_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Legs/DA_Armor_Regular_Jeweler_Legs_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_03_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_04_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "05", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_05_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "06", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_06_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "07", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_07_CompositeMeshData" },
+  { family = "Jeweler", slot = "Torso", name = "08", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_08_CompositeMeshData" },
+  { family = "Jeweler", slot = "Waist", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Waist/DA_Armor_Regular_Jeweler_Waist_01_CompositeMeshData" },
+  { family = "Jeweler", slot = "Waist", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Waist/DA_Armor_Regular_Jeweler_Waist_02_CompositeMeshData" },
+  { family = "Jeweler", slot = "Waist", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Waist/DA_Armor_Regular_Jeweler_Waist_03_CompositeMeshData" },
+  { family = "Musketeer", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_Musketeer_Feet_01_CompositeMeshData" },
+  { family = "Musketeer", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_Musketeer_Feet_02_CompositeMeshData" },
+  { family = "Musketeer", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Feets/DA_Armor_Regular_Musketeer_Feet_03_CompositeMeshData" },
+  { family = "Musketeer", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_Musketeer_Hands_01_CompositeMeshData" },
+  { family = "Musketeer", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_Musketeer_Hands_02_CompositeMeshData" },
+  { family = "Musketeer", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Hands/DA_Armor_Regular_Musketeer_Hands_03_CompositeMeshData" },
+  { family = "Musketeer", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_01_CompositeMeshData" },
+  { family = "Musketeer", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_02_CompositeMeshData" },
+  { family = "Musketeer", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_03_CompositeMeshData" },
+  { family = "Musketeer", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_Musketeer_Legs_01_CompositeMeshData" },
+  { family = "Musketeer", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_Musketeer_Legs_02_CompositeMeshData" },
+  { family = "Musketeer", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Legs/DA_Armor_Regular_Musketeer_Legs_03_CompositeMeshData" },
+  { family = "Musketeer", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_Musketeer_Torso_01_CompositeMeshData" },
+  { family = "Musketeer", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_Musketeer_Torso_02_CompositeMeshData" },
+  { family = "Musketeer", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Torso/DA_Armor_Regular_Musketeer_Torso_03_CompositeMeshData" },
+  { family = "NPC_GalenSkelton", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_GalenSkelton/CompositeMeshData/Feets/DA_Armor_Regular_NPC_GalenSkelton_Feet_CompositeMeshData" },
+  { family = "NPC_GalenSkelton", slot = "Legs", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_GalenSkelton/CompositeMeshData/Legs/DA_Armor_Regular_NPC_GalenSkelton_Legs_CompositeMeshData" },
+  { family = "NPC_GalenSkelton", slot = "Torso", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_GalenSkelton/CompositeMeshData/Torso/DA_Armor_Regular_NPC_GalenSkelton_Torso_CompositeMeshData" },
+  { family = "NPC_GalenSkelton", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_GalenSkelton/CompositeMeshData/Torso/DA_Armor_Regular_NPC_GalenSkelton_Belt_01_CompositeMeshData" },
+  { family = "NPC_GalenSkelton", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_GalenSkelton/CompositeMeshData/Torso/DA_Armor_Regular_NPC_GalenSkelton_Cape_01_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Feet", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Feets/DA_Armor_Regular_NPC_Ksante_Feet_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Hands", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Hands/DA_Armor_Regular_NPC_Ksante_Hands_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Legs", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Legs/DA_Armor_Regular_NPC_Ksante_Legs_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Torso", name = "Default", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Torso/DA_Armor_Regular_NPC_Ksante_Torso_Torn_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Torso/DA_Armor_Regular_NPC_Ksante_Belt_01_CompositeMeshData" },
+  { family = "NPC_Ksante", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/NPC_Ksante/CompositeMeshData/Torso/DA_Armor_Regular_NPC_Ksante_Cape_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Hunter_Feather_Feet_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Hunter_Feather_Feet_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Hunter_Feather_Feet_03_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Hunter_Feather_Hands_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Hunter_Feather_Hands_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Hunter_Feather_Hands_03_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_03_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Feather_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Feather_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Feather_Legs_03_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Hunter_Feather_Torso_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Hunter_Feather_Torso_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Feather", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Hunter_Feather_Torso_03_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Wood", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Wood_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Wood", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Wood_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Hunter_Wood", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Hunter_Wood_Legs_03_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Cape", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Cape/DA_Armor_Regular_Senkamati_Shaman_Feather_Cape_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Cape", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Cape/DA_Armor_Regular_Senkamati_Shaman_Feather_Cape_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Shaman_Feather_Feet_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Shaman_Feather_Feet_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Shaman_Feather_Hands_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Shaman_Feather_Hands_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_03_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Shaman_Feather_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Shaman_Feather_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Neck", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Neck/DA_Armor_Regular_Senkamati_Shaman_Feather_Neck_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Neck", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Neck/DA_Armor_Regular_Senkamati_Shaman_Feather_Neck_02_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Shaman_Feather_Torso_01_CompositeMeshData" },
+  { family = "Senkamati_Shaman_Feather", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Shaman_Feather_Torso_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Feather_Feet_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Feather_Feet_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Feather_Feet_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Feather_Hands_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Feather_Hands_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Feather_Hands_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Head", name = "04", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_04_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Feather_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Feather_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Feather_Legs_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Thrall_Feather_Torso_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Thrall_Feather_Torso_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Feather", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Thrall_Feather_Torso_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Wood_Feet_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Wood_Feet_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Thrall_Wood_Feet_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Wood_Hands_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Wood_Hands_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Thrall_Wood_Hands_03_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Wood_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Wood_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Thrall_Wood", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Wood/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Thrall_Wood_Legs_03_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Warrior_Feather_Feet_01_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Warrior_Feather_Feet_02_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Feet", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Feets/DA_Armor_Regular_Senkamati_Warrior_Feather_Feet_03_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Warrior_Feather_Hands_01_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Hands", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Warrior_Feather_Hands_02_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Hands", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Hands/DA_Armor_Regular_Senkamati_Warrior_Feather_Hands_03_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_01_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_02_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Head", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_03_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Warrior_Feather_Legs_01_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Warrior_Feather_Legs_02_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Legs", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Legs/DA_Armor_Regular_Senkamati_Warrior_Feather_Legs_03_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Warrior_Feather_Torso_01_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Warrior_Feather_Torso_02_CompositeMeshData" },
+  { family = "Senkamati_Warrior_Feather", slot = "Torso", name = "03", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Torso/DA_Armor_Regular_Senkamati_Warrior_Feather_Torso_03_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Adventurer_Feet_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Adventurer_Hands_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Head/DA_Armor_Regular_Hero_Adventurer_Head_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Adventurer_Legs_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Adventurer_Waist_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Adventurer_Belt_01_CompositeMeshData" },
+  { family = "Set_Adventurer", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Adventurer_Torso_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Bandit_Feet_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Bandit_Hands_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Head/DA_Armor_Regular_Hero_Bandit_Head_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Bandit_Legs_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Bandit_Waist_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Bandit_Belt_01_CompositeMeshData" },
+  { family = "Set_Bandit", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Bandit_Torso_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Brigant_Feet_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Brigant_Hands_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Head/DA_Armor_Regular_Hero_Brigant_Head_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Brigant_Legs_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Brigant_Waist_01_CompositeMeshData" },
+  { family = "Set_Brigant", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Brigant_Torso_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Conquistador_Feet_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Conquistador_Hands_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Head/DA_Armor_Regular_Hero_Conquistador_Head_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Conquistador_Legs_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Conquistador_Belt_01_CompositeMeshData" },
+  { family = "Set_Conquistador", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Conquistador_Torso_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Flibustier_Feet_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Flibustier_Hands_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Hero_Flibustier_Head_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Flibustier_Legs_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Flibustier_Waist_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Flibustier_Belt_01_CompositeMeshData" },
+  { family = "Set_Flibustier", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Flibustier_Torso_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Mercenary_Feet_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Mercenary_Hands_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Bandana_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Hat_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Headband_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Mercenary_Legs_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Mercenary_Waist_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Mercenary_Belt_01_CompositeMeshData" },
+  { family = "Set_Mercenary", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Mercenary_Torso_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Pikeman_Feet_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Pikeman_Hands_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Head/DA_Armor_Regular_Hero_Pikeman_Head_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Pikeman_Legs_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Pikeman_Waist_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Pikeman_Belt_01_CompositeMeshData" },
+  { family = "Set_Pikeman", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Pikeman_Torso_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Starter_Feet_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Feet", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Starter_Feet_02_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Starter_Hands_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Head/DA_Armor_Regular_Hero_Starter_Head_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Starter_Legs_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Starter_Waist_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Starter_Legs_02_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Legs", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Starter_Waist_02_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Starter_Belt_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Starter_Torso_01_CompositeMeshData" },
+  { family = "Set_Starter", slot = "Torso", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Starter_Torso_02_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Feet", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Vanilla_Feet_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Hands", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Hands/DA_Armor_Regular_Hero_Vanilla_Hands_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Head/DA_Armor_Regular_Hero_Vanilla_Head_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Vanilla_Legs_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Legs", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Legs/DA_Armor_Regular_Hero_Vanilla_Waist_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Vanilla_Belt_01_CompositeMeshData" },
+  { family = "Set_Vanilla", slot = "Torso", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Vanilla_Torso_01_CompositeMeshData" },
+  { family = "T01_Head_SoloPlayer", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T01_Head_SoloPlayer/CompositeMeshData/Head/DA_Armor_Regular_Hero_SoloPlayer_Head_01_CompositeMeshData" },
+  { family = "T01_Head_SoloPlayer", slot = "Head", name = "02", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T01_Head_SoloPlayer/CompositeMeshData/Head/DA_Armor_Regular_Hero_SoloPlayer_Head_02_CompositeMeshData" },
+  { family = "T03_Head_MaskSenkamati", slot = "Head", name = "01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T03_Head_MaskSenkamati/CompositeMeshData/Head/DA_Armor_Regular_Hero_MaskSenkamati_Head_01_CompositeMeshData" },
+}
+
 
 Config.FEMALE_WALKER_OVERLAYS = {
   -- LETTY -- same body as our walker (SK_Adventure_Female_01), so no body swap needed. BUG FIX
@@ -2187,6 +3231,241 @@ Config.WHISTLE_PET_AI_CLASS =
 Config.CASTER_KILL_TOTEMS = true
 Config.CASTER_TOTEM_CLASS_PATH =
   "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/Totem/BP_Mob_SenkamatiCorrupted_Reglar_Shaman_Caster_Totem.BP_Mob_SenkamatiCorrupted_Reglar_Shaman_Caster_Totem_C"
+
+------------------------------------------------------------------
+-- Config.CUSTOM_POSES (2026-08-27) -- flat pose roster imported from Other\Poses.xlsx,
+-- built by RedFalcon while live-testing lbtestpose across the full asset catalog. One row per
+-- confirmed-testable animation: `path` is the /Game/... asset (the argument half of the
+-- `lbtestpose <path>` command actually run to verify it), `topCategory`/`subCategory` (nil when
+-- a sheet had no subcategory column) build the Custom > Poses > ... branch in spawn_menu.ini via
+-- spawnmenu_manifest.lua's CUSTOM_POSES descriptor, `name` is the display leaf. Order preserved
+-- exactly as authored: sheet order (Standing, SittingKneeling, Work Benches, Battle, Magical,
+-- Monsterous, Statues, Misc), then row order within each sheet -- this is also the ROSTER INDEX
+-- spawn_menu.ini's `index = N` values point back into, so don't reorder rows once entries exist
+-- in that file (same append-only discipline every other roster here already follows).
+Config.CUSTOM_POSES = {
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Victory/AM_Regular_Male_NPC_ShipCrew_Boarding_Victory_001", topCategory = "Standing", subCategory = "Cheer", name = "Cheer 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Victory/AM_Regular_Male_NPC_ShipCrew_Boarding_Victory_002", topCategory = "Standing", subCategory = "Cheer", name = "Cheer 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Victory/AM_Regular_Male_NPC_ShipCrew_Boarding_Victory_003", topCategory = "Standing", subCategory = "Cheer", name = "Cheer 3" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Victory/AM_Regular_Male_NPC_ShipCrew_Boarding_Victory_004", topCategory = "Standing", subCategory = "Cheer", name = "Cheer 4" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Victory/AM_Regular_Male_NPC_ShipCrew_Boarding_Victory_005", topCategory = "Standing", subCategory = "Cheer", name = "Cheer 5" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Eating/AM_Regular_Male_Hero_Eating_Coconut", topCategory = "Standing", subCategory = "Food and Meds", name = "Eat Coconut" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Eating/AM_Regular_Male_Hero_Eating_Meat", topCategory = "Standing", subCategory = "Food and Meds", name = "Eat Meat" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Eating/AM_Regular_Male_Hero_Eating_Soup", topCategory = "Standing", subCategory = "Food and Meds", name = "Eat Soup" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Pills/AM_Regular_Male_Hero_Axe_Armed_Pills", topCategory = "Standing", subCategory = "Food and Meds", name = "Fast Drink" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Salve/AM_Regular_Male_Hero_Salve", topCategory = "Standing", subCategory = "Food and Meds", name = "Slather in Salve" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Potion/AM_Regular_Male_Hero_Axe_Armed_Potion", topCategory = "Standing", subCategory = "Food and Meds", name = "Slow Drink" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/Other/A_Regular_PrisonerStand2_Idle", topCategory = "Standing", subCategory = "Hang", name = "Hang From Shackles" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Shroud/A_Regular_Male_NPC_ShipCrew_Shroud_HangForFrigat_LeftSide_Cycle", topCategory = "Standing", subCategory = "Hang", name = "Hang on Pole Left 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Shroud/AM_Regular_Male_NPC_ShipCrew_Shroud_HangForFrigat_LeftSide", topCategory = "Standing", subCategory = "Hang", name = "Hang on Pole Left 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Shroud/A_Regular_Male_NPC_ShipCrew_Shroud_HangForFrigat_RightSide_Cycle", topCategory = "Standing", subCategory = "Hang", name = "Hang on Pole Right 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Shroud/AM_Regular_Male_NPC_ShipCrew_Shroud_HangForFrigat_RightSide", topCategory = "Standing", subCategory = "Hang", name = "Hang on Pole Right 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_02", topCategory = "Standing", subCategory = "Idle", name = "Regular Idle 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/A_Regular_Male_Calm_Idle", topCategory = "Standing", subCategory = "Idle", name = "Regular Idle 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/IdleBreak/AM_Regular_Male_Hero_IdleBreak_Neutral", topCategory = "Standing", subCategory = "Idle", name = "Regular Idle 3" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_01", topCategory = "Standing", subCategory = "Idle", name = "Regular Idle 4" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_Vendor02", topCategory = "Standing", subCategory = "Lean", name = "Lean on Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_LongBen_InteractionIdle", topCategory = "Standing", subCategory = "Lean", name = "Long Ben Lean on Counter" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Universal/Lean/A_Regular_Male_NPC_Universal_LeanOnWall_Idle_01_Loop", topCategory = "Standing", subCategory = "Lean", name = "Wall Lean" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_Vendor03", topCategory = "Standing", subCategory = "Lean", name = "Wall Lean Arms Crossed" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Bulwark/AM_Regular_Male_NPC_ShipCrew_Bulwark_Lean_Relaxed_01", topCategory = "Standing", subCategory = "Lean", name = "Wall Lean Face Front" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Bulwark/AM_Regular_Male_NPC_ShipCrew_Bulwark_Lean_Active_RightSide", topCategory = "Standing", subCategory = "Lean", name = "Wall Lean Face Left" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Bulwark/AM_Regular_Male_NPC_ShipCrew_Bulwark_Lean_Active_LeftSide", topCategory = "Standing", subCategory = "Lean", name = "Wall Lean Face Right" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_Vendor04", topCategory = "Standing", subCategory = "Stand", name = "Arms Behind Back" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_Vendor01", topCategory = "Standing", subCategory = "Stand", name = "Arms Tightly Crossed" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_06", topCategory = "Standing", subCategory = "Stand", name = "Benjamin" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/IdleBreak/AM_Regular_Male_Hero_IdleBreak_Snots", topCategory = "Standing", subCategory = "Stand", name = "Blow Out Nose" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_05", topCategory = "Standing", subCategory = "Stand", name = "BotC Merchant" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_07", topCategory = "Standing", subCategory = "Stand", name = "Charlie" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/AM_Regular_Male_Calm_IdleBreak_03", topCategory = "Standing", subCategory = "Stand", name = "Checks Things Out" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/Other/AM_Regular_BoardingEnd_Lose", topCategory = "Standing", subCategory = "Stand", name = "Cowering" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_04", topCategory = "Standing", subCategory = "Stand", name = "Dust Off Body" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/AM_Regular_Male_Calm_IdleBreak_04", topCategory = "Standing", subCategory = "Stand", name = "Dusts Legs" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fists/A_Regular_Male_Hero_Fists_Combat_BlockCycle", topCategory = "Standing", subCategory = "Stand", name = "Fists Up Like Boxing" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/A_IsraelHands_Agressive_BlockCycle", topCategory = "Standing", subCategory = "Stand", name = "hand out, looks like old man with cane" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Vendors/A_Regular_Male_Vendor05", topCategory = "Standing", subCategory = "Stand", name = "Hands on Hips" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_05", topCategory = "Standing", subCategory = "Stand", name = "Hands on Hips Look Around" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/Other/A_Regular_Carpenter_Idle", topCategory = "Standing", subCategory = "Stand", name = "Hands on Hips, Shuffle" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Saber/A_Regular_Male_Hero_Saber_Armed_Idle", topCategory = "Standing", subCategory = "Stand", name = "Idle with Saber" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/AM_Regular_Male_Calm_IdleBreak_02", topCategory = "Standing", subCategory = "Stand", name = "Kicks Dirt" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/AM_Regular_Male_Calm_Alert", topCategory = "Standing", subCategory = "Stand", name = "Looking Around" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_08", topCategory = "Standing", subCategory = "Stand", name = "Palms Clasped" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/AM_Regular_Male_Calm_IdleBreak_01", topCategory = "Standing", subCategory = "Stand", name = "Rolls Shoulders" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SearchOnTheTable/A_Regular_Male_Hero_Universal_Interact_SearchOnTheTable_Loop", topCategory = "Standing", subCategory = "Stand", name = "Rummaging Table" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_03", topCategory = "Standing", subCategory = "Stand", name = "Scratch Chin" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_04", topCategory = "Standing", subCategory = "Stand", name = "Scrathing Head, thinking" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_02", topCategory = "Standing", subCategory = "Stand", name = "Shake Arm" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Saber/Sergeant/A_Regular_Male_Combat_Saber_Sergeant_Idle", topCategory = "Standing", subCategory = "Stand", name = "Standing Aggressively" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Speaking_01", topCategory = "Standing", subCategory = "Stand", name = "Standing and Talking" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_03", topCategory = "Standing", subCategory = "Stand", name = "Standing, Arm on Hip and Proud" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Standing_01", topCategory = "Standing", subCategory = "Stand", name = "Standing, Looking Left" },
+  { path = "/Game/Character/Animations/Human/Regular/BlackBeard/A_Regular_Male_Scum_IdleBreak_06", topCategory = "Standing", subCategory = "Stand", name = "Swat at Bugs" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/IdleBreak/AM_Regular_Male_Hero_IdleBreak_Mosquitoes", topCategory = "Standing", subCategory = "Stand", name = "Swat At Mosquitos" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_001_01", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_001_02", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_002_01", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 3" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_002_03", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 4" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_003_01", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 5" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_003_03", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 6" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Taunt/AM_Regular_Male_NPC_ShipCrew_Boarding_Taunt_005_01", topCategory = "Standing", subCategory = "Taunt", name = "Taunt 7" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Bandages/A_Regular_Male_Hero_Unarmed_BandagesCycle", topCategory = "Standing", subCategory = "Work", name = "Bandage No Sound" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fishing_Rod/AM_Regular_Male_Hero_Fishing_Throw", topCategory = "Standing", subCategory = "Work", name = "Crouched Fishing" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Shovel/AM_Regular_Male_Hero_Shovel_Terraform", topCategory = "Standing", subCategory = "Work", name = "Faster Digging" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fishing_Rod/AM_Regular_Male_Hero_Fishing_IdleFishing", topCategory = "Standing", subCategory = "Work", name = "Fishing" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Building/AM_Regular_Male_Hero_Building_HammerHit", topCategory = "Standing", subCategory = "Work", name = "Hammering" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Cannons/AM_Regular_Male_NPC_ShipCrew_Cannon_L", topCategory = "Standing", subCategory = "Work", name = "Hold Cannon Left" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Cannons/AM_Regular_Male_NPC_ShipCrew_Cannon_R", topCategory = "Standing", subCategory = "Work", name = "Hold Cannon Right" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Wheel/AM_Regular_Male_NPC_ShipCrew_Wheel_FakeInteraction", topCategory = "Standing", subCategory = "Work", name = "Hold Ship Wheel" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Building/A_Regular_Male_Hero_Building_Armed_Idle", topCategory = "Standing", subCategory = "Work", name = "Holding Hammer" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fishing_Rod/A_Regular_Male_Hero_Fishing_Armed_Idle", topCategory = "Standing", subCategory = "Work", name = "Idle with Fishing Pole" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fishing_Rod/AM_Regular_Male_Hero_Fishing_Fight", topCategory = "Standing", subCategory = "Work", name = "Reel In Fish" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Shovel/A_Regular_Male_Hero_Shovel_Armed_G1", topCategory = "Standing", subCategory = "Work", name = "Slower Digging" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Ropes/AM_Regular_Male_NPC_ShipCrew_RopePull_HipToHip_Active_01", topCategory = "Standing", subCategory = "Work", name = "Stand and Pull Rope" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_Standing_01", topCategory = "Standing", subCategory = "Stand", name = "Fem Bucc Merchant" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_Standing_05", topCategory = "Standing", subCategory = "Stand", name = "Fem Hands on Hips" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_Standing_02", topCategory = "Standing", subCategory = "Stand", name = "Letty" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_Standing_03", topCategory = "Standing", subCategory = "Stand", name = "Marita" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Female_Hero_Lobby_Idle_03", topCategory = "Standing", subCategory = "Idle", name = "Regular Fem Player Idle" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_Standing_07", topCategory = "Standing", subCategory = "Stand", name = "Fem Table Merchant" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Male_Hero_Lobby_Idle_03", topCategory = "Standing", subCategory = "Idle", name = "Regular Masc Player Idle" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_SittingOnChair_01", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Chair Sit", name = "Fem Sit 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_SittingOnChair_02", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Chair Sit", name = "Fem Sit 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Female_Idle_SittingOnChair_03", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Chair Sit", name = "Fem Sit 3" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_SittingOnChair_02", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Chair Sit", name = "Sit on Chair, look left" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SittingOnAstool/A_Regular_Male_Hero_Universal_Interact_SittingOnAstool_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Chair Sit", name = "Sit on Stool" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Defeat/AM_Regular_Male_NPC_ShipCrew_Boarding_Defeat_005", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Crouch", name = "Crouch and Cower" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SittingOnGround/A_Regular_Male_Hero_Universal_Interact_SittingOnGround_Idle03_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Crouch", name = "Crouching" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Ropes/AM_Regular_Male_NPC_ShipCrew_RopePull_HipToFloor_Active_01", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit and Pull Rope" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Defeat/AM_Regular_Male_NPC_ShipCrew_Boarding_Defeat_004", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on Floor Cowering" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SittingOnGround/A_Regular_Male_Hero_Universal_Interact_SittingOnGround_Idle01_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on Ground Arms on Legs" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SittingOnGround/A_Regular_Male_Hero_Universal_Interact_SittingOnGround_Idle02_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on Ground Crossed Legs" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_SittingOnChair_For_JacquesArno", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on ground, holding stomach" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Defeat/AM_Regular_Male_NPC_ShipCrew_Boarding_Defeat_003", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on ground, holding stomach out of breath" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Calm/Idle/A_AnimatedActor_Regular_Male_Idle_Sitting_01", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Ground Sit", name = "Sit on ground. Head on hand" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Defeat/AM_Regular_Male_NPC_ShipCrew_Boarding_Defeat_001", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Defeat Fall to Knees" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Boarding_Defeat/AM_Regular_Male_NPC_ShipCrew_Boarding_Defeat_002", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Defeat Fall to Kness and Cower" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/A_IsraelHands_Agressive_OutOfPostureCycle", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Kneeling, Out of Breath" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/A_IsraelHands_HumanForm_Spawn_Cycle", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Praying" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/SearchingInObject/A_Regular_Male_Hero_Universal_Interact_SearchingInObject_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Rummaging Chest" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Universal_Interact/Employee/A_Regular_Male_Hero_Universal_Interact_Garden_Loot", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Rummaging Low" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Universal/Idle/A_Regular_Male_NPC_Universal_FloorCleaning_Brush01_Idle01", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Scrub Floor 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Universal/Idle/A_Regular_Male_NPC_Universal_FloorCleaning_Brush02_Idle", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Kneel", name = "Scrub Floor 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Hammock/AM_Regular_Male_NPC_ShipCrew_Hammock_Hammock_Sleep", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Hammock" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_001_L", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Back" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_002_L", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Back Knees Up" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_005_L", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Back Left Knee Up" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_005_R", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Back Right Knee Up" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_003_L", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Front Left Arm Dangling" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_003_R", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Front Right Arm Dangling" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_004_R", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Left Side" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnGround/A_Regular_Male_Hero_SleepOnGround_Loop", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep on Left Side on Floor" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/SleepOnBed/AM_Regular_Male_Hero_Universal_Interact_SleepOnBed_004_L", topCategory = "Sit, Crouch, Kneel, Sleep", subCategory = "Sleep", name = "Sleep On Right Side" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Alchemy/TableInteract/A_Regular_Male_Hero_Alchemy_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Alchemy Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/AnvilInteract/A_Regular_Male_Hero_Blacksmith_AnvilInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Anvil" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Jevellery/TableInteract/A_Regular_Male_Hero_Jevellery_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Check Gems" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Cooking/CuttingTable/A_Regular_Male_Hero_Cooking_CuttingTableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Chopping Table (Has Fish)" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Equipment/TableInteract/A_Regular_Male_Hero_Equipment_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Cut Leather" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/BellowsInteract/Coal/A_Regular_Male_Hero_Blacksmith_BellowsInteract_Coal_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Dig Coals" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Enchanter/TableInteract/A_Regular_Male_Hero_Enchanter_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Enchanting Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/ShelfInteract/AM_Regular_Male_Hero_ShelfInteract_Start", topCategory = "Workbenches", subCategory = "No Props", name = "Get Stuff From Shelves" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Equipment/ShoemakerInteract/A_Regular_Male_Hero_Equipment_ShoemakerInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Make Shoes" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/BarrelInteract/A_Regular_Male_Hero_Blacksmith_BarrelInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Quenching Barrel" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Workbench/SawmillInteract/AM_Regular_Male_Hero_Workbench_SawmillInteract", topCategory = "Workbenches", subCategory = "No Props", name = "Sawhorse" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/TableInteract/A_Regular_Male_Hero_Blacksmith_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Weapons Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Workbench/TableInteract/A_Regular_Male_Hero_Workbench_TableInteract_Loop", topCategory = "Workbenches", subCategory = "No Props", name = "Workbench" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Alchemy/TableInteract/AM_Regular_Male_Hero_Alchemy_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Alchemy Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/AnvilInteract/AM_Regular_Male_Hero_Blacksmith_AnvilInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Anvil" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Jevellery/TableInteract/AM_Regular_Male_Hero_Jevellery_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Check Gems" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Cooking/CuttingTable/AM_Regular_Male_Hero_Cooking_CuttingTableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Chopping Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Equipment/TableInteract/AM_Regular_Male_Hero_Equipment_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Cut Leather" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/BellowsInteract/Coal/AM_Regular_Male_Hero_Blacksmith_BellowsInteract_Coal", topCategory = "Workbenches", subCategory = "With Props", name = "Dig Coals" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Equipment/MannequinInteract/AM_Regular_Male_Hero_Equipment_MannequinInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Dust Mannequin" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Enchanter/TableInteract/AM_Regular_Male_Hero_Enchanter_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Enchanting Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/ShelfInteract/A_Regular_Male_Hero_ShelfInteract_Loop", topCategory = "Workbenches", subCategory = "With Props", name = "Get Stuff From Shelves" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Equipment/ShoemakerInteract/AM_Regular_Male_Hero_Equipment_ShoemakerInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Make Shoes" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/BellowsInteract/Lever/AM_Regular_Male_Hero_Blacksmith_BellowsInteract_Lever", topCategory = "Workbenches", subCategory = "With Props", name = "Pump Bellows" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/BarrelInteract/AM_Regular_Male_Hero_Blacksmith_BarrelInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Quenching Barrel" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Workbench/SawmillInteract/AM_Regular_Male_Hero_Workbench_SawmillInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Sawhorse" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Cooking/PotInteract/AM_Regular_Male_Hero_Cooking_PotInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Smelling and Warming By Fire" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Blacksmith/TableInteract/AM_Regular_Male_Hero_Blacksmith_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Weapons Table" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/CampActivity/Workbench/TableInteract/AM_Regular_Male_Hero_Workbench_TableInteract", topCategory = "Workbenches", subCategory = "With Props", name = "Workbench" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Axe/AM_Regular_Male_Hero_Axe_Armed_G1", topCategory = "Combat", subCategory = "Attack", name = "Axe Attack" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Shovel/AM_Regular_Male_Hero_Shovel_Combat_Attack_H1", topCategory = "Combat", subCategory = "Attack", name = "Hard Two Handed Down Thrust" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Pickaxe/AM_Regular_Male_Hero_Pickaxe_Armed_G1", topCategory = "Combat", subCategory = "Attack", name = "Pickaxe Swing 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Pickaxe/AM_Regular_Male_Hero_Pickaxe_Armed_G2", topCategory = "Combat", subCategory = "Attack", name = "Pickaxe Swing 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Musket/A_Regular_Male_Combat_Musket_Shot", topCategory = "Combat", subCategory = "Attack", name = "Shoot Musket" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Saber/Sergeant/A_Regular_Male_Combat_Pistol_Shot", topCategory = "Combat", subCategory = "Attack", name = "Shoot Pistol" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Kill_Behind_01", topCategory = "Combat", subCategory = "Attack", name = "Stabbing From Behind" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Sword2h/A_Regular_Male_Hero_Sword2h_Combat_BlockCycle", topCategory = "Combat", subCategory = "Guard", name = "Hold 2H Defensively" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Halberd/A_Regular_Male_Hero_Halberd_Combat_BlockCycle", topCategory = "Combat", subCategory = "Guard", name = "Hold Halberd Defensively" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Musket/A_Regular_Male_Combat_Musket_BlockCycle", topCategory = "Combat", subCategory = "Guard", name = "Hold Musket Defensively 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Musket/A_Regular_Male_Hero_Musket_Combat_BlockCycle", topCategory = "Combat", subCategory = "Guard", name = "Hold Musket Defensively 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Saber/AM_Regular_Male_Combat_Saber_Block", topCategory = "Combat", subCategory = "Guard", name = "Hold Saber Defensively" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Shovel/A_Regular_Male_Hero_Shovel_Combat_BlockCycle", topCategory = "Combat", subCategory = "Guard", name = "Hold Shovel Defensively" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Saber/A_Regular_Female_Hero_Saber_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Fem Stand With  Saber" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fists/A_Regular_Female_Hero_Fists_Unarmed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Fem Stand with Fist Clenched" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Sword2h/A_Regular_Female_Hero_GSword_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Fem Stand With Great Sword" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Halberd/A_Regular_Female_Hero_Halberd_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Fem Stand With Halberd" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Musket/A_Regular_Female_Hero_Musket_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Fem Stand With Musket" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Fists/A_Regular_Male_Hero_Fists_Unarmed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Masc Stand with Fist Clenched" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Sword2h/A_Regular_Male_Hero_GSword_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Masc Stand With Great Sword" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Halberd/A_Regular_Male_Hero_Halberd_Armed_Idle", topCategory = "Combat", subCategory = "Idle", name = "Masc Stand With Halberd" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Musket/A_Regular_Male_Combat_Musket_Idle", topCategory = "Combat", subCategory = "Idle", name = "Masc Stand with Musket" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Saber/A_Regular_Male_Combat_Saber_Idle", topCategory = "Combat", subCategory = "Idle", name = "Masc Stand with Saber" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Oil/AM_Regular_Male_Hero_Axe_Armed_Oil", topCategory = "Combat", subCategory = "Prep", name = "Oil Up Blade" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Consumables/Bandages/AM_Regular_Male_Hero_Bandage_WithoutLoop", topCategory = "Combat", subCategory = "Prep", name = "Wrap Arm with Sound" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Musket/A_Regular_Male_Combat_Musket_IdleAim", topCategory = "Combat", subCategory = "Readied", name = "Aim Musket" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Combat_Saber/Sergeant/A_Regular_Male_Combat_Pistol_AimCycle", topCategory = "Combat", subCategory = "Readied", name = "Aim Pistol 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Pistol/A_Regular_Male_Hero_Pistol_S1Cycle", topCategory = "Combat", subCategory = "Readied", name = "Aim Pistol 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Pistol/A_Regular_Male_Hero_Pistol_Armed_Idle", topCategory = "Combat", subCategory = "Readied", name = "Standing with Pistol Ready" },
+  { path = "/Game/Character/Animations/Bosses/Boatswain/Polehook/A_Boss_Boatswain_Attack_Idle", topCategory = "Combat", subCategory = "Readied", name = "Standing With Spear Ready" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Pistol/AM_Regular_Male_Hero_Pistol_ActiveReload_First", topCategory = "Combat", subCategory = "Reload", name = "Pistol Reload" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Musket/AM_Regular_Male_Hero_Musket_ActiveReload", topCategory = "Combat", subCategory = "Reload", name = "Reload Musket" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Musket/AM_Regular_Male_Hero_Musket_ActiveReload_Fast", topCategory = "Combat", subCategory = "Reload", name = "Reload Musket Fast" },
+  { path = "/Game/Character/Animations/Bosses/Boatswain/Polehook/AM_Human_Adventurer_Combat_Grab_Target", topCategory = "Combat", subCategory = "Yeet", name = "Slammed to the Ground" },
+  { path = "/Game/Character/Animations/Creatures/Crocodile/A_Human_Adventurer_Crocodile_Grab_Target", topCategory = "Combat", subCategory = "Yeet", name = "Swung Back and Forth" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Sword2h/AM_Regular_Male_Hero_Sword2h_Combat_SoulHarvest", topCategory = "Magic", subCategory = nil, name = "Glowing Fist Pump" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/A_IsraelHands_Agressive_Shot", topCategory = "Magic", subCategory = nil, name = "Leans Back, Sparks shoot. Sound" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_GroundSpikeConePush_Previs", topCategory = "Magic", subCategory = nil, name = "Witch Cast Dome" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/A_SenkamatiCorrupted_Regular_Shaman_Caster_repulsion", topCategory = "Magic", subCategory = nil, name = "Witch Cast Repulsion No Sound" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_HealZone", topCategory = "Magic", subCategory = nil, name = "Witch Stabs Arm Grows Flowers" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_HealWave", topCategory = "Magic", subCategory = nil, name = "Witch Stabs Arm Grows Tentacles" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_MassHeal", topCategory = "Magic", subCategory = nil, name = "Witch Stabs Arm Yellow Glow" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_DeployTotem", topCategory = "Magic", subCategory = nil, name = "Witch Summon Totem" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/A_SenkamatiCorrupted_Regular_Shaman_Caster_DeployTotem", topCategory = "Magic", subCategory = nil, name = "Witch Summon Totem No Sound" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/AM_SenkamatiCorrupted_Regular_Shaman_GroundSpikesCircle", topCategory = "Magic", subCategory = nil, name = "Witch with Spikes (Cause Damage)" },
+  { path = "/Game/Character/Animations/Human/Regular/Drowned/AM_Drowned01_Alert", topCategory = "Monsterous", subCategory = "Drowned", name = "Drowned Alerted" },
+  { path = "/Game/Character/Animations/Human/Regular/Drowned/AM_Drowned01_IdleBreak1", topCategory = "Monsterous", subCategory = "Drowned", name = "Drowned Calm" },
+  { path = "/Game/Character/Animations/Human/Regular/Drowned/A_Drowned01_Agressive_Idle", topCategory = "Monsterous", subCategory = "Drowned", name = "Drowned ready to fight" },
+  { path = "/Game/Character/Animations/Human/Regular/Drowned/AM_Drowned01_Agressive_RageStart", topCategory = "Monsterous", subCategory = "Drowned", name = "Drowned Roar" },
+  { path = "/Game/Character/Animations/Human/Regular/Drowned/Spitter/AM_Drowned01_Spitter_ChannelingBeam", topCategory = "Monsterous", subCategory = "Drowned", name = "Drowned Spitting" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/A_IsraelHands_Agressive_Idle", topCategory = "Monsterous", subCategory = "Other", name = "Slow Undead Idle" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/AM_IsraelHands_SpiritualReleaseLight", topCategory = "Monsterous", subCategory = "Other", name = "Standing, Leans Back with Roar" },
+  { path = "/Game/Character/Animations/Bosses/IsraelHands/AM_IsraelHands_Agressive_IdleBreak", topCategory = "Monsterous", subCategory = "Other", name = "Stands Idle then Roars (with sound)" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Senkamati_Corrupted_Thrall_Aggressive_Grab_Instigator", topCategory = "Monsterous", subCategory = "Senkamati", name = "Bite Then Push" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Hunter/AM_Regular_SenkamatiCorrupted_Hunter_Alert", topCategory = "Monsterous", subCategory = "Senkamati", name = "Hunter Looking Around" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Hunter/A_SenkamatiCorrupted_Regular_Hunter_Agressive_Idle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Hunter Ready to Fight" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Hunter/AM_SenkamatiCorrupted_Regular_Hunter_Throwing_Throw", topCategory = "Monsterous", subCategory = "Senkamati", name = "Hunter Throw Spear" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Thrall/A_Regular_SenkamatiCorrupted_Thrall_Agressive_Idle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Thrall Calm 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Thrall/A_Regular_SenkamatiCorrupted_Thrall_Calm_Idle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Thrall Calm 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Thrall/AM_Regular_SenkamatiCorrupted_Thrall_Calm_Alert", topCategory = "Monsterous", subCategory = "Senkamati", name = "Thrall Look Around" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Warrior/A_SenkamatiCorrupted_Regular_Warrior_Calm_Idle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Warrior Calm" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Warrior/AM_SenkamatiCorrupted_Regular_Warrior_Calm_Alert", topCategory = "Monsterous", subCategory = "Senkamati", name = "Warrior Looks Around" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Warrior/A_SenkamatiCorrupted_Regular_Warrior_Agressive_BlockCycle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Warrior Standing Defensively" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/AM_Regular_Female_Senkamati_Witch_Calm_IdleBreak_01", topCategory = "Monsterous", subCategory = "Senkamati", name = "Witch Calm 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/AM_Regular_Female_Senkamati_Witch_Calm_IdleBreak_02", topCategory = "Monsterous", subCategory = "Senkamati", name = "Witch Calm 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/A_Regular_Female_Senkamati_Witch_AlertCycle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Witch Looking Around" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/Caster/A_Regular_Female_Senkamati_Witch_Agressive_Idle", topCategory = "Monsterous", subCategory = "Senkamati", name = "Witch Ready to Fight" },
+  { path = "/Game/Character/Animations/Human/Regular/Senkamati_Shaman/A_SenkamatiCorrupted_Regular_Shaman_Agressive_Heal_loop", topCategory = "Monsterous", subCategory = "Senkamati", name = "Witch Stab Arm" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/AM_Regular_Male_Hero_Barrel_Pose", topCategory = "Statues", subCategory = nil, name = "Arms Outstretched 1" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Male_Hero_Carrying_Barrel", topCategory = "Statues", subCategory = nil, name = "Arms Outstretched 2" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Male_Hero_Carrying_FireBowl", topCategory = "Statues", subCategory = nil, name = "Arms Outstretched 3" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Default/A_Regular_Male_Hero_Carrying_Vase", topCategory = "Statues", subCategory = nil, name = "Arms Outstretched 4" },
+  { path = "/Game/Character/Animations/Human/Regular/Shared/Ship/Transition/A_Regular_Male_Hero_BoardingTransitionDown_HoldToLanding", topCategory = "Statues", subCategory = nil, name = "Mid Jump" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Saber/A_Regular_Male_Hero_Saber_Armed_Falling", topCategory = "Misc", subCategory = nil, name = "Falling or Floating" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Swimming/A_Regular_Male_Hero_Swimming_Idle", topCategory = "Misc", subCategory = nil, name = "Floating in Water" },
+  { path = "/Game/Character/Animations/Human/Regular/Hero/Saber/A_Regular_Male_Hero_Saber_Armed_Jump", topCategory = "Misc", subCategory = nil, name = "Floaty Jump" },
+}
 
 ------------------------------------------------------------------
 -- PLAIN-TEXT config.txt (for users who don't touch Lua). A file next to the mod with simple

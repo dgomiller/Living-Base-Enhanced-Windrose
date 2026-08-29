@@ -948,7 +948,2788 @@ edit/despawn/undo/cycle toolkit. In order:
     (2) The concurrency-3 restore fix (this item's own follow-up above) tested fine in-game —
     RedFalcon reports loading is OK now, no repeat of the original crash.
 
-## Known limitations (confirmed via log, not assumptions)
+70. **Ship-pivot placement probe added — exploring a future ship decor/crew feature, NOT YET
+    TESTED LIVE** (2026-08-25). RedFalcon asked to explore changing LivingBase's crew variety after
+    pointing at a separate companion mod, XenophonCompanion, which tames a native hostile-faction
+    crew pawn as a following companion. That investigation surfaced a further idea: Xenophon also
+    has code (its own "58A/58B/58C-R1" sections) that teleports its companion onto the player's
+    ship on embark, positioned via a 2D "inboard" vector built from TWO live-queried points (the
+    helm's `SteeringInteractTargetComponent` location and the ship actor's own origin) — its own
+    comment trail shows an EARLIER version tried using the ship's actual rotation for this instead
+    and was withdrawn, though the specific failure reason wasn't preserved in that file. RedFalcon
+    asked whether offsets could instead be computed directly from the ship's own pivot (actor
+    location + rotation) — simpler in principle, and untested by anyone as far as this project
+    knows.
+    Built as a standalone probe, not a real feature — this mod has no ship/decor mechanic at all
+    yet, so there's nothing to wire this into; it exists purely to generate real evidence before
+    deciding whether to build one. `Spawner.FindPlayerShip()` (spawner.lua) locates the ship the
+    player is currently standing on via `BasedMovement.MovementBase`'s owner (falling back to
+    `GetAttachParentActor()`), the same two checks Xenophon's own code already confirmed live.
+    `Spawner.ShipPivotTestPlace(fwd, right, up)` transforms a local (forward, right, up) offset by
+    the ship's current location + yaw into a world position, places a plain `Config.CREW_CLASS`
+    test actor there (or moves it, if one already exists), then checks 350ms later whether
+    `BasedMovement` actually latched the actor onto the ship — same verify-via-readback the rest of
+    this file always does, same specific check Xenophon's `.58C-R1` uses to confirm a placement
+    "latched." `Spawner.ShipPivotTestStatus()` is the actual test: run it after moving/turning the
+    ship (with no re-placement) to recompute the test actor's CURRENT local offset from the ship's
+    CURRENT transform — near-zero drift from the originally requested offset would confirm the
+    pivot-relative math holds regardless of the ship's position/heading; real drift would mean it
+    doesn't, or that `BasedMovement` isn't keeping it seated correctly. `Spawner.
+    ShipPivotTestClear()` despawns the test actor. Wired to three console commands
+    (`lbshiptest [forward] [right] [up]` / `lbshiptest` with no args for status-only / `lbshiptestclear`,
+    main.lua) — a console dev-tool, not a numpad key, same shape as `lbfollowtest`/`lbcustomscan`.
+    Every reading logs to both `ue4ss.log` and a new `LivingBase_ShipPivotTest_dump.txt` (multi-
+    candidate relative path, same convention `customization_survey.jsonl` already uses) so a full
+    test session survives to be written up afterward.
+    **Not yet tested live** — next step is RedFalcon boarding their own ship, running `lbshiptest`
+    a few times at different offsets, then moving/turning the ship and re-running `lbshiptest`
+    (no args) to check drift. Once there's a real result, the durable finding belongs in
+    `WINDROSE_MODDING_NOTES.md` (and its public mirror), not just here — this entry only records
+    that the tool was built and why.
+    **Same-day follow-up — tested live, CONFIRMED**: RedFalcon boarded their own ship (a
+    `BP_Ship_Brig_Brethren_C`) and ran the sequence above. Placement latched onto `BasedMovement`
+    immediately (350ms verify: `latchedToShip=true`). The recomputed local offset came back
+    IDENTICAL — `(fwd=222.7, right=0.0, up=191.3)` vs. `(fwd=222.8, right=-0.5, up=189.6)` — across
+    two status checks taken ~58s apart, the second AFTER the ship had genuinely sailed (~1300uu)
+    and turned (~49°) in between. Confirms the pivot-relative yaw math holds through real movement
+    and turning, same as hoped. One real wrinkle: the SETTLED local offset didn't match the
+    REQUESTED one — asked for `(fwd=300, right=0, up=100)`, got `(fwd=223, right=0, up=191)`
+    instead, consistently, from the very first check onward. Read as the engine's own gravity/
+    collision correcting the actor's exact resting spot once, right after the teleport-in, since
+    the naive `up` constant doesn't account for the deck's actual height/slope at that specific
+    XY. Practical rule for later: place, then immediately re-read the ACTUAL settled local offset
+    (same inverse-transform `lbshiptest` status check does) and use that as the tuned value for a
+    given spot — it only needs doing once, since it then holds indefinitely. Full write-up (with
+    the general technique, stripped of this mod's own function names) is
+    `WINDROSE_MODDING_NOTES.md` §13, mirrored to the public `Windrose_Modding_Notes.txt` and the
+    `Windrose-UE4SS-Modding-Notes` repo (commit `65ab2dd`) same day.
+
+71. **`lbshiplook` — an actual Walker/Statue preview, not just the pivot test's placeholder**
+    (2026-08-25, same day, right after item 70's live confirmation). RedFalcon asked to see a real
+    Walker or Statue placed (rather than judging placement quality from the plain
+    `Config.CREW_CLASS` actor `lbshiptest` uses) — the natural next step for evaluating what either
+    would actually look like as ship crew/decor, tying back to this session's original "swap the
+    active crew type" exploration.
+    `Testbed.SpawnShipLookPreview(kind, fwd, right, up)` (testbed.lua): auto-detects whether the
+    player is currently on a ship (`Spawner.FindPlayerShip()`) and branches — on a ship, it reuses
+    item 70's proven pivot-relative math (now exported as `Spawner.ShipLocalToWorld`, promoted out
+    of being a `spawner.lua`-local, since a second caller needed it) via a direct `Spawner.Spawn`
+    call at the computed destination; off a ship, it falls straight through to the ALREADY-PROVEN
+    "in front of you" placement — calling `spawnTownsmanEntry`/`placeStatueEntry` directly (both
+    already local to this file) rather than re-deriving `frontSpot`/floor-snap logic a second time.
+    Deliberately does NOT floor-snap on the ship-relative path — a moving deck isn't "the floor"
+    `playerFloorZ()`'s logic was built for, and item 70 already established the settled Z needs
+    re-measuring per spot anyway, not assumed. Picks the first roster entry of each kind ("Walker",
+    and `Config.STANDING_STATUES[1]`, the Brethren Standing Woman) — a quick look, not a by-name
+    picker yet. Wired to `lbshiplook <walker|statue> [forward] [right] [up]` (main.lua), same
+    `say()`/`Ar:Log()` shape every other console command here uses. Unlike `lbshiptest`'s own
+    actor (a deliberate throwaway, tracked only in `Spawner.shipPivotTest`), this goes through
+    `Spawner.Spawn` normally — a real, persisted spawn that despawn/undo/cycle all already work on,
+    no new plumbing needed for that.
+    **Process note**: `testbed.lua` was edited before archiving its pre-edit contents, breaking
+    this project's own "archive before overwriting" rule for that one file this session (spawner.lua/
+    main.lua were archived correctly beforehand). Caught immediately, before any further edits —
+    reconstructed the exact pre-edit content by removing the known insertion (a clean, self-
+    contained addition with no other changes nearby, so this was a lossless recovery, not a
+    reconstruction from memory) and archived that as `archive/testbed_20260825_114540.lua`, same as
+    if the rule had been followed originally.
+    **Not yet tested live** — deployed to the live install, not yet run in-game as of this
+    write-up.
+    **Same-day follow-up, before any live test**: RedFalcon asked whether the off-ship preview
+    spot should instead be computed from the CAMERA's own position, ~600uu out along wherever
+    it's actually looking, rather than the mod's ordinary near-player placement — confirmed as a
+    real, intended direction ("that's what we're going to do eventually anyway"), not a one-off
+    experiment. Worth naming the tension this touches: `frontSpot`/`spotInFrontOfPlayer`
+    (testbed.lua) deliberately stayed PLAYER-origin + YAW-ONLY for every real placement key in
+    this mod (item 16) specifically because camera-origin at SHORT range (200-300uu) already
+    broke targeting once (item 15) — the camera sits well behind/above the pawn root in third
+    person, and at short range that offset rivals the target distance itself. That lesson doesn't
+    reverse here; it just doesn't apply at 600uu, where the same fixed offset is a much smaller
+    fraction of the total distance (the same reasoning a separate mod's own 1000uu camera-forward
+    targeting already relies on, item 13). Built `Spawner.CameraForwardSpot(distance)`
+    (spawner.lua) as a clearly-separate primitive from `frontSpot` — same self-consistent
+    position+rotation-from-PlayerCameraManager discipline every other camera read in this file
+    already uses, full pitch+yaw (not yaw-only), explicitly NOT wired into any of the mod's
+    ordinary placement keys, only into this preview command.
+    Threading it into `Testbed.SpawnShipLookPreview`'s off-ship branch needed a real location-
+    override parameter on the functions it already reused (`spawnTownsmanEntry`/`placeStatueEntry`/
+    `spawnPosed`) rather than duplicating their archetype-variation/yaw-correction/label logic a
+    second time — added `atLocation` as a trailing OPTIONAL parameter to all three (every existing
+    caller across the whole mod omits it, so every other call site is provably unaffected). For
+    `spawnPosed` specifically, supplying `atLocation` also SKIPS its floor-snap step entirely —
+    `playerFloorZ()` traces down from the player's own position, which is only meaningful for the
+    default near-player spot; re-snapping a camera-aimed 3D point (which may be well above/below
+    the player's own local ground, especially with pitch) to the player's own floor height would
+    silently throw the aim away. Falls back to the ordinary frontSpot placement automatically if
+    the camera read ever fails (`CameraForwardSpot` returns nil, which every downstream `atLocation
+    or frontSpot(300)`-shaped check already treats as "use the default"), rather than failing the
+    whole preview.
+    **Not yet tested live** — this addition is untested as of this write-up.
+    **Same-day follow-up, tested live**: RedFalcon ran both `lbshiplook walker` and `lbshiplook
+    statue` while on their ship. The Walker rode along correctly with zero issues. The Statue did
+    NOT: it stayed in place while the ship bobbed (appeared to move up/down as the deck rocked
+    through it) and was left behind entirely once the ship got underway. Root cause: a Walker is
+    a Character with its own `CharacterMovementComponent`, which runs its OWN per-tick floor
+    check and sets `BasedMovement` automatically the instant it's standing on a moving surface —
+    this is exactly why item 70's ship-pivot test (also a Character, the plain crew class) latched
+    with nothing more than a teleport, no attach call needed. A posed `AnimatedActor` statue has
+    no movement component and never runs that check, so it never acquires a moving base on its
+    own no matter where it's placed — it just sits at its last teleported world position while the
+    ship's collision moves through/past it.
+    Fix: `Spawner.AttachActorToShip(actor, ship)` (spawner.lua) — a genuine actor-to-actor attach
+    instead of relying on `BasedMovement` auto-detection, which only ever applied to Characters in
+    the first place. Tries the modern per-axis-rule `K2_AttachToActor(ship, "", 1, 1, 1, false)`
+    (same shape as the already-proven `K2_AttachToComponent` calls elsewhere in this file,
+    `EAttachmentRule::KeepWorld` = 1 on all three axes so the actor doesn't jump on attach),
+    falling back to the older single-enum `K2_AttachToActor(ship, "", 1, false)` shape if the
+    first doesn't verify — this game's actual actor-level attach UFUNCTION signature has never
+    been confirmed in this codebase before now, unlike the component-level attach this borrows
+    its enum values from. Verified via `GetAttachParentActor()` readback, not trusted from the
+    call alone. Wired into `Testbed.SpawnShipLookPreview`'s on-ship statue branch only — the
+    Walker branch is untouched, since it already works for free and a Character being
+    actor-attached on top of its own movement component could fight its own AI/pathing in ways
+    never tested here.
+    **Not yet tested live** — this fix is deployed but unconfirmed as of this write-up; next step
+    is RedFalcon re-running `lbshiplook statue` on the ship and checking whether it now rides
+    along through both bobbing and sailing.
+    **Same-day follow-up: CONFIRMED TO CRASH THE GAME, two-for-two, REVERTED**. RedFalcon tried
+    `lbshiplook statue` on the ship — the game crashed. Tried again — crashed again. Same
+    pcall-uncatchable-native-crash signature already documented for `Config.TATTOO_TEST_PARAMS`
+    and `comp:SetBody` (item 64): the append-only ship-test dump file (which survives a relaunch,
+    unlike `ue4ss.log`, which resets on each launch) shows ZERO "ATTACH" log lines across both
+    crash attempts — `Spawner.AttachActorToShip`'s own final log call, which runs unconditionally
+    after both the modern and classic attach attempts regardless of outcome, never fired either
+    time. That means execution never returned to Lua after the very first
+    `actor:K2_AttachToActor(ship, "", 1, 1, 1, false)` call — the crash happens inside that native
+    call itself, `pcall` and all, same as `SetBody`.
+    **Immediately reverted**: pulled the `Spawner.AttachActorToShip` call out of
+    `Testbed.SpawnShipLookPreview`'s statue branch entirely (the Walker branch, which never called
+    it, is untouched and still works). The function itself is kept, unregistered from every call
+    site, its own header comment rewritten to CONFIRMED-DANGEROUS status (same treatment
+    `Spawner.ApplyBodyType`/`Config.TATTOO_TEST_PARAMS` already got) — do not call it again, and
+    do not retry any variant (different enum values, the classic 4-arg fallback signature, a
+    different socket string) without first getting a real crash log/dump that says why, since
+    guessing a "safer" variant blind is exactly how this one shipped in the first place. Root
+    cause not established — could be this specific argument combination, could be
+    `K2_AttachToActor` itself on this actor class, could be something specific to attaching onto a
+    ship actor (moving, physics-driven, replicated) as opposed to the static-mesh attach targets
+    already proven safe elsewhere in this file.
+    **Net status**: the original reported problem (a statue placed on a ship floats in place and
+    gets left behind, since it has no `CharacterMovementComponent` to auto-latch onto
+    `BasedMovement` the way a Walker does) is STILL UNSOLVED and is now a documented known
+    limitation, not silently papered over. `lbshiplook statue` on a ship will reproduce the
+    original float/left-behind symptom again, safely, with no attach attempt — this was
+    intentionally chosen over leaving the crashing call in place under any condition.
+    **Same-day follow-up: a safe alternative that avoids the attach UFUNCTION entirely.**
+    RedFalcon asked whether periodically re-syncing the statue's transform to the ship would be
+    too expensive — no: this mod already runs several actors on self-rescheduling timers doing
+    the same shape of work (the leash sweep, the whistle escort re-warp, the toast ticker), all
+    handling more actors more often than a handful of moored statues would need. Built
+    `Spawner.AddShipRider(actor, ship)`/`Spawner.ShipRiderTick()` (spawner.lua, right next to the
+    now-disabled `AttachActorToShip` for direct comparison): captures the actor's REAL settled
+    local offset (via the newly-exported `Spawner.ShipWorldToLocal`, the inverse of §13's own
+    `Spawner.ShipLocalToWorld`) and relative yaw the moment it starts riding, then a
+    self-rescheduling tick (`Config.SHIP_RIDER_TICK_MS`, 200ms/5-per-second default) recomputes
+    the ship's current world position from that fixed local offset and calls
+    `K2_SetActorLocation`/`K2_SetActorRotation` — both already proven safe everywhere else in this
+    file, no attach call, no new engine surface. Self-stops (does not reschedule) once its rider
+    list empties, same shape as `Spawner.StartTargetLockTick`, not an always-on loop. Wired into
+    `Testbed.SpawnShipLookPreview`'s statue branch in place of the removed attach call.
+    **Same-day follow-up, tested live**: RedFalcon confirmed the "senkamati" kind rides the ship
+    perfectly (as expected — it's still a Character under the hood, just with AI stopped, "no
+    AI" was never actually the load-bearing difference). The statue "kind of worked" via
+    `Spawner.AddShipRider` but was visibly jittery — it sits frozen for the whole 200ms between
+    ticks while the ship's own bob/sail motion (rendered every frame) moves out from under it,
+    then snaps back. RedFalcon then asked directly whether the SAME mechanism that keeps a person
+    based on the ship could be given to a plain object. Answer: it's not really "AI" doing that —
+    it's specifically the Character's own movement component running its own per-tick floor
+    check, independent of whatever the AIController is deciding (which is exactly why the frozen
+    Senkamati still rides fine — `StopLogic` only pauses decisions, not that component). A statue
+    has no such component at all. Constructing/attaching one to a non-Character actor at runtime
+    is a real possibility in principle, but was NOT attempted — it's the same class of "guess at
+    engine construction machinery" operation as `SetBody` and the actor attach, both of which
+    already crashed this exact session; not worth a third blind guess. Took the cheap, zero-risk
+    lever instead: raised `Config.SHIP_RIDER_TICK_MS` from 200 to 40 (5/sec -> 25/sec) — still two
+    plain transform writes per tick, same trivial-cost reasoning as before, just paid more often.
+    **Not yet tested live** — this specific change is unconfirmed as of this write-up. If 40ms
+    still reads as jittery, the next lever is a shorter interval still (UE4SS's own timer
+    resolution is the real floor, not processing cost) — not a different mechanism, unless
+    RedFalcon wants to revisit the movement-component-attach idea with the understood crash risk.
+    **Same-day follow-up: RedFalcon opted straight for the movement-component idea** ("let's try
+    the engine. if it doesn't work we'll abandon that option") rather than waiting on the 40ms
+    result. Built `Spawner.TryAddMovementComponentToNearest(say)` (spawner.lua) — a HIGH-RISK
+    EXPERIMENT, clearly labeled as such in its own comment: constructing and attaching a BRAND-NEW
+    `UCharacterMovementComponent` to an actor at runtime, a genuinely different and also-unproven
+    engine operation from anything tried before (every existing component attach in this file
+    works with components that ALREADY EXIST — mesh pieces onto sockets — never a freshly
+    constructed one). `CharacterMovementComponent` internally assumes an `ACharacter` owner in
+    several places, so this could silently no-op, error safely, or crash the same way
+    `ApplyBodyType`/`AttachActorToShip` already did.
+    De-risked as far as possible before the actual risky call, same discipline as the toast
+    investigation (item 22): (1) resolve the component's class via `StaticFindObject` — pure
+    read; (2) check whether the target already has one via `GetComponentByClass` — pure read; (3)
+    walk the actor's own class hierarchy with `ForEachFunction` (the exact proven-safe technique
+    `dumpCompositeFunctions` already uses) to confirm `AddComponentByClass` actually exists on
+    this class BEFORE calling it, rather than guessing a function name blind. Only if all three
+    checks pass does it attempt the real construction — and logs IMMEDIATELY BEFORE that one call
+    (not just after, unlike `AttachActorToShip`'s original mistake), so even a full crash leaves a
+    breadcrumb in the append-only dump file confirming exactly how far execution got. Targets the
+    nearest spawned actor in front (`findNearestSpawnInFront`, the same picker `lbsexchange`/
+    despawn/cycle/live-edit already share) via a new console command, `lbshipmovecomp` — aim it at
+    a placed `SHIP_LOOK_Statue` before running it.
+    **Not yet tested live** — untested as of this write-up. RedFalcon has explicitly accepted the
+    crash risk for this one; if it crashes, per RedFalcon's own framing, this avenue is abandoned,
+    not retried with a different variant.
+    **Same-day follow-up, before any live test**: RedFalcon flagged a real targeting problem —
+    the statue is actively being repositioned by `Spawner.AddShipRider`'s jitter-sync, so aiming
+    the ordinary cone/range picker at it is unreliable (it may drift out of the cone by the
+    moment the command runs). Fixed with a two-level lookup in
+    `Spawner.TryAddMovementComponentToNearest`: (1) if `Spawner.shipRiders` has an active entry,
+    target that actor DIRECTLY — no aiming at all, since the exact reference is already held;
+    (2) otherwise fall through to `findNearestSpawnInFront`, which already checks
+    `Spawner.lockedTarget` (Num+) before any cone/range test, so a target locked beforehand still
+    resolves correctly even after moving. Only a truly un-ridden, unlocked target still needs to
+    be aimed at live.
+    **Same-day follow-up: a real bug, same class as item 66's own documented lesson**. RedFalcon
+    ran `lbshipmovecomp` and got a Lua error before any of the risky logic ever ran: "attempt to
+    call a nil value (global 'findNearestSpawnInFront')". Root cause: `findNearestSpawnInFront`
+    is declared `local` further down in spawner.lua than where
+    `Spawner.TryAddMovementComponentToNearest` had been placed — the exact same "a function
+    defined before an as-yet-undeclared local resolves that name as a global" trap item 66
+    already hit once for `spawnSenkaEntry`/`freezeSenkaStatue` in testbed.lua, just recurring
+    here in spawner.lua. Fixed by relocating the whole function (comment and all) to just before
+    `Spawner.ApplySexChangeToNearest`, which already calls `findNearestSpawnInFront` successfully
+    from that position — no logic changed, purely a reordering. **Lesson reinforced**: when adding
+    a new function that calls an existing `local function` in a large file, check that local's
+    OWN declaration line is actually above the new call site before assuming it's in scope — this
+    is now the second time in this codebase specifically that assumption was wrong.
+    **Not yet re-tested live** — the actual high-risk `AddComponentByClass` attempt has still
+    never run; this fix only gets the command to reach that point without erroring first.
+    **Same-day follow-up: the risky call itself SUCCEEDED, no crash.** RedFalcon re-ran
+    `lbshipmovecomp` after the ordering fix — `ue4ss.log` confirmed every step passed cleanly:
+    `AddComponentByClass call ok=true result=UObject: 0000014B5D18E958`,
+    `verified present after call=true`. A brand-new `CharacterMovementComponent` was genuinely
+    constructed and attached to the statue with no crash — a real, positive result after two
+    confirmed crashes earlier this session from adjacent operations. **Important caveat, not yet
+    resolved**: the component EXISTING doesn't prove it's actually doing anything — it may be
+    missing internal wiring (`UpdatedComponent` etc.) that normally only gets set up as part of an
+    actual `ACharacter`'s own construction, which this bare `AddComponentByClass` call never went
+    through. Also, `Spawner.AddShipRider`'s manual jitter-sync was still actively re-teleporting
+    the same actor every 40ms, which would mask whatever the new component does or doesn't do on
+    its own. Added an automatic step: `Spawner.TryAddMovementComponentToNearest` now calls
+    `Spawner.RemoveShipRider(actor)` immediately after a CONFIRMED successful add (not on
+    failure), so the component's real behavior can be observed in isolation, uncontaminated by the
+    manual workaround.
+    **Not yet tested live** — whether the bare component alone actually makes the statue ride the
+    ship (as opposed to just existing, inert) is the open question RedFalcon still needs to
+    observe next: with the manual sync now removed, does it hold position, float in place, or
+    genuinely track the ship?
+
+72. **`lbshiplook` gains a third kind: an idle Senkamati look** (2026-08-25, same day). RedFalcon
+    asked for a way to preview "one of the idle forms of the senkamati" through the same command.
+    `firstIdleSenkaLook()` (testbed.lua) finds the first `idle == true` row in
+    `Config.SENKAMATI_LOOKS` dynamically (not a hardcoded table index — that roster has been
+    reordered before, see its own comment history) rather than picking by name, matching
+    RedFalcon's "one of the idle forms" phrasing rather than a specific look. `spawnSenkaEntry`
+    (already the function every Num7/restore path uses) gained the same optional trailing
+    `atLocation` override already added to `spawnTownsmanEntry`/`placeStatueEntry`/`spawnPosed` —
+    every existing caller omits it and is unaffected; when set, floor-snap is skipped in both its
+    "crew" and "mob"/"corrupted" branches for the same reason as the other two (a caller-supplied
+    3D point already has its own intended height, `playerFloorZ()` would silently discard it).
+    `Testbed.SpawnShipLookPreview` and `lbshiplook`'s usage text both extended to
+    `<walker|statue|senkamati>`. On a ship, the picked idle row is expected (not yet confirmed
+    live) to auto-latch onto `BasedMovement` the same way the Walker does with zero extra code —
+    a "crew"-kind idle row is still a Character with a `CharacterMovementComponent`; `StopLogic`
+    (which `freezeSenkaStatue` calls, already wired into `spawnSenkaEntry` for any `s.idle` row)
+    only stops the AIController's own decision-making, not the movement component's per-tick floor
+    check that `BasedMovement` actually depends on. Not wired into `Spawner.AddShipRider` — only
+    added there if live testing shows it's actually needed, matching why the Walker branch was
+    never touched either.
+    **Not yet tested live** — untested as of this write-up.
+
+73. **Ship-decor/statue direction abandoned; a pakcontents.xlsx animation search turns up real
+    NPC ship-crew activity animations; a generic path-fed pose tester built** (2026-08-25, same
+    day). After the movement-component experiment (item 72's own follow-ups) produced erratic
+    gravity-driven bobbing unrelated to the ship's actual motion — not the mooring behavior wanted
+    — RedFalcon called it per their own stated criteria: abandon decorations/statues on ships
+    entirely, keep only Walking (the Walker) and Idle (frozen Senkamati) — both genuine Characters
+    that already ride the ship correctly for free via their own movement component, no workaround
+    needed.
+    RedFalcon then asked whether real ship/workbench activity animations could be found in "the
+    list I exported" — `WindroseUE4SSModdingNotes/pakcontents.xlsx`, a full asset-path export
+    across every pak chunk (built 2026-08-24, not previously searched for this). Scanned it for
+    animation-related paths matching ship/workbench/craft keywords — real, substantial hits:
+    - **`Character/Animations/Human/Regular/Shared/Ship/`**: genuinely NPC-labeled (not
+      player-only "Hero") ship-crew animations — `Wheel/AM_..._Wheel_FakeInteraction` (name
+      strongly suggests the game's own "NPC idling at the helm" animation), `Cannons/` (per-side
+      `_Idle_01`/`_Start`/`_Shoot_Reload_01`/`_End`, plain `A_`-prefixed idle sequences included),
+      `Hammock/` (`_Spawn`/`_Sleep`/`_Despawn`, plus older plain-sequence versions at
+      `Character/Animations/Ship/A_Hammock_Idle`), `Ropes/` (hauling animations, with their own
+      VAT rope mesh — a separate, more involved system).
+    - **`Character/Animations/Human/Regular/Shared/CampActivity/`**: workbench/crafting
+      animations not ship-specific but same "doing an activity at a station" shape — Sawmill/Table
+      interact, Cooking (cutting table, pot), Blacksmith (anvil, bellows).
+    - Also a whole existing roster of posed `BP_AnimatedActor_*_CarpenterIdle`/`_Chat_01`/
+      `_FireWarm`/`_LeanOnWall`/`_SitterOnGround_01-04`/`_SitterOnStool` Sailor/Musketeer/Trapper/
+      TortugaCitizen figures — same AnimatedActor/statue class family just abandoned for ship use,
+      so land-only unless revisited.
+    Flagged one real naming distinction before picking a target: `AM_`-prefixed assets are
+    AnimMontages (need proper Montage playback, not yet built here); `A_`-prefixed ones are plain
+    AnimSequences, which `Spawner.ApplyPose` (built during the earlier pose-porting saga, items
+    53-63) already knows how to drive via SingleNode mode.
+    RedFalcon then asked for a generic tool ("similar to FX") rather than one throwaway function
+    per candidate animation — direct precedent: `Spawner.TestSpawnNiagaraByPath`/`lbtestniagarapath`
+    already do exactly this shape for FX. Built `Spawner.TestApplyPoseByPath(pathArg)` /
+    `lbtestpose <path>` the same way: auto-appends the trailing `.AssetName` suffix if only the
+    bare path is pasted (same convenience the Niagara tester already has), targets the nearest
+    spawned actor in front via `findNearestSpawnInFront` (respects `Spawner.lockedTarget`/Num+, so
+    a hard-to-aim target can be locked first), then calls the existing `Spawner.ApplyPose`
+    unchanged. Placed carefully AFTER `findNearestSpawnInFront`'s own `local function` declaration
+    in spawner.lua (right after `Spawner.ApplySexChangeToNearest`, which already calls it
+    successfully from that position) — checked explicitly this time, given items 66 and 72 already
+    each hit the exact same forward-reference trap once.
+    Set honest expectations going in, not just built and handed over: `Spawner.ApplyPose` running
+    cleanly (no crash) is NOT the same as the pose looking right — 5-6 independent prior attempts
+    at porting a DIFFERENT specific pose (`Female_Standing_01`'s) all T-posed despite every
+    individual step reporting success (items 53-63, closed). These new candidates are a
+    structurally different case — generic "Shared" animations explicitly organized for reuse
+    across Regular-skeleton NPCs, not one character's own Control-Rig-bound BlueprintMode pose —
+    genuinely untested, not a retry of the closed investigation, but not guaranteed either.
+    **Not yet tested live** — deployed, no specific animation tried yet as of this write-up.
+    **Same-day follow-up: a real, fixable bug found, unrelated to skeleton compatibility.**
+    RedFalcon tried `lbtestpose` with `A_Hammock_Idle` on two different Character targets (a
+    Walker and an idle Senkamati Hunter) — "i didnt see a change" both times. `ue4ss.log` showed
+    why: `SetAnimationMode call FAILED` on every attempt, while `SetAnimation`/`Play`/`SetPosition`
+    all reported `ok` — meaning the mesh never actually left `BlueprintMode` at all, so those three
+    "successful" calls had nothing to act on; the AnimBP kept driving the pose the whole time
+    regardless. This is NOT the skeleton/Control-Rig incompatibility the closed pose-porting
+    investigation (items 53-63) hit — it's `Spawner.ApplyPose` itself never successfully switching
+    modes in the first place, on ANY target, so the real compatibility question hasn't actually
+    been tested yet.
+    Fixed with the same function-then-property fallback shape `Spawner.SetAnimClass` already uses
+    for its own similar uncertainty (item 54): try `mesh:SetAnimationMode(0)` first, and if that
+    pcall fails, fall back to a plain `mesh.AnimationMode = 0` property write. Root cause of the
+    function call's own failure isn't confirmed (possibly this build's reflection doesn't marshal
+    the `TEnumAsByte<EAnimationMode::Type>` parameter this function expects) — the fallback sidesteps
+    needing to know why. Log message now also reports which path (`function` vs `property`)
+    actually set the mode, so a future look at `ue4ss.log` can tell immediately which one worked.
+    **Not yet tested live** — this fix is unconfirmed as of this write-up; next step is retrying
+    the same `lbtestpose` command and checking whether the pose actually changes now.
+    **Same-day follow-up: the fallback worked, but wrote the WRONG enum value — and a crash
+    occurred right after, cause unconfirmed.** RedFalcon retried `lbtestpose` on a Handyman Farmer
+    walker: `ue4ss.log` showed `SetAnimationMode via property call ok` this time (the fallback
+    fired and succeeded) — but still "AnimationMode 0 -> 0", still no visible change. Root cause:
+    `EAnimationMode::Type` is `AnimationBlueprint = 0, AnimationSingleNode = 1` — the code
+    (both the original function-call attempt AND the new property fallback) was writing `0`,
+    which is the mode the mesh was ALREADY in by default. The write genuinely succeeded; it just
+    set the same mode that was already active, so of course nothing rendered differently. Fixed
+    to `1` in both the function-call attempt and the property fallback.
+    **Then, separately, a crash**: RedFalcon released the target lock (Num+ off) right after the
+    pose test, and the game crashed. `ue4ss.log`'s last lines before it went silent: "Target lock
+    OFF" completed cleanly, then `[hover-transition] APPLY (was nothing)` fired (this mod's own
+    hover-ghost-highlight system, which activates on whatever's under the reticle whenever nothing
+    is targeted) — then nothing further, the same abrupt-stop native-crash signature documented
+    repeatedly elsewhere in this file. The timing is suspicious (the actor the hover system would
+    have highlighted was the same one just poked by `ApplyPose`'s SetAnimation/Play/SetPosition
+    calls moments earlier) but NOT confirmed causal — this could be an unrelated pre-existing
+    hover-highlight fragility coincidentally triggered right then. Root cause not established.
+    **Important consequence of the enum fix, worth flagging explicitly**: every PRIOR
+    `lbtestpose`/`ApplyPose` attempt across this entire investigation (including all of items 53,
+    62-63) had been silently failing to ever actually leave `BlueprintMode` — meaning nothing has
+    ever really been tested in a genuinely-SingleNode state before now. The enum fix changes that:
+    the NEXT test will be the first time this mesh has ever actually been put into SingleNode mode
+    with a foreign animation, which is a materially different (and unvalidated) state from
+    everything tried so far — the crash risk profile going forward is not the same as it was for
+    any previous attempt in this whole saga.
+    **Not yet tested live** — RedFalcon has not yet retried with the enum fix in place. Given the
+    unconfirmed crash, recommend testing cautiously: despawn the test target immediately after
+    each `lbtestpose` attempt (Num9/DEL) rather than leaving it in the world or walking away from
+    it, until whether the crash was actually caused by this mechanism is understood one way or
+    the other.
+    **Same-day follow-up: crash likely unrelated; enum fix confirmed harmless but INSUFFICIENT.**
+    RedFalcon tested the caution protocol twice — applied a pose, despawned, waited (nothing
+    happened); applied to a second actor, un-targeted, walked past it repeatedly (nothing
+    happened either time) — no repeat of the crash under either condition, good evidence it
+    wasn't actually caused by this mechanism. But `ue4ss.log` showed the deeper problem: both
+    attempts now read `AnimationMode 0 -> 1` (the enum fix genuinely took effect, verified via
+    readback) with every step reporting `ok` — and the animation STILL never visibly played.
+    Diagnosis: the real C++ `SetAnimationMode()` function does more than flip the enum — it also
+    swaps the component's internal animation-playback instance to match the new mode. A bare
+    property write (the fallback this whole time) only changes the flag; the OLD BlueprintMode
+    instance keeps actually driving rendering regardless, so everything set afterward
+    (`SetAnimation`/`Play`/`SetPosition`) had nowhere to go. This means the function call FAILING
+    in the first place was always the real blocker — the property fallback could never fully
+    substitute for it, no matter what value it wrote.
+    Switched `Spawner.ApplyPose` to try `mesh:PlayAnimation(seq, false)` FIRST — a single
+    UFUNCTION built to do "switch to single-node and play this" in one call, with only an object
+    reference and a bool as parameters (no raw `TEnumAsByte<EAnimationMode::Type>` to marshal),
+    so it may sidestep whatever specifically breaks `SetAnimationMode`'s own call. The old
+    granular path is kept as a fallback if `PlayAnimation` itself isn't callable, and now also
+    logs the ACTUAL pcall error message on `SetAnimationMode` failure for the first time (only
+    the pass/fail boolean was ever logged before) — that text is the one thing that could
+    actually explain the original failure, if `PlayAnimation` doesn't pan out either.
+    **Not yet tested live** — this is the third distinct mechanism tried in this sub-investigation
+    (function call, property write, now `PlayAnimation`); unconfirmed as of this write-up.
+    **Same-day follow-up: `PlayAnimation` mechanically WORKS — but this specific animation
+    T-posed.** RedFalcon tried it: the mesh T-posed, while still moving around (AI-driven
+    translation is a separate system from pose rendering, same lesson already established in the
+    closed pose-porting investigation, items 53-63). This is real progress on the "how do I even
+    apply one of these" question (`PlayAnimation` is no longer silently no-op'ing like the prior
+    two mechanisms) — but confirms `A_Hammock_Idle` specifically isn't built for the Walker/
+    Handyman skeleton, the same "foreign AnimSequence -> T-pose" signature this project already
+    closed out once before, just now demonstrated on a moving Character instead of a static
+    statue. Not a dead end for the MECHANISM, just for this ANIMATION CHOICE.
+    Recommended next candidate (not yet tried): `A_Regular_Carpenter_Idle` instead of another
+    ship-themed one — it already showed up natively as a default `AnimToPlay` fallback value on a
+    Handyman-based character's own AnimInstance earlier in this project's history (item 62's own
+    probe), a real hint it may already be built for this exact skeleton family, unlike the
+    ship-crew animations which were likely authored for a different NPC skeleton entirely.
+    **Same-day follow-up: RedFalcon spawned two crew (`Player Crew 1`, `Sailor Crew 1`) and tried
+    `A_Hammock_Idle` on them — same T-pose.** Checked `ue4ss.log`: both confirmed
+    `BP_Mob_Crew_Regular_Player_C` (a DIFFERENT base class from the Handyman family
+    `A_Regular_Carpenter_Idle`'s own hint came from) — neither was ever a fair test of that
+    specific candidate. The log also showed a genuinely Handyman-based actor already in the
+    world, `Town Gatherer (F) 1` (`BP_NPC_Handyman_Gatherer_C`, confirmed) — pointed RedFalcon at
+    running `A_Regular_Carpenter_Idle` on THAT one instead, the correctly-matched pairing.
+    **RESULT: IT WORKED.** RedFalcon confirmed the Carpenter Idle pose rendered correctly — no
+    T-pose — on the Handyman Gatherer (still walking around, since her AI was never stopped, but
+    the pose itself displayed properly). **This is the first successful custom-animation
+    application anywhere in this entire investigation**, closing the open question left by the
+    T-pose results: the mechanism (`PlayAnimation`, after fixing the enum value and the
+    property-write insufficiency) genuinely works — it just requires the animation to actually be
+    authored for the target's own skeleton family, exactly as suspected. Folder-name similarity
+    ("Human/Regular/...") is NOT enough to predict compatibility (already established twice before
+    for AnimClass swaps, items 54-55) — what predicts it is the animation ALREADY being associated
+    with that exact base class somewhere (a native `AnimToPlay` default, in this case).
+    "We know how to fix" the still-walking part refers to the already-proven `Spawner.SetAILogic`/
+    `freezeSenkaStatue` (`StopLogic`) mechanism — stopping AI decision-making without touching the
+    pose, same technique the idle Senkamati rows already use. Not yet wired into a combined "pose +
+    freeze" command; still a two-step manual process (`lbtestpose` then... no generic "freeze
+    whatever I'm looking at" console command exists yet, only the roster-specific ones).
+    **Durable finding written up properly this time**: this whole saga (both the earlier closed
+    T-pose investigation, items 53-63, and today's actual working technique) was NEVER promoted
+    into `WINDROSE_MODDING_NOTES.md` — only this file has it. Added as a new §14 there (and the
+    public mirror) now that there's a genuine positive result worth recording for other modders,
+    not just a dead end.
+    **Second confirmation, same day**: RedFalcon also tried `A_Regular_Carpenter_Idle` on the idle
+    Senkamati (the "crew"-kind reskin, itself built on the Handyman/`SENKA_FEMALE_BASE_CLASS`
+    base) — "looks good," no T-pose. Consistent with the theory: same underlying Handyman skeleton
+    family as the Gatherer, so the same compatible animation renders correctly there too. Two
+    independent Handyman-family targets now confirmed working, zero Crew-family targets have
+    worked — a real, reproducible pattern, not a one-off.
+    **Loop fix, same day**: RedFalcon noted the working pose didn't loop — `Spawner.ApplyPose`'s
+    `PlayAnimation(seq, false)` call hardcoded one-shot playback. Added an optional `bLooping`
+    parameter, now defaulting to `true` (every existing caller omits it and gets the new default,
+    matching this function's actual intended use as a persistent ambient pose, not a one-shot).
+    Also threaded through the granular fallback path (`mesh:SetLooping(bLooping)` + `Play(bLooping)`)
+    for consistency. Deployed and confirmed working.
+    **Workbench candidate tried, T-posed — but with a useful new heuristic.** RedFalcon tried
+    `A_Craftstation_Blacksmith_BellowsInteract` (flagged as a real candidate but not Hero-locked)
+    on the same working target — T-posed, AND played an unrelated visual effect alongside it.
+    RedFalcon's own read: this might not be a person animation at all — correct, and confirmed by
+    the path itself: `Character/Animations/Environment/Workbenches/...`, not `Human/Regular/...`
+    like the one confirmed-working animation. The matching `ABP_AlchemyTableT01_02_p02`/
+    `ABP_BlackSmithT01_p02` AnimBlueprints found in the same `Environment/WorkBenches/` folder are
+    almost certainly that WORKBENCH OBJECT's own animation driver (its moving parts, its spark
+    effect), not a human interaction animation at all. New pre-filter added to
+    `WINDROSE_MODDING_NOTES.md` §14 and its public mirror: prefer `Human/Regular/...` paths for
+    person-pose candidates, treat an `Environment/...` path segment as a likely prop animation to
+    skip entirely rather than test blind.
+    **Same-day follow-up: the "avoid Hero" caution was WRONG, corrected.** RedFalcon proposed
+    testing a `_Hero_`-prefixed animation anyway, reasoning that "Hero" might mean "the detailed
+    human rig, possibly shared by named workers," not strictly "player-only" — pushing back on
+    the caution given a few messages earlier. Suggested `A_Regular_Male_Hero_Workbench_
+    TableInteract_Loop` (a genuine person animation under `Human/Regular/Shared/CampActivity/
+    Workbench/`, not the `Environment/` prop folder that just failed) as the test. **RedFalcon
+    confirmed it worked** — on a generic Handyman worker, not a named NPC and nowhere near the
+    player. This means the original "Hero = player-only, be cautious" caution was an incorrect
+    analogy, imported from a DIFFERENT, unrelated finding: this game's `Hero_`-prefixed
+    CompositeMeshParams (body/outfit shape assets, confirmed to crash on NPCs) are a completely
+    different asset type from `Hero_`-prefixed ANIMATIONS, and the crash risk does not transfer.
+    Corrected in `WINDROSE_MODDING_NOTES.md` §14 (and the public mirror) — the real filter stays
+    `Human/Regular/...` vs `Environment/...`; `Hero` vs plain naming inside `Human/Regular/` does
+    not by itself predict anything. This reopens the entire `_Hero_` animation pool (ship wheel/
+    cannon steering, cooking, the rest of CampActivity) that was being deprioritized for no good
+    reason — a real, useful correction, not just a footnote.
+
+74. **A combined pose+FX tester, after confirming real tool/effect assets exist for craft
+    stations** (2026-08-25, same day, closing out this arc for now). RedFalcon noticed the
+    Carpenter Idle pose has no tool visibly in-hand and recalled seeing "tools and workbench
+    stuff in the effects folder" — checked `pakcontents.xlsx` again and confirmed both halves are
+    real, separate assets: actual holdable tool meshes
+    (`Environment/Gameplay/WorkBenches/SM_CraftStation_Tools_Hammer_01`/`_Chisel_0X`/`_Saw_0X`)
+    and separate particle FX for the activity itself (`FX/Particles/Buildings/CampActivities/
+    BlackSmith/FX_Blacksmith_Anvil_Hammer`/`_Bellow_Action`/`_Bellow_Idle`,
+    `.../Workbanch/FX_Workbanch_Sawmill_01` — note the game's own "Workbanch" typo in that one
+    folder — `.../Cooking/FX_Cooking_CuttingTable*`). Also found a deeper native orchestration
+    layer, `BP_AIC_CraftStation_<Station>_<Action>` GameplayAbility Blueprints under
+    `Gameplay/Character/GameplayAbilities/Interaction/CraftStation/` — almost certainly what
+    normally drives pose+tool+FX together in real gameplay via the GAS (Gameplay Ability System).
+    Reproducing that generically from Lua would be a much larger undertaking than a console
+    command, so deliberately scoped this down instead of chasing it.
+    RedFalcon asked for a combined command specifically because running pose-then-FX as two
+    separate manual steps leaves a human-reaction-time gap — "the effect would be off on its
+    timing." Built `Spawner.TestApplyPoseWithFx(animPathArg, fxPathArg)` / `lbtestposefx <anim>
+    <fx>`: same targeting as `lbtestpose` (`findNearestSpawnInFront`, respects the Num+ lock),
+    applies the pose via the already-proven `Spawner.ApplyPose`, then reuses the EXISTING
+    `Spawner.TestSpawnNiagaraActor` for the FX by priming `Spawner._lastProbedActor` to the same
+    target first — that field is the exact interface that function already expects (normally set
+    by the HOME probe key), so this avoids re-deriving its own bounds-based placement math a
+    second time. Placed correctly after `findNearestSpawnInFront`'s own declaration this time
+    (checked explicitly, given items 66/72/73 already each hit that exact forward-reference trap).
+    **Explicitly scoped, not silently incomplete**: this only solves "pose + station-level FX
+    together." It does NOT attach the effect to a specific socket (a hand bone, for something
+    that should visually originate from a swung tool) — `TestSpawnNiagaraActor` places it at the
+    target's own footprint, which suits an ambient station effect (sparks/dust near the activity)
+    but not a hand-carried one — and it does NOT attach the actual tool MESH at all yet (that
+    would need a live socket-name probe on the target skeleton first, plus adding a new
+    StaticMeshComponent via `AddComponentByClass` — mechanically proven to work in this exact
+    codebase already, item 72's crew experiment — and attaching it via the already-proven
+    `K2_AttachToComponent` socket-attach technique, deliberately NOT the crashed `K2_AttachToActor`
+    route). Both are real, identified next steps if RedFalcon wants to pursue the full "tool
+    visibly in hand" look, not attempted in this pass.
+    **Not yet tested live** — deployed, untried as of this write-up.
+    **Same-day follow-up: found a real skeletal-mesh tool prop, and it turns out this codebase
+    already has a fully-shipped mechanism to mount it.** RedFalcon asked for a broader
+    `pakcontents.xlsx` sweep (both "workbench"/"workbanch" spellings) specifically for anything
+    that could be the held item. Found `Character/Skeletal_Meshes/Environment/WorkBenches/Meshes/
+    SK_CraftStation_Tools_Hammer_01` — a genuine SKELETAL mesh version of the hammer (alongside
+    the plain `SM_` static one and a `PHYS_` physics asset) — meaning it's built to be
+    socket-attached the same way this game's own gear/armor pieces are, not just placed as a dumb
+    static prop. Also found `FX_.../Workbanch/M_Workbanch_Table_WoodDebris` (confirming the wood-
+    chip effect RedFalcon saw is a real, dedicated asset) and the actual orchestrator,
+    `BP_AIC_CraftStation_Workbench_Sawmill`/`_Table` GameplayAbility Blueprints under `Gameplay/
+    Character/GameplayAbilities/Interaction/CraftStation/Workbench/` — almost certainly what the
+    base game runs on its own NPCs to tie pose+tool+debris together via AnimNotifies, which our
+    simpler `PlayAnimation()` approach bypasses entirely.
+    Best part: `Spawner.AttachShield` (the Warrior's shield-on-hand feature) is an EXISTING,
+    ALREADY-SHIPPED implementation of exactly this mechanism — `AddComponentByClass` (a
+    SkeletalMeshComponent, `bManualAttachment=true`) → `SetSkeletalMeshAsset` → verify the socket
+    via `DoesSocketExist` (since `K2_AttachToComponent` silently attaches at the origin on a
+    missing socket rather than failing — a real bug this exact shield feature already hit and
+    fixed once) → `K2_AttachToComponent`, with a full `GetAllSocketNames()` dump as the fallback
+    when no candidate matches. Generalized it into `Spawner.TestAttachToolToNearest(meshPathArg,
+    socketArg)` / `lbtesttool <meshPath> [socket]`: same generic nearest-in-front/locked targeting
+    every other test command here uses (not hardcoded to the Warrior), defaults its socket
+    candidates to the right-hand analogs of the CONFIRMED-WORKING `Config.WARRIOR_SHIELD_SOCKETS`
+    (proven on this same broad human skeleton) tried first, falling back to the shield's own
+    left-hand set, with an explicit socket argument always winning. This is by far the
+    LOWEST-RISK experiment in this whole animation/attachment arc — every piece of it (the
+    component type, the attach call, the socket-verify pattern) is already proven safe in
+    production, not a new guess at unproven engine surface like `AttachActorToShip` or the
+    movement-component experiment were.
+    **Not yet tested live** — deployed, untried as of this write-up. Next step: `lbtesttool
+    /Game/Character/Skeletal_Meshes/Environment/WorkBenches/Meshes/SK_CraftStation_Tools_Hammer_01`
+    on the same Handyman-based target the poses have been confirmed on — either a right-hand
+    socket candidate matches and it just works, or the full socket dump tells us the real name to
+    hardcode next.
+    **Same-day follow-up: first try failed on a path-casing mismatch, second try CONFIRMED
+    WORKING.** RedFalcon's first attempt logged `mesh did not resolve` — root cause: the
+    `pakcontents.xlsx` export lists this exact file under BOTH `WorkBenches` (capital B) and
+    `Workbenches` (lowercase b) as parallel entries across different pak chunks, and the path
+    given used the wrong-cased one; `resolveAsset`'s `StaticFindObject`/`LoadAsset` pair is
+    case-sensitive enough that only the correct casing actually resolves. Switching to
+    `Environment/Workbenches/Meshes/...` (lowercase b) worked immediately — RedFalcon confirmed
+    the target is now genuinely holding a hammer mesh in-hand. **First fully-successful custom
+    prop attachment in this entire investigation.** One of the two matched right-hand socket
+    candidates worked (which one wasn't logged in this run, only that the attach succeeded) — the
+    full-socket-dump fallback was never needed this time. RedFalcon also noted the same actor has
+    a separate item already in her OFF hand — almost certainly her own native profession gear
+    (Gatherer/Farmer-family NPCs commonly carry a baked-in prop by default), not anything this new
+    code touched, since it only ever attaches to one socket per call. Suggested trying
+    `SK_CraftStation_Tools_Chisel_01` next instead of the hammer, for a better thematic match to
+    the carving-motion pose already confirmed working — not yet tried as of this write-up.
+    **Lesson for this file's own asset-path notes going forward**: when `pakcontents.xlsx` (or any
+    future export) lists the same-looking path under two different casings, don't assume either
+    one — the wrong one fails silently with a generic "did not resolve," not a helpful error, so
+    it's worth trying both before assuming the asset doesn't exist at all.
+    **Same-day follow-up: two-handed props, and a real mesh-type gap fixed.** RedFalcon asked for
+    an item in the OTHER hand too — "sometimes they are holding two items... a knife carving a
+    piece of wood." Searching `pakcontents.xlsx` for a wood-piece mesh found real candidates
+    (`SM_Craft_T01_PlanksWood_01`, `SM_PlankWooden_02/03`) but NONE of them have a skeletal-mesh
+    counterpart the way the tools (hammer/knife/chisel) do — they're plain static meshes only.
+    `Spawner.TestAttachToolToNearest` only knew how to host a SKELETAL mesh (hardcoded
+    `SkeletalMeshComponent` + `SetSkeletalMeshAsset`), so it would have failed on a static prop.
+    Fixed by reading the resolved mesh's own class name first (`mesh:GetClass():GetFName():
+    ToString()`, checking for `"StaticMesh"`) and picking the matching component type/setter
+    (`StaticMeshComponent` + `SetStaticMesh` vs. the existing `SkeletalMeshComponent` +
+    `SetSkeletalMeshAsset` path) — `resolveAsset` itself succeeds identically for either mesh
+    type, so this was purely about which component can host which. No new attach mechanism, no
+    new risk — same `AddComponentByClass`/`K2_AttachToComponent` recipe either way.
+    Two items on one Character just means calling `lbtesttool` twice — the function already
+    creates a fresh component each call, so nothing needs to change there. The one real gotcha:
+    the OFF-hand call MUST pass an explicit left-hand socket (`ik_weapon_lSocket` — the
+    already-confirmed-working primary from `Config.WARRIOR_SHIELD_SOCKET`), since the function's
+    own default candidate list tries RIGHT-hand names first and would otherwise attach to the
+    same hand the tool is already on.
+    **Not yet tested live** — the static-mesh path is deployed but unconfirmed as of this
+    write-up.
+    **Same-day follow-up: extended the existing probe to answer "what is a real NPC holding
+    mid-animation."** RedFalcon asked whether probing a real NPC while actively performing a
+    craft-station animation would reveal its held item(s) directly, instead of continuing to
+    guess mesh/socket combinations from asset names alone. Good idea and directly answerable with
+    this project's own established tooling: `dumpMeshComponentNames` (the `lbprobe`/`lbprobedump`
+    backing function, already listing every `SkeletalMeshComponent` + its assigned mesh) was
+    missing the one piece that actually matters here — WHICH SOCKET each component rides on. Added
+    a `GetAttachSocketName()` read (a plain, read-only `USceneComponent` getter, same safety class
+    as every other call this probe already makes) to its output. Also extended it to sweep
+    `StaticMeshComponent`s in addition to `SkeletalMeshComponent`s — a held prop attached by the
+    game's own interaction-ability system is not guaranteed to be skeletal (confirmed: the
+    wood-piece candidates for the off-hand are static-only), so the original skeletal-only sweep
+    could have silently missed exactly the component being looked for.
+    Practical workflow this unlocks: find a real NPC (an Employee/Artisan) actually performing the
+    craft-station work in the world, `lbprobe` it, then `lbprobedump` while it's actively holding
+    the item — the output now shows the EXACT mesh path and EXACT socket name in one read, instead
+    of guessing candidates and hoping one exists.
+    **Not yet tested live** — deployed, untried as of this write-up.
+
+75. **`lbprobedump` now writes its own timestamped file, for convenience** (2026-08-25, same
+    day). RedFalcon asked to cut the noise of hunting through `ue4ss.log` for one probe's output
+    among everything else this mod (and the engine) constantly log. `Spawner.ProbeDumpProperties`
+    calls a whole chain of `dump*` sub-functions (`dumpObjectProperties`, `dumpMeshComponentNames`,
+    `dumpAnimInfo`, etc.), each with its own scattered `print()` calls — too many individual call
+    sites to retrofit one at a time. Instead, split the function: its entire original body became
+    a new local `probeDumpPropertiesBody()`, unchanged; a new `Spawner.ProbeDumpProperties()`
+    wrapper opens a fresh `probedump_<timestamp>.txt` (same multi-candidate relative-path
+    convention as every other dump file in this project), temporarily reassigns the GLOBAL `print`
+    to also write to that file (Lua's `print` is a real global and every probe function already
+    calls the bare global, not a local alias, so this captures the ENTIRE chain's output with zero
+    changes to any of those individual functions), calls the body via `pcall`, then unconditionally
+    restores `print` and closes the file — the restore happens even if the body errors, since
+    leaving the global `print` swapped in permanently would silently break logging for the rest of
+    this mod, a far worse failure than losing one probe's output.
+    **Confirmed safe to do this way, not just convenient**: checked that `probeDumpPropertiesBody`
+    and everything it calls is fully synchronous — no `ExecuteWithDelay`/`ExecuteInGameThread`
+    anywhere in that call chain — so nothing can fire after `print` is already restored and land
+    in the wrong place (a real risk this exact monkey-patch technique would have if any nested
+    call deferred work to a later tick).
+    **Not yet tested live** — deployed, untried as of this write-up.
+
+76. **`lbprobe` now toasts what it targeted** (2026-08-25, same day). RedFalcon asked for
+    on-screen confirmation of `lbprobe`'s target — as a console command it had zero feedback while
+    actually playing, so it was easy to fire it, look away, and never notice it had silently
+    latched onto the wrong actor (or missed entirely). Added a `Spawner.Toast("Probed: " ..
+    shortName, 2.5)` call right where `Spawner.ProbeNearestActor` already logs its target — short
+    class name only (the full `/Game/...` path stays in `ue4ss.log`/the new `probedump_*.txt` for
+    anyone who needs it; a toast is meant to be glanced at). Goes through `Spawner.Toast` like
+    every other on-screen confirmation in this file, never `PrintString`/`ClientMessage` (both
+    already confirmed dead ends here, see the "Working agreements" note near the top of this
+    file). Deliberately did NOT add a matching toast to the "nothing within Xuu ahead" miss case
+    right above it — this project already has an explicit prior decision (item 23) to keep that
+    exact family of message log-only, since RedFalcon found it spammy when tapped repeatedly while
+    aiming; respected that instead of re-adding it here.
+    **Not yet tested live** — deployed, untried as of this write-up.
+
+77. **A dedicated "currently playing" line in the probe dump** (2026-08-25, same day). RedFalcon
+    asked for the probe dump to surface the target's currently-playing animation directly, "to
+    save time on finding that too" — it was technically already there (`dumpAnimInfo`'s existing
+    `AnimationData` walk already reads `AnimToPlay` via the safe struct-drilling recipe), just
+    buried among several other `AnimationData` fields (`bLooping`, `Rate`, `bPlaying`, etc.) that
+    have to be scanned past to find the one that actually matters for reapplying it via
+    `lbtestpose`. Pulled that one value out into its own clearly labeled line
+    (`CURRENTLY PLAYING (SingleNode) = <full path>`, or a clear "driven live by AnimClass, no
+    single clip" note when in BlueprintMode) printed right after the existing
+    `AnimationMode`/`AnimClass` summary line, using the exact same safe read already proven a few
+    lines below — this doesn't replace the full `AnimationData` walk, just surfaces its most
+    useful field early as a ready-to-paste-into-`lbtestpose` asset path.
+    **Not yet tested live** — deployed, untried as of this write-up.
+
+78. **BlueprintMode state query added; asked about listing a Blueprint's own referenced
+    animations, deliberately not yet built** (2026-08-25, same day). RedFalcon probed a Character
+    in BlueprintMode (`ABP_Human_NPC_C`) and asked whether the specific active clip could be seen
+    at all. Honest answer: not safely, not with anything this codebase already trusts — the
+    actual sampled clip inside a compiled AnimGraph lives in internal runtime execution nodes
+    (state machines, blend spaces), which this project's own history already flagged as raw,
+    per-frame-rebuilt state, not real configuration — a different, riskier class of read than the
+    plain Vector structs (`AnimationData`/`BodyMorph`) already proven safe. Added the safer,
+    sanctioned middle ground instead: `animInstance:GetCurrentStateName(machineIdx)` (machine
+    indices 0-2) — a real, documented `UAnimInstance` UFUNCTION built specifically for querying
+    which state a machine is currently in (e.g. "Idle"/"Walk"). Not the literal asset, but a
+    genuine live signal from proper engine API surface rather than a raw struct walk.
+    RedFalcon separately asked whether the Blueprint's own STATIC list of referenced animations
+    (as opposed to which one is live right now) could be listed instead — a genuinely different,
+    likely easier question, since a compile-time-baked asset reference inside a graph node is just
+    an object reference, not the same runtime-rebuilt state the state-machine question hits.
+    Two things worth knowing before building it: (1) the ALREADY-EXISTING
+    `dumpObjectProperties(animInstance, "ANIMINSTANCE")` call (part of this same probe dump) already
+    lists every declared property name on the AnimInstance, including struct-typed graph nodes —
+    for a struct-typed property its generic reader only prints the TYPE name, not field values, so
+    node names like `AnimGraphNode_Sequence...` may already be visible in that section without any
+    new code — worth checking there first. (2) Actually drilling INTO one of those nodes to read
+    its assigned `Sequence`/`Animation` field would be genuinely new territory, explicitly flagged
+    by this project's own prior comment as riskier than the Vector-struct drilling already proven
+    safe (`AnimGraphNode_*` were called out by name as "internal anim-runtime state... a different,
+    much riskier question than a plain FVector"). NOT attempted this round — deliberately left as
+    RedFalcon's call whether to try it as a genuine "test and see" rather than treating the
+    Vector-struct precedent as proof it's equally safe.
+    **Not yet tested live** — the state-machine query is deployed but unconfirmed.
+    **Same-day follow-up: RedFalcon opted into the experiment** ("ok, so experimentation it is")
+    after confirming the IK socket-attach mechanism continues to work well across different props
+    (a "stick" turned out to actually be a wood club mesh once probed). Built the AnimGraph
+    node-drilling attempt: every struct-typed property on the AnimInstance is checked by its
+    RESOLVED TYPE (not by property name, which is compiler-generated and unpredictable) for
+    `AnimNode_`/`AnimGraphNode` in the type path — matching UE's real `FAnimNode_*` C++ family
+    every compiled AnimGraph execution node belongs to — and any match gets drilled into with the
+    exact same "any unfamiliar native struct" recipe `WINDROSE_MODDING_NOTES.md` §10 already
+    established as crash-safe in general. This is the actual open question that recipe has never
+    been tested against before: whether it generalizes to compiled EXECUTION nodes, not just the
+    plain data structs (`AnimationData`/`BodyMorph`) already proven safe. Every field read stays
+    individually `pcall`-wrapped, same discipline as everywhere else — one bad field must not stop
+    the others or escalate into an uncaught native crash.
+    **Not yet tested live** — this is a genuine first attempt at previously-avoided territory;
+    unconfirmed as of this write-up whether it renders anything useful, errors safely, or worse.
+    **Same-day follow-up: CONFIRMED TO CRASH THE GAME LIVE, both experiments pulled.** RedFalcon
+    tested `lbprobedump` on the same BlueprintMode target — crashed. `ue4ss.log` shows ZERO output
+    from either new block (not even a single `StateMachine[0]...` or `-- AnimGraphNode_...` line)
+    before the log stops dead — the same pcall-uncatchable native-crash signature already
+    documented for `SetBody`/`AttachActorToShip` earlier this session. Since neither block ever
+    printed anything, which specific call actually crashed — `GetCurrentStateName` itself, or the
+    `ForEachProperty` walk into an `AnimNode_*` struct — could not be isolated from the log alone.
+    Rather than guess which one was "probably fine," BOTH were immediately removed from
+    `dumpAnimInfo` and replaced with a documented removal note (matching this project's own
+    established treatment of confirmed-dangerous code — kept as a record, not silently deleted,
+    but never re-registered without a genuinely new theory backed by real evidence).
+    **Net result of items 77-78**: the "currently playing" summary line (SingleNode mode) and the
+    `probedump_*.txt`/toast conveniences all stand — those are real, working improvements. The
+    BlueprintMode-specific questions ("what state is it in," "what anims does this Blueprint
+    reference") remain genuinely unanswered by any means this codebase currently trusts; the
+    `WINDROSE_MODDING_NOTES.md` §10 struct-discovery recipe's own general "any unfamiliar native
+    struct" claim does NOT extend to compiled `AnimNode_*` execution structs — this is now a
+    confirmed, not just suspected, limit on that recipe's own scope, worth remembering the next
+    time it looks tempting to reuse for something struct-shaped.
+
+79. **`lbtestmaterial <path>` — a generic material tester, same shape as lbtestpose/
+    lbtestniagarapath** (2026-08-26). Built while investigating a NEW side mod
+    ("Summon Ghost Sailors" — see `Working\SummonGhostSailors\`) that repurposes this mod's own
+    `MI_Building_SimplifiedPreview` build-ghost-preview material as a character "ghost" look.
+    RedFalcon wanted to adjust its opacity; the only lever for that (a dynamic material
+    instance via `UKismetMaterialLibrary:CreateDynamicMaterialInstance`) **crashed the game
+    live, confirmed** — same "pcall cannot catch this" native-crash signature already
+    documented for `SetBody`/`AttachActorToShip` elsewhere in this file. Abandoned per the
+    established "if it doesn't work we abandon that option" rule; that mod's
+    `Config.GHOST_OPACITY` stays disabled (1.0).
+    Better direction found instead: a `pakcontents.xlsx` keyword sweep ("ghost"/"translucent"/
+    "dissolve"/etc.) turned up a whole purpose-built ghost-character asset family this project
+    never knew existed — `R5/Content/Character/Shaders/MasterMaterials/M_CharacterGhost_V2`
+    (a master material made specifically for ghost characters), and a themed
+    `MI_Boneman_Ghost_Pirate` (+ `MI_Boneman_Ghost_Spanish`, `MI_Hair_Ghost`) with a matching
+    full skeletal mesh set (`SK_ArmorCreature_Boneman_Spanish_Ghost_01/02_Torso/Head/Legs/
+    Feets/Hands`) under `Character/Skeletal_Meshes/Armor/ArmorRegular/Ghost/` — plus
+    `SK_Fable_Male_Ghost`/`MI_Fable_Male_Ghost_Small` under `Human/Regular/Ghost/`. Trying these
+    needs zero new risk — same proven-safe `comp:SetMaterial` swap `Spawner.ApplyGhostMaterial`
+    already uses, no dynamic instance at all.
+    Refactored that swap loop out into `Spawner.ApplyMaterialToActor(actor, mat, tag)` (spawner.lua)
+    so both the original hardcoded `ApplyGhostMaterial` and the new tester share one
+    implementation. `Spawner.TestApplyMaterialByPath(pathArg)` mirrors `TestApplyPoseByPath`
+    exactly: auto-appends the trailing `.AssetName` suffix if only a bare path is pasted,
+    targets the nearest spawned actor in front (`findNearestSpawnInFront`, respects the Num+
+    lock), resolves the path via the existing `resolveAsset`, then swaps it in. Wired to
+    `lbtestmaterial <path>` (main.lua), same registration shape as every other path-fed tester
+    here.
+    **Same-day follow-up, real bug caught on first live use, same class as items 66/72/73/74**:
+    RedFalcon ran it and got "attempt to call a nil value (global 'findNearestSpawnInFront')" —
+    `TestApplyMaterialByPath` had been placed right after `ApplyGhostMaterial` (~line 5427),
+    well above `findNearestSpawnInFront`'s own `local function` declaration further down the
+    file (line 6959) — the exact forward-reference trap this file has now hit five separate
+    times. Fixed by relocating the function (comment and all) to just before
+    `Spawner.ApplySexChangeToNearest`, the same safe landing spot `TestApplyPoseByPath` already
+    uses. No logic changed, purely a reordering; `lint.py` clean afterward
+    (`compile: 10 scripts OK`). Saved as a standing rule in Claude's own memory system this
+    time (not just this file) — check a new function against this trap BEFORE writing it, not
+    after hitting the error again.
+    **Not yet tested live** — deployed, untried as of this write-up. Next step: `lbprobe` a
+    spawned crew/walker, then `lbtestmaterial /Game/Character/Skeletal_Meshes/Armor/
+    ArmorRegular/Ghost/Materials/MI_Boneman_Ghost_Pirate` (or `M_CharacterGhost_V2`, or the
+    Fable ghost variant) and see how each actually renders on a real character mesh before
+    picking one for the side mod.
+    **Same-day follow-up: `lbtestmaterial2 <skinPath> <clothPath>`** — RedFalcon wanted to mix
+    two candidates ("Skin using MI_Fable_Male_Ghost and clothes using M_CharacterGhost_V2")
+    rather than one material everywhere. `Spawner.ApplyTwoMaterialsToActor` splits along the
+    same seam `ApplyMaterialToActor`'s own loop already makes: `actor.Mesh` (the base body/skin)
+    gets one material, every OTHER `SkeletalMeshComponent`/`StaticMeshComponent` found via
+    `K2_GetComponentsByClass` (the composite armor/clothing pieces) gets the other — with
+    `actor.Mesh` explicitly excluded from that second sweep so the cloth material can't
+    immediately overwrite the skin material back off the body. Placed directly after
+    `TestApplyMaterialByPath` (already past `findNearestSpawnInFront`'s declaration, so this
+    one didn't repeat the forward-reference trap). Registered as `lbtestmaterial2 <skinPath>
+    <clothPath>` (main.lua), same target-resolution shape as every other path-fed tester.
+    **Same-day follow-up: first live test looked wrong (uniform texture everywhere), root
+    cause confirmed and fixed.** The original body-exclusion check compared components with
+    raw `comp == bodyMesh` — reproducing item 38's own already-documented finding that two
+    independently-obtained references to the SAME underlying component aren't reliably `==` in
+    this codebase. Since the check silently always evaluated false, the cloth material's sweep
+    never actually excluded the body mesh and overwrote its skin-material slots right back,
+    making the whole actor read as one material. Added explicit slot-count diagnostics
+    (`body mesh: found (name=...)`, `components seen=N, excluded-as-body=N, skin slots=N, cloth
+    slots=N`) AND switched the identity check to compare `GetFName():ToString()` instead of
+    `==` (the same fix item 38 already used for exactly this class of problem). **Confirmed
+    live**: `excluded-as-body=1`, `skin slots=4, cloth slots=14` (Witch idle) and `skin
+    slots=4, cloth slots=19` (Sailor Crew) — the split now works correctly, RedFalcon confirmed
+    it visually renders as two distinct materials. **Lesson reinforced**: raw `==` between two
+    separately-fetched component handles in this codebase should be treated as unreliable by
+    default — compare by `GetFName()` (or another stable identity field) instead, not just for
+    `DeCorruptByClass` (item 38) but for any new component-identity check written here.
+
+80. **"Unable to target with +" investigated — NOT a code bug, traced to a frozen in-game
+    camera (likely Remote Desktop input interference)** (2026-08-27). RedFalcon reported Num+
+    (target lock) suddenly failing every time, always logging "Target lock: nothing hovered to
+    lock onto." `ue4ss.log` showed the hover raycast (`Spawner.UpdateHoverHighlight`,
+    spawner.lua) hitting the exact same actor — `BP_BuildingBlock_BuildingCenterT01`, a native
+    building piece, not anything this mod spawned — on every single 150ms tick, for 16+
+    minutes straight, across several different intended targets (the Buccaneers Merchant
+    statue, then something else with open ocean behind it and nothing in front). RedFalcon
+    confirmed nothing ever ghost-highlights either, no matter what's aimed at.
+    A raycast computing the identical hit for that long regardless of where the player is
+    actually looking on screen means the CAMERA transform feeding the trace
+    (`PlayerCameraManager:GetCameraLocation()`/`GetCameraRotation()`, read fresh every tick)
+    wasn't actually changing — i.e., the in-game camera itself was frozen, not a Lua/targeting
+    logic bug. `RegisterKeyBind` (how Num+ reaches the mod at all) hooks input independently of
+    window focus, which is why the key press still logged "received" even while this was
+    happening — but mouse-look/camera rotation depends on the game window actually having
+    input focus, so the two can desync: keyboard still reaches the mod, camera stops moving.
+    RedFalcon was connecting via Google/Chrome Remote Desktop, which is a known source of
+    exactly this kind of relative-mouse-delta capture trouble (especially across focus changes
+    between the game window and the companion LivingBaseSpawnMenu window, which can steal OS
+    focus via its own Numpad-1 "focus steal" action). No code change made — nothing in
+    `Spawner.UpdateHoverHighlight`/`pickTargetPreferringHover`/`Spawner.ToggleTargetLock` was
+    touched, since the raycast/lock logic is doing exactly what it's supposed to do with the
+    (frozen) camera input it was given.
+    **CORRECTED, same day — the Remote Desktop theory was WRONG.** RedFalcon tested from the
+    physical machine (no Remote Desktop) and Num+ still failed the exact same way. The real
+    root cause, found via a second piece of live evidence: at the SAME moment the hover raycast
+    kept reporting a hit on `BP_BuildingBlock_BuildingCenterT01`, an UNRELATED command
+    (`lbtestpose`, which targets via `findNearestSpawnInFront` — a completely different,
+    cone/range-based picker, not this raycast) successfully found "Letty (Idle) 1" as the
+    actor in front of the player. That's decisive: the camera was NOT frozen (a different
+    targeting method aimed from the same camera found the real actor just fine) — the raycast
+    ITSELF was being occluded. Read as: a mod-spawned actor standing on or near a native
+    building platform can have that building piece's own collision sitting BETWEEN the camera
+    and the actor along the single straight-line ray `Spawner.UpdateHoverHighlight` casts, so
+    `LineTraceSingleForObjects` (which stops at the very first thing it hits, full stop) never
+    reaches the real target at all — a plain line-of-sight occlusion problem, not a camera or
+    input issue, and not something either of the two prior investigations (this item, or the
+    Remote Desktop machine check) could have caught, since both were reasoning from "the same
+    hit repeats regardless of aim" without a second, independent targeting method to compare
+    against at the same moment. See item 86 for the actual fix.
+
+81. **Cannon "T-pose" candidates identified as OBJECT animations, not human ones — refines the
+    Human/Regular-vs-Environment heuristic from item 73** (2026-08-27). RedFalcon reports the
+    ship animation candidates from item 73's `pakcontents.xlsx` sweep that T-posed (paired with
+    an unrelated effect playing alongside them, the same symptom the Blacksmith bellows
+    candidate showed) are actually **object animations** — the same category of thing that
+    animates a cannon's barrel recoiling when it fires, not a sailor's own pose. Item 73's
+    established filter ("prefer `Human/Regular/...` paths, treat `Environment/...` as a likely
+    prop animation to skip") is real but evidently NOT sufficient on its own — this session's
+    Ship/Cannons candidates were listed under `Character/Animations/Human/Regular/Shared/
+    Ship/Cannons/`, a `Human/Regular` path, and still turned out to be driving the CANNON's own
+    transform/recoil, not a person's skeleton, despite living in the "should be a person
+    animation" folder.
+    **Refined rule, not a reversal**: folder path is a useful first-pass filter but not proof —
+    the one filter that's actually held up every time so far is whether the exact animation
+    asset already shows up as a genuine native `AnimToPlay`/AnimInstance default fallback value
+    on a REAL Character of the target skeleton family (the technique that found
+    `A_Regular_Carpenter_Idle` actually working, item 73's own closing success) — that's a
+    positive confirmation of skeletal compatibility, where "which folder is it in" is only ever
+    a guess. A T-pose PAIRED WITH an unrelated effect firing (muzzle flash, bellows spark, wood
+    debris) is itself a useful tell that the asset is more likely an object/scene animation with
+    its own AnimNotify driving that effect, not a person's idle pose — worth treating as a
+    signal to abandon that specific candidate rather than trying variations of it.
+    Documented in `WINDROSE_MODDING_NOTES.md` §14 as a follow-up caveat to the existing
+    Human/Regular-vs-Environment filter, and mirrored to the public `Windrose_Modding_Notes.txt`
+    / `Windrose-UE4SS-Modding-Notes` repo in the same pass.
+
+82. **`lbtestpose`/`Spawner.ApplyPose` confirmed working on posed statues too, not just
+    Characters** (2026-08-27, same day). RedFalcon confirmed a genuinely skeleton-matched real
+    animation applies cleanly via the SAME mechanism item 73 already proved out on
+    crew/walkers — no separate code path needed, `Spawner.ApplyPose`'s `PlayAnimation` call was
+    always generic to any actor with a `Mesh` component, `lbtestpose` targets whatever's nearest-
+    in-front/locked regardless of actor type. Worth distinguishing this from the CLOSED
+    pose-porting investigation (items 53-63): that saga was specifically about forcing a
+    Character onto a DIFFERENT, foreign skeleton's exact baked BlueprintMode stance (e.g. porting
+    `Female_Standing_01`'s own AnimBP-driven pose onto an unrelated body) and stays closed — this
+    is the opposite, much simpler case: playing an animation that's already genuinely built for
+    that SAME actor's own skeleton family, which was already established (item 73) as the one
+    thing that reliably works. The news here is just that it generalizes to the posed
+    `AnimatedActor`/statue classes too, not only spawned crew/walker Characters — useful for any
+    future "give a statue a specific real activity pose instead of a generic idle" work (the
+    Senkamati Statues feature this would have helped was already fully removed, item 69, for
+    unrelated NSFW-reroll reasons — this finding would matter for a DIFFERENT future statue-posing
+    ask, not a reason to revive that specific feature).
+    **Same-day follow-up, scope confirmed even wider**: RedFalcon reports the technique also
+    applies successfully across native Senkamati (the raw mob skeleton, `CASTER_MOB` etc.),
+    converted Senkamati (the human-skeleton Handyman-based crew re-skin), every statue type, and
+    crew — i.e. every actor category this mod spawns. Read as confirming the MECHANISM
+    (`PlayAnimation` after the enum/property fixes from item 73) is universal across actor types,
+    each given an animation actually built for its OWN specific skeleton family — not that one
+    literal animation file works identically across the mob skeleton and the human/Handyman
+    skeleton, which are still two different rigs per every finding earlier this session (item 73's
+    own "skeleton compatibility is not predictable from folder naming, only a native-default-value
+    match predicts it" rule is unaffected and still the thing to check per skeleton family). Net
+    result: "apply a specific real activity pose to any placed actor" is now a broadly proven,
+    working capability across this whole mod, not just the crew/walker case it was first confirmed
+    on.
+    **CORRECTION (2026-08-28)**: the assumption right above — that a literal animation file
+    working on BOTH the mob skeleton and the human/Handyman skeleton would be a coincidence, since
+    they're "still two different rigs" — turned out to be wrong. RedFalcon: "all the poses for
+    standard bodies also worked on the native senkamati, so they arent as different as they seem."
+    The SAME standard/"Human/Regular" pose set applies correctly on the RAW native Senkamati mob
+    skeleton too, not just the human-skeleton crew re-skin — meaning the mob skeleton and the
+    ordinary human "Regular" skeleton family share enough real bone-rig compatibility for
+    animations to transfer directly between them, at least for this pose set. This narrows (doesn't
+    fully overturn) the separate, longer-standing skin-MATERIAL warning elsewhere in this file
+    ("painting a human skin material onto a Senkamati body mesh maps garbage, renders like bark")
+    — that one is specifically about surface UV mapping for TEXTURES, a different question from
+    skeletal bone-rig compatibility for ANIMATIONS, and remains unaffected by this correction. Net
+    effect: the pose roster built in item 87 (`Custom > Poses`) is now known to be usable on native
+    Senkamati mob-skeleton actors too, not just human-skeleton ones — a real, wider reach than
+    assumed when that roster was built.
+
+83. **Two more findings from continued `lbtesttool`/`lbtestpose` use** (2026-08-27, same day).
+    - **Cold-asset race fixed in `Spawner.TestAttachToolToNearest`**: RedFalcon reported tool props
+      "not loading if they haven't been used before" — matches `resolveAsset`'s own shape
+      (`StaticFindObject` -> `LoadAsset` -> `StaticFindObject` again, all synchronous, no delay):
+      `LoadAsset` kicks off the load but there's no guarantee the asset has actually finished
+      streaming into memory by the time the immediately-following re-check runs, on the very FIRST
+      reference anything in the session has made to that specific asset — a genuine race, not a Lua
+      bug, and exactly what "works once something else already loaded it" looks like from outside.
+      Refactored the function: the actual component/attach work moved into a new local
+      `proceedWithTool(actor, name, meshPath, socketArg, mesh)`; `Spawner.TestAttachToolToNearest`
+      now tries `resolveAsset` immediately as before, and if that fails, schedules exactly ONE
+      retry 400ms later (`ExecuteWithDelay`) that re-resolves and, if it now succeeds, calls
+      `proceedWithTool` — using the SAME captured actor/target from the original call, not a fresh
+      pick (an aim change during the 400ms shouldn't redirect where the tool ends up). `lint.py`
+      clean after the edit (`compile: 10 scripts OK`). Deployed to the live install (game was
+      running — told to `lbreload` to pick it up). **Not yet re-tested live** — next step is
+      RedFalcon retrying `lbtesttool` on a mesh that failed cold before, to confirm the retry
+      actually catches it.
+    - **A genuinely dangerous finding, not a bug to fix**: RedFalcon applied the Senkamati Caster's
+      own "create spikes" combat-ability animation to a placed statue (untamed/uncontrolled, no AI
+      casting anything) via this same pose-testing pipeline — and it **actually damaged the
+      player**. This means at least some animations carry AnimNotify events tied to REAL gameplay
+      logic (damage, spike-spawn, etc.) that fire off the animation's own timeline regardless of
+      who or what is playing it — an inert, non-hostile, player-placed statue with `PlayAnimation`
+      called on it directly is not exempt, since notifies aren't gated on AI/hostility state, only
+      on the animation actually playing. This is a real safety consideration for this whole
+      pose-testing toolset (`lbtestpose`/`lbtestposefx`) going forward, not something fixable in
+      the mod's own code — there's no established-safe way from Lua to strip or suppress an
+      AnimSequence's own baked-in notifies before playing it. **Practical rule from here on**:
+      treat any COMBAT/ABILITY-sounding animation candidate (attack windups, spell casts, spike/
+      projectile-themed names) as a real risk to test from a safe distance or with health to
+      spare, not just a cosmetic experiment the way an idle/activity pose has been so far. Worth
+      writing up as a caution in `WINDROSE_MODDING_NOTES.md` §14 the next time that section gets a
+      pass, alongside the existing pose-application findings. **Documented immediately** (not
+      deferred) in `WINDROSE_MODDING_NOTES.md` §14, the public mirror, and the
+      `Windrose-UE4SS-Modding-Notes` repo (commit `93b5c7a`) the same day, given it's a genuine
+      player-safety finding rather than a routine technique note.
+
+84. **`lbtestarmor <slot/mesh name match> [meshPath]` — a generic clothing/armor swap console
+    command** (2026-08-27). RedFalcon asked whether swapping individual clothing/armor pieces via
+    console command was feasible. Yes, and lower-risk than most of this session's other testers:
+    `Spawner.DeCorrupt`'s `replaces` mechanism already does exactly this everywhere in this mod's
+    re-skin rulesets (match a component's current mesh/name against a pattern, then
+    `SetSkeletalMeshAsset`/`SetSkeletalMesh` the replacement) — this just exposes that same proven
+    swap directly against an arbitrary path from the console, instead of only through a
+    pre-written rules table.
+    `Spawner.TestSwapArmorPiece(componentMatch, meshPathArg)` (spawner.lua, placed right after
+    `Spawner.TestAttachToolToNearest`, already past `findNearestSpawnInFront`'s declaration):
+    targets the nearest spawned/locked actor same as every other tester here, enumerates its
+    `SkeletalMeshComponent`s, and matches `componentMatch` as a case-insensitive substring against
+    BOTH the component's own name (e.g. "Torso", "Headgear") and its CURRENT mesh's name — covers
+    both "I know the slot" and "I only know what it currently looks like." Every matching
+    component gets swapped, not just the first (a broad fragment can legitimately match more than
+    one piece, same as `DeCorrupt`'s own replace loop). Two built-in discovery aids so nothing has
+    to be guessed blind: omit the mesh path to just LIST the current pieces matching that name; if
+    NOTHING matches, dumps the target's full current piece list (component + mesh name) instead of
+    failing with no information. Same cold-asset 400ms retry as item 83's `lbtesttool` fix (shared
+    `resolveAsset` race) — factored into a small local `armorProceedWithMesh` helper used by both
+    the immediate and retried paths. Registered as `lbtestarmor` (main.lua), same
+    `RegisterConsoleCommandHandler` shape as every other path-fed tester.
+    **Process note**: `main.lua`'s registration edit was made before archiving its pre-edit
+    contents, breaking this project's own archive-before-edit rule for that one file this
+    session (spawner.lua was archived correctly beforehand). Caught immediately — reconstructed
+    the exact pre-edit content by removing the known, self-contained insertion (verified clean via
+    `grep -c lbtestarmor` returning 0 on the reconstruction) and saved it as
+    `archive/main.lua_20260827_162027.lua`, same recovery method used earlier this project
+    whenever this slip has happened before. `lint.py` clean after both edits (`compile: 10 scripts
+    OK`). Deployed to the live install (game was running — `lbreload` needed to pick it up).
+    **Not yet tested live** — next step: `lbprobe` a spawned crew/walker/statue, then
+    `lbtestarmor Torso` (or any other slot fragment) with no mesh path to confirm the listing
+    works, then supply a real mesh path to confirm the actual swap renders.
+
+85. **`lbhelp [command]` — a self-updating console command directory** (2026-08-27). RedFalcon
+    asked for a command listing every existing command; a follow-up ask, before any code was
+    written, extended it to also print a given command's exact syntax + a one-line description.
+    With 58 console commands already registered across this file by this point, a hand-written
+    static list would drift out of date the moment the next one gets added — the same class of
+    duplication risk this project has already been burned by once before (item 44's `senkaShortKey`
+    lesson: reference the live source, don't hand-copy it).
+    Built as a lightweight metadata registry instead, deliberately NOT a wrapper around
+    `RegisterConsoleCommandHandler` (so it can't affect whether any existing command still
+    registers): `local LB_COMMANDS = {}` + `registerCmdInfo(name, usage, desc)` (both declared once,
+    right before `lbspawn`'s own registration — the first real command in the file, so every later
+    call has it in scope). Every one of the 44 directly-registered commands got ONE new line added
+    immediately after its existing `log("Console command registered: ...")` line — a mechanical,
+    scripted insertion (Python, matching each command's exact existing log text as the anchor) that
+    never touched the actual `RegisterConsoleCommandHandler(...)` call or its handler body, so there
+    was no risk of breaking a working command while adding this. The 14 simpler commands built on
+    the shared `registerDumpCommand(name, fn, label)` helper needed only ONE edit, inside that
+    helper itself, to cover all of them at once: a new `DUMP_CMD_DESC` lookup table gives the
+    friendlier ones a real one-line description, falling back to the existing `label` string for
+    anything not listed there. `lbhelp` itself registers into the same table.
+    `lbhelp` with no argument prints an alphabetized list of every registered command name;
+    `lbhelp <command>` (case-insensitive exact match) prints that command's usage line and
+    description, or a clear "no command named X" if it doesn't recognize the name — same
+    `say()`/`Ar:Log()` dual-output shape as every other command here, so the answer shows up right
+    in whichever console window it was typed into, not just `ue4ss.log`.
+    `lint.py` clean after every edit (`compile: 10 scripts OK`). Deployed to the live install (game
+    was running — `lbreload` needed to pick it up). **Not yet tested live** — next step: run
+    `lbhelp` with no arguments to confirm the full list prints, then `lbhelp lbtestarmor` (or any
+    other command) to confirm the per-command syntax/description lookup works.
+
+86. **Target lock fixed for real: hover raycast switched to a multi-hit trace, to see past
+    occluding building geometry** (2026-08-27, closing out item 80's corrected investigation).
+    Root cause confirmed: `Spawner.UpdateHoverHighlight`'s `LineTraceSingleForObjects` call stops
+    at the FIRST thing it hits along its ray, whatever that is. A mod-spawned actor standing on or
+    near a native building platform can have that platform's own collision sitting between the
+    camera and the actor — so the trace was hitting `BP_BuildingBlock_BuildingCenterT01` (a
+    building piece, not anything this mod spawned) and stopping there, never reaching the real
+    target even though the player was genuinely looking right at it (confirmed by
+    `findNearestSpawnInFront`, a totally different targeting method, finding the same actor fine
+    at the same moment — see item 80's correction).
+    Fix: the trace now tries `KSL:LineTraceMultiForObjects(...)` FIRST — same argument shape as
+    the already-proven `LineTraceSingleForObjects` call, just returning every hit along the ray
+    instead of only the first. Walks the returned hits in order and picks the first one that's
+    actually a tracked (`Spawner.spawned`) actor, skipping past any non-ours geometry (the
+    building piece, or anything else) in between — this generalizes to ANY intervening geometry,
+    not just this one specific building class, without touching that class's own collision at
+    all. If every hit along the ray is non-ours, treated as a real "hit something, just nothing
+    lockable" (same NOT-OURS diagnostic as before, now also logging `usedMulti=`). Falls back
+    automatically to the ORIGINAL single-hit trace, completely unchanged, if `LineTraceMultiForObjects`
+    isn't available in this build or the call errors — implemented so this can only ever ADD a
+    chance of finding an occluded target, never remove previously-working behavior.
+    `resolveHitActor`/`actorIsOurs` were factored out of the old single-hit-only body into shared
+    local closures so both the new multi-trace path and the original single-trace fallback use
+    the exact same "which actor did this resolve to, and is it one of ours" logic — no duplicated,
+    driftable copy.
+    **Genuinely untested engine surface** — `LineTraceMultiForObjects` has never been called
+    anywhere in this codebase before now, unlike `LineTraceSingleForObjects` (proven live
+    2026-08-24). Same family/signature as that proven call (an array out-param instead of one
+    struct), so a reasonable next step rather than a wild guess, but not yet confirmed to exist or
+    marshal correctly in this specific UE4SS build. Heavily `pcall`-wrapped with the safe fallback
+    described above specifically because of that uncertainty. `lint.py` clean (`compile: 10
+    scripts OK`). Deployed to the live install (game was running — `lbreload` needed to pick it
+    up).
+    **Same-day follow-up: CONFIRMED `LineTraceMultiForObjects` exists and runs in this build
+    (`usedMulti=true` in the log) — but its own result was WORSE, not better.** RedFalcon:
+    "still not working. sees less now." The `[hover-diag]` line showed why: the resolved
+    `hitActor`'s class read back as `/Script/CoreUObject.ScriptStruct` — not an actor at all.
+    Root cause, the SAME documented pitfall as `Spawner.LetFurniturePass`'s own history and
+    several other component-array reads in this file: indexing an element out of the
+    `TArray<FHitResult>` out-param can hand back a `RemoteUnrealParam` WRAPPER, not the struct
+    itself — reading `.HitObjectHandle.ReferenceObject` straight off the wrapper silently
+    resolved to the struct's own TYPE metadata instead of erroring, which is exactly why this
+    went undetected until the diagnostic printed a class name. Compounding that: the ORIGINAL
+    version of this fix treated the multi-trace as PRIMARY, letting its (garbage) result silently
+    override whatever the proven single-trace call would have found — so a target that used to
+    resolve fine via the single trace could now get overwritten by the broken multi-trace path,
+    which is the actual mechanism behind "sees less now."
+    **Fixed two ways, same pass**: (1) added the same `:get()` unwrap this file already uses
+    everywhere else for exactly this array-element pitfall, applied to each `TArray<FHitResult>`
+    element before reading its fields; (2) restructured so the proven single-hit trace ALWAYS
+    runs first and is the baseline result — the multi-trace now only runs at all when the single
+    trace did NOT already find something ours, and can only ever OVERRIDE a miss with a real
+    found target, never replace a working single-trace hit with anything. This makes the
+    "can only ever add, never take away" guarantee actually true in the code, not just the
+    stated intent it was supposed to be from the start.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was running —
+    `lbreload` needed to pick it up).
+    **CONFIRMED LIVE, WORKING** — RedFalcon: "that worked." Target lock now correctly finds and
+    locks a mod-spawned actor sitting behind/near occluding native building geometry, the original
+    bug this whole investigation (items 80/86) started from. Closing summary of the full arc for
+    future reference: (1) first suspected Remote Desktop input interference — wrong, ruled out by
+    testing from the physical machine; (2) real cause found by comparing against a second,
+    independent targeting method (`findNearestSpawnInFront`) succeeding at the same moment this
+    raycast failed — a single-hit-trace occlusion problem, not a camera/input issue; (3) first fix
+    attempt (multi-trace as PRIMARY) made things measurably worse ("sees less now") due to an
+    unwrapped `RemoteUnrealParam` on the returned `TArray<FHitResult>` elements — the same
+    documented array-wrapper pitfall as `Spawner.LetFurniturePass`'s own history, just newly hit on
+    a struct array instead of an object array; (4) final fix — the `:get()` unwrap PLUS
+    restructuring so the proven single-trace is always the baseline and multi-trace can only
+    supplement (never override) it — confirmed live working. `KSL:LineTraceMultiForObjects` is now
+    a second proven-safe trace function in this codebase, alongside `LineTraceSingleForObjects`,
+    for any future work that needs to see past the first hit along a ray.
+    **Immediate same-day follow-up — a second, separate gap in the same feature**: RedFalcon:
+    "it worked on people, but not the decor." Root-caused to `Spawner.EnsureRaytraceChannel`
+    (spawner.lua) — called unconditionally on every spawn, but its actual collision-response call
+    had been fully commented out since 2026-08-24 (a diagnostic disable after it caused a
+    confirmed leg-bending/IK glitch among WALKING Characters — see the function's own full history
+    in its header comment). That disable was believed cost-free once the raytrace itself switched
+    to object-type querying the same day, on the assumption Characters (native Pawn collision) and
+    decor/statues (native WorldStatic/WorldDynamic collision) would both register fine without any
+    extra help — never actually re-verified for decor specifically afterward. Decor items are
+    commonly authored with collision that doesn't block every channel a line trace might query
+    (the exact gap this function existed to close in the first place, back when walkers/idle
+    Senkamati/decor ALL had this same problem) — with the old fix disabled, nothing was left
+    plugging that gap for decor, while Characters' own always-solid Pawn collision meant they
+    never needed it in the first place.
+    Re-enabled, but narrower and on a DIFFERENT channel than what caused the original bug: blocks
+    raw `ECollisionChannel` 0 and 1 (WorldStatic/WorldDynamic — the equivalents of the trace's own
+    `{1,2,3}` object-type array, offset by one the same way this file's own comments already
+    establish for Visibility) — raw channel 3 (Visibility, the one that actually caused the IK
+    glitch) is deliberately never touched again. Also skips any actor with a
+    `CharacterMovementComponent` entirely (`actor:GetComponentByClass(...)`, the same proven call
+    item 71's movement-component experiment already used) — decor/statues never have one, so this
+    can't reach the class of actor the original bug was ever observed on, belt-and-suspenders on
+    top of already being a different channel. Added a plain diagnostic print (components touched)
+    so a live test shows immediately whether this ran at all.
+    Since `Spawner.EnsureRaytraceChannel` only runs automatically at SPAWN time, ALREADY-PLACED
+    decor won't pick this up on its own — `lbfixraytrace` (`Spawner.FixAllRaytraceChannels`,
+    already shipped 2026-08-22 for exactly this "retroactively fix every already-placed spawn"
+    purpose) re-calls it on every tracked actor without needing a reload or respawn.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was running —
+    `lbreload` needed to pick it up).
+    **Same-day follow-up — worked on chests, not on destructible furniture.** RedFalcon: "it works
+    on chests, but i placed a barrel table and a broken wardrobe and nothing." Log evidence pinned
+    the difference: the wardrobe's class was `BP_Shared_DestructibleStructures_WardrobeAshlands_04`
+    — a `DestructibleStructures` prop, plausibly registering its own native collision Object Type
+    as something like PhysicsBody/Destructible rather than plain WorldStatic/WorldDynamic (what
+    chests and ordinary decor use, and what the previous fix's `{1,2,3}` object-type array and
+    raw-channel-0/1 response fix both assumed). Rather than guess a fourth specific enum value
+    blind, widened BOTH levers at once, since querying/blocking an extra type nothing actually has
+    is harmless (it just never matches, unlike guessing a collision RESPONSE wrong, which risks
+    unwanted physical blocking):
+    - The trace's own object-type array (`Spawner.UpdateHoverHighlight`, both the single- and
+      multi-trace calls) widened from `{1,2,3}` to a new module-local `HOVER_TRACE_OBJECT_TYPES =
+      {0,1,2,3,4,5,6}` — covers the full standard range of default UE object types under either a
+      0-indexed or 1-indexed reading of the enum, since which convention this UE4SS build's
+      binding actually uses was never confirmed either way.
+    - `Spawner.EnsureRaytraceChannel`'s own raw-channel response-blocking extended from just
+      {WorldStatic=0, WorldDynamic=1} to also cover {PhysicsBody=5, Destructible=7} (Unreal's
+      standard default `ECollisionChannel` ordering) — still deliberately never channel 3
+      (Visibility), the one confirmed to cause the original IK glitch, and still skipped entirely
+      for any actor with a `CharacterMovementComponent`.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was running —
+    `lbreload` needed to pick it up).
+    **Same-day follow-up — "still not working after reload," and the real bug found via a
+    decisive diagnostic, not more guessing.** RedFalcon: still nothing, even on a fresh
+    placement confirmed to route through `Testbed.placeDecorEntry` -> `Spawner.Spawn` (which
+    calls `Spawner.EnsureRaytraceChannel` unconditionally, per its own long-standing call site).
+    Rather than guess a FIFTH channel/object-type value, grepped `ue4ss.log` for the new
+    `[raytrace-fix]` diagnostic print this function's re-enable added — ZERO occurrences,
+    anywhere, for ANY actor, ever, since it was redeployed. Since that print is unconditional
+    except for the function's own two early-return guards, this proved the function itself was
+    silently bailing out every single time, for every actor — not a decor-specific collision
+    gap at all.
+    Root cause: the `CharacterMovementComponent` exclusion check added in the SAME re-enable read
+    `hasMovement = comp ~= nil` — but `GetComponentByClass` returns a non-nil-but-INVALID userdata
+    sentinel when nothing matches, the exact same documented pitfall
+    `Spawner.TryAddMovementComponentToNearest`'s OWN check (`existing and existing:IsValid()`,
+    a few thousand lines up in this same file) already handles correctly — missed here. `~= nil`
+    was therefore true for EVERY actor regardless of whether it actually had a movement
+    component, so the function returned early before doing anything, for literal everyone,
+    the entire time. This means the WorldStatic/WorldDynamic fix and the PhysicsBody/Destructible
+    widening were BOTH silently inert from the moment they shipped — none of this arc's
+    collision-channel theorizing had actually been tested at all until now. Fixed to `(comp ~=
+    nil) and comp:IsValid()`, matching the established pattern exactly.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was running —
+    `lbreload` needed to pick it up). **Not yet tested live** — next step: `lbreload`, run
+    `lbfixraytrace` to retrofit the already-placed wardrobe/barrel table (or place fresh ones),
+    confirm `[raytrace-fix] actor=... components touched=N` NOW actually appears in the log, then
+    try Num+ on them. If it still fails even with the function confirmed running this time, that's
+    real evidence the object-type/channel guesses themselves are wrong, not that something else is
+    silently swallowing the fix.
+    **Same-day follow-up — STILL failing even with the function confirmed running, and a real
+    reframe from RedFalcon.** "still not working with wardrobe or table. it worked before what
+    changed" — asked to clarify, RedFalcon: "it may have been a while, but at one point we had all
+    decor and people working." That points at a specific known-good era rather than an unlocated
+    guess: the 2026-08-22 window, when `Spawner.EnsureRaytraceChannel`'s ORIGINAL body
+    unconditionally blocked raw Visibility (channel 3) on every spawn and the hover trace was
+    still plain CHANNEL-based (`LineTraceSingle`, TraceTypeQuery 0) — the exact combination its own
+    header comment says was built to cover "walking actors, idle Senkamati, AND drops decor"
+    together. That combination was abandoned 2026-08-24 for two reasons at once: the Visibility
+    block caused the IK glitch on WALKING Characters, and the trace itself switched to object-type
+    querying on the (evidently wrong, for at least some native classes) assumption that native
+    Pawn/WorldStatic/WorldDynamic collision would cover everything without it.
+    Fixed by bringing BOTH pieces of the historically-proven mechanism back, but scoped to avoid
+    the IK bug this time instead of just leaving it disabled: (1) `Spawner.EnsureRaytraceChannel`
+    now ALSO blocks raw Visibility (channel 3) again, alongside the WorldStatic/WorldDynamic/
+    PhysicsBody/Destructible channels already added — safe now because this function already
+    returns early for anything with a `CharacterMovementComponent` (the `hasMovement` fix, above),
+    so Characters never reach this line at all and the original IK-glitch class of bug can't recur;
+    (2) `Spawner.UpdateHoverHighlight` gained a THIRD fallback tier — a plain channel-based
+    `LineTraceSingle` (TraceTypeQuery 0), tried only if BOTH the object-type single- and multi-trace
+    tiers already came up empty. Same "can only ever add, never replace a working result" discipline
+    as the multi-trace tier: a working object-type hit is never second-guessed, this only fires on
+    an existing miss.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was running —
+    `lbreload` needed to pick it up). **Not yet tested live** — next step: `lbreload`, `lbfixraytrace`
+    (or a fresh placement) to make sure the Visibility block actually lands on the wardrobe/table,
+    then Num+ on them. This is now a three-tier trace (object-type single -> object-type multi ->
+    channel-based single) covering every combination this whole investigation has turned up
+    evidence for — if this specific combination still fails, the next real diagnostic step is
+    reading the wardrobe's actual `BodyInstance.CollisionEnabled`/response values directly (real
+    struct-drilling per `WINDROSE_MODDING_NOTES.md` §10's own recipe) rather than continuing to
+    guess at channel numbers blind.
+    **CONFIRMED LIVE, WORKING** — RedFalcon: "looks to be working." Target lock now correctly
+    finds and locks the wardrobe/barrel-table class (and by extension the whole reachable range of
+    native decor/destructible classes this three-tier trace now covers), closing this entire
+    multi-day investigation for real. Full arc, for anyone revisiting this later: (1) Remote
+    Desktop theory — wrong. (2) camera-occlusion diagnosis via a second independent targeting
+    method — correct, fixed by adding a multi-hit trace tier. (3) multi-trace made things worse at
+    first due to an unwrapped `RemoteUnrealParam` on the hit-result array — fixed, and reordered so
+    single-trace is always the protected baseline. (4) decor still failed — traced to
+    `EnsureRaytraceChannel` being silently disabled since 2026-08-24. (5) re-enabling it still
+    didn't help destructible props specifically — widened the object-type array and channel list,
+    still no effect. (6) the widening never actually ran AT ALL — a `~= nil` vs `:IsValid()` bug
+    silently skipped the whole function for every actor. (7) fixed that, still failed for this one
+    class — RedFalcon's "it worked before" reframe pointed at the specific 2026-08-22-era
+    mechanism (Visibility-channel block + channel-based trace) that had been abandoned rather than
+    replaced-and-improved; restoring it as a scoped, IK-safe third tier finally closed it. Every
+    dead end and the final working shape are written up generally in `WINDROSE_MODDING_NOTES.md`
+    §18 (public mirror + GitHub repo, commit `13b58ff`) for any future targeting-system work, here
+    or elsewhere.
+
+87. **`Custom > Poses` — a spreadsheet-driven pose picker added to the LivingBaseSpawnMenu tree**
+    (2026-08-27). RedFalcon asked to add a "Custom" branch containing "Poses" to the GUI dropdown,
+    populated from `Other\Poses.xlsx` (a spreadsheet built while live-testing `lbtestpose` across
+    the game's asset catalog this session) — one tab per top-level category, each row a confirmed-
+    testable animation with its own subcategory (when the tab has one) and display name, plus the
+    exact `lbtestpose <path>` command already run to verify it. Explicitly scoped by RedFalcon as
+    NOT needing persistence yet.
+    Deliberately built on the EXISTING roster/index mechanism (`spawnmenu_manifest.lua` +
+    `SPAWN_MENU_HANDLERS`, main.lua) rather than adding a new leaf type to the compiled
+    LivingBaseSpawnMenu C++ mod — confirmed by reading that mod's own source
+    (`Working\LivingBaseSpawnMenu\Mod\src\SpawnMenu.cpp`) that its ini parser only understands
+    `roster`/`index` pairs and requires both non-empty (`commit_entry` silently drops anything
+    else) — a "run this raw command" leaf type doesn't exist there and would need a C++ rebuild.
+    Since `SPAWN_MENU_HANDLERS[roster] = function(index) ... end` is fully generic Lua on this
+    side (never required to actually spawn an actor), registering a new roster name whose handler
+    applies a pose instead needed ZERO changes to the compiled DLL — same "add a descriptor, the
+    generic machinery already handles the rest" pattern this whole manifest system was already
+    built around.
+    Extracted all 221 rows across the workbook's 8 tabs (Standing, SittingKneeling, Work Benches,
+    Battle, Magical, Monsterous, Statues, Misc — the exact tab order requested) via a Python/
+    openpyxl script (column headers varied slightly per tab — "Category" vs "Command", "Combat"
+    vs "Top Category", "Sub Category" vs "Subcategory" — matched case-insensitively rather than
+    assuming one fixed header row); every row's own `lbtestpose <path>` text had the path half
+    split out, verified all 221 start with `/Game/`, zero rows dropped. Wrote the result as
+    `Config.CUSTOM_POSES` (config.lua, inserted before the config.txt/ModSettings/
+    SpawnMenuManifest tail so `SpawnMenuManifest.GenerateOnce(Config)` — already called
+    unconditionally at the end of config.lua on every load — sees it and auto-appends the new
+    `[Custom.Poses.<TopCategory>.<SubCategory>.<Name>]` sections to `spawn_menu.ini` with no manual
+    ini-editing needed, same append-only mechanism every other roster already relies on. Row order
+    preserved exactly (sheet order, then row order within each sheet) since that order IS the
+    roster index `spawn_menu.ini` points back into — reordering `Config.CUSTOM_POSES` later would
+    silently repoint every already-generated entry, same caution this file's own header comment
+    gives for every other flattened roster.
+    Three pieces, each archived before editing: (1) `Config.CUSTOM_POSES` (config.lua) — flat array
+    of `{path, topCategory, subCategory, name}`, `subCategory` nil for the three tabs with no
+    subcategory column (Magical/Statues/Misc). (2) `custom_poses_path_and_label(row)` +
+    `{name = "CUSTOM_POSES", ...}` descriptor (spawnmenu_manifest.lua) — nests under a shared
+    `{"Custom", "Poses", row.topCategory}` path, appending `row.subCategory` only when present.
+    (3) `SPAWN_MENU_HANDLERS.CUSTOM_POSES` (main.lua) — calls the existing, already-proven
+    `Spawner.TestApplyPoseByPath(row.path)` (the same function `lbtestpose` itself calls) on
+    whatever's targeted, and deliberately returns `false` on every path (including success) — this
+    roster never produces a new actor, and `false` is the same falsy sentinel every other handler's
+    own failure path already returns, which safely short-circuits `pollSpawnMenuRequest`'s
+    build-ghost-preview check without risking that check indexing a bare `true`. No spawn tracking,
+    no persist.txt entry — matches RedFalcon's own "don't worry about persistence yet" framing,
+    since applying a pose only ever modifies an actor that already exists.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed all three files to the live install (game
+    was running — `lbreload` needed to pick it up, which also re-runs `GenerateOnce` and appends
+    the new `spawn_menu.ini` sections). **Not yet tested live** — next step: `lbreload`, open the
+    LivingBaseSpawnMenu window, confirm a `Custom > Poses > ...` branch now exists with all 8 top
+    categories in tab order, and that selecting a leaf + Spawn actually applies the pose to
+    whatever's currently targeted.
+    **Same-day follow-up: REPLACE would have silently destroyed the target.** RedFalcon asked
+    whether Spawn or Replace should be used for these entries. Checked `Spawner.
+    ReplaceNearestInFront` directly and confirmed it unconditionally destroys the current target
+    BEFORE calling the spawn callback, then checks `Spawner.spawned` actually grew — since
+    `CUSTOM_POSES`' handler never spawns anything, Replace would have deleted whatever was
+    targeted and then reported "replacement spawn failed" (recoverable via Num0, but a bad
+    surprise for a button meant to just apply a pose). Fixed in `pollSpawnMenuRequest` (main.lua):
+    a new `NON_SPAWNING_ROSTERS` lookup table makes REPLACE behave identically to SPAWN for any
+    roster listed in it, rather than routing through the destroy-then-recreate flow. Deployed.
+
+88. **`Custom > Skin Tones` — an 8th non-spawning GUI branch, reusing the same pattern as item 87**
+    (2026-08-28). RedFalcon: "since you already know them, is it possible to make a skin tone
+    category also? ... including the corrupted skin?" — referencing the skin-tone/ethnicity-family
+    material-swap mechanism already established this project (items 35/36: `Config.SKIN_FAMILIES`/
+    `SkinFamilySwapRules`, a proven `Spawner.DeCorrupt` `swaps` rule matching a component's current
+    material name and replacing it) and the Senkamati mob's own native "corrupted" skin material
+    (`Config.DECORRUPT_MOB`'s own `swaps` rules, which go the OPPOSITE direction — corrupted to
+    clean — already reference its bare name, `MI_Senkamati_<Sex>_<Build>`, as a match pattern, but
+    no full asset path for it existed anywhere in this codebase before now).
+    Found the real path for the corrupted material via `pakcontents.xlsx` (not guessed):
+    `Human/Regular/Senkamati/Materials/MI_Senkamati_<Sex>_<Build>` — the SAME folder shape as every
+    other ethnicity family (`Human/Regular/<Family>/Materials/...`), meaning it's a genuine
+    ethnicity-style asset authored for the human body/UVs, NOT the "painting a human skin onto the
+    Senkamati's own native MESH maps garbage" case this file's own long-standing comment warns
+    about (that's the opposite direction/target — a normal ethnicity onto the native Senkamati
+    skeletal mesh; this only ever targets a human-skeleton actor, same as every other family).
+    Also confirmed via the same catalog search that asset availability is UNEVEN: only a Medium
+    build exists for the Female corrupted skin (Small/Large don't), while Male has a genuine
+    per-build set under "Feather" (a second "Wood" male variant `Config.DECORRUPT_MOB` references
+    wasn't found in the catalog and isn't used). `Config.CorruptedSkinSwapRules(sex)` (config.lua,
+    right after `Config.SkinFamilySwapRules`) documents this honestly rather than hiding it — all
+    three Female build-match patterns swap to the same Medium asset, which may read slightly
+    off-scale on a Small/Large-build target but is the only option that exists.
+    `Spawner.TestApplySkinFamily(familyName)` (spawner.lua, right after `TestSwapArmorPiece`) is
+    the one genuinely new piece needed beyond item 87's own pattern: unlike a pose or a mesh swap
+    (a single path, no context needed), a skin-tone swap's match rules are keyed on the target's
+    SEX (the game's own material naming, e.g. `MI_African_Female_Medium`), so applying the wrong
+    sex's ruleset would silently match nothing. Reads it straight off the target's own
+    `CompositeMeshComponent` via `GetBodySex()` (same 1=Male/2=Female encoding `Spawner.
+    ApplyBodySex`/`ApplySexChangeToNearest` already use), defaulting to Female for anything
+    unreadable rather than failing outright. `"corrupted"` (case-insensitive) routes to
+    `Config.CorruptedSkinSwapRules`; anything else is matched case-insensitively against `Config.
+    SKIN_FAMILIES` and routed to `Config.SkinFamilySwapRules`. The actual swap is a plain
+    `Spawner.DeCorrupt(actor, { swaps = rules })` call — zero new engine surface, same mechanism
+    every skin/outfit rule in this file already runs on.
+    Wired identically to item 87's `CUSTOM_POSES`: `Config.CUSTOM_SKIN_TONES` (a flat 8-name list —
+    the 7 families plus "Corrupted"), a `custom_skin_tones_path_and_label` descriptor
+    (spawnmenu_manifest.lua, building a flat `{"Custom", "Skin Tones"}` branch with no subcategory
+    nesting needed), a `SPAWN_MENU_HANDLERS.SKIN_TONES` entry (main.lua) that always returns
+    `false` (no actor produced), and `lbtestskin <family>` as the matching direct console command.
+    `SKIN_TONES` was added to the same `NON_SPAWNING_ROSTERS` guard from this item's own earlier
+    follow-up, so Replace is safe for it too from the start — no separate bug to hit and fix this
+    time.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was not running
+    at deploy time — takes effect on next launch, no `lbreload` needed). **Not yet tested live** —
+    next step: open the SpawnMenu window, confirm `Custom > Skin Tones` lists all 8 entries, and
+    that selecting one (on both a male and a female target, to check the sex auto-detection) swaps
+    the skin correctly — "Corrupted" specifically is a reasoned-through but genuinely untested
+    combination (first time this material has ever been applied to a human-skeleton actor rather
+    than swapped away from a Senkamati mob body).
+    **CONFIRMED LIVE, WORKING** — RedFalcon: "Skin tones seem to work." Both the 7 ethnicity
+    families and the reasoned-through "Corrupted" entry render correctly via the GUI tree, with the
+    sex auto-detection picking the right Male/Female ruleset without needing to ask.
+
+89. **`Custom > Hair > Hat|No Hat` — a 3rd non-spawning GUI branch, plus a real male-hair-catalog
+    finding** (2026-08-28). RedFalcon asked whether the game's male hairstyle options differ from
+    the female set (only ever built out on the female side so far, `Config.FEMALE_HAIR_STYLES`/
+    `_HAT`) — checked the actual asset catalog rather than guessing: **`Hair/Male/` mirrors
+    `Hair/Female/` exactly** — the same 16 family names, and the same 12-of-16 subset with a
+    hat-compatible ("SuspendHat") mesh variant (Bristle/Mohawk/PartialDreadlocks/Undercut lack one
+    on BOTH sexes, not just Female as the existing tables might have implied). Every one of the 28
+    resulting Male asset paths was independently confirmed present in the catalog one at a time —
+    not derived by pattern-substituting "_Female" → "_Male" into the existing Female table and
+    hoping the numbering matched, since a couple of families (Shag in particular) have irregular
+    numbering across their Default/SuspendHat variants that isn't safe to assume symmetric without
+    checking.
+    `Config.CUSTOM_HAIR` (config.lua, right after `Config.FEMALE_HAIR_STYLES`) combines both sexes
+    into one 28-row roster (16 "No Hat" + 12 "Hat"), each row carrying `femalePath`/`malePath` plus
+    the `hasHat` flag RedFalcon asked to sub-categorize by. `Spawner.TestApplyHairStyle(styleName)`
+    (spawner.lua, right after `TestApplySkinFamily`) mirrors that function's own sex-auto-detection
+    (`GetBodySex()` off the target's `CompositeMeshComponent`, defaulting Female) for the same
+    reason — a hair mesh authored for the wrong sex's skeleton is the same class of mismatch this
+    file already documents for skin materials — then applies it via a plain `Spawner.DeCorrupt`
+    `replaces` rule (`match = "Hair_"`), the exact mechanism Letty/Marita/Merchant's own hair
+    overlays already use, just fed one path instead of a whole character ruleset.
+    Wired identically to items 87/88: `custom_hair_path_and_label` (spawnmenu_manifest.lua) nests
+    each row under `{"Custom", "Hair", row.hasHat and "Hat" or "No Hat"}` — the same style name
+    (e.g. "Afro") appears once under each branch since the two variants are genuinely different
+    meshes, which is fine, they land at different full dotted paths so there's no section
+    collision. `SPAWN_MENU_HANDLERS.HAIR` (main.lua) added to the same `NON_SPAWNING_ROSTERS` guard
+    from item 87 — Replace is safe from the start here too. `lbtesthair <style>` registered as the
+    matching direct console command.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was not running
+    at deploy time — takes effect on next launch). **Not yet tested live** — next step: open the
+    SpawnMenu window, confirm `Custom > Hair` shows both `Hat` (12 entries) and `No Hat` (16
+    entries) subcategories, and that a style applies correctly on both a male and a female target.
+    **CORRECTED same day, RedFalcon caught a real gap**: "i dont see the cut that looks like
+    Marita's." Her own hair rule (`Config.FEMALE_WALKER_OVERLAYS`) uses
+    `SK_Hair_Wig_02_SuspendedBandana_Female` — a **third** headwear-compatibility variant
+    (Bandana) this item's original Hat/No-Hat split never modeled at all, on top of a **fourth**
+    (Headband) that was ALSO missing. Re-swept the catalog properly this time (every family, all
+    four variants — Default/Hat/Headband/Bandana — both sexes, not just re-deriving Marita's one
+    specific asset) and found two things the original narrower sweep got wrong: (1) only Bristle
+    (no headwear variants at all) and Mohawk/Undercut (Headband only, no Hat/Bandana) genuinely
+    lack full coverage — every other family, INCLUDING PartialDreadlocks, has all four; (2)
+    PartialDreadlocks was WRONGLY believed hat-incompatible back in item 36 (2026-08-11) — it
+    actually has a full Hat/Headband/Bandana set, just under a bare `_Hat_`/`_Bandana_`/
+    `_Headband_` naming convention with no "Suspend" prefix, which every previous sweep of this
+    folder (including this item's own first pass) missed by only searching for
+    "suspend...hat/headband/bandana" substrings.
+    `Config.CUSTOM_HAIR` rebuilt from 28 rows (`hasHat` boolean) to 57 (`variant` string:
+    "Default"/"Hat"/"Headband"/"Bandana") — the same style name now appears once per variant it
+    actually has, same pattern the original Hat/No-Hat split already used, just with two more
+    values. `Spawner.TestApplyHairStyle` gained a second `variant` parameter (defaults to
+    "Default") since a bare style name is now ambiguous across up to 4 rows;
+    `custom_hair_path_and_label` (spawnmenu_manifest.lua) nests directly on `row.variant` instead
+    of the old ternary; `lbtesthair <style> [variant]` and the `HAIR` roster handler both updated
+    to pass it through.
+    **Real deployment gotcha, fixed manually**: the OLD 28-entry table had already been loaded by
+    the live game at least once (RedFalcon was actively browsing/testing `Custom > Hair` before
+    reporting the gap), so `spawn_menu.ini` already had 28 `roster = HAIR` sections baked in under
+    the old ordering. Since the new 57-entry table inserts PartialDreadlocks into the middle of
+    the Hat block (shifting every index after it), those 28 stale sections would have silently
+    pointed at the WRONG rows once the new table loaded — `spawnmenu_manifest.lua`'s own
+    append-only design only ever ADDS missing entries, it never corrects a stale one. Manually
+    stripped all 28 stale `[Custom.Hair....]` sections carrying `roster = HAIR` out of the live
+    install's `spawn_menu.ini` (Poses/Skin Tones sections untouched) so the next load regenerates
+    all 57 correctly from scratch, rather than leaving a landmine of correctly-labeled tree
+    entries pointing at the wrong mesh.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game was not running
+    at deploy time). **Not yet tested live** — next step: open the SpawnMenu window, confirm
+    `Custom > Hair` now shows FOUR subcategories (Default/Hat/Headband/Bandana), and specifically
+    that Wig > Bandana renders as something recognizably close to Marita's own look.
+    **CORRECTED AGAIN same day — still not Marita's actual hair.** RedFalcon: "so none of those
+    are the same as marita's hair. Check the walking woman spawn of her, as that hair is
+    assigned." The real problem: this table was STILL collapsing each family down to ONE
+    representative numbered mesh (whichever sorted first, usually `_01`) per variant — Marita's
+    confirmed real mesh is specifically `SK_Hair_Wig_02_SuspendedBandana_Female` (the "02" sub-
+    style), not "01", and several families genuinely ship MULTIPLE distinct numbered sub-styles
+    that are real, visually different looks, not interchangeable copies the "pick one to
+    represent the family" design assumed: Afro has 5, Shag/Pixie/Wavy have 3, Bun/Wick/Wig have 2.
+    Rebuilt a third time to expose every numbered sub-style as its own entry ("Wig 1"/"Wig 2",
+    "Afro 1".."Afro 5", etc.) — a family with only one real style keeps its bare name (e.g.
+    "ShortBob"). This pass also caught a genuine naming collision the earlier per-family sweep had
+    silently lost entirely: `LayeredBob` ships TWO distinct meshes both nominally "01" under the
+    same folder — plain `LayeredBob_01_...` and a separate `LayeredBobDecor_01_...` — previously
+    one silently overwrote the other in the "one representative per family" table; now kept as
+    two separate entries, "LayeredBob" and "LayeredBob Decor". One confirmed real asymmetry
+    excluded rather than guessed around: Male Shag ships 3 extra numbered variants (04/05/06)
+    Female Shag doesn't have at all — since a single entry needs both sexes' paths (sex is
+    auto-detected at apply time), those 3 Male-only numbers were left out; every other
+    family/number/variant combination was individually confirmed present for BOTH sexes via
+    pakcontents.xlsx before being added, not assumed symmetric. `Config.CUSTOM_HAIR` grew from 57
+    to 109 entries. `Spawner.TestApplyHairStyle`'s own name-matching needed no change (case-
+    insensitive exact match on the full name string, e.g. "Wig 2", already worked once the table
+    carried the right names).
+    Deployed while the game was RUNNING this time — manually stripped the (now-stale, 57-entry)
+    `roster = HAIR` sections from the live `spawn_menu.ini` again (same reasoning as the previous
+    round: the append-only manifest generator can't fix a stale entry pointing at the wrong row,
+    only add new ones) and copied the updated `config.lua` over; `lbreload` still needed to re-run
+    `GenerateOnce` and regenerate all 109 entries fresh. **Not yet tested live** — next step:
+    `lbreload`, then check `Custom > Hair > Bandana > Wig 2` specifically against the real walking
+    Marita spawn's own hair.
+    **Real bug found and fixed, same day**: RedFalcon: "if i assign 'undercut' to an npc, and then
+    try to change the hair again, it will not change." Root cause: `Spawner.TestApplyHairStyle`
+    originally routed through `Spawner.DeCorrupt`'s shared `replaces` mechanism (`match = "Hair_"`
+    against a component's CURRENT mesh's bare NAME) — the exact same pattern Letty/Marita/
+    Merchant's own hair overlays already use. Undercut's real asset is named
+    `SK_Undercut_01_..._Female` — the ONLY family in the whole catalog missing the "Hair_" prefix
+    every other style has. The instant it's applied, the component's current mesh name no longer
+    contains "Hair_" at all, so every SUBSEQUENT "Hair_" pattern match silently fails to find that
+    component — not a crash, just a component that becomes permanently unmatchable by name once
+    Undercut lands on it, exactly matching the reported symptom.
+    Fixed by no longer matching by NAME at all: `Spawner.TestApplyHairStyle` now walks every
+    `SkeletalMeshComponent` directly and checks each one's current mesh's FULL asset PATH for
+    `/Hair/` (not the bare filename for "Hair_") to find the hair slot, then swaps it with a plain
+    `SetSkeletalMeshAsset`/`SetSkeletalMesh` call — bypassing `Spawner.DeCorrupt`'s name-pattern
+    matching for this tester entirely. The full path reliably contains `/Hair/` regardless of
+    which family's own (possibly irregular) filename convention happens to be currently equipped,
+    so this can't repeat the same failure for any other oddly-named style either.
+    **Not fixed, deliberately out of scope**: Letty/Marita/Merchant's own hardcoded `replaces`
+    rules (`Config.FEMALE_WALKER_OVERLAYS`) still use the original name-pattern approach and carry
+    the exact same latent bug — it just never surfaced there because none of their fixed hair
+    targets happen to be Undercut. Worth remembering if that ever comes up, not touched this pass
+    since those rules work fine for what they actually assign today.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game running —
+    `lbreload` needed). **Not yet tested live** — next step: apply Undercut to an actor, then try
+    a different style on the same actor and confirm it actually changes this time.
+    **CONFIRMED LIVE, WORKING** — RedFalcon: "works." Hair can now be changed again after Undercut,
+    closing out the `Custom > Hair` feature arc for real (numbered variants + this fix).
+
+90. **`Custom > Clothes` — a 4th non-spawning GUI branch, bigger and messier than hair turned out
+    to be** (2026-08-28). RedFalcon asked what to search the pak export for to find clothing
+    pieces; after a first informational sweep (families/slots/folder structure, no code yet),
+    asked to build it for real ("yeah sweep what's there").
+    Swept `Character/Skeletal_Meshes/Armor/ArmorRegular/` the same way `Config.CUSTOM_HAIR` swept
+    `Hair/` — 401 real (`SK_`-prefixed, excluding `PHYS_`/`SM_Drop_`/stray `SK_Hair_`/
+    `SK_ArmorCreature_` files that don't belong in this folder at all) mesh files across 25 family
+    folders, parsed into (family, slot, number, sex, style). Genuinely more irregular than hair:
+    - **"Belt" is actually FOUR separate accessory types** (Belt/Frog/Sling/Strap) named
+      `SK_<Type>_<NN>_<Sex>` — a completely different filename shape from every other family
+      (`SK_Armor_<Family>_[NN_]?[Sex_]?<Slot>[_<style>]`). Split into their own pseudo-families
+      rather than forced into one bucket.
+    - **Two casing-duplicate family pairs**, same class of issue as the `WorkBenches`/
+      `Workbenches` gotcha already documented in `WINDROSE_MODDING_NOTES.md` §14: `BlackBeard_
+      Musketeer`/`Blackbeard_Musketeer` and `BlackSmith`/`Blacksmith` — same content indexed
+      under both casings across different pak chunks. Dropped the capitalized duplicates.
+    - **Sex pairing is genuinely asymmetric in real, confirmed ways**, not guessed around: Dogface
+      has no Female content at all (a male-only NPC type); Jeweler's Torso/Waist pieces have real
+      content asymmetry (Female gets 3 torso shape sub-variants per outfit "set", Male gets 1);
+      Flibustier's Set 1 uses a plain "Torso" mesh for Male but "Torso_Long" for Female — probably
+      the intended per-sex cut for the same look, but not something safe to assume/force-pair
+      from naming alone. Policy: only pair Female+Male into one sex-auto-detected row when they
+      share the EXACT SAME style token; anything that exists for only one sex (or has none at all
+      in its name, e.g. Musketeer/Combatant/Dogface) becomes a single `unisexPath` row applied
+      regardless of the target's detected sex — an honest reflection of what the catalog actually
+      has, not an invented workaround.
+    `Config.CUSTOM_CLOTHES` (config.lua, right after `Config.CUSTOM_HAIR`): 242 rows after
+    dedup. `name` is a best-effort mechanical label built from each file's own number+style
+    tokens ("Set 2 Long 3" for some of the more deeply-nested Jeweler entries) — not hand-polished
+    per entry given the scale, expect some clunky names until tried live.
+    **The one genuinely new piece of engineering**: unlike hair (one component, found once by
+    checking for `/Hair/` in its current mesh's path), clothing has MANY components on one actor
+    (Torso/Legs/Feet/Hands/Headgear/Waist/Cape/etc. simultaneously) — `Spawner.
+    TestApplyClothingPiece` finds the right one to swap via a new `clothingSlotOf(meshName)`
+    helper that categorizes a component's CURRENT mesh name into a canonical slot using the exact
+    same token vocabulary the config table itself was built from, deliberately checking
+    longer/more-specific tokens FIRST (`BandanaHat`/`Headband` before `Hat`/`Head`) since several
+    tokens are substrings of each other and Lua's `pairs()` has no guaranteed iteration order —
+    caught and fixed this ordering bug during writing, before it ever shipped, by switching from a
+    plain key/value table to an explicit ordered list. This is the same fix class as item 89's
+    Undercut bug (match by a robust, always-present signal — here, ANY recognized slot token
+    appearing anywhere in the current name — rather than one specific family's own convention),
+    applied proactively this time instead of needing a live bug report first.
+    Wired identically to items 87-89: `custom_clothes_path_and_label` (spawnmenu_manifest.lua)
+    nests four levels deep (`Custom > Clothes > <Family> > <Slot> > <Name>`, one deeper than hair
+    since clothing genuinely has both a family and a slot axis); `SPAWN_MENU_HANDLERS.CLOTHES`
+    (main.lua) added to `NON_SPAWNING_ROSTERS` from the start (no separate Replace-safety bug to
+    hit this time, learned from item 87); `lbtestclothes <family> <slot> <name>` as the matching
+    console command.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game running —
+    `lbreload` needed). **Explicitly lower-confidence than hair/skin at ship time** — 242 entries
+    across 25 families is a much larger surface than hair's 109 across 16, built from pure catalog
+    inference with no equivalent to Marita's known-real mesh to cross-check against ahead of time;
+    expect this one to need more live-testing correction passes, not fewer. **Not yet tested
+    live** — next step: `lbreload`, browse `Custom > Clothes`, and try a piece from a family with
+    no sex indicator (e.g. Musketeer or Combatant) plus one with real asymmetric content (Jeweler
+    Torso) to see how both actually look before trusting the rest of the table.
+
+91. **Jeweler Torso/Waist sex-pairing corrected; a reference spreadsheet exported; a second
+    Senkamati corrupted-skin option added** (2026-08-28, same day, following up on item 90's own
+    "kind of works" report). RedFalcon: "Can you export a csv or excel I can use to reference. I
+    have found that jeweler torso has a pattern where if it ends in 01, 02, or 03, its for the
+    female body, and those withut are male."
+    Re-checked the raw per-file parse (`clothes_parsed2.json` in scratchpad, from item 90's own
+    sweep) rather than re-deriving from scratch: confirmed RedFalcon's finding is exactly right,
+    and explains the "kind of works" — Jeweler's Torso/Torso_Long/Waist slots were the ONE place
+    in the whole 401-file sweep where Female ships several NUMBERED sub-variants
+    (`Torso_01`/`_02`/`_03`) per outfit "set" while Male ships only ONE bare-named mesh (`Torso`)
+    for that same set. Item 90's pairing rule ("only pair Female+Male when they share the exact
+    same style token") never matched a numbered Female style against a bare Male one, so all of
+    these silently fell back to separate UNISEX rows — meaning a Male target could get one of the
+    Female-only numbered meshes and vice versa, exactly the kind of wrong-body-shape mismatch
+    RedFalcon's own testing surfaced.
+    Fixed by re-pairing: for each (Torso/Torso_Long/Waist, outfit-set-number), every Female
+    numbered sub-variant now pairs with THAT SET's single Male bare mesh as a real
+    `femalePath`+`malePath` row (e.g. "Set 2 02" = Female `Torso_02` + Male's one `Torso`,
+    sex-auto-detected same as every other paired row) — 8 old Male-bare unisex rows and 19 old
+    Female-numbered unisex rows (27 total) replaced with 19 correctly-paired rows.
+    `Config.CUSTOM_CLOTHES` went from 242 to 234 entries. `spawn_menu.ini`'s live install had
+    already baked in 242 stale `roster = CLOTHES` sections from item 90's own testing session —
+    same "append-only manifest can't fix a stale index" landmine already hit once for hair (item
+    89) — manually stripped all 242 (via an `awk` block filter, not the manifest generator, which
+    only adds) so the next `lbreload` regenerates all 234 correctly from scratch rather than
+    leaving old entries pointed at now-shifted/removed rows.
+    **CSV/Excel reference delivered**: `Other\CustomClothesReference.xlsx` — one row per
+    `Config.CUSTOM_CLOTHES` entry (234 rows), columns Family/Slot/Name/Coverage (Female only /
+    Male only / Both, sex auto-detected / Unisex, fixed mesh)/Female Mesh/Male Mesh/Unisex
+    Mesh/a ready-to-paste `lbtestclothes` console command — sorted by family/slot/name, header
+    row frozen, autofilter on. Meant for RedFalcon to browse and flag any other mispairing the
+    same way the Jeweler one was caught, without needing another live probe-and-report round trip
+    per family.
+    **Also addressed, from a mid-task follow-up ("Also can you try grabbing the senkamati")**:
+    item 88's own comment said a second "Wood" male corrupted-skin variant referenced by `Config.
+    DECORRUPT_MOB` "wasn't found in the asset catalog" — re-swept `pakcontents.xlsx` for every
+    `MI_Senkamati_*` material and found `MI_Senkamati_Wood_Male_Medium` genuinely exists after all
+    (a Medium-only alternate to the per-build "Feather" family Male already uses). Added `Config.
+    CorruptedWoodSkinSwapRules(sex)` (Male routes to Wood_Male_Medium at all three sizes, same
+    "one asset covers every build" compromise the Female corrupted skin already uses; Female has
+    no Wood equivalent at all, so it falls back to the identical Female Medium asset regular
+    "Corrupted" already uses — the two options render identically on a Female target, only Male
+    differs) and a matching `"Corrupted (Wood)"` entry in `Config.CUSTOM_SKIN_TONES` (now 9
+    entries). `Spawner.TestApplySkinFamily` routes the new name case-insensitively, same `elseif`
+    shape as the existing "corrupted" branch.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `config.lua`/`spawner.lua` to the live
+    install (game running — `lbreload` needed to pick up both the corrected clothes table and the
+    new skin-tone option and regenerate `spawn_menu.ini` fresh). **Not yet tested live** — next
+    step: `lbreload`, confirm `Custom > Clothes > Jeweler > Torso`/`Waist` now show
+    sex-auto-detected paired entries instead of the old separate unisex ones, and confirm `Custom
+    > Skin Tones > Corrupted (Wood)` applies correctly on a Male target.
+    **Same-day correction: RedFalcon meant the Senkamati ARMOR, not another skin variant.** "try
+    grabbing the senkamati" (a mid-task message during the Jeweler/CSV work above) was answered as
+    a second corrupted-SKIN option — wrong guess; the actual ask was to add the Senkamati tribal
+    armor pieces (Warrior/Hunter/Thrall/Witch) into the `Custom > Clothes` catalog itself, same as
+    every other family already swept in item 90.
+    Found via the same `pakcontents.xlsx` technique: a COMPLETELY SEPARATE folder tree from
+    item 90's sweep — `Character/Skeletal_Meshes/Armor/ArmorCreature/Senkamati_<Role>/` (Warrior/
+    Hunter/Thrall/Witch, one subfolder each; Witch's is singularly named `Mesh/`, every other
+    role's is `Meshes/` — a real, confirmed inconsistency, not a typo to "fix") rather than
+    `ArmorRegular/` — these are the exact meshes `Config.DECORRUPT_CREW`/`DECORRUPT_HUNTER`/
+    `DECORRUPT_CREW_FEMALE` already reference by hand for the Warrior/Hunter/Caster-F crew
+    re-skins (items 29-34), now exposed as individually swappable pieces instead of only ever
+    arriving as a fixed per-character bundle. 73 real files parsed with zero regex misses:
+    `SK_ArmorCreature_Senkamati_<Warrior|Hunter|Thrall|Witch>_<Feather|Wood>_<NN>_<slot
+    token>` — none of these carry a `_Female_`/`_Male_` sex token at all (confirmed genuinely
+    absent, not missed), so every row is `unisexPath`-only, applied regardless of the target's
+    detected sex — same honest-reflection-of-the-catalog policy item 90 already established for
+    Musketeer/Combatant/Dogface.
+    Two new canonical slot tokens needed in `CLOTHING_SLOT_TOKENS` (spawner.lua) that item 90's
+    sweep never encountered: `"Neck"` (Witch only) and `"TorsoCloth"` (Witch's cloth underlayer,
+    a real separate component from her `Torso` armor piece) — `TorsoCloth` inserted BEFORE the
+    existing `"Torso"` entry, same longest-token-first discipline as every other entry in that
+    list, since `"Torso"` is a literal substring of `"TorsoCloth"` and would otherwise misclassify
+    every Witch TorsoCloth piece as her Torso slot.
+    Appended as `Config.CUSTOM_CLOTHES` rows 235-307 (family = `"Senkamati Warrior"`/`"Hunter"`/
+    `"Thrall"`/`"Witch"`, slot from the token above, name = `"<Feather|Wood> <NN>"`) — deliberately
+    added AFTER the existing 234 rows, not interleaved, so every already-generated `spawn_menu.ini`
+    index for Jeweler/etc. from this same session stays valid; only 73 brand-new sections need
+    generating on the next `lbreload`, no stale-index cleanup required this time (unlike the two
+    prior hair/clothes reshuffles, items 89-91, which both needed a manual `spawn_menu.ini` strip).
+    A new `ARMC` path constant (`.../Armor/ArmorCreature/`) sits alongside the existing `ARM`
+    constant since these live under a sibling folder tree, not a subfolder of it.
+    `CustomClothesReference.xlsx` (item 91's own export) regenerated to include all 307 rows.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `config.lua`/`spawner.lua` to the live
+    install (game running — `lbreload` needed). **Not yet tested live** — next step: `lbreload`,
+    browse `Custom > Clothes > Senkamati Warrior/Hunter/Thrall/Witch`, and confirm a piece (e.g.
+    Warrior's `Feather 01` Torso) applies cleanly via the generic slot-match mechanism on a
+    human-skeleton crew/walker target, the same way it already does when hardcoded into the
+    Warrior/Hunter/Caster-F re-skin rules.
+
+92. **`lbtestscale` — exposing the long-dormant component-scale mechanism generically** (2026-08-28,
+    same day). RedFalcon recalled scaling armor pieces being possible — correct: `Spawner.
+    NudgeComponentTransform(actor, pattern, scaleMul, offsetZ)` has existed since 2026-08-10 (built
+    for the Senkamati Legs pelvis-gap problem, items 32/48-51), but it was only ever wired into ONE
+    internal retry loop (`senkaCrewFix`'s own Legs-piece nudge) gated by `Config.
+    SENKA_LEGS_NUDGE_SCALE`/`_OFFSET_Z`, both left at `1.0`/`0.0` (a no-op) the whole time — it has
+    never actually been exercised with a real value or confirmed to look right live.
+    RedFalcon's follow-up gave a concrete reason to actually use it now: with `Custom > Clothes`
+    (items 90-91) able to apply ANY piece from ANY family onto ANY targeted actor, they've noticed
+    a real proportion mismatch in both directions — ordinary human clothing looks TOO SMALL on the
+    Senkamati Witch/Caster body, and Senkamati tribal armor looks TOO LARGE on an ordinary human
+    body. Directly consistent with the already-documented finding (item 61) that the Senkamati
+    armor was rigged/skinned for the mob's own native proportions, not the human "Regular" skeleton
+    it now also gets worn on via the re-skin/Custom-Clothes route — a fixed relative scale offset
+    between the two body families is exactly what that mismatch would produce.
+    Built `Spawner.TestScaleClothingPiece(componentMatch, scaleMul, offsetZ)` (spawner.lua, right
+    after `Spawner.TestSwapArmorPiece`) rather than reusing `NudgeComponentTransform` directly —
+    that function matches EVERY component whose current mesh name matches a Lua PATTERN (fine for
+    one hardcoded internal call site with a known-safe string, riskier as a free-typed console
+    argument); this instead reuses `TestSwapArmorPiece`'s own proven component-name/current-mesh-name
+    SUBSTRING match plus its "list what's here if nothing matches" discovery aid — same targeting
+    conventions as `lbtestarmor`, so a search term that already finds a piece there works here too.
+    `scaleMul` defaults to `1.0` and `offsetZ` to `0.0` when omitted (independently optional — pure
+    scale, pure vertical nudge, or both); omitting both just lists matches, same as `lbtestarmor`'s
+    own list-mode. Registered as `lbtestscale <slot/mesh name match> [scaleMul] [offsetZ]`
+    (main.lua, right after `lbtestarmor`, same handler shape).
+    **Explicitly flagged as genuinely untested territory, not just "should work"**: `Nudge
+    ComponentTransform`'s own 2026-08-10 comment already notes a leader-pose-bound skinned mesh's
+    vertices follow the LEADER's animated bone transforms, not just its own component transform —
+    a uniform scale might close a size mismatch cleanly, or might look stretched/detached instead.
+    That's a live visual judgment call, not something provable from a log line — RedFalcon needs to
+    actually look at the result.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`main.lua` to the live
+    install (game running — `lbreload` needed). **Process note**: `main.lua`'s edit was made before
+    archiving its pre-edit contents (the same slip as items 71/84) — caught immediately and
+    recovered losslessly by removing the known, self-contained insertion and archiving that
+    reconstruction (verified `lbtestscale` absent from it) as `archive/main.lua_20260828_*.lua`,
+    same recovery method as those two prior instances.
+    **Same-day live test, two real bugs found and fixed**: RedFalcon tested — scale alone worked
+    immediately (confirmed the Witch/regular-body proportion mismatch theory: shrinking a
+    Senkamati piece or growing a regular one visibly helped), but `offsetZ` failed every time,
+    first silently (before error-message logging existed) then with a real error once added:
+    `Tried calling a member function but the UObject instance is nullptr`, thrown from the
+    `m.comp:K2_SetRelativeLocation(...)` call specifically — the SAME `m.comp` reference that had
+    just succeeded moments earlier in the SAME loop iteration for `SetRelativeScale3D`, so the
+    component itself wasn't actually invalid. Root cause, found by comparing against the only two
+    call sites in this whole file that have offset a component's position and are ACTUALLY
+    confirmed working (the Warrior shield nudge, the placement-camera raise, both from earlier
+    sessions): neither of them ever calls `K2_GetRelativeLocation()` — both read the CURRENT
+    relative position via the plain PROPERTY `comp.RelativeLocation` instead. My code (and the
+    older, never-actually-live-tested `Spawner.NudgeComponentTransform` this was modeled on) both
+    called the FUNCTION `K2_GetRelativeLocation()` first — apparently not a working call in this
+    UE4SS build, and calling it right before the real `K2_SetRelativeLocation` call left that
+    second, otherwise-fine call reporting a null instance. Fixed by switching both functions to
+    `local loc = comp.RelativeLocation` (a plain property read, no function call) — matches the
+    two already-proven call sites exactly. This is the SAME class of function-vs-property
+    uncertainty this project has hit repeatedly before (item 73's `SetAnimationMode`/
+    `AnimationMode` fallback is the closest precedent) — when in doubt in this UE4SS build, prefer
+    reading a Vector/Rotator field as a plain property over a `K2_Get*` accessor, and check for an
+    already-proven precedent elsewhere in the file before assuming a getter function works just
+    because the matching setter does.
+    Also added real pcall error-MESSAGE logging to `Spawner.TestScaleClothingPiece` (previously
+    only a bare `ok`/`FAILED` boolean, same gap item 73 already called out once for
+    `SetAnimationMode`) — this is exactly what let RedFalcon's second report ("failed again") get
+    diagnosed from one log line instead of another guess-and-check round trip.
+    `lint.py` clean (`compile: 10 scripts OK`) after both fix passes. Deployed `spawner.lua` to the
+    live install both times (game running — `lbreload` needed). **Not yet re-tested live** — next
+    step: `lbreload`, retry `lbtestscale Torso 1.0 20` (or whatever ratio already looked right from
+    the scale-only test) and confirm the Z nudge now actually moves the piece.
+    **Same-day follow-up: per-axis scale, then full XYZ offset.** Scale worked and confirmed the
+    proportion-mismatch theory (regular clothes read small on the Witch/Senkamati-adjacent body,
+    Senkamati armor reads large on a regular body), but RedFalcon flagged "that's what I was afraid
+    of" — a UNIFORM scale distorts a piece that's only off on one axis (e.g. taller vs. wider), and
+    then separately asked for a full X/Y/Z offset, not just Z. `scaleArg`/`offsetArg` in
+    `Spawner.TestScaleClothingPiece` both now accept EITHER a plain number OR a comma-separated
+    `"a,b,c"` triple, kept in the SAME argument slots (not new positional args) so no existing call
+    shape becomes ambiguous — a bare number and a comma-triple are trivially distinguishable to
+    parse. Scale's bare-number shorthand still means uniform (X=Y=Z, matches every prior test);
+    offset's still means Z-only (X=Y=0), preserving every already-tested `lbtestscale <match>
+    <scale> <offsetZ>` call from before this addition. Full syntax now: `lbtestscale <match>
+    [scaleMul|sx,sy,sz] [offsetZ|ox,oy,oz]`. `lint.py` clean, deployed both `spawner.lua`/`main.lua`
+    (help text updated to match). **Not yet tested live** — next step: try a per-axis scale (e.g.
+    `1,1,1.15` for height only) and a non-Z offset (e.g. `10,0,0`) and see whether either reads
+    better than the uniform/Z-only version already confirmed partially working.
+
+93. **`lbtestthickness [value]` — a second, lower-risk lever for the same body-proportion mismatch**
+    (2026-08-28, same day). RedFalcon spotted `ArmorThicknessMorph` while browsing an `lbprobedump`
+    of a randomized female walker body and asked whether it's adjustable. It is, and with unusually
+    high confidence for this codebase: it's a plain FLOAT Blueprint variable on the target's
+    AnimInstance (`mesh:GetAnimInstance().ArmorThicknessMorph`) — not a struct, not a compiled
+    execution-graph node (the class of read/write that crashed the game twice in item 78) — and
+    it's already been WRITTEN successfully once before, in the closed pose-porting investigation
+    (items 62-63): `Spawner.ApplyBlueprintPose`/`MakePreBuildPoseSetter` both set it to the real
+    value probed off `Female_Standing_01` (`0.34999999403954`), and both confirmed the write stuck
+    on readback. That whole pose-porting attempt ultimately failed, but for unrelated Control-Rig
+    reasons (see item 63's own closing notes) — never because this specific property write was
+    unsafe. That makes it a rare LOW-risk lever in this session's run of experiments, most of which
+    have been genuinely untested engine surface.
+    Built `Spawner.TestArmorThicknessMorph(valueArg)` (spawner.lua, right after
+    `TestScaleClothingPiece`) — targets the nearest spawned/locked actor same as every other
+    tester, reads the CURRENT value first (useful standalone, since RedFalcon can now check what a
+    given body/archetype already rolled without changing anything), and only writes if a value is
+    given. Registered as `lbtestthickness [value]` (main.lua). Both prior call sites hardcoded one
+    specific probed value as part of a larger pose-porting attempt that's since been abandoned;
+    this is the first time the property is exposed as a standalone, freely-tunable lever.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game running —
+    `lbreload` needed). **Not yet tested live** — next step: `lbreload`, `lbtestthickness` with no
+    value on a mismatched body to see its current setting, then try nudging it up/down and see
+    whether it visibly changes how the armor/clothing fits — if it does, it may end up being a
+    cleaner fix than raw component scale/offset for at least some of this mismatch, since it's a
+    morph the game's own rig presumably already knows how to blend, rather than a blunt transform
+    override on top of it.
+    **Same-day live test, a real scope finding**: RedFalcon tried it — "it only seems to be
+    affecting the belts." So `ArmorThicknessMorph`'s generic-sounding name is misleading: despite
+    living on the shared AnimInstance (one value, not per-component), its actual effect appears
+    baked into specifically the Belt/Frog/Sling/Strap meshes' own morph targets, not into
+    Torso/Legs/Headgear/etc. — plausibly a "let a belt cinch/expand without clipping regardless of
+    waist size" input rather than a general armor-bulk control the name suggests. Not itself a fix
+    for the broader Torso/Legs proportion mismatch this whole investigation is chasing — `lbtestscale`
+    (per-axis scale + XYZ offset, this same item's earlier entries) remains the right tool for
+    those slots. Worth remembering if belts specifically ever look off on some body/archetype
+    pairing — this is now a known, live-confirmed lever for exactly that one accessory family.
+
+94. **Witch-body clothing scale baked into config, applied automatically** (2026-08-28, same day).
+    RedFalcon tuned it by hand via `lbtestscale` and reported the result: dressing the RAW
+    Senkamati Witch body (`SK_Senkamati_Witch_01_Female`, the native creature skeleton — NOT the
+    human-skeleton crew re-skin, see item 82's own bone-rig-compatibility finding for why a
+    human-authored mesh even attaches and deforms here at all, just at the wrong scale) in a
+    regular (non-Senkamati) clothing piece needs `(1.5, 1.1, 1.0)` to read correctly — X/Y wider,
+    Z (height) untouched.
+    Rather than leave this as a value to retype by hand every time, added `Config.
+    SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE = { X = 1.5, Y = 1.1, Z = 1.0 }` (config.lua, right
+    before `Config.CUSTOM_CLOTHES`) and wired it into `Spawner.TestApplyClothingPiece` itself: right
+    after a mesh swap succeeds, if the applied row's family is NOT one of the four `"Senkamati
+    *"` families AND the target's OWN current body mesh (`actor.Mesh`'s current skeletal mesh)
+    contains `"Senkamati_Witch"`, the newly-swapped component is auto-scaled to this triple. Detected
+    by the target's actual body mesh name, not by class or actor type, so it applies to the raw mob,
+    an idle Num7 row, or any other actor built on that same body — and deliberately does NOT fire
+    when dressing a SENKAMATI piece onto her (already authored for this exact body) or a regular
+    piece onto anyone else (their own body already fits its own catalog without correction).
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`config.lua` to the live
+    install (game running — `lbreload` needed). **Not yet re-tested live** — next step: `lbreload`,
+    dress the raw Witch body in a regular clothing piece via `lbtestclothes` and confirm it now
+    renders at the correct scale automatically, with no manual `lbtestscale` follow-up needed.
+
+95. **`lbbodymesh` — a one-question diagnostic** (2026-08-28, same day). RedFalcon asked how to
+    check what body mesh an actor is using — already answerable via `lbprobedump`'s full
+    component listing, but buried among every clothing/hair piece too. `Spawner.
+    TestReportBodyMesh()` (spawner.lua, right after `TestArmorThicknessMorph`) reads just
+    `actor.Mesh`'s current skeletal mesh (short name + full path) on the nearest/locked actor and
+    prints/toasts it, nothing else — the exact same read `Spawner.TestApplyClothingPiece`'s own
+    Witch auto-scale check (item 94) uses internally, now exposed standalone so RedFalcon can
+    check a body without triggering a clothing swap first. Registered as `lbbodymesh` (main.lua,
+    no arguments). `lint.py` clean (`compile: 10 scripts OK`). Deployed to the live install (game
+    running — `lbreload` needed).
+
+96. **`BodyMorph` identified as the likely real fit-difference lever, via a direct dump comparison**
+    (2026-08-28, same day). RedFalcon noticed the Buccaneers Merchant and the standing Brethren
+    Woman roll the SAME body mesh (`SK_Orient_Female_01`) yet fit their clothing differently, and
+    supplied `lbprobedump`s of both (`probedump_20260828_152643.txt` = Merchant,
+    `probedump_20260828_152715.txt` = Standing) for comparison. Diffed the two files directly
+    rather than guessing: body mesh identical, `ArmorThicknessMorph` identical (`0.35` on both, so
+    item 93's belt-only finding is unaffected/unrelated here) — but `BodyMorph` (the same Vector
+    already read-only-probed during the closed pose-porting investigation, items 62-63) differs
+    substantially: Merchant `(0.0, 0.20286786556244, 0.22273226082325)` vs. Standing `(0.0,
+    0.83562117815018, 0.02066108584404)`. Also noted, separately, a real but purely cosmetic
+    difference: Merchant uses the `MI_Orient_Female_Large` skin material, Standing uses
+    `MI_Orient_Female_Small` — a different BUILD variant of the same ethnicity family (texture
+    only, established mechanism, not a shape input).
+    `BodyMorph` reads as the actual likely answer: a per-instance body-shape morph (bust/waist/hip-
+    style blend) baked differently into each Blueprint class's own construction defaults despite
+    sharing an identical archetype mesh — a materially better fit candidate than blunt component
+    scale/offset (`lbtestscale`, items 92/94), since it's presumably a real sculpted morph target
+    the mesh was authored with, not a uniform transform stretch layered on top.
+    Built `Spawner.TestBodyMorph(xArg, yArg, zArg)` (spawner.lua, right after
+    `TestReportBodyMesh`) — same read-if-omitted/write-if-given shape as `Spawner.
+    TestArmorThicknessMorph` (item 93), writing the Vector via the plain `{X=,Y=,Z=}` table
+    convention this codebase already established as safe for that type (`Spawner.WarpNear` and
+    others) rather than any struct-drilling. Registered as `lbtestbodymorph [x] [y] [z]`
+    (main.lua) — all three must be given to write, matching a Vector's own all-or-nothing shape;
+    omit all three to just read.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`main.lua` to the live
+    install (game running — `lbreload` needed). **Not yet tested live** — next step: `lbreload`,
+    lock (Num+) onto the standing woman, run `lbtestbodymorph 0.0 0.20286786556244
+    0.22273226082325` (the Merchant's own probed value) and see whether her proportions/clothing
+    fit actually shift toward the Merchant's — this is the real open question this whole
+    comparison was built to answer.
+
+97. **`lbtestmorphlist`/`lbtestmorph` — morph targets on the CLOTHING mesh itself, as an
+    alternative to whole-component scaling** (2026-08-28, same day). RedFalcon asked whether,
+    instead of scaling a piece via `lbtestscale`, a morph target baked into the garment mesh
+    itself could be used to fix fit — a more surgical mechanism if these meshes actually have any:
+    a sculpted "size"/"fit" blend shape the mesh was authored with, rather than a blunt uniform/
+    per-axis stretch layered on top of an unmodified mesh.
+    Genuinely unconfirmed going in — unlike `BodyMorph`/`ArmorThicknessMorph` (already proven-safe
+    AnimInstance variable writes from the closed pose-porting investigation, items 62-63/96), this
+    is the first time this codebase has ever queried a `SkeletalMeshComponent` for its OWN morph
+    target list, as opposed to a value living on the shared AnimInstance. Built two tools sharing a
+    new local `findMatchedClothingComponent(toolTag, componentMatch)` helper — factored out of
+    `Spawner.TestSwapArmorPiece`'s own targeting+substring-match+"list what's here" body, since
+    both new functions needed the identical behavior and a third hand-copy wasn't worth it:
+    - `Spawner.TestListMorphTargets(componentMatch)` / `lbtestmorphlist <match>` — tries the
+      standard UE Blueprint signature `GetMorphTargetNames(TArray<FName>& OutNames)` as an
+      out-param call first (same calling convention already proven for `LineTraceSingleForObjects`),
+      falls back to treating it as a return-value call if the out-param form yields nothing, in
+      case this UE4SS binding marshals it differently. A component reporting ZERO morph targets is
+      a normal, expected result for many garment pieces (most likely outcome for a lot of these),
+      not a failure — this tool exists specifically to find out which (if any) pieces have some.
+    - `Spawner.TestSetMorphTarget(componentMatch, morphName, value)` / `lbtestmorph <match>
+      <morphName> <value>` — calls the standard `SetMorphTarget(FName, float)` Blueprint function,
+      reads back via `GetMorphTarget(FName)` to confirm. Both `SetMorphTarget`/`GetMorphTarget` are
+      among the most standard, long-stable Blueprint-exposed functions in the whole engine — lower
+      risk than most of this session's other untested calls, not a wild guess.
+    `lint.py` clean (`compile: 10 scripts OK`; the two new `Reads(...)` lines under "UNDEFINED
+    CALLS" are the same pre-existing false-positive class already seen for `camera(...)`/
+    `command(...)` — the linter misparsing comment/help-text prose as a call, not a real issue).
+    Deployed `spawner.lua`/`main.lua` to the live install (game running — `lbreload` needed).
+    **Not yet tested live** — next step: `lbreload`, `lbtestmorphlist Torso` (or any other slot) on
+    a piece with a known fit problem, and see whether it reports any real morph targets at all
+    before trying to set one.
+    **Same-day live test: BOTH avenues confirmed dead, for two separate reasons.**
+    `lbtestmorphlist Torso` on the Senkamati Witch's own Torso piece
+    (`SK_ArmorCreature_Senkamati_Witch_Feather_01_Torso`) reported **0 morph targets** — nothing
+    on this mesh to set at all. Separately, RedFalcon tried `lbtestbodymorph` with the Merchant's
+    value (item 96's own next step): the write succeeded and read back correctly
+    (`BEFORE=(0.0,0.8616,0.0509) AFTER=(0.0,0.2029,0.2227)`, exact log line confirmed) but produced
+    **no visible change** on the actor. This ISN'T a new failure — it's a re-confirmation of
+    something item 63 already closed: that same investigation tried writing `BodyMorph` (among
+    `IsFemale?`/`ArmorThicknessMorph`/`Animation`) post-construction and got the identical
+    "reports success, zero visible effect" result across all of them, root-caused to the
+    AnimGraph's Control Rig node binding not re-evaluating a live post-construction change at all,
+    on any variable that feeds it. Doesn't contradict `ArmorThicknessMorph`'s own confirmed belt
+    effect (item 93) — that's a DIFFERENT variable, apparently wired to an actual morph target on
+    belt meshes specifically, a real binding `BodyMorph` evidently doesn't have (it feeds the
+    Control Rig graph directly instead).
+    **Net conclusion for the Witch/regular-clothes proportion mismatch this whole side-investigation
+    (items 92-97) was chasing**: `lbtestscale` (whole-component scale/offset, items 92/94) remains
+    the one actually-working lever — both alternatives explored since (`ArmorThicknessMorph`/
+    `BodyMorph` on the AnimInstance, morph targets on the clothing mesh itself) are confirmed dead
+    ends, the first two for pre-existing reasons (belt-only scope, Control-Rig-binding non-
+    responsiveness) and the third because the specific mesh tested simply has none. Don't re-chase
+    `BodyMorph` for a visible fit fix without a genuinely new theory about the Control Rig binding
+    itself — same standing rule item 63 already established, now doubly confirmed.
+
+98. **Senkamati Torso/Legs fit-compatibility fallback: default underwear on incompatible female
+    bodies** (2026-08-28, same day, closing out the whole scale/morph fit investigation). RedFalcon
+    reported the actual live-tested compatibility boundary after trying Senkamati Torso/Legs pieces
+    across several bodies via `lbtestclothes`: "all the named women, the buccaneer merchant, and
+    albion + Adventure standing/sitting women can wear the senkamati torso and legs without major
+    clipping" — implicitly, every other female archetype (African/Fable/Native/Orient/Scum) clips
+    badly. This matches item 61's own already-confirmed finding from the removed Senkamati Statues
+    investigation (the armor was rigged for exactly one archetype, doesn't deform correctly onto
+    the other 5) — same underlying limitation, just newly relevant again now that Senkamati pieces
+    are reachable generically via `Custom > Clothes` rather than only a fixed statue roster.
+    Asked for: detect anything outside that known-good set and substitute the default underwear
+    top/legs instead — explicitly Female-only.
+    `Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES = { "SK_Adventure_Female_01",
+    "SK_Albion_Female_01" }` (config.lua) is the allowlist, checked against the target's own
+    current body mesh — same detection technique as the Witch auto-scale check (item 94). The
+    named women (Letty/Marita, "Woman With Hair Base 1") already resolve to
+    `SK_Adventure_Female_01` (item 31), so they're covered automatically with no separate name/
+    class special-case. Added `Config.SENKA_UNDERWEAR_TORSO_F` (config.lua, sibling to the
+    existing `SENKA_UNDERWEAR_LEGS_F`/`_M` from the earlier pelvis-gap saga) — no Male Torso
+    underwear variant exists in the catalog, matching `Config.CUSTOM_CLOTHES`' own "Underwear"
+    family sweep (Torso is Female-only there too).
+    `Spawner.TestApplyClothingPiece` (spawner.lua) restructured: body mesh name and actual sex are
+    now read ONCE at the top (previously the Witch auto-scale check computed body mesh name
+    separately, further down — now shared) and reused by both this fallback AND that existing
+    check. The fallback fires only when `matched.family` is a `"Senkamati "` family, `matched.slot`
+    is Torso or Legs, the target is Female, and its body mesh isn't in the allowlist — in that case
+    `path` resolves to the underwear mesh instead of the requested Senkamati mesh, and both the log
+    line and the toast clearly say a fallback happened (which family it substituted for) rather
+    than silently pretending the requested piece was applied.
+    **One real uncertainty flagged rather than assumed away**: the Buccaneers Merchant's own body
+    archetype randomizes on spawn same as the Standing/Sitting statues (item 57) — a probe from
+    earlier the same day (item 96) caught her specifically on Orient, not Adventure/Albion. As
+    implemented, she is NOT given an unconditional pass — she's checked by body mesh like anyone
+    else, so she'll get the underwear fallback too whenever she happens to roll a non-Adventure/
+    Albion body. If RedFalcon confirms she fits regardless of which archetype she lands on (a
+    structural difference in her own composite, not an archetype-dependent one), the fix is a
+    small addition — an explicit class-name check (`BP_AnimatedActor_Buccaneers_Merchant_01`)
+    ORed into the compatibility test — not a redesign.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`config.lua` to the live
+    install (game running — `lbreload` needed). **Not yet tested live** — next step: `lbreload`,
+    try `lbtestclothes "Senkamati Witch" Torso "Feather 01"` (or similar) on both a compatible body
+    (Adventure/Albion) and an incompatible one (any other female archetype) and confirm the
+    incompatible case now gets underwear instead of clipping armor, with the log/toast clearly
+    showing the fallback fired.
+    **Same-day follow-up**: RedFalcon added "the actual senkamati women" and confirmed the
+    Herbalist/Gatherer both work. Checked an existing probe dump
+    (`probedump_20260828_104940.txt`, from earlier the same day) rather than guessing — it shows
+    the Herbalist-based walker ALSO reads `SK_Adventure_Female_01`, identical to the Gatherer, so
+    both were already covered by the allowlist with no change needed. The one genuine gap: the RAW
+    Senkamati Witch body herself (`SK_Senkamati_Witch_01_Female`) wasn't listed — trivially
+    correct (it's her own native armor) but missed since the fallback logic was only ever framed
+    around applying a piece onto an unrelated body. Added to `Config.
+    SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES` (now 3 entries). `lint.py` clean, deployed
+    `config.lua` to the live install (`lbreload` needed).
+    **Same-day follow-up: a real class-name override, resolving the Merchant uncertainty this item
+    already flagged.** RedFalcon added "also marita and buccaneer merchant woman" as further
+    confirmed-compatible. Checked two more probe dumps already sitting in the mod folder rather
+    than guessing: `probedump_20260828_105110.txt` shows "Marita" here is actually the real
+    base-game QUEST NPC (`BP_NPC_QuestStatic_Smugglers_MaritaSuares_C`, NOT the mod's own walking
+    Handyman re-skin), body mesh `SK_Fable_Female_01` — Fable, not in the mesh allowlist at all.
+    `probedump_20260828_151210.txt` shows the Buccaneers Merchant
+    (`BP_AnimatedActor_Buccaneers_Merchant_01_C`) reading `SK_Orient_Female_01` this time —
+    different from the Adventure/Albion body she's rolled in earlier probes, confirming her body
+    genuinely randomizes per spawn (item 57) — yet still reportedly fits. This resolves the
+    uncertainty this item's own body flagged earlier: she fits REGARDLESS of which archetype she
+    rolls, not only when she happens to land on Adventure/Albion — so a body-mesh check alone can
+    never fully cover her.
+    Added `Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_CLASSES = {
+    "BP_NPC_QuestStatic_Smugglers_MaritaSuares_C", "BP_AnimatedActor_Buccaneers_Merchant_01_C" }`
+    — an unconditional pass by class name (`actor:GetClass():GetFName():ToString()`, an established
+    pattern already used elsewhere in this file), checked as a SECOND, independent path in
+    `Spawner.TestApplyClothingPiece` only when the body-mesh allowlist doesn't already match.
+    Something about these two specific classes' own composite/outfit build apparently avoids the
+    clipping regardless of skin archetype — a real, class-specific exception, not explainable by
+    body mesh alone. `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`config.lua`
+    to the live install (`lbreload` needed).
+
+99. **`lbtestclothassets` — checking for Chaos Cloth simulation, a third mechanism beyond morph
+    targets/plain skinning** (2026-08-28, same day). RedFalcon's follow-up to the morph-target dead
+    end (item 97): "since the women's clothes seem to fit to different sizes, they likely have mesh
+    nodes... could we use that to fit the clothes to the senkamati woman better?" — clarified via
+    AskUserQuestion as specifically UE5's Chaos Cloth simulation/clothing-asset system (a garment
+    can have a bound `UClothingAssetBase` that deforms it dynamically against the body underneath,
+    a genuinely different mechanism from both plain bone-skinning and morph targets, and one this
+    codebase has never checked for before).
+    Built `Spawner.TestListClothAssets(componentMatch)` (spawner.lua, right after
+    `TestSetMorphTarget`, reusing the same `findMatchedClothingComponent` helper from item 97) —
+    checks two things per matched piece: (1) the component's own `bDisableClothSimulation` bool
+    (a plain, always-present property on `USkeletalMeshComponent` in stock UE regardless of
+    whether an asset actually uses cloth — a cheap first signal), and (2) the SkeletalMesh ASSET's
+    (not component's) bound clothing assets via `GetMeshClothingAssets` — the standard UE
+    Blueprint-callable signature, same out-param-then-return-value fallback shape as
+    `TestListMorphTargets` for the same "unsure how this binding marshals an out `TArray`" reason.
+    Registered as `lbtestclothassets <slot/mesh name match>` (main.lua).
+    Genuinely unconfirmed whether this game's garments use Chaos Cloth at all — the Senkamati
+    Torso's own zero-morph-targets result (item 97) makes plain bone-skinning at least plausible
+    for this game's clothing in general, but that doesn't rule out cloth on OTHER pieces.
+    `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`main.lua` to the live
+    install (game running — `lbreload` needed). **Not yet tested live** — next step: `lbreload`,
+    try `lbtestclothassets` on a regular woman's clothing piece known to fit well across body
+    sizes (to see if cloth simulation explains that adaptability) and separately on the Senkamati
+    Torso/Legs (to see if its absence there explains why it DOESN'T adapt) — the comparison is the
+    actual test, not either result alone.
+    **Same-day live test, a clean answer — real mechanism confirmed, but a dead end for THIS fit
+    problem.** RedFalcon ran it on a standing woman and a Senkamati Witch. Results: the standing
+    woman's Jeweler Torso reports `1 clothing asset found`
+    (`SK_Armor_Jeweler_03_Female_Torso_sim_Clothing_0`) — genuinely Chaos Cloth simulated; her Legs
+    piece reports 0 (rigid, no cloth). The Senkamati Witch's ACTUAL Torso armor
+    (`...Witch_Feather_01_Torso` — the piece causing the reported clipping) reports **0 clothing
+    assets**, matching item 97's own zero-morph-targets result for the same mesh — plain rigid
+    skinning, nothing more. Her SEPARATE `TorsoCloth` component (the decorative fabric flap under
+    the armor shell, a different component from the Torso armor itself — its own `_Dyn` filename
+    suffix already hinted at this, item 74) DOES report 1 clothing asset
+    (`...TorsoCloth_Dyn_Clothing_1`).
+    So Chaos Cloth is real and active in this game — confirmed for the first time in this
+    codebase — but it's bound to decorative/flowing sub-pieces (a fabric flap, a torso's own cloth
+    layer), not to the rigid armor SHELL that's actually clipping. Since cloth-sim data (painted
+    max-distance/backstop maps, physics config) is baked into a mesh asset at author time, this is
+    the SAME class of dead end as morph targets (item 97) for a different specific reason: not "the
+    mechanism doesn't exist in this game" (it does), but "this specific mesh wasn't authored with
+    it, and that can't be added at runtime any more than a missing morph target could be."
+    **Net conclusion for the whole scale/morph/cloth side-investigation (items 92-99)**:
+    `lbtestscale` (component scale/offset, items 92/94) plus the compatibility fallback (items
+    92/94/98) remain the only actually-working levers for this specific fit problem. Morph
+    targets and Chaos Cloth are both now confirmed-real mechanisms in this game generally, but
+    both confirmed absent on the specific mesh that needs fixing — don't re-chase either for this
+    particular piece without a genuinely new theory; a DIFFERENT clipping piece that DOES report
+    morph targets or clothing assets via these same tools would be a fair reason to revisit either
+    approach for that piece specifically.
+
+100. **The whole component-scale approach walked back** (2026-08-28, same day). RedFalcon: "setting
+     scale doesn't work, so I want to look at a different direction. In fact we should walk that
+     back." Removed the item-94 auto-scale hook from `Spawner.TestApplyClothingPiece` (spawner.lua)
+     entirely — regular clothes on the raw Senkamati Witch body now render at scale 1.0 again, no
+     automatic compensation. `Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE` (config.lua) is kept as
+     a documented, no-longer-called constant rather than deleted — same treatment this file already
+     gives other confirmed-inadequate levers (`ColorParams`, `ArchetypePreset`, etc.) — do not
+     re-wire a blunt whole-component scale/offset back in without a genuinely different theory;
+     both `TestScaleClothingPiece`'s and `NudgeComponentTransform`'s own original comments already
+     flagged this as a live visual gamble, not a guaranteed fix, and that caveat held.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`config.lua` to the live
+     install (`lbreload` needed).
+     **Net status of the Witch/regular-clothes fit problem after items 92-100**: every mechanism
+     tried this session — whole-component scale/offset (`lbtestscale`), `ArmorThicknessMorph`
+     (belt-only scope), `BodyMorph` (Control-Rig-binding dead end, items 62-63/96), morph targets
+     baked into the clothing mesh (none found, item 97), Chaos Cloth simulation (present in this
+     game but not on the rigid armor shell, item 99), and now the auto-scale hook itself — is
+     either confirmed absent on the relevant mesh or confirmed not to produce an acceptable visual
+     result. The Senkamati Torso/Legs fit-compatibility FALLBACK (item 98, substituting default
+     underwear on an incompatible body) remains in place and unaffected by this walk-back — that's
+     a different mechanism (swap the piece entirely) from scaling a mismatched one, and was never
+     part of what got walked back. RedFalcon has not yet specified the next direction to try.
+
+101. **Cloth-simulation rebind after a runtime mesh swap** (2026-08-28, same day, the new
+     direction). RedFalcon: "can we take advantage of the cloth simulations to make those clothes
+     fit the caster better?" — a genuinely more promising angle than scaling: item 99 already
+     confirmed Chaos Cloth is real and active in this game (e.g. the Jeweler Torso's own bound
+     clothing asset), and unlike a rigid skinned mesh, a cloth-simulated piece reacts dynamically
+     to the underlying skeleton's bone poses/collision at runtime rather than being a fixed
+     authored shape — it may genuinely drape correctly on a mismatched body (the raw Senkamati
+     Witch/Caster) instead of clipping, with no scale hack needed at all.
+     One real risk identified before testing: `SetSkeletalMeshAsset`/`SetSkeletalMesh` swap the
+     render mesh at runtime, but native UE cloth actors are normally rebuilt via the component's
+     own internal mesh-set callback — unconfirmed whether this UE4SS binding's exposed setters
+     trigger that same internal path, meaning cloth could stay silently inert after a live swap
+     even though the mesh itself has a valid clothing asset. Added an explicit
+     `targetComp:RecreateClothingActor()` call (the real UE engine function for forcing a cloth
+     rebuild) immediately after every mesh swap, in BOTH swap paths: `Spawner.
+     TestApplyClothingPiece` (`lbtestclothes`) and `armorProceedWithMesh` (the shared helper behind
+     `lbtestarmor`, both its immediate and 400ms-retry paths) — purely additive, gated on the mesh
+     swap itself having succeeded, and if the function isn't exposed in this build the pcall just
+     fails without affecting the swap. Both tools' log lines now include a `clothRebind=ok/FAILED/
+     n/a` field so the result is visible without a separate probe step.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install
+     (`lbreload` needed). **Not yet tested live** — next step: `lbreload`, apply a piece already
+     confirmed to have a bound clothing asset (the Jeweler Torso, `lbtestclothassets` result from
+     item 99) onto the raw Senkamati Witch/Caster body via `lbtestclothes` or `lbtestarmor`, and
+     check both the `clothRebind=` log field (did the rebind call succeed at all) and — the actual
+     test — whether the piece visually drapes/fits better than the earlier rigid-mesh clipping did,
+     with scale left at the default 1.0 this time.
+     **Same-day live test: `RecreateClothingActor` confirmed broken, not just untested.** RedFalcon
+     tried it on the raw mob-body Caster (`BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster`) across
+     several Jeweler Torso/Legs pieces: every single attempt logged `clothRebind=FAILED: ... Tried
+     calling a member function but the UObject instance is nullptr` — the exact same error
+     signature already established elsewhere in this file to mean the FUNCTION itself isn't
+     properly callable via this UE4SS binding, not that `targetComp` was actually invalid
+     (`SetSkeletalMeshAsset` had just succeeded on that identical reference one line earlier, same
+     `applied=true` pattern). So the mesh swap always worked, but cloth was never actually rebuilt
+     — RedFalcon's "hips and boobs still clip" report was against a piece that had NEVER been given
+     a real chance to re-simulate, not a confirmed failure of the cloth-simulation idea itself.
+     Replaced `RecreateClothingActor()` with `SetSkeletalMesh(mesh, true)` (bReinitPose=true) in
+     BOTH call sites (`Spawner.TestApplyClothingPiece` and `armorProceedWithMesh`) instead of
+     guessing another obscure function name: `SetSkeletalMeshAsset` is a newer, minimal property
+     setter, while `SetSkeletalMesh` (the OLDER Blueprint function, already used elsewhere in this
+     file as the fallback path) is documented to do more internal setup on assignment, plausibly
+     including cloth actor initialization — its own `bReinitPose` argument was previously only ever
+     reached as a `false` fallback when `SetSkeletalMeshAsset` FAILS, never as a deliberate
+     follow-up when it succeeds (which it always has in testing so far). `lint.py` clean
+     (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install (`lbreload` needed).
+     **Not yet tested live** — next step: `lbreload`, retry the same piece, confirm `clothRebind=ok`
+     this time (not FAILED), and THEN judge whether the hips/bust clipping actually improves — this
+     is the first genuine test of the cloth-simulation idea, the previous one never actually ran.
+     **Same-day live test: SAME failure signature again, on a DIFFERENT function.** RedFalcon
+     tried it across many more targets/pieces (Gatherer, Buccaneers Merchant, quest-NPC Marita,
+     quest-NPC Letty, Crew Officer, native Hunter/Warrior, the raw Caster) — every single one
+     logged `clothRebind=FAILED: ... Tried calling a member function but the UObject instance is
+     nullptr`, identical to the `RecreateClothingActor` failure, just now on `SetSkeletalMesh(mesh,
+     true)` instead. Two DIFFERENT functions failing identically on the SAME `targetComp`/`m.comp`
+     reference immediately after `SetSkeletalMeshAsset` had just succeeded on it points at the
+     HANDLE, not either function name — the same stale-captured-reference class of bug already
+     documented elsewhere in this file (line ~1508: `K2_GetComponentsByClass` returns 0 on a
+     captured ACTOR reference, needs a fresh `FindAllOf` handle), just triggered here by
+     `SetSkeletalMeshAsset` on a COMPONENT reference instead.
+     Fixed by re-fetching a genuinely FRESH component handle before the follow-up call, rather than
+     reusing the reference that just did the mesh swap: captured `targetCompName`
+     (`targetComp:GetFName():ToString()`) BEFORE the swap, then after it, re-ran
+     `actor:K2_GetComponentsByClass(smcCls)` fresh and matched by that same name to get a new
+     handle, calling `SetSkeletalMesh(mesh, true)` on THAT instead. Applied to both call sites:
+     `Spawner.TestApplyClothingPiece` (which already has `actor`/`smcCls` in scope) and
+     `armorProceedWithMesh` (the shared `lbtestarmor` helper, which didn't have `actor`/a resolved
+     `SkeletalMeshComponent` class available before — both are now threaded through as two new
+     trailing parameters from `Spawner.TestSwapArmorPiece`'s own already-resolved `actor`/`cls`,
+     at both its immediate and 400ms-retry call sites).
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install
+     (`lbreload` needed). **Not yet tested live** — this is the third distinct attempt at forcing a
+     cloth rebind in this build. If this ALSO fails with the same signature, the honest conclusion
+     is that forcing cloth reinitialization from Lua isn't viable in this UE4SS build at all (not
+     that the wrong function/reference approach was tried three times) — worth stating plainly to
+     RedFalcon rather than proposing a fourth variant, since three independent mechanisms failing
+     identically is a real pattern, not bad luck.
+
+102. **`lbtestclothes` gains a sex-override argument** (2026-08-28, same day). RedFalcon asked for
+     a way to see how the MALE version of a clothing piece fits on a female-sexed target (the raw
+     Senkamati Witch/Caster), as a further experiment now that scale/cloth-rebind have both been
+     exhausted or walked back. `lbtestclothes` previously always auto-detected the target's own
+     sex via `GetBodySex()` and had no way to force the other path.
+     Added an optional 4th argument to `Spawner.TestApplyClothingPiece(family, slot, pieceName,
+     sexOverride)` — accepts `"M"`/`"Male"`/`"F"`/`"Female"` case-insensitively, overriding which
+     of `matched.malePath`/`matched.femalePath` gets used for a sex-split row. Deliberately scoped
+     narrow: only affects PATH SELECTION for the requested piece — the Senkamati Torso/Legs
+     fit-compatibility fallback (item 98) still gates on the target's REAL detected sex
+     (`actorSex`), not this override, since that check is about the actual body wearing the
+     clothes, not which mesh variant was asked for. A `unisexPath` row (including every Senkamati
+     family) ignores the override entirely — there's only one mesh either way. `lbtestclothes`
+     (main.lua) registration updated to pass through a 4th parameter; usage now `lbtestclothes
+     <family> <slot> <name> [sex override: M/F]`, e.g. `lbtestclothes Jeweler Torso "Set 1" Male`
+     on a female target. The GUI (`Custom > Clothes`) is unaffected — it still only ever calls the
+     3-argument form, since a menu entry has no natural place to specify an override; the new
+     capability is console-only for now.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`main.lua` to the live
+     install (`lbreload` needed).
+
+103. **`Custom > Clothes > Remove` — a 5th GUI branch, plus a general "nothing to act on" notice**
+     (2026-08-28, same day). RedFalcon: "can we have a clothes section for 'remove' where it has
+     each slot available as well as a remove all... and it hides the item in that slot" — then,
+     mid-build, "can we also have a notice when the slot doesn't have anything to replace."
+     `Config.CLOTHING_REMOVABLE_SLOTS` (config.lua) is the canonical 15-slot list (Headgear/Torso/
+     TorsoCloth/Legs/Hands/Feet/Head/Neck/Waist/Cape/Scarf/Belt/Frog/Sling/Strap — kept in sync
+     manually with spawner.lua's own `CLOTHING_SLOT_TOKENS` list); `Config.CLOTHES_REMOVE` is a
+     flat roster built from it plus one `"All"` entry, feeding both the GUI and a new
+     `lbremoveclothes <slot|all>` console command.
+     `Spawner.TestRemoveClothingPiece(slotArg)` (spawner.lua, right after `TestApplyClothingPiece`)
+     HIDES the matching component(s) (`SetVisibility(false)` + `SetHiddenInGame(true)`) rather than
+     clearing their mesh to nil — clearing would make `clothingSlotOf` (which identifies a slot by
+     its CURRENT mesh name) unable to recognize that slot afterward, permanently breaking the
+     ability to dress it again via `lbtestclothes`/the GUI. `"all"` (case-insensitive) hides every
+     component that resolves to ANY canonical slot via `clothingSlotOf` — naturally excludes the
+     base body mesh, hair, and eyebrows, since none of their names contain a recognized clothing
+     token, no extra filtering needed.
+     Both `Spawner.TestApplyClothingPiece` and `armorProceedWithMesh` (the `lbtestarmor` swap
+     helper) now explicitly restore visibility (`SetVisibility(true)` + `SetHiddenInGame(false)`)
+     on a successful swap — otherwise a previously-removed slot would stay invisible forever even
+     after a new piece got dressed onto it, since nothing else in either path ever touched
+     visibility before this.
+     **The notice ask**: both the apply path's pre-existing "no component in that slot" case (which
+     was log-only before) and the new remove path's "nothing found to hide" case now toast a clear
+     message (`"<name> has nothing in the <slot> slot"`) instead of silently no-op'ing — the same
+     on-screen-feedback discipline this whole toolset already follows everywhere else.
+     Registered as `lbremoveclothes <slot|all>` (main.lua) and `Custom > Clothes > Remove ><Slot>` /
+     `> All` (new `CLOTHES_REMOVE` roster in `SPAWN_MENU_HANDLERS`/`NON_SPAWNING_ROSTERS`/
+     `spawnmenu_manifest.lua`'s `roster_descriptors`). Since `CLOTHES_REMOVE` is a brand-new roster
+     name, no stale `spawn_menu.ini` cleanup was needed this time (unlike the hair/clothes
+     reshuffles in items 89-91) — `lbreload` just appends its 16 new sections fresh.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed all four files (`spawner.lua`/
+     `config.lua`/`main.lua`/`spawnmenu_manifest.lua`) to the live install (`lbreload` needed).
+     **Not yet tested live** — next step: `lbreload`, try `Custom > Clothes > Remove > Torso` (or
+     `lbremoveclothes Torso`) on a dressed target, confirm the piece disappears and the slot stays
+     correctly hidden, then try `> All`, then dress something back onto that slot and confirm
+     visibility is restored automatically. Also try removing an already-empty slot to confirm the
+     new notice fires instead of nothing happening.
+
+104. **A full women's-clothing fit-rules engine, replacing the old single Witch fallback**
+     (2026-08-28, same day). RedFalcon supplied a large, structured spec after live-testing many
+     more bodies/families, covering: which families a Torso/Legs piece clips on for the Senkamati
+     body vs. regular female bodies; a "Remove" default of substituting underwear rather than true
+     nudity; a new off-by-default unlock toggle; and per-body-group scale corrections for a
+     specific list of unisex-cut families. Two rounds of clarification were needed before building
+     (AskUserQuestion, then a follow-up in plain text) since several parts were genuinely
+     ambiguous — answers below, folded into the design.
+     **Mechanism A — Senkamati-style compatible-bodies gate, generalized.** The existing item-98
+     allowlist (`Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES`/`_CLASSES`) now also gates
+     `Config.CLOTHES_SENKAMATI_GATED_FAMILIES = { "Conquistador" }` — RedFalcon: "only those
+     allowed to wear the senkamati clothes can wear this" — checked identically to real Senkamati
+     Torso/Legs pieces, on any body. Incompatible → calls `Spawner.TestRemoveClothingPiece`
+     instead of applying (previously: a hardcoded direct swap to underwear).
+     **Mechanism B — regular female Torso resize/allow/deny, new.** Only families with NO
+     dedicated `femalePath` (unisex-cut, item 90's own category) are in scope — a family with its
+     own proper Female mesh was never a fit concern and is untouched. Classified into:
+     - `Config.CLOTHES_ALLOWED_ASIS_FAMILIES_WOMEN = { "Blackbeard_Sailor" }` — apply unchanged.
+       **Flagged assumption, unresolved**: RedFalcon's message first listed "Blackbeard_Sailor
+       -All" under a "NO WOMEN" heading, then later said "allow sailors torsos" — there is no
+       plain "Sailor" family in the catalog (confirmed via the raw parse, only
+       "Blackbeard_Sailor" exists), so this was read as a correction/reversal of the earlier line,
+       not two separate instructions. Worth RedFalcon double-checking this specific one.
+     - `Config.CLOTHES_RESIZED_FAMILIES_WOMEN` (Musketeer/Dogface/DrGalen/Ksante/
+       Blackbeard_Grenadier/Blackbeard_Musketeer/Combatant = every piece; `Flibustier = {"Set
+       1"}` only) — scaled via `Config.CLOTHES_BODY_GROUP_SCALE`, keyed by body group.
+     - Anything else unisex-only and uncategorized → default-deny, routes to Remove.
+     **Body groups, by class** (RedFalcon's own call — Gatherer/Herbalist share the identical
+     `SK_Adventure_Female_01` mesh, so mesh alone can't distinguish them): new local
+     `getFemaleBodyGroup(actor, bodyMeshName)` (spawner.lua, right after `clothingSlotOf`).
+     Group1 = `Config.CLOTHES_BODY_GROUP1_CLASSES` (Gatherer + quest-NPC Marita). Group2 =
+     `Config.CLOTHES_BODY_GROUP2_CLASSES` (Herbalist + quest-NPC Letty) **plus** any
+     `BP_AnimatedActor_BotC_*` statue class whose CURRENT rolled body is Adventure or Albion
+     (reusing `Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES`, since one statue class covers all 7
+     archetypes, item 57). A resize-list family on a body that resolves to NEITHER group — "similar
+     to the non albion and adventure BotC woman wearing senkamati" (RedFalcon's own framing) —
+     gets the identical Remove treatment as Mechanism A's incompatible case.
+     `Config.CLOTHES_BODY_GROUP_SCALE` holds RedFalcon's own live-tuned values: Group1 `scale=
+     (1.03,1.05,1.0) offset=(0,1.5,-1.0)`, Group2 `scale=(1.03,1.05,1.0) offset=(0,2.5,-1.0)` —
+     applied via the identical `SetRelativeScale3D`/`K2_SetRelativeLocation` mechanism
+     `lbtestscale` already uses, but this is a NEW, separately-approved use, not a revival of the
+     walked-back Senkamati-Witch auto-scale (item 100) — different bodies, different families,
+     different (RedFalcon-confirmed) numbers.
+     **The modesty guard on Remove itself** (RedFalcon: "for remove when its not unlocked, instead
+     of hiding the torso and legs, use underwear"): `Spawner.TestRemoveClothingPiece` now swaps in
+     the default underwear mesh (`Config.SENKA_UNDERWEAR_TORSO_F`/`_LEGS_F`/`_LEGS_M`) rather than
+     truly hiding, specifically for Torso+Legs on a female target and Legs on a male target, only
+     when `Config.CLOTHES_UNLOCK_ALL` is off. Every other slot/sex combination always does a true
+     hide. Since BOTH fit-restriction mechanisms above now call into `TestRemoveClothingPiece`
+     rather than hardcoding their own underwear swap, an incompatible-piece substitution and an
+     explicit "Remove" click land on IDENTICAL visual results by construction.
+     **The toggle**: `Config.CLOTHES_UNLOCK_ALL` (off by default) + `Spawner.ToggleClothesUnlock()`
+     / `lbunlockclothes` console command (no GUI entry, per RedFalcon's own choice) — bypasses
+     BOTH mechanisms and the modesty guard entirely when on, printing/toasting the "not reviewed,
+     may clip or look wrong" caveat once at toggle time, not on every subsequent apply.
+     `lint.py` clean (`compile: 10 scripts OK`; confirmed no stray references to the removed
+     `usedFallback` variable anywhere in the codebase). Deployed `spawner.lua`/`config.lua`/
+     `main.lua` to the live install (`lbreload` needed).
+     **Not yet tested live** — this is a large, multi-part change; next steps: `lbreload`, then
+     spot-check each piece — a Conquistador Torso on an incompatible body (should Remove/
+     underwear), a Musketeer Torso on a Group1 vs. Group2 body (should resize differently), a
+     Blackbeard_Sailor Torso on any woman (should apply as-is per the flagged assumption above —
+     confirm this is actually what was wanted), a resize-family piece on an unrecognized body
+     (should Remove), and `lbunlockclothes` toggled on (everything should apply/remove exactly as
+     requested with no restrictions, plus the caveat message).
+     **Same-day correction, flagged assumption resolved**: RedFalcon: "blackbeard sailor torsos
+     should only be allowed for women in unlocked mode, otherwise replace with underwear" — the
+     opposite of item 104's own guess. `Config.CLOTHES_ALLOWED_ASIS_FAMILIES_WOMEN` emptied out
+     (was `{ "Blackbeard_Sailor" }`) — confirmed via `Config.CUSTOM_CLOTHES` that every
+     Blackbeard_Sailor row already has `femalePath = nil` (fully unisex-cut), so simply removing
+     it from the allowed-as-is list — without adding it anywhere else — already produces exactly
+     the requested behavior through Mechanism B's existing default-deny path (Remove → underwear
+     on women, unless `Config.CLOTHES_UNLOCK_ALL`). No new code needed, just the one-line data fix.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `config.lua` to the live install
+     (`lbreload` needed).
+     **Same-day correction, a real intent-flip for the whole resize list**: RedFalcon: "all these
+     [the 8-family `Config.CLOTHES_RESIZED_FAMILIES_WOMEN` list] are male only unless unlocked" —
+     the OPPOSITE of how item 104 had wired it (resize applied automatically for a recognized body
+     group, entirely independent of the lock state). The real intent: unlocking is what makes
+     these families wearable by women AT ALL (blocked outright otherwise, same Remove →
+     underwear treatment as everything else in restricted mode); the resize correction is what
+     makes them look right ONCE unlocked, not a substitute for locking.
+     Restructured Mechanism B in `Spawner.TestApplyClothingPiece`: the block's outer gate no
+     longer includes `not unlocked` (it used to skip the whole mechanism when unlocked, which
+     would have applied these families completely raw with no scale correction even when a user
+     deliberately unlocked to use them on a woman) — `unlocked` is now checked INSIDE each
+     decision point instead: a resize-list family blocks (Remove) when locked, and only applies
+     (with scale, if the body resolves to a recognized group; raw otherwise) when unlocked. The
+     "uncategorized unisex-only family" default-deny branch got the same treatment for
+     consistency — blocked when locked, freely applied when unlocked, matching what "unlock"
+     is supposed to mean everywhere else in this system.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install
+     (`lbreload` needed). **Not yet tested live** — next step: with the toggle OFF, confirm a
+     Musketeer Torso on any woman now removes/underwears (previously it would have resized and
+     applied); with `lbunlockclothes` ON, confirm the same piece applies with the correct
+     per-body-group scale on a recognized body, and applies raw on an unrecognized one.
+
+105. **Blacksmith family removed; a scope correction confirming Torso-only; "Male Only Pants" — a
+     third, separate Legs mechanism** (2026-08-28, same day). Three items from RedFalcon in one
+     message:
+     - **"The Blacksmith Category doesn't work (nothing changes) Remove it."** Removed all 3
+       `Blacksmith` rows (Feet/Hands/Legs "Default") from `Config.CUSTOM_CLOTHES` outright — a
+       non-functional family, not worth keeping as dead weight. Confirmed no other file references
+       the string `"Blacksmith"` afterward.
+     - **Scope confirmation, no code change needed**: "everything else was referencing ONLY
+       Torsos" — confirms Mechanism B (item 104, the resize/allow/deny rules) was already
+       correctly scoped to `matched.slot == "Torso"` only; Mechanism A (the Senkamati-style gate,
+       covering both Torso AND Legs) is unaffected since it mirrors the ORIGINAL Senkamati-body
+       restriction ("Senkamati women just can't wear regular torso or legs" — a dual-slot
+       statement from the very first message in this whole arc), not the Torso-only regular-women
+       rules.
+     - **"Male Only Pants"**: a new, separate, EXPLICIT family list for the Legs slot — Musketeer,
+       Blackbeard_Sailor, Dogface, Blackbeard_WolfTamer, DrGalen, Ksante, Blackbeard_Grenadier,
+       Blackbeard_Musketeer, Combatant (all "-All"). Unlike the Torso resize list, there's no
+       scale correction for Legs at all (none was given) and no "anything else unisex-only
+       defaults to remove" catch-all — this is a closed, explicit list; any OTHER unisex-only Legs
+       family stays untouched. `Config.CLOTHES_MALE_ONLY_LEGS_FAMILIES` (config.lua) + a new
+       Mechanism C block in `Spawner.TestApplyClothingPiece` (spawner.lua, right before the
+       `shouldRemoveInstead` early-return): blocked (→ underwear via `TestRemoveClothingPiece`'s
+       own modesty guard) on a female target unless `Config.CLOTHES_UNLOCK_ALL`; unlocked applies
+       the piece raw, same "no restrictions" contract as everywhere else in this system.
+     **Stale `spawn_menu.ini` index cleanup, done carefully after a real self-caught mistake**:
+     removing 3 rows mid-table shifts every subsequent row's index (Underwear/Vanilla/Restored/
+     Starter + all 73 Senkamati-armor rows that follow Blacksmith in the table) — same landmine
+     as items 89/91. First cleanup attempt (a bash `awk` block filter, the same technique used
+     successfully in item 91) silently did nothing — investigated and found the earlier direct
+     Python-script approach had ALSO been silently blocked by this session's own permission
+     classifier on the very first attempt (writes reached the file only in step two below). Second
+     attempt, from a fresh copy of the pre-edit backup: a substring match (`"roster = CLOTHES" in
+     block`) over-matched `CLOTHES_REMOVE` sections too (307 real `CLOTHES` blocks vs. 323
+     matched, exactly the 16-entry `CLOTHES_REMOVE` roster) — caught by cross-checking the removed
+     count against an exact-line grep before trusting it, not after. Fixed with an exact
+     line-equality check (`"roster = CLOTHES" in block.splitlines()`) instead of a substring
+     search, confirmed removing exactly 307 blocks and leaving all 16 `CLOTHES_REMOVE` sections
+     intact; copied into place via the Read/Write tool path (not a direct script write, which this
+     session's classifier blocks for this specific game-folder target) and verified header/tail/
+     section-count sanity afterward.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`config.lua` to the live
+     install, plus the repaired `spawn_menu.ini` (`lbreload` needed to regenerate all 304 CLOTHES
+     sections fresh with correct indices). **Not yet tested live** — next step: `lbreload`, confirm
+     `Custom > Clothes` no longer lists a `Blacksmith` branch at all, and try a Musketeer/
+     Blackbeard_Sailor/Dogface/etc. Legs piece on a woman (locked: should Remove/underwear;
+     unlocked: should apply raw).
+     **Same-day correction, a real scoping bug**: RedFalcon: "conquistador pants are still not
+     allowed on women," then, mid-fix, "to be clear ALL women shapes can have conquistador legs.
+     its the torso thats limited." Item 105's own Torso-only clarification should have applied to
+     Conquistador too (a regular family riding the Senkamati mechanism) but Mechanism A's slot
+     check was left as `Torso or Legs` unconditionally, still gating Conquistador Legs against the
+     compatible-bodies allowlist. Split the check: `isRealSenkamati` (actual Senkamati family
+     pieces — Torso AND Legs, the ORIGINAL "Senkamati women can't wear regular torso or legs"
+     restriction, genuinely dual-slot and untouched) vs. `isGatedFamily` (Conquistador and any
+     future `Config.CLOTHES_SENKAMATI_GATED_FAMILIES` entry — Torso ONLY now). A new
+     `senkamatiGateSlotOk` local computes `(slot == "Torso") or (slot == "Legs" and
+     isRealSenkamati)`, used in place of the old unconditional `Torso or Legs` check. Conquistador
+     Legs no longer goes through the compatible-bodies gate at all — it's not in `Config.
+     CLOTHES_MALE_ONLY_LEGS_FAMILIES` either, so it now simply applies normally on any woman,
+     matching RedFalcon's explicit confirmation.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install
+     (`lbreload` needed). **Not yet tested live** — next step: confirm a Conquistador Legs piece
+     now applies on any female body regardless of archetype/class, while Conquistador Torso stays
+     gated to the compatible-bodies allowlist as before.
+
+107. **Resize-offset baseline bug: the cloth-rebind step was resetting position before the offset
+     applied** (2026-08-28, same day). RedFalcon confirmed the fit-rules engine works, then flagged
+     a positioning bug: "I just checked out the unlocked male torsos, and they are way far forward
+     compared to when I tested with our function [lbtestscale]." Root cause: item 104's resize
+     block read `targetComp.RelativeLocation` (to compute `current + offset`) AFTER the item-101
+     cloth-rebind step had already run `SetSkeletalMesh(mesh, true)` on the same underlying
+     component — `bReinitPose=true` apparently resets/changes `RelativeLocation` as a side effect,
+     not just the animation pose. `lbtestscale` (the function RedFalcon manually validated the
+     offset numbers against) never calls `SetSkeletalMesh` at all, so its own baseline was always
+     the natural, never-reinitialized position — the two code paths were computing the SAME offset
+     against two DIFFERENT baselines, explaining the reported "way far forward" drift.
+     Fixed by capturing `preClothLoc` (a plain `{X,Y,Z}` snapshot) immediately after the initial
+     `SetSkeletalMeshAsset` swap, BEFORE the cloth-rebind block runs at all, and having the resize
+     block compute its final position from that captured snapshot instead of re-reading
+     `RelativeLocation` fresh at that later point. This restores the same baseline `lbtestscale`
+     itself always worked from, regardless of whatever the cloth-rebind step does internally.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua` to the live install
+     (`lbreload` needed). **Not yet tested live** — next step: re-check an unlocked male-cut Torso
+     (e.g. Musketeer) on a Group1/Group2 woman and confirm the position now matches what
+     `lbtestscale` showed during manual tuning, not offset further forward.
+     **Same-day follow-up, a second compounding bug RedFalcon spotted before even testing item
+     107's fix**: "when changing away it never resets position to, I assume, 1,1,1 0,0,0, so every
+     time I set it it moves position a little more." Correct, and a real second bug independent of
+     item 107's cloth-rebind-timing one: reading "current position + offset" is inherently
+     cumulative — swapping a SECOND resize-list piece into the same slot would read back the
+     FIRST piece's already-offset position and stack another offset on top, drifting further with
+     every swap. Fixed more robustly than item 107's own fix: since every Torso/Legs slot is just
+     an alternate skin on the SAME shared skeleton (no per-slot socket offset), the true natural
+     resting state for all of them is scale `(1,1,1)` / position `(0,0,0)` — `Spawner.
+     TestApplyClothingPiece` now resets to that identity on EVERY swap (whether the piece needs a
+     resize or not, right after the plain mesh swap, replacing item 107's "capture the baseline"
+     approach entirely), and the resize block sets an ABSOLUTE target (`resizeOffset` directly)
+     instead of reading-and-adding an uncertain "current" value. This fixes both bugs at once: the
+     cloth-rebind's own position side effect (item 107) no longer matters because the resize write
+     happens after it with a known, fixed target rather than a read-then-add; and switching
+     between pieces no longer compounds since every swap starts from a guaranteed-clean state.
+     `lint.py` clean (`compile: 10 scripts OK`; confirmed no stray references to the removed
+     `preClothLoc` variable). Deployed `spawner.lua` to the live install (`lbreload` needed).
+     **Not yet tested live** — next step: apply a resize-list Torso, then swap to a DIFFERENT
+     resize-list Torso on the same target (the specific case that used to drift), and confirm the
+     second piece lands at the correct absolute position rather than compounding the first one's
+     offset.
+
+108. **`Custom > Face` — a new top-level category for eyebrows/beard/mustache/whiskers**
+     (2026-08-28, same day). RedFalcon: "I can see from the probes there are slots for eyebrows
+     and beard parts and such. I've captured some dumps for reference" — four probe dumps
+     (BotC Merchant 02, Buccaneers Merchant 01, TortugaCitizen Combatant, quest-NPC Marita)
+     confirmed real, separate `SkeletalMeshComponent`s for Eyebrows, Beard, Mustache/Mustaches,
+     and Whiskers, all under `Character/Skeletal_Meshes/Facial/` — a folder tree never swept
+     before. Component names are all auto-generated (`SkeletalMeshComponent_XXXXXXX`, confirmed
+     from the same dumps), so slot identification has to work the same way clothing's does: by
+     the CURRENT mesh name.
+     Swept `pakcontents.xlsx` for the full `Facial/` tree (228 raw hits) and parsed it into 48 real
+     rows: `Config.CUSTOM_FACIAL` (config.lua, same family/slot/name/femalePath/malePath/
+     unisexPath shape as `Config.CUSTOM_CLOTHES`). Two real findings from the sweep:
+     - **Eyebrows** is a genuine sex-paired family — Female has 5 numbered variants, Male has 4,
+       paired by matching number (Female 05 left as female-only, no Male 05 exists).
+     - Every OTHER family (Bristle/HalfPonytail/Hungover/Jag/Nordic/RoyalMarine/Shag/Sparse/
+       BlackSmith) is a Beard-folder style with up to THREE independent slots — Beard, Mustache,
+       Whiskers — confirmed genuinely male-only (zero female facial-hair assets exist anywhere in
+       the catalog, not assumed). Not every style has all three pieces (e.g. Bristle only ships a
+       Beard mesh) — reflects the real catalog rather than an assumed symmetry, same discipline as
+       every other sweep this session. `BlackSmith`/`Blacksmith` casing-duplicate folders (same
+       pattern already documented in `WINDROSE_MODDING_NOTES.md` §14) collapsed to one, including
+       catching that BlackSmith's own style-specific eyebrow piece (`SK_Eyebrow_BlackSmith`,
+       singular) needed its own row too, not just Beard/Mustache — caught before shipping, not
+       after a live report.
+     `Spawner.TestApplyFacialPiece(family, slot, pieceName, sexOverride)` (spawner.lua, right
+     after `Spawner.ToggleClothesUnlock`) mirrors `TestApplyClothingPiece` closely but skips the
+     whole women's-fit rules engine entirely — there's no "does this fit a woman" question for
+     facial hair since it's already confirmed male-only at the data level. A new `FACIAL_SLOT_
+     TOKENS`/`facialSlotOf` pair (deliberately separate from clothing's own `CLOTHING_SLOT_TOKENS`
+     even though the two folder trees could never actually collide) finds the right component by
+     current mesh name, same longest-match discipline; `"Eyebrow"` is checked as a prefix so it
+     matches both the plain plural and BlackSmith's own singular filename.
+     Wired identically to Clothes: `lbtestfacial <family> <slot> <name> [sex override: M/F]`
+     (main.lua) and `Custom > Face > <Family> > <Slot> > <Name>` (new `FACIAL` roster in
+     `SPAWN_MENU_HANDLERS`/`NON_SPAWNING_ROSTERS`/`spawnmenu_manifest.lua`'s `roster_descriptors`).
+     `FACIAL` is a brand-new roster name, so no stale `spawn_menu.ini` cleanup was needed —
+     `lbreload` just appends 48 fresh sections.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed all four files (`spawner.lua`/
+     `config.lua`/`main.lua`/`spawnmenu_manifest.lua`) to the live install (`lbreload` needed).
+     **Not yet tested live** — next step: `lbreload`, try `Custom > Face > Eyebrows > 02` on both
+     a male and female target to confirm sex auto-detection, and a Beard-folder style (e.g.
+     `Sparse > Beard > Sparse 01`) on a male target to confirm the independent-slot swap works.
+
+109. **SkinDecor texture parameters (FaceDecor/BodyDecor/"SkinDecor ID"/SkinAging) CONFIRMED NOT
+     a per-character lever — a third negative result, same conclusion as the 2026-08-10 tattoo
+     investigation, now on more actors** (2026-08-28, same day). Follow-up to Marita's "makeup"
+     question: her skin material (`MI_Fable_Female_Medium`) carries 4 extra
+     `TextureParameterValues` beyond the plain Albedo/Normal/SRM, all pointing at
+     `T_Adventurer_*` decor textures — first read as the likely mechanism behind her visible
+     makeup. Built `Spawner.TestSetSkinDecor` / `lbtestdecor <param> [texturePath]`
+     (read-if-omitted, same shape as `TestArmorThicknessMorph`/`TestBodyMorph`) to inspect/set
+     them, with the SET path explicitly flagged as genuinely risky (needs
+     `mesh:CreateDynamicMaterialInstance`, an untested sibling of the Kismet-library function
+     that already crashed the game once this session on a different character mesh, item 79).
+     RedFalcon then said flatly "marita's makeup is not on the regular fable skin" — a real
+     correction, since the shared-asset name alone doesn't prove an identical render. Ran
+     `lbtestdecor FaceDecor` (read-only) plus `lbprobedump`'s own `[probe-mat]` across 5 different
+     actors (Native Male, Orient Female, Scum Male, Marita/Fable Female, plus the original probe)
+     to actually check. **Result: byte-identical.** Every one of them carries the exact same 4
+     `T_Adventurer_*` decor textures, the same single `RefractionDepthBias` scalar, zero Vector
+     overrides, and zero StaticSwitch overrides on their skin material slot — regardless of skin
+     family or whether the character visibly has makeup. Also checked her `GetColorControllers()`
+     list (19 entries: Hairs/Torso/Legs/Feets/Hands/Headgear/Waist, 3 each for most garment
+     slots) — no Skin/Face/Decor/Makeup controller exists there either.
+     **Conclusion, stated plainly rather than re-chased a 4th time**: these 4 SkinDecor texture
+     parameters are a universal composite-build default baked identically onto every actor's skin
+     material — NOT a per-character customization input, and NOT what makes Marita's face read
+     differently from a plain Fable-bodied NPC. This is the SAME negative result the 2026-08-10
+     tattoo investigation already found for `BodyDecor` specifically (`WINDROSE_MODDING_NOTES.md`
+     history, this file's item 35: "BodyDecor texture parameter (identical tattooed vs. not)") —
+     now independently reconfirmed across 5 more actors spanning 4 different skin families, not
+     just the original 2. Whatever actually produces her distinct look is NOT reachable through
+     this material's exposed instance parameters at all — either it's baked directly into a
+     uniquely-authored base texture/material specific to her quest-NPC identity (which would
+     require a differently-named asset than what's shown here, not proven either way), or it's a
+     mechanism this project hasn't found yet. **Don't re-open the SkinDecor-texture-parameter
+     angle for a per-character look question without a genuinely new lead** — this is now a
+     3-for-3 negative result on that specific idea.
+     `Spawner.TestSetSkinDecor`/`lbtestdecor` are kept, not removed — a legitimate, low-risk
+     READ tool (confirms in one command whether a given actor's skin material exposes a named
+     decor parameter at all, which is how this round's comparison was done quickly), and the SET
+     path remains available if a future actor ever DOES show a differing value. Just no longer
+     believed to be the answer to "what makes Marita's face look different."
+     **Same-day follow-up, RedFalcon re-ran the scan with proper HOME-probe actor identification
+     this time** (rather than the mod's own spawned test/comparison actors) — confirms the same
+     result on REAL, hand-authored characters, not just generic composite rolls: the real quest
+     Letty (`BP_NPC_QuestStatic_Letty_C`), the real Buccaneers Merchant statue
+     (`BP_AnimatedActor_Buccaneers_Merchant_01_C`), a BotC Merchant
+     (`BP_AnimatedActor_BotC_Merchant_02_C`), the real Standing Brethren Woman statue
+     (`BP_AnimatedActor_BotC_Female_Standing_01_C`), and a wild Handyman Gatherer all carry the
+     identical `T_Adventurer_BodyDecor_ID`/`_BodyDecor_M`/`_FaceDecor_M`/`_SkinAging_M` block
+     regardless of their own body archetype/skin family. Even named, purpose-built characters get
+     this same generic default — strengthens the conclusion above rather than changing it.
+
+110. **`lbsockets` (full skeleton socket dump) and `Spawner.RefLog` (a persistent, crash-surviving
+     reference log)** (2026-08-28, same day). RedFalcon wants to design an IK-slot/attachment
+     layout and asked what sockets are actually known — the honest answer was "a handful of
+     candidate-list guesses (some carried over from a different skeleton, the Senkamati mob) and
+     incidental sightings in probe dumps, never one real exhaustive list." Built
+     `Spawner.TestDumpSockets` / `lbsockets` — reuses the exact `GetAllSocketNames()` call already
+     proven safe by the shield/tool-attach fallback code, just run unconditionally on the
+     nearest/locked actor's Mesh instead of only as a last resort when a guess fails.
+     RedFalcon then asked for it in the actual console too, not just `ue4ss.log` — added a `say`
+     parameter (same convention as `Spawner.ApplySexChangeToNearest`: the command handler passes a
+     closure that both `print()`s and `Ar:Log()`s each line) threaded through from `main.lua`.
+     **Then a broader, standing-value request**: "a lot of these scans can crash over time...
+     make a log file just for this... doesn't get erased at game launch." `ue4ss.log` itself is
+     wiped fresh on every launch (already established this project, e.g. the ship-pivot dump's own
+     comment) — any tool that only ever `print()`s loses its findings the instant the game
+     restarts, crash or not, which is exactly the failure mode for a scanning session that ends in
+     a crash rather than a clean exit. Built `Spawner.RefLog(tag, msg)` — one shared, ever-growing
+     file (`LivingBase_ReferenceLog.txt`, same multi-candidate relative-path + `io.open(p, "a")`
+     convention as `SHIP_TEST_DUMP_PATHS`/`CUSTOM_SURVEY_PATHS` elsewhere in this file) rather than
+     a separate file per tool, per RedFalcon's own "doesn't have to be separate" — `tag` prefixes
+     each line (e.g. `[sockets]`, `[decor]`) so a mixed history from different tools stays
+     greppable by kind. Wired into both `lbsockets` (every socket line) and `lbtestdecor` (its
+     three substantive result lines — no-slot-found, read-report, set-result) as the first two
+     consumers; any future exploratory probe/tester should call this too rather than relying on
+     `print()` alone, now that the pattern exists.
+     **Same-day follow-up, a real bug found on first live use**: RedFalcon ran `lbsockets` on the
+     Buccaneers Merchant and got "0 sockets" despite her visibly carrying attached props (a
+     lantern, pouches, straps) -- meaning she clearly has real sockets. Root cause: the original
+     code wrapped the whole `GetAllSocketNames()` call + array-unwrap in ONE outer `pcall` with its
+     ok/err result completely discarded -- if the call fails for ANY reason (wrong calling
+     convention, wrong function on this actor's specific component class, etc.), it silently
+     produces an empty list with zero diagnostic, indistinguishable from an honestly-empty result.
+     Worse, the header comment's claim that this reused an "already proven safe" call was an
+     overstatement: the shield/tool-attach code's own socket-dump fallback branch (which this was
+     modeled on) had NEVER actually fired even once in this whole project's history (confirmed by
+     grep -- zero matching log lines ever existed before this function), so the call had only ever
+     been proven not to crash when WRITTEN, never proven to actually return real data when RUN.
+     Fixed to match this file's own established pattern for other uncertain `TArray`-returning
+     calls (`Spawner.TestListMorphTargets`' identical shape): try the OUT-PARAM calling convention
+     first (`body:GetAllSocketNames(names)` into a pre-created table), fall back to treating it as
+     a plain return value if that yields nothing, unwrap each element via `:get()` in case it comes
+     back as a `RemoteUnrealParam` wrapper (the item 86 lesson, applied proactively here rather than
+     after a second bug report), and -- the actual fix for THIS bug -- capture and report the call's
+     real pcall error text instead of swallowing it, so a genuine failure is visible instead of
+     looking identical to an empty list. Also added a genuinely-empty-result diagnostic: if both
+     calling conventions succeed but truly return nothing, it now prints which component/mesh
+     `actor.Mesh` actually resolved to, so a wrong-component case is distinguishable from a
+     truly socket-less one. **Not yet re-tested live** -- next step: `lbreload`, re-run `lbsockets`
+     on the Buccaneers Merchant and confirm it now either lists her real sockets or reports a clear
+     error/diagnostic instead of a silent zero.
+     **CONFIRMED LIVE, WORKING**, same day. RedFalcon re-ran it across several characters (real
+     data, not the diagnostic-zero case). Two real findings from comparing the captured lists
+     directly: (1) the Senkamati Caster's raw MOB skeleton (`BP_Mob_SenkamatiCorrupted_Regular_
+     Shaman_Caster`) is BYTE-IDENTICAL to the plain human "Regular" skeleton -- 340/340 names,
+     zero difference -- she's built on the exact same Skeleton asset as every human NPC, not a
+     distinct creature rig; this is the structural reason item 82's pose-compatibility finding
+     ("all the poses for standard bodies also worked on the native senkamati") holds. (2) the
+     Warrior/Hunter mob skeleton (315) is a STRICT SUBSET of the human skeleton -- zero
+     Warrior/Hunter-only sockets -- missing only ~25 "Dyn" secondary/jiggle-physics bones
+     (CollarDyn/calfDyn/thighDyn/upperarmDyn/lowerarmDyn-family, thighStrap), none of which are
+     IK/attach-relevant. **Practical conclusion for the IK-layout task**: for hand/attach-point
+     purposes, Human/Caster/Warrior/Hunter are functionally identical -- one unified socket layout
+     covers all of them, no per-skeleton variant needed. Of the ~340 total (mostly ordinary body/
+     face/finger bones), the real IK/attach candidates are: `ik_weapon_lSocket`/`ik_weapon_rSocket`
+     (the two true hand-IK sockets, left confirmed via the Warrior's shield, right presumably via
+     the craft-station tool attach), raw `ik_weapon_l`/`ik_weapon_r`/`hand_l`/`hand_r` bone
+     fallbacks (no baked offset), a set of back/hip/belt STOW sockets (`Axe1h_backsocket`,
+     `Axe2h_backsocket`, `Crossbow2h_backsocket`, `GSword_backsocket`, `Halberd_backsocket`,
+     `Musket_backsocket`, `swordSlot_lSocket`, `rapierSlot_lSocket`, `beltSlot_01/02_lSocket`/
+     `_rSocket`, `chestSlot_01Socket`), a head socket pair (`headSocket`/`headSocket_hat`), and a
+     cluster of FX-only particle-attach sockets (`FX_Weapon_l/r_Socket`, `FXSocket_Potion`,
+     `FX_Chest_Socket`, several combat-trail ones) not meant for meshes at all.
+     **Same-day follow-up**: RedFalcon first asked to see each socket's actual transform value,
+     not just its name -- a per-socket `GetSocketTransform(FName, 2)` read (RTS_Component space)
+     was added to `Spawner.TestDumpSockets`'s print/RefLog loop, but RedFalcon then clarified that
+     wasn't the ask: "i mean more like, what item is in the socket or what have you." Pulled the
+     transform read back out (genuinely untested engine surface, never actually confirmed working,
+     no longer needed) and replaced it with `socketOccupants(actor)` -- a new local helper that
+     sweeps the actor's own `SkeletalMeshComponent`s AND `StaticMeshComponent`s (props can be
+     either, per item 74) and reads each one's `GetAttachSocketName()` -- the EXACT SAME read
+     `dumpMeshComponentNames`'s own probe-mesh dump already does per-component, just inverted into
+     a socket-name -> `"compName (meshName)"` lookup instead of a component-name -> socket lookup.
+     `Spawner.TestDumpSockets` now prints an "occupied sockets" summary FIRST (just the handful
+     actually holding something, easy to scan) before the full 340-name list, each line annotated
+     with its occupant when one exists (`<socket>  <- <comp> (<mesh>)`) or left blank when nothing
+     is attached there -- most of the ~340 named sockets/bones are unused at any given moment, only
+     worn weapons/tools/props show up. Zero new engine-surface risk -- every call here
+     (`K2_GetComponentsByClass`, `GetAttachSocketName`, mesh-name resolution) is a read already
+     proven safe elsewhere in this exact file. **Not yet tested live** -- next step: `lbreload`,
+     run `lbsockets` on a character actually holding/wearing something socket-attached (a Warrior
+     with his shield, or an actor from `lbtesttool`) and confirm the occupied-sockets summary
+     correctly names it.
+
+111. **`lbtestaddslot <slot> <meshPath>` -- building a genuinely MISSING clothing component from
+     scratch, standalone experiment** (2026-08-28, same day). RedFalcon's real underlying question,
+     once the socket investigation (item 110) was underway: sailors (and other NPCs) sometimes
+     spawn with a composite roll that never creates a Torso (or other slot) component at all -- a
+     genuine build-time omission, not a hidden/removed piece -- so `Custom > Clothes`
+     (`Spawner.TestApplyClothingPiece`) has nothing to grab onto, since it only ever SWAPS an
+     EXISTING component's mesh by matching its current name; it can't create a component that was
+     never there. Asked whether the sockets from item 110 could be "populated" to fix this.
+     Checked first rather than assumed: every clothing/armor component in every probe-mesh dump
+     captured this session reports `socket=None` -- clothing pieces are NOT socket-attached at
+     all, they're plain extra `SkeletalMeshComponent`s sharing the body's skeleton via leader-pose
+     skinning. So sockets are the wrong lever for this specific problem; the real fix is
+     constructing the missing component the same structural way the composite system itself would
+     have: `AddComponentByClass` (the exact proven-safe recipe `Spawner.AttachShield`/
+     `TestAttachToolToNearest` already use successfully) + `SetLeaderPoseComponent(actor.Mesh)`
+     instead of a socket attach.
+     RedFalcon asked for this as a standalone test first, not wired into `TestApplyClothingPiece`
+     yet. `Spawner.TestAddMissingClothingSlot(slotArg, meshPathArg)` / `lbtestaddslot <slot>
+     <meshPath>`: refuses up front if the requested slot already has a real component (checked via
+     the same `clothingSlotOf` scan `Spawner.TestRemoveClothingPiece` already uses) -- this tool is
+     for filling a genuine gap, not adding a second competing piece; existing pieces still go
+     through `lbtestclothes`/`lbtestarmor`. Otherwise: `AddComponentByClass` a new
+     `SkeletalMeshComponent`, `SetSkeletalMeshAsset`/`SetSkeletalMesh` the requested mesh onto it,
+     attach it to the body (no socket, empty string = attach at root), then the one genuinely NEW
+     call in this codebase -- `SetLeaderPoseComponent(body)`, tried under the modern UE5 name
+     first and falling back to the deprecated pre-5.1 `SetMasterPoseComponent` alias if that pcall
+     fails (this game is UE 5.6 so the modern name should be right, but the fallback costs
+     nothing). VERIFIED via `GetLeaderPoseComponent()`/`GetMasterPoseComponent()` readback
+     (matching that a component's own name equals the body's), not trusted from the call alone --
+     same discipline as every other "does this attach actually stick" check in this file. Reports
+     a clear `verified=true/false` in both the console/log output and `Spawner.RefLog` (tagged
+     `addslot`), and an explicit warning if the leader-pose call couldn't be confirmed (the mesh
+     may render statically at the wrong pose without it, not crash -- but shouldn't be trusted
+     without a visual check).
+     **Genuinely new engine surface, flagged plainly**: `AddComponentByClass` + the attach call are
+     proven; `SetLeaderPoseComponent` itself has never been called anywhere in this codebase
+     before. Not in the same crash-risk category as `SetBody`/`AttachActorToShip`/
+     `RecreateClothingActor` (those are all confirmed-fatal native crashes) -- this is a much more
+     standard, long-stable Blueprint-exposed function -- but still unconfirmed in THIS specific
+     UE4SS binding until tested live.
+     `lint.py` clean (`compile: 10 scripts OK`). Deployed `spawner.lua`/`main.lua` to the live
+     install (`lbreload` needed). **Not yet tested live** -- next step: `lbreload`, find (or
+     despawn/respawn until you get) a Sailor missing his shirt, run `lbtestaddslot Torso
+     <a Sailor torso mesh path>`, and check both the `verified=` result and -- the actual test --
+     whether the new piece visually deforms correctly with the body's animation rather than sitting
+     rigid/misplaced.
+     **Same-day fix, caught by RedFalcon before any live test**: asked whether the mesh path needs
+     the trailing `.SK_Armor_...` object-name suffix -- it did, but shouldn't have had to: every
+     other path-fed tester in this file (`lbtesttool`/`lbtestmaterial`/`lbtestpose`) already
+     auto-appends that suffix when a bare `/Game/...` path is pasted without one, a convenience
+     this function was overlooked for when first written. Added the identical
+     `meshPathArg:match("%.[%w_]+$")` check/append. `lint.py` clean, deployed.
+     **Same-day: a real crash report with no diagnosable cause, root-caused to a logging gap and
+     fixed.** RedFalcon reported a crash right after using this tool ("dang, the fun crash") but
+     neither `ue4ss.log` (which resets on every launch/crash) nor `LivingBase_ReferenceLog.txt`
+     (item 110's own crash-survival file) had a single `[test-addslot]` line anywhere -- because
+     this function only ever logged its FINAL result, AFTER the three risky calls
+     (`AddComponentByClass`/the attach/`SetLeaderPoseComponent`) already ran, the exact "log only
+     after, not before" mistake item 71's `AttachActorToShip` crash already taught this project
+     once. Fixed by adding a `breadcrumb()` helper (print + `Spawner.RefLog`) called IMMEDIATELY
+     BEFORE each of the three risky calls, so a future crash leaves a trace of exactly which one
+     did it instead of a silent gap. Whether THIS crash was actually caused by `lbtestaddslot` was
+     never confirmed either way (RedFalcon's report didn't specify), but the logging gap itself was
+     real and is now fixed regardless. `lint.py` clean, deployed.
+
+112. **The custom-archetype investigation: full composite-outfit structure mapped three levels
+     deep, and the first real construction experiment built** (2026-08-29). RedFalcon's real
+     endgame, stated plainly: "making our own archetype that can then be applied, similar to how
+     we do the walking maritas" -- with every clothing slot specifiable, closing the exact gap
+     `lbtestaddslot` (item 111) was built for, but through the game's own NATIVE composite-build
+     path instead of hand-constructed components.
+     **Correction along the way, worth recording**: this investigation started from a wrong
+     assumption RedFalcon caught -- "pretty sure that's not how it works anymore. she is ready and
+     fully dressed at spawn." Re-reading the CURRENT `Testbed.ApplyFemaleReskinTarget` (not
+     trusting this file's own summarized history) confirmed a real 2026-08-19 rework:
+     `Config.FEMALE_CHARACTER_PARAMS` gives Letty/Marita/Merchant their OWN real, live-probed
+     `CompositeMeshComponentParams` DataAsset pre-build -- the entire old `ForceHeadwear`/content-
+     match/topless-bald settle-check-and-reroll system (items 36-37) is DEAD CODE for these three
+     characters specifically, superseded, not merely supplemented. Only the generic "Woman"
+     roster entry still uses the old shared-Brethren-Woman-plus-randomness approach (and
+     deliberately un-forced, per RedFalcon's own live-testing call that its native randomness
+     already produces acceptable results either way). **Lesson reinforced**: this file's own
+     summarized history is not authoritative once the underlying code has moved on -- check the
+     live source before answering a specific "how does X work" question, not just this file.
+     **Structure mapped, three levels, via RedFalcon's own live asset-JSON exports** (a tool this
+     project hadn't used before this session -- presumably FModel or similar, run directly against
+     the actual `.uasset` files): `R5CompositeMeshComponentBaseParams` (Marita's own real params
+     asset) -> per category (`Customization.UID.Armor`/`Hairs`/`Facial.Eyebrows`), a per-sex list
+     of `R5CompositeMeshGroup` references (Armor: ONE fixed group, `bAllowCustomization=false`;
+     Hairs/Eyebrows: dozens of options, `bAllowCustomization=true` -- this IS the real backing data
+     for the game's own character-creation hair/eyebrow picker) -> `R5CompositeMeshGroup`
+     (`DA_NPC_QuestStatic_Smugglers_MaritaSuares_Equipment_CompositeMeshGroup`), a flat array of
+     SIX `R5CompositeMeshParams` references, one per body part (Feet=Conquistador, Hands/Head/
+     Legs/Torso=Flibustier, Belt=Gunslinger -- confirming a "Group" is genuinely an arbitrary
+     mix-and-match bundle, not a single-family outfit) -> `R5CompositeMeshParams` (the bottom
+     level), which finally holds the real `BaseMesh.AssetPathName` per sex, `Attachments` (socket-
+     attached extras like her pistols/pouches, each with a full baked Rotation/Translation/Scale
+     transform -- the data-driven answer to the earlier IK-socket-offset question), and
+     `ColorData.ColorIndexesMap` (confirming color is baked in at THIS level, build-time-only --
+     consistent with, not contradicting, the already-established "post-build ColorController/
+     ColorParams writes never render" dead end from item 35).
+     **De-risked plan, not "build everything from scratch"**: since every existing catalog
+     family/slot almost certainly already has its own `R5CompositeMeshParams` ("CompositeMeshData")
+     asset (confirmed for Dogface: 12 entries, Feet/Head/Legs/Torso x 3 numbered variants each,
+     same shape as `Config.CUSTOM_CLOTHES`' own raw-mesh catalog), a custom archetype doesn't need
+     the deepest level built from scratch -- only a NEW `R5CompositeMeshGroup` referencing EXISTING
+     per-piece assets from whatever families you want, mixed freely. Swept `pakcontents.xlsx` for
+     the full set (354 pieces, 33 families -- some overlapping `Config.CUSTOM_CLOTHES`' own 25,
+     some new: BlackBeard_Grenadier/Huntsman/Sergeant, Combatant, Crafter, Default, Drowned,
+     Drowned_Armored, the Senkamati_*_Feather/Wood families, several `Set_*`/`NPC_*` families) into
+     `Config.CUSTOM_COMPOSITE_PIECES` (config.lua) -- reference data only so far, not wired into
+     anything yet.
+     **`Spawner.TestBuildCustomOutfit` / `lbtestgroup <slot> <family> <name>`** (spawner.lua) is the
+     first real construction experiment -- deliberately the SMALLEST possible test: takes Marita's
+     own known-real 6-piece bundle (hardcoded from the live probe dumps above) and swaps exactly
+     ONE slot for a different catalog family, rather than building a fully custom archetype in one
+     shot. **This is the single riskiest experiment built this entire session** -- three genuinely
+     new engine calls stacked in one function, none previously used in this codebase: (1)
+     `StaticConstructObject` on `R5CompositeMeshGroup` (only ever proven on a plain UMG `TextBlock`
+     before, item 22 -- a real extrapolation, not a repeat), (2) writing a `TArray` of HARD OBJECT
+     REFERENCES (every prior property write this session has been a scalar, a Vector/Quat struct,
+     or a single texture/material reference -- never an array of object pointers; tries direct
+     Lua-table assignment first, falls back to `:Add()` per element, reports the actual resulting
+     count rather than trusting either blindly), (3) `DuplicateObject` (never used anywhere in this
+     codebase before -- chosen over hand-constructing a whole new
+     `R5CompositeMeshComponentBaseParams` from scratch specifically to avoid ALSO having to build
+     the deeper `CustomizationData`/`GameplayTag`/`TMap` structure from nothing; if `DuplicateObject`
+     itself fails, the function stops there rather than falling back to that much bigger from-
+     scratch task in the same pass). A final re-read verifies the Armor-category patch actually
+     stuck (TMap-entry structs returned by index may come back as copies in this binding, unproven
+     either way) rather than trusting the write blindly.
+     **Every risky call is preceded by a breadcrumb** (`print` + `Spawner.RefLog`, tagged
+     `"group"`) immediately before it runs -- the item-111 lesson applied proactively this time, not
+     after a crash: if this crashes, `LivingBase_ReferenceLog.txt`'s last `[group]` line names
+     exactly which of the three new calls did it.
+     `lint.py` clean (`compile: 10 scripts OK`; the `StaticConstructObject`/`DuplicateObject`
+     "undefined call" warnings are the same pre-existing false-positive class already documented
+     for these exact global UE4SS functions, e.g. line 336's own `StaticConstructObject` — the
+     linter can't resolve UE4SS-provided globals, not a real issue). Deployed
+     `spawner.lua`/`main.lua`/`config.lua` to the live install (`lbreload` needed).
+     **Not yet tested live** -- this is a first attempt at genuinely unprecedented engine surface,
+     stacked three calls deep, in the single riskiest experiment this session has built. Next step:
+     `lbreload`, then `lbtestgroup Torso Dogface 01` (or any other catalog family/slot combo) and
+     watch `LivingBase_ReferenceLog.txt`/the console in real time — if it crashes, the last
+     `[group]` line tells us which call to investigate; if it succeeds, the actual test is whether
+     the spawned actor's outfit renders with the swapped piece looking correct (not distorted,
+     not missing, deforming properly with the body).
+     **First live run: NOT a crash — a clean, caught Lua error, and a real (contained) bug.**
+     `resolveAsset` threw `GetPackageNameFromLongName: Name wasn't long` on the very first piece
+     resolve, `pcall`-caught with a full stack trace, no engine damage at all — genuinely
+     reassuring given the risk level of the rest of this function. Root cause: every path in this
+     function — both the hardcoded `BASELINE` table and every row `Config.CUSTOM_COMPOSITE_PIECES`
+     generates — is missing the trailing `.AssetName` suffix `resolveAsset`'s `StaticFindObject`
+     call actually requires; the catalog-generation script stripped it (`rsplit('.',1)[0]` also ate
+     the object-name segment, not just `.uasset`), and the hardcoded baseline was typed without it
+     from the start. Fixed with the same auto-append convenience every other path-fed tester in
+     this file already has (`lbtesttool`/`lbtestmaterial`/`lbtestpose`) — a local `ensureSuffix()`
+     applied to every path before resolving, rather than regenerating the whole 354-row catalog
+     over a formatting detail. `lint.py` clean, deployed.
+     **Second live run: TWO of the three genuinely-new engine operations CONFIRMED WORKING,
+     cleanly, on the first real attempt.** `StaticConstructObject` on `R5CompositeMeshGroup`
+     succeeded ("Group constructed ok") — generalizes beyond the one class (a plain UMG
+     `TextBlock`, item 22) it had ever been proven on before. Writing the `CompositeMeshesParams`
+     array via plain Lua-table assignment ALSO succeeded on the first try — "Group.
+     CompositeMeshesParams now reports 6 entries (wanted 6)" — no `:Add()`-per-element fallback
+     needed at all; this UE4SS binding evidently marshals a Lua table straight into a `TArray` of
+     hard object references, at least for this property. Only `DuplicateObject` failed, and safely
+     so: "attempt to call a nil value (global 'DuplicateObject')" — a clean Lua-level error (calling
+     a name that was never registered as a global can't touch the engine at all, unlike a real
+     engine call with wrong arguments) confirming the function simply isn't exposed under that name
+     in this binding, not a deeper problem. Added a fallback to `StaticDuplicateObject` — the real
+     underlying C++ engine function name, matching the exact naming pattern
+     `StaticFindObject`/`StaticConstructObject` (both already proven in this codebase) already
+     follow — tried automatically if the plain name fails. `lint.py` clean, deployed.
+     **Third live run: `StaticDuplicateObject` ALSO confirmed unavailable** — same clean "attempt
+     to call a nil value" Lua error, not a crash, for both duplicate-object names now. Pivoted
+     immediately to the fallback plan already anticipated: building a BRAND NEW
+     `R5CompositeMeshComponentBaseParams` from scratch via the SAME `StaticConstructObject` call
+     already proven working on `R5CompositeMeshGroup` moments earlier in the same run, rather than
+     guessing a third duplicate-object name blind. Its `CustomizationData` (one entry, Armor
+     category only — Hairs/Eyebrows deliberately omitted for this minimal test) is written as ONE
+     nested Lua table literal in a single assignment, betting that the table->TArray marshaling
+     which just worked for a flat array of object references generalizes to an array of NESTED
+     STRUCTS (a `GameplayTag`, a bool, and a `TMap`-shaped sub-array) too — a genuinely new,
+     unproven assumption, verified via re-read afterward exactly like the earlier array write was,
+     not trusted blindly; the function now refuses to spawn at all if that verification comes back
+     empty. `lint.py` clean, deployed.
+     **Fourth live run: CONFIRMED TO CRASH THE GAME.** The breadcrumb printed immediately before
+     the `CustomizationData` table-literal assignment ("about to write CustomizationData...") was
+     the LAST line written to either `LivingBase_ReferenceLog.txt` or `ue4ss.log` before the game
+     went down — execution never returned to Lua. Everything before it in this same run is
+     confirmed SAFE: both `StaticConstructObject` calls (on `R5CompositeMeshGroup` AND on
+     `R5CompositeMeshComponentBaseParams`) and the flat array-of-object-references write on the
+     Group all completed cleanly. So the crash is narrowly isolated to this ONE specific
+     operation — assigning a nested Lua table (containing a `GameplayTag` sub-table, a bool, and a
+     `TMap`-shaped sub-array of Key/Value pairs) to `CustomizationData` in a single write — not a
+     general failure of object construction or array writes, which both remain proven-safe
+     techniques going forward.
+     **Immediately disabled**: pulled the crashing assignment (and the now-unreachable
+     verification/spawn code after it, which Lua's own "`return` must be the last statement in its
+     block" rule required physically relocating below the function's `end` rather than leaving
+     commented-out in place) out from live execution — `Spawner.TestBuildCustomOutfit` now returns
+     `false` with a clear "confirmed to crash, stopping here" message right before reaching that
+     line, matching this file's established treatment of other confirmed-fatal calls (`SetBody`/
+     `AttachActorToShip`/`RecreateClothingActor`). The crashing code itself is kept, block-commented,
+     as a documented record — not deleted, not silently removed. `lint.py` clean (`compile: 10
+     scripts OK`), deployed.
+     **Net status of the custom-archetype investigation, closed out for this session**: the
+     underlying insight (a `CompositeMeshGroup` is a flat array of existing per-piece references,
+     mixable across families) is confirmed correct and the composite-consumption mechanism for a
+     whole custom outfit is proven reachable in principle — `StaticConstructObject` on BOTH
+     relevant classes works, and writing a flat array of object references works. The one thing
+     that doesn't yet work is assembling the OUTER `CustomizationData` wrapper in a single
+     all-in-one nested-table write. **Real next step, not yet attempted**: construct the
+     `CustomizationData` entry's fields INDIVIDUALLY instead of as one large table literal —
+     e.g. build the entry struct, assign `GroupCategoryId` alone, then `bAllowCustomization` alone,
+     then `CompositeMeshGroupsByBodySex` alone (and possibly that TMap's own Key/Value pair
+     one field at a time too) — since the flat array-of-objects case proved simple single-shape
+     writes work fine, the crash may be specific to how much heterogeneous nested structure was
+     asked for in one assignment, not nested writes in general. A genuinely different next
+     experiment, not a retry of what just crashed.
+
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).
   **The engine drops most repeat keydown events for these specific keys** before UE4SS

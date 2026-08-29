@@ -148,7 +148,11 @@ local lastTownIdx = 0
 -- Spawn one specific Config.TOWNSFOLK_CLASSES entry -- shared by the rotation-driven Num2 key
 -- (Testbed.SpawnWalker, picks the next entry itself) and the by-name console lookup
 -- (Testbed.SpawnWalkerByName, 2026-08-13, for lbspawn/lblook validation -- see main.lua).
-local function spawnTownsmanEntry(cls)
+-- `atLocation` (2026-08-25, optional): every existing caller omits this and gets the original
+-- "spot in front of the player" behavior (Spawner.Spawn's own nil-atLocation default) unchanged.
+-- Added so Testbed.SpawnShipLookPreview can place a real Walker at a camera-aimed spot instead
+-- of duplicating this function's archetype-variation/label/fallback logic a second time.
+local function spawnTownsmanEntry(cls, atLocation)
     -- Only the plain Citizens need the Handyman brain bolted on.
     local ai = (cls.handymanAI and Config.HANDYMAN_FOR_TOWNSFOLK)
         and Config.HANDYMAN_AI_CLASS or nil
@@ -167,11 +171,11 @@ local function spawnTownsmanEntry(cls)
     -- Prefer spawn_menu.ini's curated label over the mechanical "TOWN_<name>" fallback -- see
     -- Spawner.FriendlyLabels' own comment (main.lua) for the full mechanism.
     local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[cls.name]) or ("TOWN_" .. cls.name)
-    local actor = Spawner.Spawn(cls.path, spawnLabel, nil, nil, ai, nil, false, look)
+    local actor = Spawner.Spawn(cls.path, spawnLabel, atLocation, nil, ai, nil, false, look)
     if not (actor and actor:IsValid()) then
         -- Path miss (e.g. a Handyman variant) — fall back to the plain Walker.
         log("Townsman '" .. cls.name .. "' failed; falling back to Walker.")
-        return Spawner.Spawn(Config.TOWNSFOLK_WALKER_CLASS, "TOWN_Walker", nil, nil,
+        return Spawner.Spawn(Config.TOWNSFOLK_WALKER_CLASS, "TOWN_Walker", atLocation, nil,
             Config.HANDYMAN_FOR_TOWNSFOLK and Config.HANDYMAN_AI_CLASS or nil)
     end
     -- Townsfolk spawn exactly as the game ships them (no re-skin, no hair colour).
@@ -261,15 +265,21 @@ end
 -- the same spot + facing and are each snapped to the floor, so a "SitterOnStool" lands
 -- on its stool. Both are tracked/persisted, so DEL removes the pair (F9 undoes one at a
 -- time). Statues posed "SitterOnGround" need no furniture at all.
-local function spawnPosed(path, label, furniture, yaw)
-    local spot   = frontSpot(300)
-    local floorZ = playerFloorZ()
+-- `atLocation` (2026-08-25, optional): every existing caller omits this and gets the original
+-- frontSpot(300)+floor-snap behavior unchanged. When given, it's used AS-IS and floor-snap is
+-- SKIPPED entirely -- playerFloorZ() traces down from the PLAYER's own position, which is only
+-- meaningful for the default near-player spot; a caller passing its own 3D point (e.g. a
+-- camera-aimed spot, Testbed.SpawnShipLookPreview) has already decided the height on purpose,
+-- and re-snapping it to the player's local ground would silently discard that.
+local function spawnPosed(path, label, furniture, yaw, atLocation)
+    local spot   = atLocation or frontSpot(300)
+    local floorZ = atLocation and nil or playerFloorZ()
     if furniture then
         local f = Spawner.Spawn(furniture, label .. "_Seat", spot, nil, nil, yaw)
-        if f and f:IsValid() then snapToFloor(f, floorZ) end
+        if f and f:IsValid() and floorZ then snapToFloor(f, floorZ) end
     end
     local actor = Spawner.Spawn(path, label, spot, nil, nil, yaw)
-    if actor and actor:IsValid() then snapToFloor(actor, floorZ) end
+    if actor and actor:IsValid() and floorZ then snapToFloor(actor, floorZ) end
     return actor
 end
 
@@ -914,7 +924,11 @@ local freezeSenkaStatue
 -- (spawnCleanSenkamati, picks the next entry itself) and the by-name console lookup
 -- (Testbed.SpawnSenkaByKey, 2026-08-13 -- see main.lua). Returns true/false, matching the
 -- original function's own return contract (used as a success flag, not the actor itself).
-local function spawnSenkaEntry(s)
+-- `atLocation` (2026-08-25, optional): every existing caller omits this and gets the original
+-- frontSpot(300) behavior unchanged. Added for Testbed.SpawnShipLookPreview's "senkamati" kind
+-- -- see spawnPosed's own comment for why floor-snap is skipped when this is set (playerFloorZ()
+-- is only meaningful for the default near-player spot, not a caller-supplied 3D point).
+local function spawnSenkaEntry(s, atLocation)
     local helmetLabel = (s.kind ~= "corrupted") and (s.helmet and "full armor" or "no helmet") or "corrupted"
     log(string.format("Clean Senkamati: %s (%s, %s)", s.name, s.kind, helmetLabel))
     -- Spawn LABEL differentiated by kind + mask (2026-08-11, RedFalcon's request) -- "SENKA_Hunter"
@@ -943,7 +957,7 @@ local function spawnSenkaEntry(s)
         local look = { params = s.params, archetype = arche, sex = s.sex, reskinTarget = senkaRowKey(s) }
         local baseClass = s.baseClass or Config.WARRIOR_BASE_CLASS or Config.CREW_CLASS
         local ai = Config.SENKAMATI_HANDYMAN and Config.HANDYMAN_AI_CLASS or nil
-        local actor = Spawner.Spawn(baseClass, rowLabel, frontSpot(300), nil, ai, nil, false, look, nil, s.idle)
+        local actor = Spawner.Spawn(baseClass, rowLabel, atLocation or frontSpot(300), nil, ai, nil, false, look, nil, s.idle)
         if not (actor and actor:IsValid()) then return nil end
         -- `idle` (2026-08-15, RedFalcon's request) -- frozen counterpart to the normal walking
         -- crew row, added specifically as an NSFW-safer comparison option: the "posed" statue rows
@@ -959,7 +973,7 @@ local function spawnSenkaEntry(s)
         -- match the statue roster's own crew-kind handling, since a frozen pawn never gets the
         -- floor correction her own AI navigation would otherwise have applied.
         if s.idle then
-            snapToFloor(actor, playerFloorZ())
+            if not atLocation then snapToFloor(actor, playerFloorZ()) end
             freezeSenkaStatue(actor)
         end
         -- Disarm + de-corrupt (weapon/hair/helmet). Same routine restore uses so a reloaded spawn
@@ -979,13 +993,13 @@ local function spawnSenkaEntry(s)
         -- (clean skin/hair, original zombie-gait stance), "corrupted" skips that entirely (see
         -- senkaMobFix's own comment) to show the untouched, pre-de-corrupt appearance.
         local friendly = Config.MAKE_CREATURES_FRIENDLY == true
-        local actor = Spawner.Spawn(s.mob, rowLabel, frontSpot(300), nil, nil, nil, friendly,
+        local actor = Spawner.Spawn(s.mob, rowLabel, atLocation or frontSpot(300), nil, nil, nil, friendly,
             { reskinTarget = senkaRowKey(s) }, nil, s.idle)
         if not (actor and actor:IsValid()) then
             log("mob spawn FAILED (class unresolved?)")
             return nil
         end
-        snapToFloor(actor, playerFloorZ())
+        if not atLocation then snapToFloor(actor, playerFloorZ()) end
         -- `idle` (2026-08-15) -- see the crew branch's own comment above for why. The mob body is
         -- a single pre-baked skeletal mesh (already fully clothed in her corrupted look, not
         -- composite-built), so she was never at NSFW risk the way a crew-kind row can be -- this
@@ -1338,7 +1352,10 @@ end
 -- picked) and the by-name console lookups (Testbed.SpawnStandingByName/etc., 2026-08-13, for
 -- lbspawn/lblook validation -- see main.lua). `label` is only used for the log line prefix here;
 -- callers still track their OWN rotation cursor via cycleStatues, not this function.
-local function placeStatueEntry(w, label, yaw)
+-- `atLocation` (2026-08-25, optional): every existing caller omits this and gets the original
+-- frontSpot-based placement unchanged -- forwarded straight to spawnPosed's own new parameter,
+-- see its comment for why floor-snap is skipped when this is set.
+local function placeStatueEntry(w, label, yaw, atLocation)
     local nm = statueEntryName(w)
     -- Per-entry yaw correction. Posed AnimatedActors bake their facing into the animation, and about
     -- half of the sitters were authored facing the opposite way — so at one placement yaw they split
@@ -1353,7 +1370,7 @@ local function placeStatueEntry(w, label, yaw)
     -- Statues have no human name field in Config at all, so this is the one roster where the
     -- fallback was never anything but a category+faction string, not a real name.
     local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[nm]) or (label:upper() .. "_" .. tostring(w.faction))
-    return spawnPosed(w.path, spawnLabel, nil, placeYaw)
+    return spawnPosed(w.path, spawnLabel, nil, placeYaw, atLocation)
 end
 
 local function cycleStatues(list, label, yaw)
@@ -1394,6 +1411,131 @@ function Testbed.SpawnStandingByName(name)    return statueByName(Config.STANDIN
 function Testbed.SpawnSeatedByName(name)      return statueByName(Config.SEATED_STATUES,      "seated",      name) end
 function Testbed.SpawnChairByName(name)       return statueByName(Config.CHAIR_STATUES,       "chairseat",   name) end
 function Testbed.SpawnInteractiveByName(name) return statueByName(Config.INTERACTIVE_STATUES, "interactive", name, playerYaw()) end
+
+-- Ship-look preview (2026-08-25) -- RedFalcon asked to see an ACTUAL Walker or Statue placed
+-- (not the plain Config.CREW_CLASS placeholder the ship-pivot test used, see spawner.lua's own
+-- "Ship-pivot placement test" section / WINDROSE_MODDING_NOTES.md §13) so real content can be
+-- eyeballed instead of judged from log numbers alone. Two branches:
+--   * On a ship right now (Spawner.FindPlayerShip() valid): use the SAME proven pivot-relative
+--     math §13 confirmed live, placed via a direct Spawner.Spawn call -- deliberately NOT routed
+--     through spawnTownsmanEntry/placeStatueEntry below, since both of those hardcode "spot in
+--     front of the player" (frontSpot/nil atLocation) with no location-override parameter, and a
+--     ship deck's own `playerFloorZ()`-based floor-snap (statues) would be meaningless on a
+--     moving platform anyway -- see §13's own note that the settled Z needs re-measuring per
+--     spot, not assumed from ground-floor logic.
+--   * Not on a ship: falls through to the EXACT already-proven "in front of you" placement --
+--     `spawnTownsmanEntry`/`placeStatueEntry` directly (both local to this file, already in
+--     scope) -- no reason to duplicate frontSpot/floor-snap logic for the common case.
+-- Picks the first roster entry of whichever kind ("Walker" / Config.STANDING_STATUES[1], the
+-- Brethren Standing Woman) -- this is a quick look, not a by-name picker; extend with a name
+-- parameter later if a specific look is wanted.
+-- First idle=true row in Config.SENKAMATI_LOOKS (2026-08-25, for the "senkamati" kind below) --
+-- "one of the idle forms" per RedFalcon's request, not a by-name picker. Found dynamically
+-- rather than hardcoding a table index, so a future reordering of the roster (already happened
+-- more than once historically, see this file's own SENKAMATI_LOOKS comment history) can't
+-- silently point this at the wrong row.
+local function firstIdleSenkaLook()
+    for _, s in ipairs(Config.SENKAMATI_LOOKS or {}) do
+        if s.idle then return s end
+    end
+    return nil
+end
+
+function Testbed.SpawnShipLookPreview(kind, fwd, right, up)
+    kind = tostring(kind or "walker"):lower()
+    if kind ~= "walker" and kind ~= "statue" and kind ~= "senkamati" then
+        log("SpawnShipLookPreview: unknown kind '" .. kind .. "' -- use 'walker', 'statue', or 'senkamati'.")
+        return nil, "unknown kind"
+    end
+
+    local ship = Spawner.FindPlayerShip and Spawner.FindPlayerShip()
+    if not (ship and ship:IsValid()) then
+        -- Not on a ship -- camera-aimed placement (2026-08-25, RedFalcon's request), NOT this
+        -- mod's ordinary near-player spot: 600uu straight out along wherever the camera is
+        -- actually looking (pitch included), via Spawner.CameraForwardSpot -- see that
+        -- function's own comment for why camera-origin is safe here specifically (long enough
+        -- distance that the camera-to-pawn-root offset stops mattering) despite this project's
+        -- own established rule against it at short range. Falls back to the ordinary
+        -- frontSpot-based placement (nil atLocation) if the camera read fails for any reason,
+        -- rather than failing the whole preview outright.
+        local spot = Spawner.CameraForwardSpot(600)
+        if kind == "walker" then
+            local entry = Config.TOWNSFOLK_CLASSES and Config.TOWNSFOLK_CLASSES[1]
+            if not entry then log("SpawnShipLookPreview: no Walker entry configured."); return nil end
+            return spawnTownsmanEntry(entry, spot)
+        elseif kind == "statue" then
+            local entry = Config.STANDING_STATUES and Config.STANDING_STATUES[1]
+            if not entry then log("SpawnShipLookPreview: no standing-statue entry configured."); return nil end
+            return placeStatueEntry(entry, "standing", nil, spot)
+        else
+            local entry = firstIdleSenkaLook()
+            if not entry then log("SpawnShipLookPreview: no idle Senkamati look configured."); return nil end
+            return spawnSenkaEntry(entry, spot)
+        end
+    end
+
+    -- On a ship -- pivot-relative placement, §13's proven math. Defaults match the ship-pivot
+    -- test's own defaults (300 forward, 0 right, 100 up) -- expect the ACTUAL settle spot to
+    -- differ, same as §13 found; re-run with different numbers (or `lbshiptest` status-only) to
+    -- tune a specific spot.
+    fwd = tonumber(fwd) or 300.0
+    right = tonumber(right) or 0.0
+    up = tonumber(up) or 100.0
+
+    local shipClass = "?"
+    pcall(function() shipClass = ship:GetClass():GetFullName() end)
+    local shipLoc, shipYaw
+    pcall(function() shipLoc = ship:K2_GetActorLocation() end)
+    pcall(function() shipYaw = ship:K2_GetActorRotation().Yaw end)
+    if not shipLoc then
+        log("SpawnShipLookPreview: ship location unavailable.")
+        return nil, "ship location unavailable"
+    end
+    shipYaw = shipYaw or 0.0
+    local dest = Spawner.ShipLocalToWorld(shipLoc, shipYaw, fwd, right, up)
+
+    local actor
+    if kind == "walker" then
+        local entry = Config.TOWNSFOLK_CLASSES and Config.TOWNSFOLK_CLASSES[1]
+        if not entry then log("SpawnShipLookPreview: no Walker entry configured."); return nil end
+        local ai = (entry.handymanAI and Config.HANDYMAN_FOR_TOWNSFOLK) and Config.HANDYMAN_AI_CLASS or nil
+        actor = Spawner.Spawn(entry.path, "SHIP_LOOK_Walker", dest, nil, ai, shipYaw, false)
+    elseif kind == "statue" then
+        local entry = Config.STANDING_STATUES and Config.STANDING_STATUES[1]
+        if not entry then log("SpawnShipLookPreview: no standing-statue entry configured."); return nil end
+        actor = Spawner.Spawn(entry.path, "SHIP_LOOK_Statue", dest, nil, nil, shipYaw)
+        -- Spawner.AttachActorToShip (a real engine attach) CONFIRMED TO CRASH THE GAME LIVE
+        -- (2026-08-25) -- see that function's own comment, do not use it. Spawner.AddShipRider is
+        -- the safe replacement: re-syncs the statue's transform to the ship on a timer instead of
+        -- attaching (Config.SHIP_RIDER_TICK_MS's own comment has the full rationale) -- built from
+        -- calls already proven safe everywhere else in this file, not the crashing attach UFUNCTION.
+        if actor and actor:IsValid() then
+            Spawner.AddShipRider(actor, ship)
+        end
+    else
+        -- "senkamati": an idle (frozen) Senkamati look. A "crew"-kind idle row (the first one
+        -- found) is a Character with the same CharacterMovementComponent the Walker branch
+        -- relies on for free BasedMovement -- StopLogic (freezeSenkaStatue, called inside
+        -- spawnSenkaEntry for any s.idle row) only stops the AIController's decision-making, not
+        -- the movement component's own per-tick floor check, so this is EXPECTED to auto-latch
+        -- the same way the Walker does, unconfirmed live. If the picked entry ever turns out to
+        -- be a "mob"/"corrupted" kind instead (a different base class -- see firstIdleSenkaLook's
+        -- own comment on why the exact row isn't hardcoded), that assumption should be re-checked
+        -- rather than assumed to hold identically.
+        local entry = firstIdleSenkaLook()
+        if not entry then log("SpawnShipLookPreview: no idle Senkamati look configured."); return nil end
+        actor = spawnSenkaEntry(entry, dest)
+    end
+
+    if not (actor and actor:IsValid()) then
+        log("SpawnShipLookPreview: spawn failed for kind=" .. kind)
+        return nil, "spawn failed"
+    end
+    log(string.format(
+        "SpawnShipLookPreview | kind=%s | ship=%s | shipLoc=(%.1f,%.1f,%.1f) yaw=%.1f | requestedLocal=(fwd=%.1f right=%.1f up=%.1f) | dest=(%.1f,%.1f,%.1f)",
+        kind, shipClass, shipLoc.X, shipLoc.Y, shipLoc.Z, shipYaw, fwd, right, up, dest.X, dest.Y, dest.Z))
+    return actor
+end
 
 -- TEMP DEV/TEST TOOL (2026-08-10, replacing TestFemaleStatueAI): giving the Handyman AI directly
 -- to the posed FACTION_STATUES women (BotC_Female_Standing_01 / Female_Sitting_01-03) was tried

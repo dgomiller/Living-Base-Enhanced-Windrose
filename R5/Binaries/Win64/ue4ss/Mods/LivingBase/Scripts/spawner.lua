@@ -525,20 +525,53 @@ end
 -- LineTraceSingle's channel arg is TraceTypeQuery index 0, which maps to raw channel 3 by Unreal's
 -- default project settings) to Block, WITHOUT touching any other channel's existing response --
 -- additive, not a wipe-and-rebuild like LetFurniturePass.
--- TEMPORARILY DISABLED (2026-08-24, diagnostic) -- RedFalcon reported wild NPCs' legs bending/
--- lifting near a mod-spawned NPC (including mod-spawned vs. mod-spawned -- "they behave the same
--- to each other"), confirmed live to reproduce on FRESH spawns never touched by F7/placement, so
--- unrelated to today's placement-preview work. Leading theory: this function's own
--- SetCollisionResponseToChannel(3, 2) below -- forcing raw Visibility to Block on every primitive
--- component of every mod spawn, added 2026-08-22 so raycast-targeting (Num+/hover-highlight/
--- lbprobe, which also traces on that same channel) could hit walking NPCs/idle Senkamati/drops --
--- is ALSO exactly the kind of channel a character's own foot-IK/ground-detection trace commonly
--- uses, so any OTHER pawn now blocking it registers as solid ground under its feet. The actual
--- SetCollisionResponseToChannel call is commented out below so RedFalcon can confirm this live
--- before a permanent (more surgical) fix goes in -- raycast-targeting on walkers/idle Senkamati/
--- drops will regress back to pass-through while this is disabled, same as before 2026-08-22.
+-- WAS TEMPORARILY DISABLED 2026-08-24-27 (diagnostic) -- RedFalcon reported wild NPCs' legs
+-- bending/lifting near a mod-spawned NPC (including mod-spawned vs. mod-spawned -- "they behave
+-- the same to each other"), confirmed live to reproduce on FRESH spawns never touched by F7/
+-- placement. Root cause: this function's own `SetCollisionResponseToChannel(3, 2)` -- forcing raw
+-- Visibility to Block on every primitive component of every mod spawn, added 2026-08-22 so
+-- raycast-targeting could hit walking NPCs/idle Senkamati/drops -- is ALSO exactly the kind of
+-- channel a character's own foot-IK/ground-detection trace commonly uses, so any OTHER pawn now
+-- blocking it registers as solid ground under its feet. The Visibility-channel trace this was
+-- originally built for was itself replaced by the object-type-based `LineTraceSingleForObjects`/
+-- `LineTraceMultiForObjects` on 2026-08-24 (see `Spawner.UpdateHoverHighlight`'s own comment) --
+-- meaning the raw channel-3 block was BOTH the cause of the IK bug AND no longer even relevant to
+-- what the trace queries, so it stayed disabled with no tradeoff... for Characters. It was never
+-- re-verified for DECOR specifically, and RedFalcon confirmed 2026-08-27 that target lock now works
+-- on people but NOT decor -- decor items are commonly authored with collision that doesn't block
+-- every channel a line trace might query (the exact gap this function existed to close in the
+-- first place), and with the old Visibility-block gone, nothing was left plugging that gap for
+-- them.
+-- RE-ENABLED, narrower and on a DIFFERENT channel (2026-08-27): blocks the raw ECollisionChannel
+-- equivalents of the trace's actual {WorldStatic, WorldDynamic, Pawn} object-type array -- raw
+-- channels 0 and 1 (WorldStatic/WorldDynamic; one less each than the ObjectTypeQuery byte values,
+-- same offset already confirmed for Visibility elsewhere in this file's comments) -- Pawn (raw 2)
+-- is skipped since decor was never meant to register as a Pawn. Visibility (raw 3, the channel
+-- that actually caused the IK bug) is deliberately NEVER touched here again. Also skips any actor
+-- with a CharacterMovementComponent entirely -- decor/statues never have one, so this can't apply
+-- to the class of actor the original bug was ever observed on, belt-and-suspenders on top of
+-- already being a different channel.
 function Spawner.EnsureRaytraceChannel(actor)
     if not (actor and actor:IsValid()) then return false end
+    -- BUG FOUND 2026-08-27 (RedFalcon: still zero [raytrace-fix] log lines for ANYTHING, even
+    -- fresh spawns confirmed to route through Spawner.Spawn) -- this check originally read
+    -- `hasMovement = comp ~= nil`, but GetComponentByClass returns a non-nil-but-INVALID userdata
+    -- sentinel when nothing matches (same documented pitfall as Spawner.
+    -- TryAddMovementComponentToNearest's own `existing and existing:IsValid()` check a few
+    -- thousand lines up -- checked there correctly, missed here). `~= nil` was therefore TRUE for
+    -- every single actor regardless of whether it actually had a CharacterMovementComponent,
+    -- silently skipping this whole function for every spawn since it was re-enabled -- explains
+    -- why NEITHER the WorldStatic/WorldDynamic fix NOR the PhysicsBody/Destructible widening ever
+    -- had any observable effect on anything, decor or otherwise.
+    local hasMovement = false
+    pcall(function()
+        local mc = StaticFindObject("/Script/Engine.CharacterMovementComponent")
+        if mc and mc:IsValid() then
+            local comp = actor:GetComponentByClass(mc)
+            hasMovement = (comp ~= nil) and comp:IsValid()
+        end
+    end)
+    if hasMovement then return false end
     local cls = StaticFindObject("/Script/Engine.PrimitiveComponent")
     if not (cls and cls:IsValid()) then return false end
     local n, touched = 0, 0
@@ -551,10 +584,36 @@ function Spawner.EnsureRaytraceChannel(actor)
             pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
             if c and c:IsValid() then
                 touched = touched + 1
-                -- pcall(function() c:SetCollisionResponseToChannel(3, 2) end)  -- Block Visibility (raw ECC 3) -- DIAGNOSTIC DISABLE, see above
+                pcall(function() c:SetCollisionResponseToChannel(0, 2) end)  -- WorldStatic -> Block
+                pcall(function() c:SetCollisionResponseToChannel(1, 2) end)  -- WorldDynamic -> Block
+                -- Widened 2026-08-27 (same pass as HOVER_TRACE_OBJECT_TYPES above) -- a
+                -- DestructibleStructures prop (barrel/wardrobe) wasn't hittable even after the
+                -- WorldStatic/WorldDynamic fix, plausibly because it responds on PhysicsBody/
+                -- Destructible instead. Raw ECollisionChannel 5/7 by Unreal's standard default
+                -- ordering (WorldStatic=0, WorldDynamic=1, Pawn=2, Visibility=3, Camera=4,
+                -- PhysicsBody=5, Vehicle=6, Destructible=7) -- still never channel 3 (Visibility),
+                -- the one confirmed to cause the original IK glitch.
+                pcall(function() c:SetCollisionResponseToChannel(5, 2) end)  -- PhysicsBody -> Block
+                pcall(function() c:SetCollisionResponseToChannel(7, 2) end)  -- Destructible -> Block
+                -- Channel 3 (Visibility) RE-ADDED 2026-08-27 -- RedFalcon: "at one point we had all
+                -- decor and people working" -- that was the 2026-08-22 era, when this function's
+                -- ORIGINAL body unconditionally blocked raw Visibility on every spawn and the trace
+                -- itself was still channel-based. This is safe to bring back now specifically
+                -- because THIS function already returns early for anything with a
+                -- CharacterMovementComponent (Characters never reach this line at all), so the
+                -- IK-glitch class of bug (another pawn's foot trace treating a Visibility-blocking
+                -- Character as solid ground) can't recur -- only decor/statues, which don't have
+                -- feet to confuse, get this. Object-type queries alone (the {0..6} array above)
+                -- apparently don't fully cover every native collision setup this game's assorted
+                -- decor/destructible classes use; Visibility is the one channel independently
+                -- CONFIRMED to have worked for "all decor" historically, so it's a real answer to
+                -- add back, not another blind guess.
+                pcall(function() c:SetCollisionResponseToChannel(3, 2) end)  -- Visibility -> Block
             end
         end
     end)
+    print(string.format("[LivingBase] [raytrace-fix] actor=%s components touched=%d\n",
+        tostring(actor), touched))
     return n > 0
 end
 
@@ -1810,7 +1869,13 @@ end
 -- should come from a live probe (dumpAnimInfo's new AnimationData.AnimToPlay read) off the REAL
 -- posed statue class, not a guess -- guessing a wrong asset path has cost a full test cycle
 -- before (WINDROSE_MODDING_NOTES.md #9/#10's own lesson).
-function Spawner.ApplyPose(actor, animSequencePath)
+-- `bLooping` (2026-08-25, optional, defaults to true): RedFalcon's own live-tested follow-up --
+-- a one-shot play (bLooping=false, this function's original hardcoded value) plays through once
+-- and stops, which reads as broken for an ambient "doing an activity" idle pose rather than a
+-- genuinely persistent one. Defaults to true now since that's the actual intended use of this
+-- function; pass false explicitly for a genuine one-shot animation if one is ever wanted.
+function Spawner.ApplyPose(actor, animSequencePath, bLooping)
+    if bLooping == nil then bLooping = true end
     local function say(m) print("[LivingBase:Pose] " .. tostring(m) .. "\n") end
     if not (actor and actor:IsValid()) then say("no actor"); return false end
     local mesh = nil
@@ -1826,16 +1891,55 @@ function Spawner.ApplyPose(actor, animSequencePath)
     end
     local beforeMode = "?"
     pcall(function() beforeMode = tostring(mesh.AnimationMode) end)
-    local okMode = pcall(function() mesh:SetAnimationMode(0) end) -- 0 = AnimationSingleNode
+
+    -- THIRD ATTEMPT (2026-08-25): the granular path below (kept as a fallback further down) is
+    -- now CONFIRMED INSUFFICIENT even when every step reports success. RedFalcon's log showed
+    -- AnimationMode genuinely flip 0->1 (verified via readback, via the property-write fallback)
+    -- with SetAnimation/Play/SetPosition all "ok" -- and the animation still never visibly
+    -- played. Read as: the real C++ SetAnimationMode() function does more than flip the enum --
+    -- it also swaps the component's internal AnimScriptInstance to match the new mode. A bare
+    -- property write only changes the flag, leaving the OLD (BlueprintMode) instance still
+    -- actually driving rendering, so everything set afterward had nowhere to go. This means the
+    -- function call FAILING in the first place (still unexplained) is the real blocker, not a
+    -- cosmetic detail the property fallback could ever fully paper over.
+    -- Trying `PlayAnimation(seq, bLooping)` instead -- a single UFUNCTION built to do exactly
+    -- "switch to single-node mode and play this" in one call. Its only parameters are an object
+    -- reference and a bool (no raw TEnumAsByte<EAnimationMode::Type> to marshal), so it may not
+    -- hit whatever specifically breaks SetAnimationMode's own call. Tried FIRST as the primary
+    -- mechanism now; the old granular path is kept below as a fallback (still useful for its own
+    -- log detail) if PlayAnimation itself isn't callable -- and now also captures the ACTUAL pcall
+    -- error message on failure (never logged before, only the pass/fail boolean was), since that
+    -- text is the one thing that could actually explain why SetAnimationMode keeps failing.
+    local okPlayAnim, errPlayAnim = pcall(function() mesh:PlayAnimation(seq, bLooping) end)
+    local afterPlayAnimMode = "?"
+    pcall(function() afterPlayAnimMode = tostring(mesh.AnimationMode) end)
+    say(string.format(
+        "PlayAnimation(%s, %s) call %s%s; AnimationMode %s -> %s",
+        tostring(animSequencePath), tostring(bLooping), okPlayAnim and "ok" or "FAILED",
+        okPlayAnim and "" or (" (" .. tostring(errPlayAnim) .. ")"),
+        beforeMode, afterPlayAnimMode))
+    if okPlayAnim then
+        return true
+    end
+
+    local modeVia = "function"
+    local okMode, errMode = pcall(function() mesh:SetAnimationMode(1) end) -- 1 = AnimationSingleNode
+    if not okMode then
+        modeVia = "property"
+        okMode = pcall(function() mesh.AnimationMode = 1 end)
+    end
     local okAnim = pcall(function() mesh:SetAnimation(seq) end)
-    local okPlay = pcall(function() mesh:Play(false) end)
+    pcall(function() mesh:SetLooping(bLooping) end)
+    local okPlay = pcall(function() mesh:Play(bLooping) end)
     local okPos  = pcall(function() mesh:SetPosition(0.0, false) end)
     local afterMode = "?"
     pcall(function() afterMode = tostring(mesh.AnimationMode) end)
     say(string.format(
-        "SetAnimationMode call %s, SetAnimation call %s (%s), Play call %s, SetPosition call %s; AnimationMode %s -> %s",
-        okMode and "ok" or "FAILED", okAnim and "ok" or "FAILED", tostring(animSequencePath),
-        okPlay and "ok" or "FAILED", okPos and "ok" or "FAILED", beforeMode, afterMode))
+        "FALLBACK: SetAnimationMode via %s call %s%s, SetAnimation call %s, Play call %s, SetPosition call %s; AnimationMode %s -> %s",
+        modeVia, okMode and "ok" or "FAILED",
+        (modeVia == "function" and not okMode) and (" (" .. tostring(errMode) .. ")") or "",
+        okAnim and "ok" or "FAILED", okPlay and "ok" or "FAILED", okPos and "ok" or "FAILED",
+        beforeMode, afterMode))
     return true
 end
 
@@ -3266,6 +3370,17 @@ function Spawner.ProbeNearestActor(maxDist)
     local instName = "?"
     pcall(function() instName = best:GetFullName() end)
     print(string.format("[LivingBase] [probe] TARGET @ %.0fuu: %s (instance: %s)\n", bestD, cls, instName))
+    -- On-screen confirmation (2026-08-25, RedFalcon's own request) -- lbprobe/lbprobedump are
+    -- console commands with no other feedback while actually playing, so it's easy to fire lbprobe,
+    -- look away, and never notice it silently latched onto the wrong thing (or nothing at all, in
+    -- the "nothing within Xuu" case a few lines up). Short class name only (the full /Game/... path
+    -- is already in ue4ss.log/the new probedump_*.txt for anyone who needs it) -- a toast is meant
+    -- to be glanced at, not read in full. Goes through Spawner.Toast like every other on-screen
+    -- confirmation in this file, never PrintString/ClientMessage (both confirmed dead ends here).
+    pcall(function()
+        local shortName = cls:match("([%w_]+)$") or cls
+        Spawner.Toast("Probed: " .. shortName, 2.5)
+    end)
     if discoveryAppend("CLASS: " .. cls) then
         print("[LivingBase] [probe] logged to discovery_dump.txt\n")
     else
@@ -4050,6 +4165,18 @@ end
 -- matches nothing, same failure mode already hit once on the Warrior/Hunter skin
 -- swaps). Mirrors the doComp() component sweep in Spawner.DeCorrupt, read-only.
 -- Remove once the real component names are confirmed and the hide rule is written.
+-- socket name added 2026-08-25 (RedFalcon: "would probe dump produce what they are holding if i
+-- grab it mid animation") -- a real NPC actually performing a craft-station animation would have
+-- an EXTRA mesh component (the held tool/item) attached at a specific socket, dynamically added
+-- by the game's own interaction-ability system, same mechanism Spawner.TestAttachToolToNearest
+-- now reuses deliberately. Reading that component's OWN `GetAttachSocketName()` (a plain,
+-- read-only USceneComponent function, same safety class as every other getter this probe already
+-- calls) is the missing half of the answer -- knowing a component exists and what mesh it has
+-- was already covered, but not which socket it rides on, which is exactly what's needed to
+-- replicate it exactly rather than guess-and-check candidate sockets. Also extended to sweep
+-- StaticMeshComponents in addition to SkeletalMeshComponents (see the second sweep below) --
+-- a held prop is not guaranteed to be a skeletal mesh (the wood-piece candidates found for the
+-- other hand were static-only), so a skeletal-only sweep could miss it entirely.
 local function dumpMeshComponentNames(actor)
     -- fullPath added 2026-08-10: the short name alone (e.g. "SK_Armor_Underwear_02_Female_Legs")
     -- isn't resolvable by Spawner.DeCorrupt's `replaces.to` -- that needs the full /Game/ asset
@@ -4061,7 +4188,21 @@ local function dumpMeshComponentNames(actor)
             sk = c.SkeletalMesh
             if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
         end)
+        if not (sk and sk:IsValid()) then
+            pcall(function()
+                sk = c.StaticMesh
+                if not (sk and sk:IsValid()) and c.GetStaticMesh then sk = c:GetStaticMesh() end
+            end)
+        end
         return sk
+    end
+    local function socketOf(c)
+        local s = ""
+        pcall(function()
+            local fn = c:GetAttachSocketName()
+            if fn then s = fn:ToString() end
+        end)
+        return s
     end
     -- materialsOf added 2026-08-10: needed to find the exact material name on the underwear-Legs
     -- piece so Config.DECORRUPT_CREW_FEMALE/DECORRUPT_CREW/DECORRUPT_CREW_HUNTER can add a
@@ -4098,29 +4239,39 @@ local function dumpMeshComponentNames(actor)
             pcall(function() nm = sk:GetFName():ToString() end)
             pcall(function() full = sk:GetFullName() end)
         end
-        print(string.format("[LivingBase] [probe-mesh] comp[%s] mesh=%s full=%s mats=%s\n",
+        local socket = socketOf(c)
+        print(string.format("[LivingBase] [probe-mesh] comp[%s] mesh=%s full=%s socket=%s mats=%s\n",
             compName, nm ~= "" and nm or "(none)", full ~= "" and full or "-",
-            table.concat(materialsOf(c), ",")))
+            socket ~= "" and socket or "(none)", table.concat(materialsOf(c), ",")))
     end
-    pcall(function() local mm = actor.Mesh; if mm and mm:IsValid() then say(mm) end end)
-    local n = 0
-    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
-    if cls and cls:IsValid() then
-        local comps
-        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
-        if comps then
-            pcall(function() n = comps:GetArrayNum() end)
-            if n == 0 then pcall(function() n = #comps end) end
-            for i = 1, n do
-                local c = nil
-                pcall(function() c = comps[i] end)
-                if c == nil then pcall(function() c = comps:Get(i) end) end
-                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
-                say(c)
+    local function sweep(classPath, label)
+        local n = 0
+        local cls = StaticFindObject(classPath)
+        if cls and cls:IsValid() then
+            local comps
+            pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if comps then
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local c = nil
+                    pcall(function() c = comps[i] end)
+                    if c == nil then pcall(function() c = comps:Get(i) end) end
+                    pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                    say(c)
+                end
             end
         end
+        print(string.format("[LivingBase] [probe-mesh] %d %s total.\n", n, label))
     end
-    print(string.format("[LivingBase] [probe-mesh] %d skeletal mesh components total.\n", n))
+    pcall(function() local mm = actor.Mesh; if mm and mm:IsValid() then say(mm) end end)
+    sweep("/Script/Engine.SkeletalMeshComponent", "skeletal mesh components")
+    -- StaticMeshComponent sweep (2026-08-25): a held prop attached via
+    -- Spawner.TestAttachToolToNearest -- or, more importantly, one the game's OWN interaction-
+    -- ability system attaches to a real NPC mid-animation -- is not guaranteed to be a skeletal
+    -- mesh (confirmed: the wood-piece candidates for the off-hand are static-only). A
+    -- skeletal-only sweep would silently miss it.
+    sweep("/Script/Engine.StaticMeshComponent", "static mesh components")
 end
 
 -- dumpAnimInfo(actor) -- TEMP DEV/PROBE TOOL (2026-08-14): what actually drives a pawn's CURRENT
@@ -4173,6 +4324,58 @@ local function dumpAnimInfo(actor)
     print(string.format(
         "[LivingBase] [probe-anim] AnimationMode=%s AnimClass=%s (%s) RuntimeAnimInstanceClass=%s\n",
         mode, animClass, animClassFull ~= "" and animClassFull or "-", runtimeInstClass))
+
+    -- Dedicated "currently playing" summary line (2026-08-25, RedFalcon: "save time on finding
+    -- that too"). AnimationData.AnimToPlay (the SingleNode-mode clip, if any) was already being
+    -- read further down as part of the generic per-field AnimationData walk -- correct, but
+    -- buried among several other fields (bLooping, Rate, bPlaying, etc.) that have to be scanned
+    -- past to find the one that actually matters for reapplying it via lbtestpose. Pulls that one
+    -- value out into its own clearly labeled line up front, using the exact same safe struct-
+    -- drilling recipe (GetFullName for the type path, StaticFindObject, bracket-index -- never
+    -- plain dot-access past the top level, see WINDROSE_MODDING_NOTES.md #10) the full walk
+    -- further down already proved safe -- this doesn't replace that walk, just surfaces its most
+    -- useful field early, as a ready-to-paste-into-lbtestpose full asset path.
+    pcall(function()
+        local animData = mesh.AnimationData
+        if animData == nil then return end
+        local typeFull = "?"
+        pcall(function() typeFull = animData:GetFullName() end)
+        local structPath = typeFull:match("ScriptStruct%s+(%S+)")
+        if not structPath then return end
+        local structDef = StaticFindObject(structPath)
+        if not (structDef and structDef:IsValid()) then return end
+        local playPath = "(none)"
+        pcall(function()
+            local val = animData["AnimToPlay"]
+            if val ~= nil and type(val) == "userdata" then
+                local okFull, full = pcall(function() return val:GetFullName() end)
+                if okFull and full then playPath = full end
+            end
+        end)
+        if mode == "1" then
+            print("[LivingBase] [probe-anim] CURRENTLY PLAYING (SingleNode) = " .. playPath .. "\n")
+        else
+            print("[LivingBase] [probe-anim] CURRENTLY PLAYING = driven live by AnimClass above"
+                .. " (BlueprintMode -- no single static clip to copy).\n")
+        end
+    end)
+
+    -- REMOVED (2026-08-26) -- CONFIRMED TO CRASH THE GAME LIVE. This block briefly held two
+    -- experimental BlueprintMode reads: (1) `animInstance:GetCurrentStateName(machineIdx)` for
+    -- machine indices 0-2, and (2) a walk of every struct-typed AnimInstance property whose
+    -- RESOLVED TYPE matched "AnimNode_"/"AnimGraphNode", drilling into each via the same
+    -- struct-discovery recipe already proven safe for AnimationData/BodyMorph. RedFalcon tested
+    -- live: the game crashed, and `ue4ss.log` shows ZERO output from either block (not even a
+    -- single "StateMachine[0]..." or "-- AnimGraphNode_..." line) before the log stops dead --
+    -- the same pcall-uncatchable native-crash signature already documented for SetBody/
+    -- AttachActorToShip. Since NEITHER block produced any output, which specific call crashed
+    -- (GetCurrentStateName itself, or the ForEachProperty walk into an AnimNode_* struct) could
+    -- not be isolated from the log alone -- both were pulled rather than guessing one was safe.
+    -- Do not re-add either without a genuinely new theory backed by a real crash log/dump, not
+    -- just a "safer-looking" variant -- see CLAUDE.md's own write-up of this incident for the
+    -- full context (RedFalcon's original ask, the reasoning that led here, both explicitly
+    -- confirmed as this session's furthest-out, most speculative experiment).
+
     -- AnimInstance's OWN properties (2026-08-14, RedFalcon's follow-up) -- both Standing_01 and
     -- Sitting_01 came back BlueprintMode on the SAME AnimClass (ABP_StandingNPC_Regular_AI_C), no
     -- static AnimSequence involved -- so whatever actually picks standing-vs-sitting has to be a
@@ -4924,8 +5127,8 @@ function Spawner.NudgeComponentTransform(actor, pattern, scaleMul, offsetZ)
                 local okO = true
                 if offsetZ ~= 0.0 then
                     okO = pcall(function()
-                        local loc = c:K2_GetRelativeLocation()
-                        c:K2_SetRelativeLocation({ X = loc.X, Y = loc.Y, Z = loc.Z + offsetZ }, false, nil, false)
+                        local loc = c.RelativeLocation
+                        c:K2_SetRelativeLocation({ X = loc.X, Y = loc.Y, Z = loc.Z + offsetZ }, false, {}, false)
                     end)
                 end
                 touched = touched + 1
@@ -4939,7 +5142,7 @@ function Spawner.NudgeComponentTransform(actor, pattern, scaleMul, offsetZ)
     return touched
 end
 
-function Spawner.ProbeDumpProperties()
+local function probeDumpPropertiesBody()
     print("[LivingBase] [probe-props] key received.\n")
     local target = Spawner._lastProbedActor
     if not (target and target:IsValid()) then
@@ -5009,6 +5212,58 @@ function Spawner.ProbeDumpProperties()
     pcall(function() dumpCompositeFunctions(target) end)
     pcall(function() dumpAnimInfo(target) end)
     print("[LivingBase] [probe-props] done.\n")
+end
+
+-- Spawner.ProbeDumpProperties() -- wrapper (2026-08-25, RedFalcon: "for convenience... to remove
+-- some of the noise"). probeDumpPropertiesBody's own output (plus every dump* function it calls --
+-- dumpObjectProperties, dumpMeshComponentNames, dumpAnimInfo, etc.) gets buried in ue4ss.log among
+-- everything else this mod and the engine constantly log, making one probe run hard to pick back
+-- out. Captures it into its own dedicated, timestamped file WITHOUT touching any of the dozens of
+-- individual print() call sites throughout that whole probe chain: Lua's `print` is a real global,
+-- and every probe function already calls the bare global (not a local alias), so temporarily
+-- redirecting it for the duration of this one call is enough to capture everything at once.
+-- Confirmed safe to do this way: probeDumpPropertiesBody and its entire call chain are fully
+-- synchronous (no ExecuteWithDelay/ExecuteInGameThread anywhere in it), so nothing can fire AFTER
+-- `print` is restored below and land in the wrong place. The body call is wrapped in its own pcall
+-- specifically so `print` and the file handle are ALWAYS restored/closed even if something in the
+-- probe chain errors -- leaving the global `print` swapped in permanently would silently break
+-- logging for the entire rest of this mod, a much worse failure than losing one probe's output.
+function Spawner.ProbeDumpProperties()
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local candidatePaths = {
+        "ue4ss/Mods/LivingBase/probedump_" .. ts .. ".txt",
+        "Mods/LivingBase/probedump_" .. ts .. ".txt",
+        "probedump_" .. ts .. ".txt",
+    }
+    local file, filePath = nil, nil
+    for _, p in ipairs(candidatePaths) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+
+    local originalPrint = print
+    if file then
+        print = function(...)
+            originalPrint(...)
+            local n = select("#", ...)
+            local parts = {}
+            for i = 1, n do parts[i] = tostring(select(i, ...)) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+
+    local ok, err = pcall(probeDumpPropertiesBody)
+
+    print = originalPrint
+    if file then
+        pcall(function() file:flush(); file:close() end)
+        print("[LivingBase] [probe-props] full dump also written to " .. tostring(filePath) .. "\n")
+    else
+        print("[LivingBase] [probe-props] could not open a dump file -- console/ue4ss.log output only.\n")
+    end
+    if not ok then
+        print("[LivingBase] [probe-props] FAILED: " .. tostring(err) .. "\n")
+    end
 end
 
 -- Spawner.ProbeCameraRig(say) -- TEMP DEV TOOL (2026-08-20, RedFalcon: native build mode raises/
@@ -5164,19 +5419,16 @@ end
 -- all -- that reflective walk crashed the game twice already today. This only touches an actor WE
 -- spawned (via lbspawn/lblook, then lbprobe to select it), using the exact same resolveAsset() +
 -- SetMaterial() pattern Spawner.DeCorrupt's swaps already use safely on live actors.
-function Spawner.ApplyGhostMaterial()
-    print("[LivingBase] [probe-ghostmat] key received.\n")
-    local actor = Spawner._lastProbedActor
-    if not (actor and actor:IsValid()) then
-        print("[LivingBase] [probe-ghostmat] no valid probed target -- run lbprobe on something first.\n")
-        return
-    end
-    local GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
-    local mat = resolveAsset(GHOST_MAT_PATH)
-    if not (mat and mat:IsValid()) then
-        print("[LivingBase] [probe-ghostmat] could not resolve " .. GHOST_MAT_PATH .. " -- wrong path, or this piece isn't in a loaded pak.\n")
-        return
-    end
+-- Spawner.ApplyMaterialToActor(actor, mat, tag) -- the actual swap mechanism, factored out
+-- 2026-08-26 (RedFalcon: found several purpose-built character-ghost materials in
+-- pakcontents.xlsx -- M_CharacterGhost_V2, MI_Boneman_Ghost_Pirate, etc. -- worth testing
+-- against the repurposed building-preview material) so both the original hardcoded
+-- ApplyGhostMaterial and the new path-fed tester share one implementation instead of two
+-- copies of the same RemoteUnrealParam-unwrap/slot-loop logic.
+function Spawner.ApplyMaterialToActor(actor, mat, tag)
+    tag = tag or "material"
+    if not (actor and actor:IsValid()) then return 0 end
+    if not (mat and mat:IsValid()) then return 0 end
     local touched = 0
     local function applyTo(comp)
         -- K2_GetComponentsByClass's array can hand back a RemoteUnrealParam wrapper rather than
@@ -5211,7 +5463,24 @@ function Spawner.ApplyGhostMaterial()
             end
         end
     end
-    print(string.format("[LivingBase] [probe-ghostmat] applied to %d material slot(s).\n", touched))
+    print(string.format("[LivingBase] [%s] applied to %d material slot(s).\n", tag, touched))
+    return touched
+end
+
+function Spawner.ApplyGhostMaterial()
+    print("[LivingBase] [probe-ghostmat] key received.\n")
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        print("[LivingBase] [probe-ghostmat] no valid probed target -- run lbprobe on something first.\n")
+        return
+    end
+    local GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
+    local mat = resolveAsset(GHOST_MAT_PATH)
+    if not (mat and mat:IsValid()) then
+        print("[LivingBase] [probe-ghostmat] could not resolve " .. GHOST_MAT_PATH .. " -- wrong path, or this piece isn't in a loaded pak.\n")
+        return
+    end
+    Spawner.ApplyMaterialToActor(actor, mat, "probe-ghostmat")
 end
 
 -- Spawner.ApplyGhostMaterialSolid() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview spike, 4th
@@ -5468,6 +5737,466 @@ function Spawner.StopFollowTest()
     Spawner._followTestActive = false
     print("[LivingBase] [followtest] stop flag set -- will halt on its next tick instead of rescheduling.\n")
 end
+
+--------------------------------------------------------------------
+-- Ship-pivot placement test (2026-08-25) -- CONFIRMED LIVE, see WINDROSE_MODDING_NOTES.md §13:
+-- the yaw-only local-offset math below holds through real ship movement/turning once an actor
+-- has genuinely latched onto BasedMovement, though the FINAL settled position differs from the
+-- naive request (gravity/collision resolves the actual resting spot on the first placement, then
+-- it stays put) -- see `Spawner.ShipLocalToWorld`'s own export note below for why this got
+-- promoted out of being a throwaway test-only local.
+--
+-- MOTIVATION: exploring whether LivingBase could eventually place decor/crew ON a ship (a
+-- companion mod, XenophonCompanion, does this for its own single follower -- see its own
+-- "58A/58B/58C-R1" ship-embark sections for the proven techniques this borrows). Xenophon's
+-- shipped placement math builds a 2D "inboard" direction from TWO live-queried world points
+-- (the helm's SteeringInteractTargetComponent location, and the ship actor's own origin) rather
+-- than from the ship's own rotation -- its own comment trail (its ".58C withdrawn... no
+-- orientation guess" note) shows an EARLIER version tried using the ship's actual rotation for
+-- this and it didn't work reliably enough to ship, though the exact failure mode wasn't
+-- preserved in that file's surviving comments.
+-- RedFalcon asked whether offsets could instead be relative to the ship's own PIVOT (actor
+-- location + rotation) directly -- the more standard "local offset transformed by the owner's
+-- transform" approach, which should place things identically regardless of the ship's world
+-- position/heading if it works. This is a genuinely different, simpler mechanism than
+-- Xenophon's two-point vector -- worth testing on its own before assuming either the "it
+-- didn't work for them" history or the "it's the obvious right way" theory. Built as a
+-- standalone probe (own console command, `lbshiptest`) rather than wired into any real
+-- placement feature -- there is no ship/decor feature in this mod yet, this only exists to
+-- generate real evidence for WINDROSE_MODDING_NOTES.md before one gets built.
+--
+-- MATH: yaw-only 2D rotation (ships roll/pitch with waves, but see the note on
+-- `Spawner.ShipPivotTestStatus` below for why that's not a problem for this specific test).
+--   local (forward, right, up) -> world:
+--     world = shipLoc + forward*(cos(yaw), sin(yaw)) + right*(-sin(yaw), cos(yaw)) + up*Z
+--   world -> local (the inverse, used by ShipPivotTestStatus to check for drift):
+--     forward =  dx*cos(yaw) + dy*sin(yaw)
+--     right   = -dx*sin(yaw) + dy*cos(yaw)
+--     up      =  dz
+--------------------------------------------------------------------
+local function shipTestLocalToWorld(shipLoc, yawDeg, fwd, right, up)
+    local yaw = math.rad(yawDeg or 0.0)
+    local cy, sy = math.cos(yaw), math.sin(yaw)
+    return {
+        X = shipLoc.X + fwd * cy - right * sy,
+        Y = shipLoc.Y + fwd * sy + right * cy,
+        Z = shipLoc.Z + up,
+    }
+end
+-- Exported (2026-08-25) so a real content-preview feature (Testbed.SpawnShipLookPreview) can
+-- reuse this proven math directly instead of re-deriving it -- this function itself is unchanged.
+Spawner.ShipLocalToWorld = shipTestLocalToWorld
+
+local function shipTestWorldToLocal(shipLoc, yawDeg, worldLoc)
+    local yaw = math.rad(yawDeg or 0.0)
+    local cy, sy = math.cos(yaw), math.sin(yaw)
+    local dx, dy, dz = worldLoc.X - shipLoc.X, worldLoc.Y - shipLoc.Y, worldLoc.Z - shipLoc.Z
+    return {
+        forward = dx * cy + dy * sy,
+        right = -dx * sy + dy * cy,
+        up = dz,
+    }
+end
+-- Exported (2026-08-25) alongside Spawner.ShipLocalToWorld -- Spawner.AddShipRider needs this
+-- direction too, to capture an actor's CURRENT settled local offset at the moment it starts
+-- riding (per §13, the physics-settled spot differs from whatever was originally requested, so
+-- this reads the REAL position rather than trusting a caller's own placement math).
+Spawner.ShipWorldToLocal = shipTestWorldToLocal
+
+-- Same multi-candidate relative-path convention as CUSTOM_SURVEY_PATHS above.
+local SHIP_TEST_DUMP_PATHS = {
+    "ue4ss/Mods/LivingBase/LivingBase_ShipPivotTest_dump.txt",
+    "Mods/LivingBase/LivingBase_ShipPivotTest_dump.txt",
+    "LivingBase_ShipPivotTest_dump.txt",
+}
+local function shipTestLog(msg)
+    local line = string.format("[%s] %s", os.date("%Y-%m-%d %H:%M:%S"), tostring(msg))
+    print("[LivingBase] [shiptest] " .. tostring(msg) .. "\n")
+    for _, p in ipairs(SHIP_TEST_DUMP_PATHS) do
+        local f = io.open(p, "a")
+        if f then f:write(line .. "\n"); f:close(); break end
+    end
+end
+
+-- A ship's UObject wrapper doesn't expose :get() the way a soft/lazy pointer property does on
+-- some engine structs -- but BasedMovement.MovementBase (an ObjectProperty, per Xenophon's own
+-- confirmed-live comment) might come back needing one anyway depending on how this UE4SS build
+-- wraps it. Try the unwrap; if the object already behaves like a plain UObject, `:get` simply
+-- won't exist and pcall just returns the original value unchanged -- costs nothing either way.
+local function shipTestUnwrap(v)
+    if v == nil then return nil end
+    local ok, got = pcall(function() return v:get() end)
+    if ok and got ~= nil then return got end
+    return v
+end
+
+-- Finds the ship (if any) the player is currently standing on -- BasedMovement.MovementBase's
+-- owner if the engine's moving-platform physics has picked the player up, else
+-- GetAttachParentActor() as a fallback. Same two checks, same order, as Xenophon's own
+-- `player_settled_on` (confirmed live in that mod: "once settled, Character.BasedMovement.
+-- MovementBase owner is the exact ship").
+function Spawner.FindPlayerShip()
+    local pc = UEHelpers.GetPlayerController()
+    local pawn = pc and pc:IsValid() and pc.Pawn
+    if not (pawn and pawn:IsValid()) then return nil end
+
+    local ship = nil
+    pcall(function()
+        local based = pawn.BasedMovement
+        if based == nil then return end
+        local base = shipTestUnwrap(based.MovementBase)
+        if base and base:IsValid() then
+            local owner = shipTestUnwrap(base:GetOwner())
+            if owner and owner:IsValid() then ship = owner end
+        end
+    end)
+    if not (ship and ship:IsValid()) then
+        pcall(function()
+            local parent = shipTestUnwrap(pawn:GetAttachParentActor())
+            if parent and parent:IsValid() then ship = parent end
+        end)
+    end
+    return ship
+end
+
+Spawner.shipPivotTest = Spawner.shipPivotTest or { actor = nil, lastLocal = nil }
+
+-- Places (or moves, if already placed) a test actor at a local offset relative to whatever ship
+-- the player is currently standing on, then verifies 350ms later whether the engine's own
+-- moving-platform physics actually picked the actor up (BasedMovement.MovementBase owner ==
+-- the ship) -- same verify-via-readback discipline as everything else in this file, and the
+-- same specific check Xenophon's own `.58C-R1` uses to confirm a placed actor "latched."
+-- fwd/right/up default to a modest in-front-of-helm spot; re-run with different numbers, or
+-- just call `lbshiptest` with no arguments (status-only) after moving/turning the ship to see
+-- whether the SAME requested local offset still lands in the same relative spot.
+function Spawner.ShipPivotTestPlace(fwd, right, up)
+    fwd = tonumber(fwd) or 300.0
+    right = tonumber(right) or 0.0
+    up = tonumber(up) or 100.0
+
+    local ship = Spawner.FindPlayerShip()
+    if not (ship and ship:IsValid()) then
+        shipTestLog("PLACE FAILED | player is not based/attached to any ship right now -- board your ship first")
+        return false
+    end
+
+    local shipClass = "?"
+    pcall(function() shipClass = ship:GetClass():GetFullName() end)
+    local shipLoc, shipYaw
+    pcall(function() shipLoc = ship:K2_GetActorLocation() end)
+    pcall(function() shipYaw = ship:K2_GetActorRotation().Yaw end)
+    if not shipLoc then
+        shipTestLog("PLACE FAILED | ship location unavailable")
+        return false
+    end
+    shipYaw = shipYaw or 0.0
+
+    local dest = shipTestLocalToWorld(shipLoc, shipYaw, fwd, right, up)
+
+    local actor = Spawner.shipPivotTest.actor
+    if not (actor and actor:IsValid()) then
+        actor = Spawner.Spawn(Config.CREW_CLASS, "SHIP_PIVOT_TEST", dest, nil, nil, shipYaw, true)
+        if not (actor and actor:IsValid()) then
+            shipTestLog("PLACE FAILED | test actor spawn failed")
+            return false
+        end
+        Spawner.shipPivotTest.actor = actor
+    else
+        pcall(function() actor:K2_SetActorLocation(dest, false, {}, true) end)
+        pcall(function() actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = shipYaw, Roll = 0.0 }, false) end)
+    end
+
+    Spawner.shipPivotTest.lastLocal = { forward = fwd, right = right, up = up }
+
+    shipTestLog(string.format(
+        "PLACE | ship=%s | shipLoc=(%.1f,%.1f,%.1f) yaw=%.1f | requestedLocal=(fwd=%.1f right=%.1f up=%.1f) | dest=(%.1f,%.1f,%.1f)",
+        shipClass, shipLoc.X, shipLoc.Y, shipLoc.Z, shipYaw, fwd, right, up, dest.X, dest.Y, dest.Z))
+
+    if ExecuteWithDelay then
+        local gen = Spawner.generation
+        ExecuteWithDelay(350, function()
+            if Spawner.generation ~= gen then return end
+            if not (actor and actor:IsValid() and ship and ship:IsValid()) then return end
+            local base, latched = nil, false
+            pcall(function()
+                local based = actor.BasedMovement
+                base = based and shipTestUnwrap(based.MovementBase) or nil
+            end)
+            local baseOwner = nil
+            if base and base:IsValid() then
+                pcall(function() baseOwner = shipTestUnwrap(base:GetOwner()) end)
+            end
+            if baseOwner and baseOwner:IsValid() then
+                pcall(function() latched = (baseOwner:GetFullName() == ship:GetFullName()) end)
+            end
+            shipTestLog("VERIFY | latchedToShip=" .. tostring(latched)
+                .. " | baseOwner=" .. (baseOwner and baseOwner:IsValid() and baseOwner:GetFullName() or "<nil>"))
+        end)
+    end
+
+    return true
+end
+
+-- Status-only: recomputes the test actor's CURRENT local offset relative to the ship's CURRENT
+-- position/rotation, without moving it. Run this AFTER the ship has moved/turned since the last
+-- `ShipPivotTestPlace` -- if the local offset comes back unchanged (drift near zero), the actor
+-- is genuinely riding the ship's own moving-platform physics correctly; if it's drifted, the
+-- initial placement math (or the engine's BasedMovement handling of it) isn't as relative as
+-- hoped. Pitch/roll from wave motion is deliberately NOT part of this test's own math (see the
+-- section header) -- once BasedMovement has genuinely latched, the engine's own physics is what
+-- keeps the actor correctly seated through any rocking, not this Lua-side computation; this
+-- check only cares whether the YAW-plane offset (the part this mechanism actually computes)
+-- held steady.
+function Spawner.ShipPivotTestStatus()
+    local ship = Spawner.FindPlayerShip()
+    if not (ship and ship:IsValid()) then
+        shipTestLog("STATUS | player not currently based/attached to any ship")
+        return
+    end
+    local actor = Spawner.shipPivotTest.actor
+    if not (actor and actor:IsValid()) then
+        shipTestLog("STATUS | no test actor placed yet -- run 'lbshiptest <forward> <right> <up>' first")
+        return
+    end
+
+    local shipClass = "?"
+    pcall(function() shipClass = ship:GetClass():GetFullName() end)
+    local shipLoc, shipYaw, actorLoc
+    pcall(function() shipLoc = ship:K2_GetActorLocation() end)
+    pcall(function() shipYaw = ship:K2_GetActorRotation().Yaw end)
+    pcall(function() actorLoc = actor:K2_GetActorLocation() end)
+    if not (shipLoc and actorLoc) then
+        shipTestLog("STATUS FAILED | location read failed")
+        return
+    end
+    shipYaw = shipYaw or 0.0
+
+    local nowLocal = shipTestWorldToLocal(shipLoc, shipYaw, actorLoc)
+    local req = Spawner.shipPivotTest.lastLocal or {}
+    local rf, rr, ru = req.forward or nowLocal.forward, req.right or nowLocal.right, req.up or nowLocal.up
+
+    shipTestLog(string.format(
+        "STATUS | ship=%s | shipLoc=(%.1f,%.1f,%.1f) yaw=%.1f"
+        .. " | requestedLocal=(fwd=%.1f right=%.1f up=%.1f) | currentLocal=(fwd=%.1f right=%.1f up=%.1f)"
+        .. " | drift=(fwd=%.1f right=%.1f up=%.1f)",
+        shipClass, shipLoc.X, shipLoc.Y, shipLoc.Z, shipYaw,
+        rf, rr, ru,
+        nowLocal.forward, nowLocal.right, nowLocal.up,
+        nowLocal.forward - rf, nowLocal.right - rr, nowLocal.up - ru))
+end
+
+function Spawner.ShipPivotTestClear()
+    local actor = Spawner.shipPivotTest.actor
+    if actor and actor:IsValid() then
+        pcall(function() Spawner.DespawnActor(actor) end)
+    end
+    Spawner.shipPivotTest.actor = nil
+    Spawner.shipPivotTest.lastLocal = nil
+    shipTestLog("CLEAR | test actor removed")
+end
+
+-- Spawner.CameraForwardSpot(distance) -- a point `distance` units directly along the camera's
+-- own full look direction (yaw AND pitch), from the camera's own location -- NOT the player
+-- pawn's position (2026-08-25, for Testbed.SpawnShipLookPreview -- RedFalcon asked to preview a
+-- Walker/Statue at wherever the camera is aimed rather than the mod's own fixed near-player spot).
+-- Deliberately DIFFERENT from this mod's ordinary placement spot (frontSpot/spotInFrontOfPlayer,
+-- testbed.lua), which stays player-origin + YAW ONLY on purpose for real gameplay placement at
+-- short range (300uu) -- see that function's own history (item 16, CLAUDE.md): mixing camera
+-- position+direction with a SHORT reach already broke targeting once (this file's own
+-- EditNearestInFront/findNearestSpawnInFront saga, item 15) because in third person the camera
+-- sits well behind/above the pawn root, and at 200-300uu that offset is comparable to the target
+-- distance itself. At 600uu+ that same offset is a much smaller fraction of the total distance
+-- (the same reasoning a separate UE4SS mod's own 1000uu camera-forward targeting relies on, see
+-- item 13's history) -- safe to use camera-origin here specifically because the distance is
+-- longer, not because the earlier lesson stopped applying.
+-- Same self-consistent-pair discipline as every other camera read in this file: position and
+-- rotation always come from the SAME source (PlayerCameraManager, falling back to the pawn root
+-- + GetControlRotation only if the camera manager itself is unavailable). Formula matches UE's
+-- own FRotator::Vector() (X=cos(pitch)*cos(yaw), Y=cos(pitch)*sin(yaw), Z=sin(pitch)), same as
+-- the targeting-cone fix already uses (spawner.lua's own camera-cone code, item 15/16).
+function Spawner.CameraForwardSpot(distance)
+    distance = tonumber(distance) or 600.0
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then return nil end
+
+    local camX, camY, camZ, camRot
+    pcall(function()
+        local pawn = pc.Pawn
+        if pawn and pawn:IsValid() then
+            local l = pawn:K2_GetActorLocation()
+            camX, camY, camZ = l.X, l.Y, l.Z
+        end
+    end)
+
+    local cam = pc.PlayerCameraManager
+    if cam and cam:IsValid() then
+        pcall(function() local l = cam:GetCameraLocation(); camX, camY, camZ = l.X, l.Y, l.Z end)
+        pcall(function() camRot = cam:GetCameraRotation() end)
+    end
+    if not camRot then pcall(function() camRot = pc:GetControlRotation() end) end
+    if not (camX and camRot) then return nil end
+
+    local yaw, pitch = math.rad(camRot.Yaw), math.rad(camRot.Pitch)
+    local cp = math.cos(pitch)
+    local fx, fy, fz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+
+    return { X = camX + fx * distance, Y = camY + fy * distance, Z = camZ + fz * distance }
+end
+
+-- Spawner.AttachActorToShip(actor, ship) -- CONFIRMED TO CRASH THE GAME LIVE, two-for-two
+-- (2026-08-25). DO NOT CALL THIS FROM ANY LIVE CODE PATH without a genuinely new theory --
+-- same tier as Config.TATTOO_TEST_PARAMS and Spawner.ApplyBodyType/comp:SetBody (item 64,
+-- CLAUDE.md): a pcall-uncatchable native crash, not a Lua error. Kept here, unregistered from
+-- every call site, purely as a documented record of what was tried and confirmed dangerous --
+-- see CLAUDE.md's own write-up for the full incident. Original motivation, still real and still
+-- UNSOLVED: a statue placed via the ship-relative preview does NOT ride the ship (it stayed at
+-- its last teleported world position while the ship bobbed/sailed out from under it) because,
+-- unlike a Walker (a Character with its own CharacterMovementComponent, which runs its OWN
+-- per-tick floor check and sets BasedMovement automatically), a posed AnimatedActor statue has
+-- no movement component and never acquires a moving base on its own. That problem is still open;
+-- this specific fix attempt is not a viable path to it.
+-- WHAT WAS TRIED: `actor:K2_AttachToActor(ship, "", 1, 1, 1, false)` (the modern per-axis-rule
+-- signature, `EAttachmentRule::KeepWorld` = 1 on all three axes, same shape as the already-proven
+-- `K2_AttachToComponent` calls elsewhere in this file) crashed immediately both times -- the
+-- append-only ship-test dump file (which survives a relaunch, unlike ue4ss.log) shows ZERO
+-- "ATTACH" log lines across both attempts, meaning execution never returned to Lua even to reach
+-- this function's own first `pcall` boundary's aftermath, let alone the classic-signature
+-- fallback below it. Root cause not established -- could be this specific enum/argument
+-- combination, could be `K2_AttachToActor` itself on this actor class, could be something about
+-- attaching to a ship actor specifically (a moving, physics-driven, replicated actor) rather than
+-- attach targets already proven safe elsewhere (all component-level, all inert static meshes).
+-- Do not retry ANY variant of this call (different enum values, the classic 4-arg signature, a
+-- different socket string) without first getting a live crash log/dump that actually says why --
+-- guessing a "safer" variant blind is exactly how this one got shipped in the first place.
+function Spawner.AttachActorToShip(actor, ship)
+    if not (actor and actor:IsValid() and ship and ship:IsValid()) then return false end
+
+    local function verify()
+        local attached = false
+        pcall(function()
+            local parent = actor:GetAttachParentActor()
+            attached = parent and parent:IsValid() and (parent:GetFullName() == ship:GetFullName())
+        end)
+        return attached
+    end
+
+    local okModern = pcall(function() actor:K2_AttachToActor(ship, "", 1, 1, 1, false) end)
+    local attached = verify()
+
+    local okClassic = false
+    if not attached then
+        okClassic = pcall(function() actor:K2_AttachToActor(ship, "", 1, false) end)
+        attached = verify()
+    end
+
+    shipTestLog("ATTACH | modernCall=" .. tostring(okModern) .. " classicCall=" .. tostring(okClassic)
+        .. " | verified=" .. tostring(attached))
+    return attached
+end
+
+-- SHIP RIDER: the safe alternative to Spawner.AttachActorToShip above (2026-08-25). Since a
+-- real engine attach confirmed crashes the game, this keeps a non-Character actor "moored" by
+-- brute-force re-syncing its transform on a timer instead -- the same self-rescheduling-tick
+-- shape this file already uses for Spawner.LeashTick/the target-lock distance check/the toast
+-- ticker, just applied to ship position instead. Every call here (K2_GetActorLocation/Rotation,
+-- K2_SetActorLocation/Rotation) is already proven safe elsewhere in this file -- no attach
+-- UFUNCTION, no new engine surface, hence no repeat of AttachActorToShip's crash.
+Spawner.shipRiders = Spawner.shipRiders or {}
+Spawner._shipRiderTickRunning = Spawner._shipRiderTickRunning or false
+
+-- Spawner.AddShipRider(actor, ship) -- starts (or refreshes) tracking `actor` against `ship`.
+-- Captures the actor's CURRENT settled local offset (via Spawner.ShipWorldToLocal against the
+-- ship's CURRENT transform) and current relative yaw -- reads the REAL position rather than
+-- trusting whatever placement math the caller used, since §13 already found the physics-settled
+-- spot differs from a naive request. Starts the tick loop if it isn't already running; safe to
+-- call for a second/third rider while the loop is already active (just adds another entry).
+function Spawner.AddShipRider(actor, ship)
+    if not (actor and actor:IsValid() and ship and ship:IsValid()) then return false end
+
+    local shipLoc, shipYaw, actorLoc, actorYaw
+    pcall(function() shipLoc = ship:K2_GetActorLocation() end)
+    pcall(function() shipYaw = ship:K2_GetActorRotation().Yaw end)
+    pcall(function() actorLoc = actor:K2_GetActorLocation() end)
+    pcall(function() actorYaw = actor:K2_GetActorRotation().Yaw end)
+    if not (shipLoc and actorLoc) then
+        shipTestLog("RIDER ADD FAILED | location read failed")
+        return false
+    end
+    shipYaw = shipYaw or 0.0
+    actorYaw = actorYaw or 0.0
+
+    local localOffset = Spawner.ShipWorldToLocal(shipLoc, shipYaw, actorLoc)
+    local yawOffset = (actorYaw - shipYaw) % 360.0
+
+    -- Replace any existing entry for this exact actor rather than piling up duplicates (e.g. a
+    -- second AddShipRider call on the same actor after it's already riding).
+    for i = #Spawner.shipRiders, 1, -1 do
+        if Spawner.shipRiders[i].actor == actor then table.remove(Spawner.shipRiders, i) end
+    end
+    table.insert(Spawner.shipRiders, { actor = actor, ship = ship, localOffset = localOffset, yawOffset = yawOffset })
+
+    shipTestLog(string.format(
+        "RIDER ADD | localOffset=(fwd=%.1f right=%.1f up=%.1f) yawOffset=%.1f | riders=%d",
+        localOffset.forward, localOffset.right, localOffset.up, yawOffset, #Spawner.shipRiders))
+
+    Spawner.StartShipRiderTick()
+    return true
+end
+
+-- Spawner.RemoveShipRider(actor) -- stop tracking a specific actor (e.g. on despawn). The tick
+-- itself also self-prunes any actor/ship that's gone invalid, so this is a convenience for an
+-- immediate, explicit removal rather than waiting for the next tick to notice.
+function Spawner.RemoveShipRider(actor)
+    for i = #Spawner.shipRiders, 1, -1 do
+        if Spawner.shipRiders[i].actor == actor then table.remove(Spawner.shipRiders, i) end
+    end
+end
+
+-- One tick: re-sync every tracked rider's transform to its ship's CURRENT position/rotation,
+-- pruning any actor or ship that's gone invalid. Self-stops (does not reschedule) once
+-- Spawner.shipRiders is empty -- same "only run while there's live work" shape as
+-- Spawner.StartTargetLockTick, not an always-on loop like Spawner.LeashTick.
+function Spawner.ShipRiderTick()
+    for i = #Spawner.shipRiders, 1, -1 do
+        local r = Spawner.shipRiders[i]
+        if not (r.actor and r.actor:IsValid() and r.ship and r.ship:IsValid()) then
+            table.remove(Spawner.shipRiders, i)
+        else
+            local shipLoc, shipYaw
+            pcall(function() shipLoc = r.ship:K2_GetActorLocation() end)
+            pcall(function() shipYaw = r.ship:K2_GetActorRotation().Yaw end)
+            if shipLoc then
+                shipYaw = shipYaw or 0.0
+                local dest = Spawner.ShipLocalToWorld(shipLoc, shipYaw, r.localOffset.forward, r.localOffset.right, r.localOffset.up)
+                pcall(function() r.actor:K2_SetActorLocation(dest, false, {}, true) end)
+                pcall(function()
+                    r.actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = (shipYaw + r.yawOffset) % 360.0, Roll = 0.0 }, false)
+                end)
+            end
+        end
+    end
+
+    if #Spawner.shipRiders == 0 then
+        Spawner._shipRiderTickRunning = false
+        return
+    end
+    if ExecuteWithDelay then
+        ExecuteWithDelay(Config.SHIP_RIDER_TICK_MS or 200, Spawner.ShipRiderTick)
+    else
+        Spawner._shipRiderTickRunning = false
+    end
+end
+
+function Spawner.StartShipRiderTick()
+    if Spawner._shipRiderTickRunning then return end
+    if not ExecuteWithDelay then
+        shipTestLog("RIDER TICK unavailable -- ExecuteWithDelay missing in this UE4SS build.")
+        return
+    end
+    Spawner._shipRiderTickRunning = true
+    ExecuteWithDelay(Config.SHIP_RIDER_TICK_MS or 200, Spawner.ShipRiderTick)
+end
+
 
 --------------------------------------------------------------------
 -- Spawn ledger: record each spawn's EXACT instance path to a file so
@@ -6385,6 +7114,304 @@ end
 -- standard the rest of this session's live tests used. `say(msg)` is the caller's own output
 -- function, so this has no dependency on UE4SS's console Ar/output-device machinery -- passed in
 -- from main.lua's command handler.
+-- HIGH-RISK EXPERIMENT (2026-08-25) -- Spawner.TryAddMovementComponentToNearest. RedFalcon found
+-- Spawner.AddShipRider's timer-based sync "kind of worked" but visibly jittery, and asked
+-- directly whether a plain object could be given the SAME movement component that lets a
+-- Character ride a ship for free (see AddShipRider's own comment: it's the component's own
+-- per-tick floor check doing that, not "AI"). RedFalcon explicitly accepted the risk of trying
+-- this ("if it doesn't work we'll abandon that option").
+-- REAL, UNDERSTOOD RISK, stated plainly before attempting: this is a DIFFERENT engine operation
+-- from anything tried before -- constructing and attaching a BRAND-NEW UCharacterMovementComponent
+-- to an actor at runtime, not moving/reading an existing one. Every component-level attach
+-- already proven safe in this file (mesh pieces onto sockets, dumpCompositeFunctions' reflection
+-- walks) works with components that ALREADY EXIST on the actor -- this is the first attempt at
+-- constructing one fresh. CharacterMovementComponent internally assumes an ACharacter owner in
+-- several places (capsule collision, root motion, Cast<ACharacter> calls) -- attaching it to a
+-- plain AnimatedActor could silently no-op, error safely, or crash exactly like
+-- Spawner.ApplyBodyType/Spawner.AttachActorToShip already did this session.
+-- SAFETY STRUCTURE (de-risked as far as possible before the actual risky call, same discipline
+-- as the toast investigation, CLAUDE.md item 22): (1) resolve CharacterMovementComponent's class
+-- via StaticFindObject -- pure read, no risk. (2) check whether the actor already has one via
+-- GetComponentByClass -- pure read. (3) walk the actor's own class hierarchy with ForEachFunction
+-- (the exact proven-safe technique dumpCompositeFunctions already uses) to confirm
+-- AddComponentByClass actually exists on this class BEFORE calling it, rather than guessing a
+-- function name blind -- read-only, no risk. Only after all three checks pass does it attempt
+-- the actual construction. Logs IMMEDIATELY BEFORE that one risky call (not just after, unlike
+-- AttachActorToShip's original mistake) so even a full crash leaves a breadcrumb in the
+-- append-only dump file (survives a relaunch) confirming exactly how far execution got.
+-- Targeting (2026-08-25, RedFalcon's own catch): the statue this is meant to test is actively
+-- being repositioned by Spawner.AddShipRider's jitter-sync, so aiming at it with the ordinary
+-- cone/range picker is unreliable -- it may have drifted out of the cone by the moment this
+-- command actually runs. Two levels, most-reliable first:
+--   1. If Spawner.shipRiders has an active entry, use that actor DIRECTLY -- no aiming needed at
+--      all, since we already hold the exact reference being moved. Covers the common case (the
+--      one statue placed via lbshiplook on a ship) with zero targeting risk.
+--   2. Otherwise, fall through to findNearestSpawnInFront -- which ALREADY checks
+--      Spawner.lockedTarget (Num+) before doing any cone/range test (see that function's own
+--      "TARGET LOCK SHORTCUT" comment), so a target locked via Num+ still resolves correctly
+--      even if it has since moved outside the aim cone. Only a truly UNlocked, un-ridden target
+--      needs you to actually be looking at it right now.
+function Spawner.TryAddMovementComponentToNearest(say)
+    say = say or function(m) shipTestLog(m) end
+
+    local actor, name
+    if Spawner.shipRiders and #Spawner.shipRiders > 0 then
+        local r = Spawner.shipRiders[1]
+        if r.actor and r.actor:IsValid() then
+            actor = r.actor
+            name = "ship rider #1"
+            say("MOVECOMP | targeting tracked ship rider directly (no aiming needed)")
+        end
+    end
+
+    if not actor then
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format(
+                "MOVECOMP FAILED | no active ship rider AND nothing within %.0fuu ahead/locked -- "
+                .. "walk closer & face it, or Num+ to lock it first.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+
+    local cmc = nil
+    pcall(function() cmc = StaticFindObject("/Script/Engine.CharacterMovementComponent") end)
+    if not (cmc and cmc:IsValid()) then
+        say("MOVECOMP FAILED | CharacterMovementComponent class did not resolve via StaticFindObject")
+        return false
+    end
+    say("MOVECOMP | target=" .. name .. " | CharacterMovementComponent class resolved: " .. cmc:GetFullName())
+
+    local existing = nil
+    pcall(function() existing = actor:GetComponentByClass(cmc) end)
+    if existing and existing:IsValid() then
+        say("MOVECOMP | " .. name .. " ALREADY has one: " .. tostring(existing:GetFullName()))
+        -- Same rider-removal step as the fresh-add path below -- a re-run on an actor that
+        -- already got the component (e.g. re-checking after the ordering-bug fix) must ALSO stop
+        -- the manual sync, or it'd stay masked forever since this branch used to just return early.
+        Spawner.RemoveShipRider(actor)
+        say("MOVECOMP | removed from manual ship-rider sync so the existing component's real behavior is observable")
+        return true
+    end
+
+    local hasFn = false
+    pcall(function()
+        local cls = actor:GetClass()
+        while cls and cls:IsValid() do
+            cls:ForEachFunction(function(fn)
+                local fname = "?"
+                pcall(function() fname = fn:GetFName():ToString() end)
+                if fname == "AddComponentByClass" then hasFn = true end
+            end)
+            if hasFn then break end
+            local nextCls
+            pcall(function() nextCls = cls:GetSuperStruct() end)
+            cls = nextCls
+        end
+    end)
+    say("MOVECOMP | AddComponentByClass present on " .. name .. "'s class hierarchy: " .. tostring(hasFn))
+    if not hasFn then
+        say("MOVECOMP FAILED | AddComponentByClass not found -- NOT attempting the risky call")
+        return false
+    end
+
+    local identityTransform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+
+    say("MOVECOMP | about to call AddComponentByClass on " .. name .. " -- if the log stops here, this call crashed.")
+    local okCall, comp = pcall(function()
+        return actor:AddComponentByClass(cmc, false, identityTransform, false)
+    end)
+    say("MOVECOMP | AddComponentByClass call ok=" .. tostring(okCall) .. " result=" .. tostring(comp))
+
+    local verified = false
+    pcall(function()
+        local got = actor:GetComponentByClass(cmc)
+        verified = got and got:IsValid()
+    end)
+    say("MOVECOMP | verified present after call=" .. tostring(verified))
+
+    -- If it verified, stop the manual jitter-sync workaround on this actor (2026-08-25) -- with
+    -- Spawner.AddShipRider still actively re-teleporting it every tick, there's no way to tell
+    -- whether the NEW component is doing anything on its own; the manual sync would silently mask
+    -- it either way. Only removed on a CONFIRMED successful add, not on failure/crash-adjacent
+    -- paths -- an actor that never got the component still needs the fallback sync to stay moored.
+    if verified then
+        Spawner.RemoveShipRider(actor)
+        say("MOVECOMP | removed from manual ship-rider sync so the new component's real behavior is observable")
+    end
+
+    return okCall and verified
+end
+
+-- Spawner.TestApplyMaterialByPath(pathArg) -- same shape as TestApplyPoseByPath/
+-- TestSpawnNiagaraByPath (2026-08-26, RedFalcon: "a command i can use to test textures" while
+-- searching pakcontents.xlsx for ghost-material candidates). Paste any /Game/... Material or
+-- MaterialInstance path (dotted .AssetName suffix optional) to try it on the nearest spawned
+-- actor in front (or the Num+ locked one) via the same proven-safe SetMaterial swap
+-- ApplyGhostMaterial already uses -- no dynamic material instance, no CreateDynamicMaterialInstance,
+-- nothing new engine-risk-wise versus what's already shipped.
+-- Placed here (after findNearestSpawnInFront's own declaration), not up near ApplyGhostMaterial
+-- where it first shipped -- that placement crashed with "attempt to call a nil value
+-- (global 'findNearestSpawnInFront')", the exact forward-reference trap this file has hit
+-- several times before (items 66/72/73/74) since that helper is a `local function` declared
+-- further down than where new callers keep getting written.
+function Spawner.TestApplyMaterialByPath(pathArg)
+    if not pathArg or pathArg == "" then
+        print("[LivingBase] [test-matpath] usage: lbtestmaterial <full /Game/... Material or MaterialInstance path, dotted suffix optional>\n")
+        return false
+    end
+    local path = pathArg
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-matpath] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+
+    local mat = resolveAsset(path)
+    if not (mat and mat:IsValid()) then
+        print("[LivingBase] [test-matpath] could not resolve " .. path .. " -- wrong path, or this piece isn't in a loaded pak.\n")
+        return false
+    end
+    print("[LivingBase] [test-matpath] target=" .. tostring(e.label or "actor") .. " | path=" .. path .. "\n")
+    Spawner.ApplyMaterialToActor(e.actor, mat, "test-matpath")
+    return true
+end
+
+-- Spawner.ApplyTwoMaterialsToActor(actor, skinMat, clothMat, tag) -- 2026-08-26, RedFalcon:
+-- "Skin using MI_Fable_Male_Ghost and clothes using M_CharacterGhost_V2". A composite pawn's
+-- base body/skin lives on `actor.Mesh` itself; every OTHER SkeletalMeshComponent/
+-- StaticMeshComponent found via K2_GetComponentsByClass is a composite armor/clothing piece --
+-- this is the SAME split ApplyMaterialToActor's own applyTo(actor.Mesh) + component-sweep loop
+-- already makes, just routing two different materials to the two halves instead of one to
+-- both. `actor.Mesh` is explicitly excluded from the clothing sweep (K2_GetComponentsByClass
+-- for SkeletalMeshComponent very likely returns the base Mesh component too, alongside every
+-- composite piece) so clothMat can't stomp skinMat right back off the body afterward.
+function Spawner.ApplyTwoMaterialsToActor(actor, skinMat, clothMat, tag)
+    tag = tag or "material2"
+    if not (actor and actor:IsValid()) then return 0 end
+    local skinSlots, clothSlots, excluded, compCount = 0, 0, 0, 0
+    local function unwrap(comp)
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        return comp
+    end
+    local function fname(comp)
+        local n = nil
+        pcall(function() n = comp:GetFName():ToString() end)
+        return n
+    end
+    local function applySlots(comp, mat, counterName)
+        if not (comp and comp:IsValid() and mat and mat:IsValid()) then return 0 end
+        local n, ok_n = 0, 0
+        pcall(function() n = comp:GetNumMaterials() end)
+        for slot = 0, (n - 1) do
+            if pcall(function() comp:SetMaterial(slot, mat) end) then ok_n = ok_n + 1 end
+        end
+        return ok_n
+    end
+
+    local bodyMesh = nil
+    pcall(function() bodyMesh = actor.Mesh end)
+    bodyMesh = unwrap(bodyMesh)
+    local bodyName = bodyMesh and fname(bodyMesh) or nil
+    if bodyMesh and bodyMesh:IsValid() then
+        skinSlots = applySlots(bodyMesh, skinMat)
+    end
+    print(string.format("[LivingBase] [%s] body mesh: %s (name=%s)\n", tag,
+        bodyMesh and "found" or "NOT FOUND (actor.Mesh invalid/nil)", tostring(bodyName)))
+
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    comp = unwrap(comp)
+                    if comp and comp:IsValid() then
+                        compCount = compCount + 1
+                        local cn = fname(comp)
+                        -- Compare by FName, not raw `==` -- item 38's own established finding is
+                        -- that two independently-obtained component references to the SAME
+                        -- underlying component aren't reliably `==` in this codebase, while their
+                        -- FName is a stable, comparable identity.
+                        if bodyName and cn == bodyName then
+                            excluded = excluded + 1
+                        else
+                            clothSlots = clothSlots + applySlots(comp, clothMat)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    print(string.format(
+        "[LivingBase] [%s] components seen=%d, excluded-as-body=%d | skin slots=%d, cloth slots=%d\n",
+        tag, compCount, excluded, skinSlots, clothSlots))
+    return skinSlots + clothSlots
+end
+
+-- Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg) -- console-testable version of
+-- the above, same shape/target-resolution as TestApplyMaterialByPath.
+function Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg)
+    if not skinPathArg or skinPathArg == "" or not clothPathArg or clothPathArg == "" then
+        print("[LivingBase] [test-mat2path] usage: lbtestmaterial2 <skin Material/MI path> <cloth Material/MI path> (dotted suffix optional on either)\n")
+        return false
+    end
+    local function withSuffix(p)
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            if last then return p .. "." .. last end
+        end
+        return p
+    end
+    local skinPath, clothPath = withSuffix(skinPathArg), withSuffix(clothPathArg)
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-mat2path] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+
+    local skinMat = resolveAsset(skinPath)
+    if not (skinMat and skinMat:IsValid()) then
+        print("[LivingBase] [test-mat2path] could not resolve skin path " .. skinPath .. "\n")
+        return false
+    end
+    local clothMat = resolveAsset(clothPath)
+    if not (clothMat and clothMat:IsValid()) then
+        print("[LivingBase] [test-mat2path] could not resolve cloth path " .. clothPath .. "\n")
+        return false
+    end
+    print("[LivingBase] [test-mat2path] target=" .. tostring(e.label or "actor")
+        .. " | skin=" .. skinPath .. " | cloth=" .. clothPath .. "\n")
+    Spawner.ApplyTwoMaterialsToActor(e.actor, skinMat, clothMat, "test-mat2path")
+    return true
+end
+
 function Spawner.ApplySexChangeToNearest(say)
     say = say or function(m) print("[LivingBase] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
@@ -6418,6 +7445,2623 @@ function Spawner.ApplySexChangeToNearest(say)
     else
         say(name .. " does not support changing sex.")
     end
+end
+
+-- Spawner.TestApplyPoseByPath(pathArg) -- generic "feed it any animation asset path" tester
+-- (2026-08-25), same shape as Spawner.TestSpawnNiagaraByPath (RedFalcon's own precedent: "similar
+-- to FX"). Built after the pakcontents.xlsx export turned up a real family of candidate poses
+-- (NPC_ShipCrew Wheel/Cannon/Hammock, CampActivity Workbench/Cooking/Blacksmith) -- rather than
+-- write one throwaway function per animation to try, this lets any of them be tested from the
+-- console directly.
+-- Auto-appends the trailing `.AssetName` suffix if only the bare /Game/... path is pasted (same
+-- convenience TestSpawnNiagaraByPath already does) -- resolveAsset itself requires the exact
+-- dotted form. Targets the nearest spawned actor in front (findNearestSpawnInFront, the same
+-- picker lbsexchange/lbshipmovecomp/despawn/cycle/live-edit all already share -- respects
+-- Spawner.lockedTarget/Num+, so a hard-to-aim target can be locked first, same note as
+-- lbshipmovecomp). The actual application is Spawner.ApplyPose, already built and proven to RUN
+-- CLEANLY (no crash) from the earlier pose-porting investigation -- see that investigation's own
+-- history (CLAUDE.md items 53-63) for why a clean run is not the same as looking right: 5-6 prior
+-- attempts porting a DIFFERENT specific pose (Female_Standing_01's) all T-posed despite every
+-- individual step reporting success. These are a structurally different case (generic "Shared"
+-- animations built for reuse across Regular-skeleton NPCs, not one character's own Control-Rig-
+-- bound BlueprintMode pose) -- genuinely untested, not a retry of the closed investigation.
+-- NOTE: only plain AnimSequence assets ("A_"-prefixed) are expected to work the way ApplyPose
+-- drives them (SetAnimationMode SingleNode + SetAnimation + Play) -- an AnimMontage
+-- ("AM_"-prefixed) may resolve and "apply" without erroring but won't necessarily play correctly
+-- through this mechanism, since montages have their own section/notify playback this was never
+-- built to drive. Try the plain sequence variant first if both exist for a given activity.
+function Spawner.TestApplyPoseByPath(pathArg)
+    if not pathArg or pathArg == "" then
+        print("[LivingBase] [test-posepath] usage: lbtestpose <full /Game/... asset path, dotted suffix optional>\n")
+        return false
+    end
+    local path = pathArg
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-posepath] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+
+    print("[LivingBase] [test-posepath] target=" .. tostring(e.label or "actor") .. " | path=" .. path .. "\n")
+    return Spawner.ApplyPose(e.actor, path)
+end
+
+-- Spawner.TestApplyPoseWithFx(animPathArg, fxPathArg) -- combined pose+FX tester (2026-08-25),
+-- RedFalcon's own request: applying the pose and the effect as two separate manual commands
+-- leaves a human-reaction-time gap between them -- timing that would visibly be "off" for
+-- something meant to read as synced (e.g. hammer-strike sparks vs. the swing itself). Runs both
+-- against the SAME resolved target in one call instead.
+-- Targets the nearest spawned actor in front (findNearestSpawnInFront -- respects
+-- Spawner.lockedTarget/Num+, same picker every other test command here shares). Applies the pose
+-- via the already-proven Spawner.ApplyPose, then reuses the EXISTING Spawner.TestSpawnNiagaraActor
+-- for the FX by priming Spawner._lastProbedActor to this same target first -- that field is the
+-- exact interface TestSpawnNiagaraActor already expects (normally set by the HOME probe key), so
+-- this avoids duplicating its own bounds-based placement logic a second time.
+-- NOTE: this does NOT attach the effect to a specific socket (e.g. a hand bone, for something
+-- like a carried hammer's swing spark) -- TestSpawnNiagaraActor places it at the target's own
+-- footprint (bottom-center of its bounds), which suits a STATION-level effect (sparks/dust near
+-- where the activity happens, e.g. FX_Blacksmith_Bellow_Action at an anvil) but not a
+-- hand-carried one. Socket-level attachment would need a live probe of the target skeleton's
+-- actual socket names first, plus a held TOOL MESH separately (Environment/Gameplay/WorkBenches/
+-- SM_CraftStation_Tools_* -- confirmed to exist, RedFalcon's own find) attached there too --
+-- neither attempted here, this only solves the "pose + station FX together" half of the ask.
+function Spawner.TestApplyPoseWithFx(animPathArg, fxPathArg)
+    if not animPathArg or animPathArg == "" or not fxPathArg or fxPathArg == "" then
+        print("[LivingBase] [test-posefx] usage: lbtestposefx <anim /Game/... path> <fx /Game/... path>\n")
+        return false
+    end
+
+    local function normalize(p)
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            if last then p = p .. "." .. last end
+        end
+        return p
+    end
+    local animPath = normalize(animPathArg)
+    local fxPath = normalize(fxPathArg)
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-posefx] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+
+    print("[LivingBase] [test-posefx] target=" .. tostring(e.label or "actor")
+        .. " | anim=" .. animPath .. " | fx=" .. fxPath .. "\n")
+
+    local okPose = Spawner.ApplyPose(e.actor, animPath)
+    Spawner._lastProbedActor = e.actor
+    Spawner.TestSpawnNiagaraActor(fxPath)
+    return okPose
+end
+
+-- Spawner.TestAttachToolToNearest(meshPathArg, socketArg) -- generic tool-attach tester
+-- (2026-08-25). Reuses the EXACT already-shipped, already-proven recipe from Spawner.AttachShield
+-- (the Warrior's shield attach, live in production) instead of inventing a new mechanism:
+-- AddComponentByClass (a SkeletalMeshComponent, bManualAttachment=true) -> SetSkeletalMeshAsset ->
+-- verify the socket exists via DoesSocketExist (K2_AttachToComponent does NOT fail on a missing
+-- socket -- it silently attaches at the component origin, which is exactly how the shield floated
+-- once before it had this check) -> K2_AttachToComponent -> if no candidate socket exists, dump
+-- the actor's FULL socket list instead (safe, read-only, same GetAllSocketNames() call the shield
+-- code already uses) so the real name can be read off rather than guessed a third time.
+-- Built for RedFalcon's craft-station tool-holding investigation: `SK_CraftStation_Tools_
+-- Hammer_01` (a genuine SKELETAL mesh, not just the plain static `SM_` one -- see this file's own
+-- history for why that distinction matters) is exactly the kind of prop this mechanism already
+-- knows how to mount. Default socket candidates are the right-hand analogs of the
+-- ALREADY-CONFIRMED-WORKING `Config.WARRIOR_SHIELD_SOCKETS` (proven live on this same broad
+-- human-skeleton family), tried before the shield's own left-hand set, since a hand tool is more
+-- naturally right-handed than the shield's left-hand mount -- an explicit `socketArg` always wins
+-- if given.
+-- Generic target (`findNearestSpawnInFront`, respects `Spawner.lockedTarget`/Num+) rather than
+-- hardcoded to the Warrior like the shield is -- works on any spawned Character, e.g. the same
+-- Handyman test targets this whole animation investigation has already been using.
+-- proceedWithTool(actor, name, meshPath, socketArg, mesh) -- the actual component/attach work,
+-- extracted (2026-08-27) so a cold/never-yet-loaded prop asset can get ONE delayed retry instead
+-- of failing outright. RedFalcon reported "props not loading if they haven't been used before" --
+-- resolveAsset's own StaticFindObject->LoadAsset->StaticFindObject sequence calls LoadAsset
+-- synchronously, but there's no guarantee the asset has finished streaming into memory by the
+-- immediately-following StaticFindObject re-check on the very FIRST reference anything in the
+-- session has made to it -- a real race, not a Lua bug, and exactly what "works once something
+-- else has already loaded it" would look like from the outside. A second look a few hundred ms
+-- later, after the load has had time to actually land, is the same shape of fix already proven
+-- for composite-settle timing elsewhere in this file, just applied to a cold asset load instead.
+local function proceedWithTool(actor, name, meshPath, socketArg, mesh)
+    -- Mesh-type auto-detect (2026-08-25, RedFalcon's own off-hand request): resolveAsset succeeds
+    -- identically for a UStaticMesh or a USkeletalMesh -- they only diverge at which COMPONENT
+    -- class can host them (SetSkeletalMeshAsset on a static mesh, or vice versa, just fails). Not
+    -- every craft-station prop has a skeletal version the way the tools (hammer/knife/chisel) do --
+    -- a carved wood piece, for the OTHER hand, only exists as a plain static mesh (SM_...), so this
+    -- reads the mesh's own class name FIRST and picks the matching component type, rather than
+    -- assuming skeletal like the original hammer-only version did.
+    local meshClassName = "?"
+    pcall(function() meshClassName = mesh:GetClass():GetFName():ToString() end)
+    local isStatic = meshClassName:find("StaticMesh") ~= nil
+
+    local compCls = StaticFindObject(isStatic and "/Script/Engine.StaticMeshComponent" or "/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then
+        print("[LivingBase] [test-tool] " .. (isStatic and "StaticMeshComponent" or "SkeletalMeshComponent") .. " class did not resolve.\n")
+        return false
+    end
+
+    local comp = nil
+    pcall(function()
+        comp = actor:AddComponentByClass(compCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [test-tool] AddComponentByClass failed on " .. name .. ".\n")
+        return false
+    end
+
+    if isStatic then
+        pcall(function() comp:SetStaticMesh(mesh) end)
+    else
+        local okMesh = pcall(function() comp:SetSkeletalMeshAsset(mesh) end)
+        if not okMesh then pcall(function() comp:SetSkeletalMesh(mesh, false) end) end
+    end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        print("[LivingBase] [test-tool] " .. name .. " has no Mesh to attach to.\n")
+        pcall(function() comp:K2_DestroyComponent(actor) end)
+        return false
+    end
+
+    local function socketExists(sName)
+        local ok, exists = pcall(function() return body:DoesSocketExist(FName(sName)) end)
+        return ok and exists == true
+    end
+
+    local candidates = {}
+    if socketArg and socketArg ~= "" then candidates[#candidates + 1] = socketArg end
+    for _, s in ipairs({ "ik_weapon_rSocket", "ik_hand_rSocket", "hand_rSocket", "hand_r" }) do
+        candidates[#candidates + 1] = s
+    end
+    for _, s in ipairs(Config.WARRIOR_SHIELD_SOCKETS or {}) do
+        candidates[#candidates + 1] = s
+    end
+
+    local socket = nil
+    for _, cand in ipairs(candidates) do
+        if socketExists(cand) then socket = cand; break end
+    end
+
+    if not socket then
+        print("[LivingBase] [test-tool] none of the candidate sockets exist on " .. name .. "'s skeleton.\n")
+        pcall(function()
+            local names = body:GetAllSocketNames()
+            local n = 0
+            pcall(function() n = names:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #names end) end
+            print(string.format("[LivingBase] [test-tool] %d sockets on %s's Mesh:\n", n, name))
+            for i = 1, n do
+                local s = nil
+                pcall(function() s = names[i] end)
+                if s == nil then pcall(function() s = names:Get(i) end) end
+                if s then print("[LivingBase] [test-tool]    " .. tostring(s:ToString()) .. "\n") end
+            end
+        end)
+        pcall(function() comp:K2_DestroyComponent(actor) end)
+        return false
+    end
+
+    local attached = pcall(function()
+        comp:K2_AttachToComponent(body, FName(socket), 2, 2, 2, false)
+    end)
+    pcall(function() comp:SetVisibility(true, false) end)
+
+    print(string.format(
+        "[LivingBase] [test-tool] target=%s | mesh=%s | socket=%s | attach call=%s\n",
+        name, meshPath, socket, tostring(attached)))
+    return attached
+end
+
+-- Spawner.RefLog(tag, msg) -- one shared, ever-growing reference log for exploratory scan/probe
+-- output (2026-08-28). RedFalcon: "a lot of these scans can crash over time... make a log file
+-- just for this... doesn't get erased at game launch." ue4ss.log itself is wiped fresh on every
+-- launch (already established this project -- e.g. the ship-pivot dump's own comment: "the
+-- append-only ship-test dump file... survives a relaunch, unlike ue4ss.log, which resets on each
+-- launch") -- any tool that only ever print()s (lbsockets, lbtestdecor, etc.) loses its findings
+-- the moment the game restarts, crash or not. Same multi-candidate relative-path + io.open(p,"a")
+-- convention as SHIP_TEST_DUMP_PATHS/CUSTOM_SURVEY_PATHS elsewhere in this file -- ONE shared file
+-- rather than a new one per tool, since RedFalcon said it doesn't need to be separate; `tag`
+-- (e.g. "sockets", "decor") just prefixes each line so a mixed history of different tools' output
+-- stays sortable/greppable by kind.
+local REFERENCE_LOG_PATHS = {
+    "ue4ss/Mods/LivingBase/LivingBase_ReferenceLog.txt",
+    "Mods/LivingBase/LivingBase_ReferenceLog.txt",
+    "LivingBase_ReferenceLog.txt",
+}
+function Spawner.RefLog(tag, msg)
+    local line = string.format("[%s] [%s] %s", os.date("%Y-%m-%d %H:%M:%S"), tostring(tag), tostring(msg))
+    for _, p in ipairs(REFERENCE_LOG_PATHS) do
+        local ok, f = pcall(io.open, p, "a")
+        if ok and f then
+            f:write(line .. "\n")
+            f:close()
+            return true
+        end
+    end
+    return false
+end
+
+-- Spawner.TestDumpSockets() -- "what are ALL the sockets on this skeleton" (2026-08-28). RedFalcon
+-- wants to design an IK-slot/attachment-point layout and asked what sockets are actually known --
+-- the honest answer going in was "a handful of guesses and incidental sightings, never one real
+-- exhaustive dump": Config.WARRIOR_SHIELD_SOCKETS/the ik_*_rSocket candidate list above are both
+-- CANDIDATE lists carried over from a different skeleton (the Senkamati mob, per this file's own
+-- comment on the shield socket) or copied by analogy, never confirmed complete; every "_backsocket"/
+-- "soc_*" name seen elsewhere in this file is just whatever happened to be equipped on some actor
+-- probed for an unrelated reason. This reuses the same GetAllSocketNames() call the shield/
+-- tool-attach fallback code just above already contains -- but that code's own dump branch had
+-- NEVER actually fired in this whole project (zero matching log lines ever, confirmed by grep)
+-- before this function existed, so "already proven safe" was an overstatement -- it had only ever
+-- been proven not to CRASH when written, never proven to actually return real data. Confirmed
+-- 2026-08-28: RedFalcon got "0 sockets" on the Buccaneers Merchant despite her visibly carrying
+-- attached props, meaning she clearly HAS real sockets. Root cause: the original version wrapped
+-- the whole GetAllSocketNames()+unwrap block in one outer pcall with its ok/err result discarded
+-- -- if the call fails for ANY reason (wrong calling convention, wrong function on this
+-- component's actual class, etc.) it silently produces an empty list with zero diagnostic. Fixed
+-- two ways, matching this file's own established pattern for other uncertain TArray-returning
+-- calls (see Spawner.TestListMorphTargets' identical out-param-then-return-value shape): (1) try
+-- the OUT-PARAM calling convention first (`body:GetAllSocketNames(names)` into a pre-created
+-- table), and if that yields nothing, fall back to treating it as a plain return value
+-- (`local names = body:GetAllSocketNames()`) -- some UFUNCTIONs in this build only marshal
+-- correctly one way, not the other, and there was never a live-confirmed data point for which
+-- this one needs; (2) the call's own pcall success/failure and error text are now captured and
+-- reported, instead of silently swallowed, so a genuine failure (as opposed to an honestly-empty
+-- list) is visible in the output rather than looking identical to it.
+-- socketOccupants(actor) -- "what item is IN the socket" (2026-08-28, RedFalcon's own follow-up:
+-- a transform value wasn't what was wanted -- what's actually attached there is). Builds a
+-- socketName -> "compName (meshName)" map by sweeping the actor's own SkeletalMeshComponents AND
+-- StaticMeshComponents (props can be either, see item 74) and reading each one's
+-- GetAttachSocketName() -- the exact same read `dumpMeshComponentNames`'s own probe-mesh dump
+-- already does per-component; this just inverts it into a per-SOCKET lookup instead. A socket
+-- with nothing plugged in simply has no entry -- most of the ~340 named sockets/bones on a given
+-- actor are unused at any moment, only the handful actually holding a weapon/tool/worn prop show
+-- up here.
+local function socketOccupants(actor)
+    local occ = {}
+    local function sweep(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        if not comps then return end
+        local n = 0
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock ~= "" then
+                    local compName, meshName = "?", "(no mesh)"
+                    pcall(function() compName = c:GetFName():ToString() end)
+                    pcall(function()
+                        local sk = nil
+                        pcall(function() sk = c.SkeletalMesh end)
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then pcall(function() sk = c:GetSkeletalMeshAsset() end) end
+                        if not (sk and sk:IsValid()) then pcall(function() sk = c.StaticMesh end) end
+                        if not (sk and sk:IsValid()) and c.GetStaticMesh then pcall(function() sk = c:GetStaticMesh() end) end
+                        if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+                    end)
+                    occ[sock] = compName .. " (" .. meshName .. ")"
+                end
+            end
+        end
+    end
+    sweep("/Script/Engine.SkeletalMeshComponent")
+    sweep("/Script/Engine.StaticMeshComponent")
+    return occ
+end
+
+-- `say` (optional) -- same convention as Spawner.ApplySexChangeToNearest: a callback the console
+-- command handler passes in that both print()s (ue4ss.log) AND Ar:Log()s (the actual in-game
+-- console window) each line, since RedFalcon wants this list visible without alt-tabbing to the
+-- log file. Falls back to a plain print-only local if called without one (e.g. from Lua directly).
+function Spawner.TestDumpSockets(say)
+    say = say or function(msg) print("[LivingBase] [test-sockets] " .. msg .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format(
+            "nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    local list = {}
+    local callOk, callErr = true, nil
+    do
+        local names = {}
+        local ok1, err1 = pcall(function() body:GetAllSocketNames(names) end)
+        local n = 0
+        pcall(function() n = names:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #names end) end
+        if n == 0 then
+            local ok2, ret = pcall(function() return body:GetAllSocketNames() end)
+            if ok2 and ret then
+                names = ret
+                pcall(function() n = names:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #names end) end
+            elseif not ok1 then
+                callOk, callErr = false, tostring(err1)
+            elseif not ok2 then
+                callOk, callErr = false, tostring(ret)
+            end
+        end
+        for i = 1, n do
+            local s = nil
+            pcall(function() s = names[i] end)
+            if s == nil then pcall(function() s = names:Get(i) end) end
+            pcall(function() if s ~= nil and type(s) == "userdata" and s.get then s = s:get() end end)
+            local sStr = nil
+            pcall(function() sStr = s:ToString() end)
+            if not sStr then pcall(function() sStr = tostring(s) end) end
+            if sStr then list[#list + 1] = sStr end
+        end
+    end
+    if not callOk then
+        say("GetAllSocketNames FAILED: " .. tostring(callErr) .. " -- this is not an empty-socket result, the call itself errored.")
+        Spawner.RefLog("sockets", "target=" .. name .. " -- GetAllSocketNames FAILED: " .. tostring(callErr))
+        return false
+    end
+    table.sort(list)
+    if #list == 0 then
+        -- Both calling conventions succeeded but genuinely returned nothing -- print what
+        -- actor.Mesh actually resolved to, so a wrong-component case (vs. a truly socket-less
+        -- component) is distinguishable instead of looking identical to it.
+        local compName, curMeshName = "?", "(none)"
+        pcall(function() compName = body:GetFName():ToString() end)
+        pcall(function()
+            local sk = body.SkeletalMesh
+            if not (sk and sk:IsValid()) and body.GetSkeletalMeshAsset then sk = body:GetSkeletalMeshAsset() end
+            if sk and sk:IsValid() then curMeshName = sk:GetFName():ToString() end
+        end)
+        say(string.format("target=%s -- 0 sockets (both calling conventions succeeded but returned nothing). actor.Mesh resolved to comp=%s mesh=%s -- if that mesh/component looks wrong, this may not be the real skeletal body.",
+            name, compName, curMeshName))
+        Spawner.RefLog("sockets", string.format("target=%s -- 0 sockets, comp=%s mesh=%s", name, compName, curMeshName))
+        return true
+    end
+    say(string.format("target=%s -- %d sockets on Mesh:", name, #list))
+    Spawner.RefLog("sockets", string.format("target=%s -- %d sockets on Mesh:", name, #list))
+
+    -- "what item is IN the socket" (2026-08-28, RedFalcon's clarification -- a raw transform
+    -- number wasn't the ask, the actual occupant is). See socketOccupants' own comment.
+    local occ = {}
+    pcall(function() occ = socketOccupants(actor) end)
+    local occupiedNames = {}
+    for sockName, _ in pairs(occ) do occupiedNames[#occupiedNames + 1] = sockName end
+    table.sort(occupiedNames)
+    say(string.format("-- %d socket(s) currently occupied: --", #occupiedNames))
+    Spawner.RefLog("sockets", string.format("-- %d socket(s) currently occupied: --", #occupiedNames))
+    if #occupiedNames == 0 then
+        say("   (nothing attached via a named socket right now)")
+        Spawner.RefLog("sockets", "   (nothing attached via a named socket right now)")
+    end
+    for _, sockName in ipairs(occupiedNames) do
+        say(string.format("   %s  <- %s", sockName, occ[sockName]))
+        Spawner.RefLog("sockets", string.format("   %s  <- %s", sockName, occ[sockName]))
+    end
+
+    say("-- full socket list (blank = nothing attached there): --")
+    Spawner.RefLog("sockets", "-- full socket list (blank = nothing attached there): --")
+    for _, s in ipairs(list) do
+        local suffix = occ[s] and ("  <- " .. occ[s]) or ""
+        say("   " .. s .. suffix)
+        Spawner.RefLog("sockets", "   " .. s .. suffix)
+    end
+    pcall(function() Spawner.Toast(string.format("%d sockets on %s (%d occupied) -- see console/ue4ss.log/LivingBase_ReferenceLog.txt", #list, name, #occupiedNames), 3.0) end)
+    return true
+end
+
+function Spawner.TestAttachToolToNearest(meshPathArg, socketArg)
+    if not meshPathArg or meshPathArg == "" then
+        print("[LivingBase] [test-tool] usage: lbtesttool <mesh /Game/... path> [socket name]\n")
+        return false
+    end
+    local meshPath = meshPathArg
+    if not meshPath:match("%.[%w_]+$") then
+        local last = meshPath:match("([^/]+)$")
+        if last then meshPath = meshPath .. "." .. last end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-tool] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh = resolveAsset(meshPath)
+    if mesh and mesh:IsValid() then
+        return proceedWithTool(actor, name, meshPath, socketArg, mesh)
+    end
+
+    -- Cold-asset retry (2026-08-27, see proceedWithTool's own comment): one delayed re-check
+    -- before giving up, rather than failing outright on an asset nothing has referenced yet this
+    -- session. Captures the SAME actor reference resolved above, not a fresh pick -- an aim change
+    -- during the delay shouldn't redirect where the tool ends up.
+    if ExecuteWithDelay then
+        print("[LivingBase] [test-tool] mesh not resolved yet, retrying once in 400ms: " .. meshPath .. "\n")
+        ExecuteWithDelay(400, function()
+            local ok, err = pcall(function()
+                local retryMesh = resolveAsset(meshPath)
+                if retryMesh and retryMesh:IsValid() then
+                    print("[LivingBase] [test-tool] resolved on retry: " .. meshPath .. "\n")
+                    proceedWithTool(actor, name, meshPath, socketArg, retryMesh)
+                else
+                    print("[LivingBase] [test-tool] mesh still did not resolve after retry: " .. meshPath .. "\n")
+                end
+            end)
+            if not ok then print("[LivingBase] [test-tool] retry FAILED: " .. tostring(err) .. "\n") end
+        end)
+        return false
+    end
+
+    print("[LivingBase] [test-tool] mesh did not resolve: " .. meshPath .. "\n")
+    return false
+end
+
+-- Spawner.TestSwapArmorPiece(componentMatch, meshPathArg) -- generic clothing/armor swap tester
+-- (2026-08-27). Not a new mechanism -- Spawner.DeCorrupt already does exactly this (match a
+-- component's CURRENT mesh name against a pattern, SetSkeletalMeshAsset/SetSkeletalMesh the
+-- replacement) everywhere in this mod's re-skin rulesets; this just exposes that same swap
+-- directly from the console against an arbitrary path, instead of only through a pre-written
+-- rules table. componentMatch is a plain case-insensitive substring checked against BOTH the
+-- component's own name (e.g. "Torso", "Headgear") and its CURRENT mesh's name -- covers both
+-- "I know the slot name" and "I only know what it currently looks like" cases. Every matching
+-- component gets swapped (not just the first) -- a composite can have more than one piece whose
+-- name/mesh matches a broad fragment, and DeCorrupt's own replace loop doesn't stop at one either.
+-- Same cold-asset retry as Spawner.TestAttachToolToNearest (see its own comment) -- an armor mesh
+-- nothing in the session has referenced yet can hit the exact same LoadAsset race.
+local function armorProceedWithMesh(matched, meshPath, mesh, actor, smcCls)
+    for _, m in ipairs(matched) do
+        local okMesh = pcall(function() m.comp:SetSkeletalMeshAsset(mesh) end)
+        if not okMesh then pcall(function() m.comp:SetSkeletalMesh(mesh, false) end) end
+        -- Restore visibility in case this slot was previously hidden by lbremoveclothes/
+        -- Custom > Clothes > Remove (2026-08-28) -- same fix as TestApplyClothingPiece's own.
+        if okMesh then
+            pcall(function() m.comp:SetVisibility(true, false) end)
+            pcall(function() m.comp:SetHiddenInGame(false, false) end)
+        end
+        -- Cloth-sim rebind after a runtime swap -- see Spawner.TestApplyClothingPiece's own
+        -- comment (2026-08-28) for the full history: RecreateClothingActor() and a direct
+        -- SetSkeletalMesh(m.comp, mesh, true) BOTH failed with the same "nullptr instance" error
+        -- on the SAME m.comp reference that had just succeeded for SetSkeletalMeshAsset --
+        -- a stale-captured-reference pattern, not a bad function name. Fixed the same way: re-fetch
+        -- a FRESH component handle (matched by m.compName) before the follow-up call.
+        local okCloth, clothErr = "n/a", nil
+        if okMesh and actor and smcCls then
+            local freshComp = nil
+            pcall(function()
+                local comps2 = actor:K2_GetComponentsByClass(smcCls)
+                local n2 = 0
+                pcall(function() n2 = comps2:GetArrayNum() end)
+                if n2 == 0 then pcall(function() n2 = #comps2 end) end
+                for i = 1, n2 do
+                    local c2 = comps2[i]; if not c2 then pcall(function() c2 = comps2:Get(i) end) end
+                    pcall(function() if c2 ~= nil and type(c2) == "userdata" and c2.get then c2 = c2:get() end end)
+                    if c2 and c2:IsValid() and not freshComp then
+                        local cn = "?"
+                        pcall(function() cn = c2:GetFName():ToString() end)
+                        if cn == m.compName then freshComp = c2 end
+                    end
+                end
+            end)
+            if freshComp then
+                okCloth, clothErr = pcall(function() freshComp:SetSkeletalMesh(mesh, true) end)
+            else
+                okCloth, clothErr = false, "could not re-fetch fresh component handle"
+            end
+        end
+        print(string.format("[LivingBase] [test-armor] comp=%s BEFORE=%s AFTER=%s clothRebind=%s\n",
+            m.compName, m.curName, meshPath,
+            (okCloth == "n/a") and "n/a" or (okCloth and "ok" or ("FAILED: " .. tostring(clothErr)))))
+    end
+end
+
+function Spawner.TestSwapArmorPiece(componentMatch, meshPathArg)
+    if not componentMatch or componentMatch == "" then
+        print("[LivingBase] [test-armor] usage: lbtestarmor <slot/mesh name match> [mesh /Game/... path]\n")
+        print("[LivingBase] [test-armor]   omit the mesh path to just LIST the target's current pieces matching that name.\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-armor] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [test-armor] SkeletalMeshComponent class did not resolve.\n")
+        return false
+    end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+
+    local needle = componentMatch:lower()
+    local all, matched = {}, {}
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName = "(none)"
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+            local compName = "?"
+            pcall(function() compName = c:GetFName():ToString() end)
+            all[#all + 1] = { comp = c, curName = curName, compName = compName }
+            if compName:lower():find(needle, 1, true) or curName:lower():find(needle, 1, true) then
+                matched[#matched + 1] = { comp = c, curName = curName, compName = compName }
+            end
+        end
+    end
+
+    if #matched == 0 then
+        print(string.format("[LivingBase] [test-armor] no piece matched '%s' on %s -- current pieces (%d):\n",
+            componentMatch, name, #all))
+        for _, a in ipairs(all) do
+            print(string.format("[LivingBase] [test-armor]    comp=%s mesh=%s\n", a.compName, a.curName))
+        end
+        return false
+    end
+
+    if not meshPathArg or meshPathArg == "" then
+        for _, m in ipairs(matched) do
+            print(string.format("[LivingBase] [test-armor] MATCH comp=%s mesh=%s\n", m.compName, m.curName))
+        end
+        return true
+    end
+
+    local meshPath = meshPathArg
+    if not meshPath:match("%.[%w_]+$") then
+        local last = meshPath:match("([^/]+)$")
+        if last then meshPath = meshPath .. "." .. last end
+    end
+
+    local mesh = resolveAsset(meshPath)
+    if mesh and mesh:IsValid() then
+        armorProceedWithMesh(matched, meshPath, mesh, actor, cls)
+        return true
+    end
+
+    if ExecuteWithDelay then
+        print("[LivingBase] [test-armor] mesh not resolved yet, retrying once in 400ms: " .. meshPath .. "\n")
+        ExecuteWithDelay(400, function()
+            local ok, err = pcall(function()
+                local retryMesh = resolveAsset(meshPath)
+                if retryMesh and retryMesh:IsValid() then
+                    print("[LivingBase] [test-armor] resolved on retry: " .. meshPath .. "\n")
+                    armorProceedWithMesh(matched, meshPath, retryMesh, actor, cls)
+                else
+                    print("[LivingBase] [test-armor] mesh still did not resolve after retry: " .. meshPath .. "\n")
+                end
+            end)
+            if not ok then print("[LivingBase] [test-armor] retry FAILED: " .. tostring(err) .. "\n") end
+        end)
+        return false
+    end
+
+    print("[LivingBase] [test-armor] mesh did not resolve: " .. meshPath .. "\n")
+    return false
+end
+
+-- Spawner.TestApplySkinFamily(familyName) -- "Custom > Skin Tones" (2026-08-28). Unlike
+-- lbtestpose/lbtestarmor (a single asset path, no context needed), a skin-tone swap needs the
+-- target's SEX first -- Config.SkinFamilySwapRules/CorruptedSkinSwapRules (config.lua) each
+-- generate match patterns keyed on "Male" or "Female" (the game's own material naming, e.g.
+-- MI_African_Female_Medium), so applying the wrong sex's ruleset would match nothing at all
+-- rather than looking wrong. Reads it straight off the target's own CompositeMeshComponent via
+-- GetBodySex() (same EBodySex encoding -- 1=Male, 2=Female -- Spawner.ApplyBodySex/
+-- ApplySexChangeToNearest already use), defaulting to Female for anything else/unreadable rather
+-- than failing outright, same permissive default Config.SkinFamilySwapRules's own `sex` parameter
+-- already uses.
+-- Reuses Spawner.DeCorrupt directly (the exact same swap mechanism -- match a component's current
+-- material name, SetMaterial the replacement -- every other skin/outfit rule in this file already
+-- runs on) rather than anything new. "Corrupted" is matched case-insensitively as a special name
+-- routing to Config.CorruptedSkinSwapRules instead of the plain per-family Config.SkinFamilySwapRules.
+function Spawner.TestApplySkinFamily(familyName)
+    if not familyName or familyName == "" then
+        print("[LivingBase] [test-skin] usage: lbtestskin <family> (Adventurer/African/Albion/Fable/Native/Orient/Scum/Corrupted/\"Corrupted (Wood)\")\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-skin] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local comp
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [test-skin] " .. name .. " has no CompositeMeshComponent -- skin-tone swap needs a composite-driven body.\n")
+        return false
+    end
+
+    local sexVal
+    pcall(function() sexVal = comp:GetBodySex() end)
+    local sexN = tonumber(sexVal)
+    local sex = (sexN == 1) and "Male" or "Female"
+
+    local rules
+    if familyName:lower() == "corrupted" then
+        rules = Config.CorruptedSkinSwapRules(sex)
+    elseif familyName:lower() == "corrupted (wood)" then
+        rules = Config.CorruptedWoodSkinSwapRules(sex)
+    else
+        local matched = nil
+        for _, f in ipairs(Config.SKIN_FAMILIES or {}) do
+            if f:lower() == familyName:lower() then matched = f; break end
+        end
+        if not matched then
+            print("[LivingBase] [test-skin] unknown family '" .. familyName .. "' -- known: " ..
+                table.concat(Config.SKIN_FAMILIES or {}, ", ") .. ", Corrupted\n")
+            return false
+        end
+        rules = Config.SkinFamilySwapRules(matched, sex)
+    end
+
+    local swapped, hidden, replaced = Spawner.DeCorrupt(actor, { swaps = rules })
+    print(string.format("[LivingBase] [test-skin] target=%s sex=%s family=%s swapped=%s\n",
+        name, sex, familyName, tostring(swapped)))
+    pcall(function() Spawner.Toast("Skin: " .. familyName .. " (" .. sex .. ") on " .. name, 2.5) end)
+    return true
+end
+
+-- Spawner.TestApplyHairStyle(styleName, variant) -- "Custom > Hair" (2026-08-28, `variant` param
+-- added same day). Same sex-auto-detection shape as Spawner.TestApplySkinFamily (see its own
+-- comment) -- hair meshes are sex-specific too (a female hair mesh on a male skeleton, or vice
+-- versa, is the same class of body-mesh-on-wrong-skeleton mismatch this file already documents
+-- elsewhere), so this reads GetBodySex() first and picks Config.CUSTOM_HAIR's femalePath/malePath
+-- accordingly rather than guessing.
+-- `variant` ("Default"/"Hat"/"Headband"/"Bandana", case-insensitive, defaults to "Default") --
+-- added once RedFalcon caught the original two-variant (Hat/no-Hat) version missing Marita's own
+-- Bandana-variant Wig entirely; Config.CUSTOM_HAIR now carries the same style NAME once per variant
+-- it actually has, so a lookup needs both fields to be unambiguous (a bare name like "Wig" now
+-- matches 4 different rows).
+-- REAL BUG FOUND AND FIXED (2026-08-28, same day): originally routed through
+-- Spawner.DeCorrupt's shared `replaces` mechanism (`match = "Hair_"` against a component's
+-- CURRENT mesh's bare NAME) -- the exact same pattern Letty/Marita/Merchant's own hair overlays
+-- use. RedFalcon confirmed live: apply "Undercut", then try to change the hair again -- it never
+-- changes. Root cause: Undercut's real asset is named `SK_Undercut_01_..._Female` -- the ONLY
+-- family in the whole catalog missing the "Hair_" prefix every other style has. The moment it's
+-- applied, the component's current mesh name no longer contains "Hair_" at all, so every later
+-- "Hair_" pattern match silently fails to find it -- not a crash, just a component that becomes
+-- permanently unmatchable by name once Undercut lands on it. Fixed by finding the hair component
+-- DIRECTLY (walking every SkeletalMeshComponent, checking each one's current mesh's FULL asset
+-- PATH for "/Hair/" rather than the mesh's bare NAME for "Hair_") and swapping it with a plain
+-- SetSkeletalMeshAsset/SetSkeletalMesh call -- bypassing Spawner.DeCorrupt's name-pattern matching
+-- for this tester entirely, since the full PATH stays reliably "/Hair/..." regardless of which
+-- specific family's own (possibly irregular) filename convention is currently assigned. NOTE:
+-- this same latent bug still exists in Letty/Marita/Merchant's own `replaces` rules (unchanged,
+-- out of scope here) -- it just never surfaced there because none of their hardcoded hair targets
+-- happen to be Undercut; worth keeping in mind if that ever comes up.
+function Spawner.TestApplyHairStyle(styleName, variant)
+    if not styleName or styleName == "" then
+        print("[LivingBase] [test-hair] usage: lbtesthair <style> [Default|Hat|Headband|Bandana] (case-insensitive; see Config.CUSTOM_HAIR for the full list)\n")
+        return false
+    end
+    variant = (variant and variant ~= "") and variant or "Default"
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-hair] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local comp
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        print("[LivingBase] [test-hair] " .. name .. " has no CompositeMeshComponent -- hair swap needs a composite-driven body.\n")
+        return false
+    end
+    local sexVal
+    pcall(function() sexVal = comp:GetBodySex() end)
+    local sexN = tonumber(sexVal)
+    local sex = (sexN == 1) and "Male" or "Female"
+
+    local matched = nil
+    for _, row in ipairs(Config.CUSTOM_HAIR or {}) do
+        if row.name:lower() == styleName:lower() and row.variant:lower() == variant:lower() then
+            matched = row; break
+        end
+    end
+    if not matched then
+        print("[LivingBase] [test-hair] unknown style/variant '" .. styleName .. "'/'" .. variant .. "'.\n")
+        return false
+    end
+    local path = (sex == "Male") and matched.malePath or matched.femalePath
+
+    local mesh = resolveAsset(path)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-hair] mesh did not resolve: " .. path .. "\n")
+        return false
+    end
+
+    local smcCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    local hairComp = nil
+    if smcCls and smcCls:IsValid() then
+        pcall(function()
+            local comps = actor:K2_GetComponentsByClass(smcCls)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            for i = 1, n do
+                local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() and not hairComp then
+                    local full = ""
+                    pcall(function()
+                        local sk = c.SkeletalMesh
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                        if sk and sk:IsValid() then full = sk:GetFullName() end
+                    end)
+                    if full:find("/Hair/") then hairComp = c end
+                end
+            end
+        end)
+    end
+    if not hairComp then
+        print("[LivingBase] [test-hair] " .. name .. " has no component currently carrying a /Hair/ mesh -- nothing to swap.\n")
+        return false
+    end
+
+    local okMesh = pcall(function() hairComp:SetSkeletalMeshAsset(mesh) end)
+    if not okMesh then pcall(function() hairComp:SetSkeletalMesh(mesh, false) end) end
+    print(string.format("[LivingBase] [test-hair] target=%s sex=%s style=%s variant=%s applied=%s\n",
+        name, sex, matched.name, matched.variant, tostring(okMesh)))
+    pcall(function() Spawner.Toast("Hair: " .. matched.name .. " " .. matched.variant .. " (" .. sex .. ") on " .. name, 2.5) end)
+    return true
+end
+
+-- Spawner.TestSetSkinDecor(paramName, texturePathArg) -- "what does each SkinDecor slot do"
+-- (2026-08-28). Found while investigating why Marita has visible makeup despite using the same
+-- shared MI_Fable_Female_Medium material every Fable-bodied actor uses: her skin material's
+-- TextureParameterValues carry 4 extra entries beyond the plain Albedo/Normal/SRM --
+-- "SkinDecor ID", "BodyDecor", "FaceDecor", "SkinAging" (confirmed via a live [probe-mat] dump,
+-- all four currently pointing at Adventurer's own decor texture set despite her Fable body).
+-- pakcontents.xlsx confirms this is the game's own player-character-creator "SkinDecor" system
+-- (MF_CharacterSkinDecorCustomization, WBP_Customization_SkinDecor_Subcategory, and a full
+-- DA_Hero_CompositeMeshParams_SkinDecor_* tree for Back/Cheeks/Chest/Cursemark/Eyeliner/Forearms/
+-- Legs/Lips/Shoulders) -- these 4 texture parameters are the raw inputs that system ultimately
+-- feeds, one level below the DataAsset layer.
+--
+-- GENUINELY UNTESTED, REAL CRASH RISK -- not a safe probe-only tool. The skin material is a
+-- SHARED asset (the same MI_<Family>_<Sex>_<Size> instance every actor of that family/build
+-- uses), so its parameters can't be overwritten in place -- changing one for just this actor
+-- needs wrapping that material slot in a fresh UMaterialInstanceDynamic first
+-- (mesh:CreateDynamicMaterialInstance). The Kismet-library version of that same operation
+-- (UKismetMaterialLibrary:CreateDynamicMaterialInstance) already CONFIRMED-CRASHED this game once
+-- this session, on a composite character mesh (the ghost-material opacity attempt, 2026-08-26) --
+-- same "wrap this mesh's material in a live instance" shape, a different UFUNCTION. This uses the
+-- COMPONENT's own CreateDynamicMaterialInstance instead, which may or may not share that failure
+-- -- treat every call as a real gamble, same caution class as SetBody/AttachActorToShip/
+-- RecreateClothingActor elsewhere in this file. Deliberately does NOT touch the
+-- DA_Hero_CompositeMeshParams_SkinDecor_* DataAsset tree or the composite-look rebuild path at
+-- all -- applying a Hero-prefixed CompositeMeshParams asset to an NPC already confirmed-crashed
+-- the game twice (item 35's tattoo investigation); this only ever sets a plain texture parameter
+-- on a dynamic material instance, a different (but still unproven) mechanism.
+function Spawner.TestSetSkinDecor(paramName, texturePathArg)
+    local VALID = { ["FaceDecor"] = true, ["BodyDecor"] = true, ["SkinDecor ID"] = true, ["SkinAging"] = true }
+    if not paramName or paramName == "" then
+        print("[LivingBase] [test-decor] usage: lbtestdecor <FaceDecor|BodyDecor|\"SkinDecor ID\"|SkinAging> [texturePath] -- omit path to just find which slot has it (use lbprobedump to read its current value)\n")
+        return false
+    end
+    -- case-insensitive match against the 4 known real names ("SkinDecor ID" has a literal space
+    -- on the engine side) rather than trusting exact user typing/casing
+    local resolvedName = nil
+    for k, _ in pairs(VALID) do
+        if k:lower() == paramName:lower() then resolvedName = k; break end
+    end
+    if not resolvedName then
+        print("[LivingBase] [test-decor] unknown param '" .. paramName .. "' -- known: FaceDecor, BodyDecor, \"SkinDecor ID\", SkinAging\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-decor] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-decor] " .. name .. " has no body Mesh component.\n")
+        return false
+    end
+
+    -- Find which material SLOT actually carries this parameter -- varies by archetype/mesh, so
+    -- match by content (same discipline as every other slot-lookup in this file) rather than a
+    -- hardcoded index.
+    local slotIdx = nil
+    local n = 0
+    pcall(function() n = mesh:GetNumMaterials() end)
+    for i = 0, n - 1 do
+        local mat = nil
+        pcall(function() mat = mesh:GetMaterial(i) end)
+        if mat and mat:IsValid() then
+            local found = false
+            pcall(function()
+                local arr = mat.TextureParameterValues
+                local an = 0
+                pcall(function() an = arr:GetArrayNum() end)
+                if an == 0 then pcall(function() an = #arr end) end
+                for j = 1, an do
+                    local item = arr[j]; if item == nil then pcall(function() item = arr:Get(j) end) end
+                    if item then
+                        local pname = ""
+                        pcall(function() pname = item.ParameterInfo.Name:ToString() end)
+                        if pname == resolvedName then found = true end
+                    end
+                end
+            end)
+            if found then slotIdx = i; break end
+        end
+    end
+    if not slotIdx then
+        print("[LivingBase] [test-decor] " .. name .. " has no material slot exposing '" .. resolvedName .. "' -- nothing to change.\n")
+        Spawner.RefLog("decor", "target=" .. name .. " -- no slot exposes '" .. resolvedName .. "'")
+        return false
+    end
+
+    if not texturePathArg or texturePathArg == "" then
+        print(string.format("[LivingBase] [test-decor] target=%s slot=%d has param '%s' -- run lbprobedump for its current texture, or pass a texture path here to set it.\n",
+            name, slotIdx, resolvedName))
+        Spawner.RefLog("decor", string.format("target=%s slot=%d has param '%s'", name, slotIdx, resolvedName))
+        return true
+    end
+
+    local tex = resolveAsset(texturePathArg)
+    if not (tex and tex:IsValid()) then
+        print("[LivingBase] [test-decor] texture did not resolve: " .. texturePathArg .. "\n")
+        return false
+    end
+
+    local mid = nil
+    local okCreate, errCreate = pcall(function() mid = mesh:CreateDynamicMaterialInstance(slotIdx) end)
+    if not (okCreate and mid and mid:IsValid()) then
+        print("[LivingBase] [test-decor] CreateDynamicMaterialInstance FAILED" ..
+            ((not okCreate) and (": " .. tostring(errCreate)) or " (returned invalid)") ..
+            " -- this is genuinely risky engine surface, see this function's own header comment.\n")
+        return false
+    end
+
+    local okSet, errSet = pcall(function() mid:SetTextureParameterValue(resolvedName, tex) end)
+    print(string.format("[LivingBase] [test-decor] target=%s slot=%d param=%s texture=%s set=%s%s\n",
+        name, slotIdx, resolvedName, texturePathArg, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    Spawner.RefLog("decor", string.format("target=%s slot=%d param=%s texture=%s set=%s%s",
+        name, slotIdx, resolvedName, texturePathArg, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    if okSet then
+        pcall(function() Spawner.Toast("SkinDecor " .. resolvedName .. " changed on " .. name, 2.5) end)
+    end
+    return okSet
+end
+
+-- clothingSlotOf(meshName) -- categorizes a skeletal mesh's bare NAME into a canonical clothing
+-- slot (Torso/Legs/Feet/Hands/Headgear/Waist/Cape/Scarf/Head/Belt/Frog/Sling/Strap), the exact same
+-- token-scan logic used to BUILD Config.CUSTOM_CLOTHES from pakcontents.xlsx (see that table's own
+-- comment). Deliberately scans for ANY recognized token anywhere in the name rather than a single
+-- fixed substring -- this is the fix for the exact class of bug the Undercut hairstyle exposed
+-- (Spawner.TestApplyHairStyle's own comment): a component becoming permanently unmatchable once one
+-- specific family's naming convention is currently equipped. As long as whatever's currently worn
+-- contains ANY of these tokens, re-matching keeps working regardless of which family supplied it.
+-- ORDERED (longest/most-specific token first) -- deliberately NOT a plain key/value table, since
+-- iterating a Lua table with `pairs()` has no guaranteed order and several tokens are substrings
+-- of each other ("Head" inside "Headband", "Hat" inside "BandanaHat", "Feet" inside "Feets"):
+-- checking the shorter one first could wrongly classify a Headband piece as slot "Head". Checking
+-- longest-first means a substring match can never pre-empt its own more specific superstring.
+local CLOTHING_SLOT_TOKENS = {
+    { "BandanaHat", "Headgear" }, { "Headband", "Headgear" }, { "Bandana", "Headgear" },
+    { "Helmet", "Headgear" }, { "Hat", "Headgear" }, { "Feets", "Feet" }, { "Feet", "Feet" },
+    { "TorsoCloth", "TorsoCloth" }, { "Torso", "Torso" }, { "Legs", "Legs" }, { "Hands", "Hands" },
+    { "Head", "Head" }, { "Neck", "Neck" },
+    { "Waist", "Waist" }, { "Cape", "Cape" }, { "Scarf", "Scarf" },
+    { "Belt", "Belt" }, { "Frog", "Frog" }, { "Sling", "Sling" }, { "Strap", "Strap" },
+}
+local function clothingSlotOf(meshName)
+    if not meshName then return nil end
+    for _, pair in ipairs(CLOTHING_SLOT_TOKENS) do
+        if meshName:find(pair[1], 1, true) then return pair[2] end
+    end
+    return nil
+end
+
+-- getFemaleBodyGroup(actor, bodyMeshName) -- (2026-08-28) classifies a female actor into "Group1"
+-- (Gatherer/"Body 1"/Marita) or "Group2" (Herbalist/"Body 2"/Letty/native BotC Adventure or Albion
+-- statues) for the women's-torso-resize rules in Spawner.TestApplyClothingPiece. By CLASS name
+-- (RedFalcon's own call, since Gatherer and Herbalist share the identical SK_Adventure_Female_01
+-- body mesh -- mesh alone can't tell them apart). Native BotC statue classes (which share ONE
+-- class across all 7 rolled archetypes, item 57) additionally need the body-mesh check to confirm
+-- THIS instance actually rolled Adventure/Albion, not one of the other 5.
+local function getFemaleBodyGroup(actor, bodyMeshName)
+    local clsName = ""
+    pcall(function() clsName = actor:GetClass():GetFName():ToString() end)
+    for _, c in ipairs(Config.CLOTHES_BODY_GROUP1_CLASSES or {}) do
+        if clsName == c then return "Group1" end
+    end
+    for _, c in ipairs(Config.CLOTHES_BODY_GROUP2_CLASSES or {}) do
+        if clsName == c then return "Group2" end
+    end
+    if clsName:find("^BP_AnimatedActor_BotC_") then
+        for _, okName in ipairs(Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES or {}) do
+            if bodyMeshName == okName and okName ~= "SK_Senkamati_Witch_01_Female" then return "Group2" end
+        end
+    end
+    return nil
+end
+
+-- Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride) -- "Custom > Clothes"
+-- (2026-08-28). Same sex-auto-detection shape as Spawner.TestApplySkinFamily/TestApplyHairStyle --
+-- reads GetBodySex() off the target's CompositeMeshComponent and picks femalePath/malePath
+-- accordingly; rows with no sex split (unisexPath) apply the same mesh regardless. Looks up the
+-- row by (family, slot, name), all case-insensitive, since Config.CUSTOM_CLOTHES can have the same
+-- `name` ("Default", "Set 1", etc.) reused across many different families/slots.
+-- Finds the component to swap by SLOT (clothingSlotOf on each SkeletalMeshComponent's CURRENT
+-- mesh name), not by matching the family's own naming convention -- see clothingSlotOf's own
+-- comment for why this avoids the Undercut-class bug.
+-- sexOverride (optional, 2026-08-28 same day, RedFalcon: "is there a command to see how the male
+-- version of clothes fit on her?") -- forces which sex-path a sex-split row resolves to
+-- ("M"/"Male" or "F"/"Female", case-insensitive), instead of the target's own detected sex. Only
+-- affects PATH SELECTION for the requested piece -- the Senkamati Torso/Legs fit-compatibility
+-- fallback (item 98) still gates on the target's REAL detected sex (actorSex), not this override,
+-- since that check is about the actual body wearing the clothes, not which mesh variant was asked
+-- for. A unisexPath row ignores sexOverride entirely (there's only one mesh to apply either way).
+function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
+    if not (family and slot and pieceName) or family == "" or slot == "" or pieceName == "" then
+        print("[LivingBase] [test-clothes] usage: lbtestclothes <family> <slot> <name> (see Config.CUSTOM_CLOTHES for the full list)\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-clothes] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    -- Read the body mesh + actual sex ONCE here -- needed by BOTH the fit-compatibility fallback
+    -- below and the Witch auto-scale check further down, so neither has to re-derive it.
+    local bodyMeshName = ""
+    pcall(function()
+        local bodyMesh = actor.Mesh
+        if bodyMesh and bodyMesh:IsValid() then
+            local sk = bodyMesh.SkeletalMesh
+            if not (sk and sk:IsValid()) and bodyMesh.GetSkeletalMeshAsset then sk = bodyMesh:GetSkeletalMeshAsset() end
+            if sk and sk:IsValid() then bodyMeshName = sk:GetFName():ToString() end
+        end
+    end)
+    local actorSex = "Female"
+    do
+        local comp
+        pcall(function() comp = actor.CompositeMeshComponent end)
+        if comp and comp:IsValid() then
+            local sexVal
+            pcall(function() sexVal = comp:GetBodySex() end)
+            local sexN = tonumber(sexVal)
+            actorSex = (sexN == 1) and "Male" or "Female"
+        end
+    end
+
+    local matched = nil
+    for _, row in ipairs(Config.CUSTOM_CLOTHES or {}) do
+        if row.family:lower() == family:lower() and row.slot:lower() == slot:lower()
+           and row.name:lower() == pieceName:lower() then
+            matched = row; break
+        end
+    end
+    if not matched then
+        print("[LivingBase] [test-clothes] unknown family/slot/name '" .. family .. "'/'" .. slot .. "'/'" .. pieceName .. "'.\n")
+        return false
+    end
+
+    -- Women's-clothing fit rules (2026-08-28, RedFalcon's second pass after live-testing across
+    -- many bodies/families): "Senkamati women just can't wear regular torso or legs. Others slots
+    -- seem ok. For the rest of the female actors, only the torso is of concern." Two independent
+    -- mechanisms, both bypassed entirely when Config.CLOTHES_UNLOCK_ALL is on (lbunlockclothes) --
+    -- an explicit, off-by-default escape hatch for outfits/poses that haven't been reviewed and
+    -- may clip or look wrong.
+    local unlocked = Config.CLOTHES_UNLOCK_ALL == true
+
+    -- MECHANISM A: the Senkamati-style compatible-bodies gate (item 61/98's own finding: the
+    -- Senkamati armor was rigged for exactly one archetype, doesn't deform correctly onto the
+    -- other 5) -- applies to real Senkamati family pieces on BOTH Torso and Legs (the ORIGINAL,
+    -- still-valid restriction: "Senkamati women just can't wear regular torso or legs" -- about
+    -- the raw Senkamati BODY, unrelated to any specific regular family) -- and, TORSO ONLY, to
+    -- Config.CLOTHES_SENKAMATI_GATED_FAMILIES ("Conquistador", RedFalcon: "only those allowed to
+    -- wear the senkamati clothes can wear this"). FIXED (2026-08-28, same day): Conquistador's
+    -- Legs was wrongly gated too at first -- RedFalcon: "conquistador pants are still not allowed
+    -- on women" -- item 105's own "everything else was referencing ONLY Torsos" clarification
+    -- applies to Conquistador (a regular family riding the Senkamati mechanism) just as much as it
+    -- did to the Torso resize/allow/deny lists, even though the gate itself is shared code with
+    -- the real-Senkamati-family case, which genuinely does need both slots.
+    local isRealSenkamati = matched.family:lower():find("^senkamati ") ~= nil
+    local isGatedFamily = false
+    if not isRealSenkamati then
+        for _, gf in ipairs(Config.CLOTHES_SENKAMATI_GATED_FAMILIES or {}) do
+            if matched.family:lower() == gf:lower() then isGatedFamily = true; break end
+        end
+    end
+    local isSenkamatiGated = isRealSenkamati or isGatedFamily
+    local senkamatiGateSlotOk = (matched.slot == "Torso") or (matched.slot == "Legs" and isRealSenkamati)
+    local shouldRemoveInstead = false
+    if not unlocked and isSenkamatiGated and senkamatiGateSlotOk
+       and actorSex == "Female" then
+        local compatible = false
+        for _, okName in ipairs(Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES or {}) do
+            if bodyMeshName == okName then compatible = true; break end
+        end
+        if not compatible then
+            local clsName = ""
+            pcall(function() clsName = actor:GetClass():GetFName():ToString() end)
+            for _, okCls in ipairs(Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_CLASSES or {}) do
+                if clsName == okCls then compatible = true; break end
+            end
+        end
+        if not compatible then shouldRemoveInstead = true end
+    end
+
+    -- MECHANISM B: regular (non-Senkamati) unisex-only families on a woman's Torso -- resize,
+    -- allow as-is, or default-remove. Only families with NO dedicated femalePath are a fit
+    -- concern here at all -- a family with its own proper Female mesh already fits its own body
+    -- correctly and is entirely untouched by any of this.
+    -- NOTE: unlike Mechanism A, this block is NOT gated on `not unlocked` at the top -- RedFalcon:
+    -- "all these [the 8 resize-list families] are male only unless unlocked" -- meaning UNLOCKING
+    -- is what makes them wearable by women AT ALL (blocked outright otherwise), and the resize
+    -- correction is what makes them look right ONCE unlocked, not a substitute for locking. So
+    -- `unlocked` has to be checked INSIDE each branch below, not used to skip the whole block.
+    local resizeScale, resizeOffset = nil, nil
+    if not shouldRemoveInstead and not isSenkamatiGated
+       and matched.slot == "Torso" and actorSex == "Female" and not matched.femalePath then
+        local isAllowedAsIs = false
+        for _, af in ipairs(Config.CLOTHES_ALLOWED_ASIS_FAMILIES_WOMEN or {}) do
+            if matched.family:lower() == af:lower() then isAllowedAsIs = true; break end
+        end
+        if not isAllowedAsIs then
+            local resizeEntry = nil
+            for famName, pieces in pairs(Config.CLOTHES_RESIZED_FAMILIES_WOMEN or {}) do
+                if matched.family:lower() == famName:lower() then resizeEntry = pieces; break end
+            end
+            local isResizeTarget = false
+            if resizeEntry == true then
+                isResizeTarget = true
+            elseif type(resizeEntry) == "table" then
+                for _, pn in ipairs(resizeEntry) do
+                    if matched.name:lower() == pn:lower() then isResizeTarget = true; break end
+                end
+            end
+            if isResizeTarget then
+                if not unlocked then
+                    shouldRemoveInstead = true -- male-only unless unlocked (RedFalcon's own words)
+                else
+                    local group = getFemaleBodyGroup(actor, bodyMeshName)
+                    if group and Config.CLOTHES_BODY_GROUP_SCALE and Config.CLOTHES_BODY_GROUP_SCALE[group] then
+                        resizeScale = Config.CLOTHES_BODY_GROUP_SCALE[group].scale
+                        resizeOffset = Config.CLOTHES_BODY_GROUP_SCALE[group].offset
+                    end
+                    -- Unrecognized body group while unlocked: apply raw, no scale -- "unlocked"
+                    -- means no restrictions, not "guess a scale that was never confirmed for this
+                    -- body." The reasoned-through Remove fallback for this case only applies when
+                    -- LOCKED (see Mechanism A's identical incompatible-body handling above).
+                end
+            elseif not unlocked then
+                shouldRemoveInstead = true -- uncategorized unisex-only family -- default-deny
+            end
+        end
+    end
+
+    -- MECHANISM C: "Male Only Pants" (2026-08-28, same day, RedFalcon's correction: everything
+    -- above was Torso-only -- Legs needed its own separate, explicit list). No scale correction
+    -- for these at all -- unlocked just applies the piece as requested, raw.
+    if not shouldRemoveInstead and not isSenkamatiGated and not unlocked
+       and matched.slot == "Legs" and actorSex == "Female" and not matched.femalePath then
+        for _, mf in ipairs(Config.CLOTHES_MALE_ONLY_LEGS_FAMILIES or {}) do
+            if matched.family:lower() == mf:lower() then shouldRemoveInstead = true; break end
+        end
+    end
+
+    if shouldRemoveInstead then
+        print(string.format("[LivingBase] [test-clothes] %s: %s %s doesn't fit this body -- removing instead.\n",
+            name, matched.family, matched.slot))
+        return Spawner.TestRemoveClothingPiece(matched.slot)
+    end
+
+    local overrideSex = nil
+    if sexOverride and sexOverride ~= "" then
+        local low = sexOverride:lower()
+        if low == "m" or low == "male" then overrideSex = "Male"
+        elseif low == "f" or low == "female" then overrideSex = "Female" end
+    end
+
+    local path = matched.unisexPath
+    local sex = "Unisex"
+    if not path then
+        sex = overrideSex or actorSex
+        path = (sex == "Male") and matched.malePath or matched.femalePath
+    end
+    if not path then
+        print("[LivingBase] [test-clothes] no path resolved for this sex/entry combination.\n")
+        return false
+    end
+
+    local mesh = resolveAsset(path)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-clothes] mesh did not resolve: " .. path .. "\n")
+        return false
+    end
+
+    local smcCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    local targetComp = nil
+    if smcCls and smcCls:IsValid() then
+        pcall(function()
+            local comps = actor:K2_GetComponentsByClass(smcCls)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            for i = 1, n do
+                local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() and not targetComp then
+                    local curName = ""
+                    pcall(function()
+                        local sk = c.SkeletalMesh
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                        if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+                    end)
+                    if clothingSlotOf(curName) == matched.slot then targetComp = c end
+                end
+            end
+        end)
+    end
+    if not targetComp then
+        print("[LivingBase] [test-clothes] " .. name .. " has no component currently in the '" .. matched.slot .. "' slot -- nothing to swap.\n")
+        pcall(function() Spawner.Toast(name .. " has nothing in the " .. matched.slot .. " slot", 2.5) end)
+        return false
+    end
+
+    local targetCompName = "?"
+    pcall(function() targetCompName = targetComp:GetFName():ToString() end)
+    local okMesh = pcall(function() targetComp:SetSkeletalMeshAsset(mesh) end)
+    if not okMesh then pcall(function() targetComp:SetSkeletalMesh(mesh, false) end) end
+    -- Restore visibility in case this slot was previously hidden by lbremoveclothes/Custom >
+    -- Clothes > Remove (2026-08-28) -- a removed slot stays hidden until something is actually
+    -- dressed onto it again; this is that "again."
+    if okMesh then
+        pcall(function() targetComp:SetVisibility(true, false) end)
+        pcall(function() targetComp:SetHiddenInGame(false, false) end)
+    end
+
+    -- Reset scale/position to identity HERE, right after the plain mesh swap, BEFORE the
+    -- cloth-rebind step below runs (2026-08-28, RedFalcon: "unlocked male torsos... are way far
+    -- forward compared to when I tested with our function", then: "when changing away it never
+    -- resets position... every time I set it it moves position a little more"). Two compounding
+    -- bugs, both now fixed by this one change: (1) the cloth-rebind's SetSkeletalMesh(mesh, true)
+    -- -- bReinitPose=true -- apparently resets/changes RelativeLocation as a side effect, so
+    -- reading "current" AFTER that call (the original approach) read a different baseline than
+    -- lbtestscale's own standalone runs ever saw. (2) reading "current + offset" at all is
+    -- inherently cumulative -- swapping a SECOND resize-list piece into the same slot would read
+    -- back the FIRST piece's already-offset position and stack another offset on top of it, each
+    -- swap drifting further. Since every Torso/Legs slot is just an alternate skin on the SAME
+    -- shared skeleton (no per-slot socket offset), the true natural resting state for ALL of them
+    -- is scale (1,1,1) / position (0,0,0) -- resetting to that identity on EVERY swap (whether
+    -- this piece needs a resize or not) makes the resize block below able to SET an absolute
+    -- target instead of reading-and-adding an uncertain "current" value, immune to both bugs.
+    if okMesh then
+        pcall(function() targetComp:SetRelativeScale3D({ X = 1.0, Y = 1.0, Z = 1.0 }) end)
+        pcall(function() targetComp:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = 0.0 }, false, {}, false) end)
+    end
+
+    -- Auto-scale for regular clothes on the raw Senkamati Witch body -- WALKED BACK (2026-08-28,
+    -- same day it shipped): RedFalcon tested it and reported "setting scale doesn't work, so I
+    -- want to look at a different direction." A blunt whole-component scale/offset was never going
+    -- to be a real fix (both TestScaleClothingPiece's and NudgeComponentTransform's own original
+    -- comments already flagged this as a live visual gamble, not a guaranteed result -- a
+    -- leader-pose-bound skinned mesh's vertices follow bone transforms, not just the component's
+    -- own transform, so a uniform scale can look stretched/detached instead of actually fitting).
+    -- Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE is kept in config.lua as a documented, no-longer-
+    -- called constant (same treatment as other confirmed-inadequate levers in this file) rather
+    -- than deleted outright -- do not re-wire it here without a genuinely different approach than
+    -- "just scale the component."
+
+    -- Cloth-simulation rebind after a runtime mesh swap (2026-08-28, same day, RedFalcon: "can we
+    -- take advantage of the cloth simulations to make those clothes fit the caster better?").
+    -- Chaos Cloth is real and active in this game (item 99 -- e.g. the Jeweler Torso's own bound
+    -- clothing asset) -- unlike a rigid skinned mesh, a cloth-simulated piece reacts dynamically to
+    -- the underlying skeleton's bone poses/collision at runtime rather than being a fixed authored
+    -- shape, so it may genuinely drape differently (and better) on a mismatched body instead of
+    -- clipping outright.
+    -- FIRST TWO ATTEMPTS BOTH CONFIRMED BROKEN in this build, same signature both times
+    -- (2026-08-28, same day): RecreateClothingActor() failed, then SetSkeletalMesh(mesh, true)
+    -- ALSO failed -- both with "Tried calling a member function but the UObject instance is
+    -- nullptr", called on the SAME targetComp reference that had just succeeded moments earlier
+    -- for SetSkeletalMeshAsset. Two different functions failing identically on the same handle
+    -- points at the handle itself, not either function name -- a stale-captured-reference pattern
+    -- already documented elsewhere in this file (line ~1508: K2_GetComponentsByClass returns 0 on
+    -- a captured actor reference, needs a FRESH FindAllOf handle) -- just triggered here by
+    -- SetSkeletalMeshAsset instead. Fixed by re-fetching a FRESH component handle (by matching
+    -- targetCompName, captured before the swap) via a new K2_GetComponentsByClass call, and
+    -- calling SetSkeletalMesh on THAT fresh reference instead of the original targetComp.
+    local okCloth, clothErr = "n/a", nil
+    if okMesh then
+        local freshComp = nil
+        pcall(function()
+            local comps2 = actor:K2_GetComponentsByClass(smcCls)
+            local n2 = 0
+            pcall(function() n2 = comps2:GetArrayNum() end)
+            if n2 == 0 then pcall(function() n2 = #comps2 end) end
+            for i = 1, n2 do
+                local c2 = comps2[i]; if not c2 then pcall(function() c2 = comps2:Get(i) end) end
+                pcall(function() if c2 ~= nil and type(c2) == "userdata" and c2.get then c2 = c2:get() end end)
+                if c2 and c2:IsValid() and not freshComp then
+                    local cn = "?"
+                    pcall(function() cn = c2:GetFName():ToString() end)
+                    if cn == targetCompName then freshComp = c2 end
+                end
+            end
+        end)
+        if freshComp then
+            okCloth, clothErr = pcall(function() freshComp:SetSkeletalMesh(mesh, true) end)
+        else
+            okCloth, clothErr = false, "could not re-fetch fresh component handle"
+        end
+    end
+
+    -- Per-body-group resize (2026-08-28, RedFalcon's own live-tuned values) -- a NEW, separate
+    -- use of component scale/offset from the walked-back Senkamati-Witch auto-scale above: this
+    -- targets regular (non-Senkamati) female bodies wearing a specific list of unisex-only
+    -- families (Config.CLOTHES_RESIZED_FAMILIES_WOMEN), not the Senkamati body, and uses values
+    -- RedFalcon confirmed by testing rather than a guess this file already walked back once.
+    local okResize, resizeErr = "n/a", nil
+    if resizeScale and okMesh then
+        okResize, resizeErr = pcall(function() targetComp:SetRelativeScale3D(resizeScale) end)
+        if resizeOffset then
+            -- Absolute target, not "current + offset" -- the identity reset above guarantees the
+            -- true baseline is (0,0,0), so the offset itself IS the final desired position.
+            pcall(function()
+                targetComp:K2_SetRelativeLocation({
+                    X = resizeOffset.X or 0.0, Y = resizeOffset.Y or 0.0, Z = resizeOffset.Z or 0.0
+                }, false, {}, false)
+            end)
+        end
+    end
+
+    print(string.format("[LivingBase] [test-clothes] target=%s sex=%s family=%s slot=%s piece=%s applied=%s clothRebind=%s resize=%s\n",
+        name, sex, matched.family, matched.slot, matched.name, tostring(okMesh),
+        (okCloth == "n/a") and "n/a" or (okCloth and "ok" or ("FAILED: " .. tostring(clothErr))),
+        (okResize == "n/a") and "n/a" or (okResize and "ok" or ("FAILED: " .. tostring(resizeErr)))))
+    pcall(function() Spawner.Toast("Clothes: " .. matched.family .. " " .. matched.slot .. " " .. matched.name .. " on " .. name, 2.5) end)
+    return true
+end
+
+-- Spawner.TestRemoveClothingPiece(slotArg) -- "Custom > Clothes > Remove" (2026-08-28, RedFalcon:
+-- "can we have a clothes section for 'remove' where it has each slot available as well as a
+-- remove all... and it hides the item in that slot"). HIDES the matching component(s)
+-- (SetVisibility(false)) rather than clearing their mesh to nil -- clearing the mesh would make
+-- clothingSlotOf unable to re-identify that slot's component afterward (it matches by the
+-- CURRENT mesh name), which would permanently break dressing that slot again via lbtestclothes/
+-- the GUI. `slotArg` of "all" (case-insensitive) hides every component that resolves to ANY
+-- canonical slot via clothingSlotOf -- naturally excludes the base body mesh, hair, and eyebrows,
+-- since none of their mesh names contain a recognized clothing-slot token. A specific slot name
+-- (from Config.CLOTHING_REMOVABLE_SLOTS) hides only components resolving to that one slot.
+-- RedFalcon separately asked for a clear notice when a slot has nothing to act on -- both branches
+-- toast an explicit "nothing found" message rather than silently no-op'ing, same as the equivalent
+-- notice just added to Spawner.TestApplyClothingPiece's own empty-slot case.
+-- MODESTY GUARD (2026-08-28, same day, RedFalcon: "for remove when its not unlocked, instead of
+-- hiding the torso and legs, use underwear"): when Config.CLOTHES_UNLOCK_ALL is OFF (default),
+-- removing Torso or Legs on a FEMALE target, or Legs on a MALE target, swaps in the default
+-- underwear mesh for that slot instead of a true hide -- so a restricted "remove" never leaves
+-- the actor bare. Every OTHER slot/sex combination (Headgear, Hands, Feet, Waist, Cape, Scarf,
+-- Belt, Frog, Sling, Strap, Head, Neck, TorsoCloth, and Torso on a male) always does a true hide
+-- regardless of the toggle. When unlocked, everything does a true hide, no guard. This is also
+-- the function Spawner.TestApplyClothingPiece's own fit-restriction rules (Mechanism A/B) call
+-- into when a piece doesn't fit -- so an incompatible-body substitution and an explicit "Remove"
+-- click end up with IDENTICAL visual results, by construction, not by coincidence.
+function Spawner.TestRemoveClothingPiece(slotArg)
+    if not slotArg or slotArg == "" then
+        print("[LivingBase] [test-remove-clothes] usage: lbremoveclothes <slot|all> (see Config.CLOTHING_REMOVABLE_SLOTS)\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-remove-clothes] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+    local wantAll = slotArg:lower() == "all"
+    local wantSlot = slotArg
+    local unlocked = Config.CLOTHES_UNLOCK_ALL == true
+
+    local actorSex = "Female"
+    do
+        local comp
+        pcall(function() comp = actor.CompositeMeshComponent end)
+        if comp and comp:IsValid() then
+            local sexVal
+            pcall(function() sexVal = comp:GetBodySex() end)
+            local sexN = tonumber(sexVal)
+            actorSex = (sexN == 1) and "Male" or "Female"
+        end
+    end
+
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [test-remove-clothes] SkeletalMeshComponent class did not resolve.\n")
+        return false
+    end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+
+    local hidden, replaced = 0, 0
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName = ""
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+            local slotHere = clothingSlotOf(curName)
+            if slotHere and (wantAll or slotHere:lower() == wantSlot:lower()) then
+                local guarded = (not unlocked) and (
+                    (slotHere == "Torso" and actorSex == "Female") or
+                    (slotHere == "Legs" and actorSex == "Female") or
+                    (slotHere == "Legs" and actorSex == "Male"))
+                local uwPath = nil
+                if guarded then
+                    if slotHere == "Torso" then uwPath = Config.SENKA_UNDERWEAR_TORSO_F
+                    else uwPath = (actorSex == "Male") and Config.SENKA_UNDERWEAR_LEGS_M or Config.SENKA_UNDERWEAR_LEGS_F end
+                end
+                local uwMesh = uwPath and resolveAsset(uwPath)
+                if guarded and uwMesh and uwMesh:IsValid() then
+                    local okUw = pcall(function() c:SetSkeletalMeshAsset(uwMesh) end)
+                    if not okUw then pcall(function() c:SetSkeletalMesh(uwMesh, false) end) end
+                    pcall(function() c:SetVisibility(true, false) end)
+                    pcall(function() c:SetHiddenInGame(false, false) end)
+                    replaced = replaced + 1
+                    print(string.format("[LivingBase] [test-remove-clothes] slot=%s -> underwear (was mesh=%s) on %s\n", slotHere, curName, name))
+                else
+                    pcall(function() c:SetVisibility(false, false) end)
+                    pcall(function() c:SetHiddenInGame(true, false) end)
+                    hidden = hidden + 1
+                    print(string.format("[LivingBase] [test-remove-clothes] hid slot=%s mesh=%s on %s\n", slotHere, curName, name))
+                end
+            end
+        end
+    end
+
+    local total = hidden + replaced
+    if total == 0 then
+        local label = wantAll and "any clothing" or ("the " .. slotArg .. " slot")
+        print(string.format("[LivingBase] [test-remove-clothes] %s has nothing in %s to remove.\n", name, label))
+        pcall(function() Spawner.Toast(name .. " has nothing in " .. label .. " to remove", 2.5) end)
+        return false
+    end
+
+    local toastMsg
+    if replaced > 0 and hidden > 0 then
+        toastMsg = string.format("Removed %d, underwear on %d (%s) on %s", hidden, replaced, wantAll and "all" or slotArg, name)
+    elseif replaced > 0 then
+        toastMsg = string.format("Underwear on %d piece(s) (%s) on %s", replaced, wantAll and "all" or slotArg, name)
+    else
+        toastMsg = string.format("Removed %d piece(s) (%s) on %s", hidden, wantAll and "all" or slotArg, name)
+    end
+    pcall(function() Spawner.Toast(toastMsg, 2.5) end)
+    return true
+end
+
+-- Spawner.TestAddMissingClothingSlot(slotArg, meshPathArg) -- "lbtestaddslot" (2026-08-28).
+-- RedFalcon's real ask, once "sockets" was ruled out (clothing pieces are all socket=None, see
+-- the [test-sockets] investigation just above): sailors/etc. sometimes spawn with a composite
+-- roll that never created a Torso (or other slot) component at all -- a genuine composite-build
+-- omission, not a hidden/removed piece -- so Custom > Clothes (Spawner.TestApplyClothingPiece)
+-- has nothing to grab onto: it only ever SWAPS an existing component's mesh, it can't create one.
+-- This is the standalone test for the fix idea: build the missing component from scratch the same
+-- structural way the composite system itself does it -- an extra SkeletalMeshComponent sharing
+-- the body's own skeleton via SetLeaderPoseComponent (leader-pose skinning, no socket at all,
+-- matching how every real clothing piece in this game already works) -- rather than the only
+-- existing mitigation for this class of bug (Spawner.DespawnActor + reroll-until-it-happens-to-
+-- include-one, kept from the original Merchant topless investigation as a last resort).
+-- GENUINELY NEW ENGINE SURFACE, TEST CAREFULLY: `AddComponentByClass` + the attach call are the
+-- SAME proven-safe recipe `Spawner.AttachShield`/`TestAttachToolToNearest` already use
+-- successfully -- but `SetLeaderPoseComponent` itself has never been called anywhere in this
+-- codebase before now. Tries the modern UE5 name first, falls back to the older pre-5.1
+-- `SetMasterPoseComponent` alias (this game is UE 5.6, so the modern name should be right, but
+-- costs nothing to also try the deprecated one if the first pcall fails) -- and VERIFIES via
+-- `GetLeaderPoseComponent()`/`GetMasterPoseComponent()` readback rather than trusting the call
+-- alone, same discipline as every other "does this attach actually stick" check in this file.
+function Spawner.TestAddMissingClothingSlot(slotArg, meshPathArg)
+    if not slotArg or slotArg == "" or not meshPathArg or meshPathArg == "" then
+        print("[LivingBase] [test-addslot] usage: lbtestaddslot <slot> <meshPath> (see Config.CLOTHING_REMOVABLE_SLOTS for slot names)\n")
+        return false
+    end
+    -- Same "paste the bare /Game/... path, we'll append .AssetName" convenience every other
+    -- path-fed tester in this file already has (lbtesttool/lbtestmaterial/lbtestpose) --
+    -- overlooked when this function was first written; fixed for consistency rather than leaving
+    -- this one tool requiring the fully-qualified form.
+    if not meshPathArg:match("%.[%w_]+$") then
+        local last = meshPathArg:match("([^/]+)$")
+        if last then meshPathArg = meshPathArg .. "." .. last end
+    end
+    local wantSlot = nil
+    for _, s in ipairs(Config.CLOTHING_REMOVABLE_SLOTS or {}) do
+        if s:lower() == slotArg:lower() then wantSlot = s; break end
+    end
+    if not wantSlot then
+        print("[LivingBase] [test-addslot] unknown slot '" .. slotArg .. "' -- known: " ..
+            table.concat(Config.CLOTHING_REMOVABLE_SLOTS or {}, ", ") .. "\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-addslot] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        print("[LivingBase] [test-addslot] " .. name .. " has no body Mesh component.\n")
+        return false
+    end
+
+    -- Refuse if the slot already has a real component -- this tool is for filling a genuine GAP,
+    -- not for adding a second competing piece in a slot that already has one (use lbtestclothes/
+    -- lbtestarmor to swap an existing piece instead).
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if cls and cls:IsValid() then
+        local comps
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local curName = ""
+                pcall(function()
+                    local sk = c.SkeletalMesh
+                    if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                    if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+                end)
+                if clothingSlotOf(curName) == wantSlot then
+                    print(string.format("[LivingBase] [test-addslot] %s already has a %s component (mesh=%s) -- use lbtestclothes/lbtestarmor to swap it instead.\n",
+                        name, wantSlot, curName))
+                    return false
+                end
+            end
+        end
+    end
+
+    local mesh = resolveAsset(meshPathArg)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-addslot] mesh did not resolve: " .. meshPathArg .. "\n")
+        return false
+    end
+
+    local compCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then
+        print("[LivingBase] [test-addslot] SkeletalMeshComponent class did not resolve.\n")
+        return false
+    end
+
+    -- Breadcrumb IMMEDIATELY BEFORE each risky call, not just after (lesson from item 71's own
+    -- AttachActorToShip crash: logging only after the fact leaves zero trace if the call itself
+    -- is what crashes, since a native crash never returns to Lua for the post-call print to run).
+    -- Both print() AND RefLog -- print() alone is useless here since ue4ss.log resets on every
+    -- launch and a crash means no clean shutdown to flush/save it either way; RefLog's file is
+    -- opened+written+closed per call, so it survives even an immediate crash right after.
+    local function breadcrumb(msg)
+        print("[LivingBase] [test-addslot] " .. msg .. "\n")
+        Spawner.RefLog("addslot", "target=" .. name .. " -- " .. msg)
+    end
+
+    breadcrumb("about to call AddComponentByClass -- if nothing follows this line, THIS crashed.")
+    local newComp = nil
+    local okAdd = pcall(function()
+        newComp = actor:AddComponentByClass(compCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (okAdd and newComp and newComp:IsValid()) then
+        breadcrumb("AddComponentByClass FAILED (pcall returned, did not crash).")
+        return false
+    end
+    breadcrumb("AddComponentByClass returned ok.")
+
+    local okMesh = pcall(function() newComp:SetSkeletalMeshAsset(mesh) end)
+    if not okMesh then pcall(function() newComp:SetSkeletalMesh(mesh, false) end) end
+    breadcrumb("mesh assign done, applied=" .. tostring(okMesh))
+
+    breadcrumb("about to call K2_AttachToComponent -- if nothing follows this line, THIS crashed.")
+    pcall(function() newComp:K2_AttachToComponent(body, "", 2, 2, 2, false) end)
+    pcall(function() newComp:SetVisibility(true, false) end)
+    breadcrumb("attach call returned.")
+
+    breadcrumb("about to call SetLeaderPoseComponent -- if nothing follows this line, THIS crashed.")
+    local okLead, errLead = pcall(function() newComp:SetLeaderPoseComponent(body) end)
+    if not okLead then
+        breadcrumb("SetLeaderPoseComponent pcall FAILED (did not crash): " .. tostring(errLead) .. " -- trying SetMasterPoseComponent fallback.")
+        okLead, errLead = pcall(function() newComp:SetMasterPoseComponent(body) end)
+    end
+    breadcrumb("leader-pose call(s) returned, ok=" .. tostring(okLead))
+
+    local verified = false
+    pcall(function()
+        local got = nil
+        pcall(function() got = newComp:GetLeaderPoseComponent() end)
+        if not (got and got:IsValid()) then pcall(function() got = newComp:GetMasterPoseComponent() end) end
+        if got and got:IsValid() then
+            local gotName, bodyName = "", ""
+            pcall(function() gotName = got:GetFName():ToString() end)
+            pcall(function() bodyName = body:GetFName():ToString() end)
+            verified = (gotName == bodyName)
+        end
+    end)
+
+    print(string.format("[LivingBase] [test-addslot] target=%s slot=%s mesh=%s meshApplied=%s leaderPoseCallOk=%s%s verified=%s\n",
+        name, wantSlot, meshPathArg, tostring(okMesh), tostring(okLead),
+        (not okLead) and (" err=" .. tostring(errLead)) or "", tostring(verified)))
+    Spawner.RefLog("addslot", string.format("target=%s slot=%s mesh=%s meshApplied=%s leaderPoseCallOk=%s verified=%s",
+        name, wantSlot, meshPathArg, tostring(okMesh), tostring(okLead), tostring(verified)))
+
+    if not verified then
+        print("[LivingBase] [test-addslot] NOT VERIFIED -- the new piece may be visible but not deforming with the body's animation (leader pose never confirmed set). Inspect visually before trusting this.\n")
+    end
+
+    pcall(function() Spawner.Toast(string.format("Added %s slot on %s (leader-pose verified=%s)", wantSlot, name, tostring(verified)), 3.0) end)
+    return okLead and verified
+end
+
+-- Spawner.TestBuildCustomOutfit(swapSlot, swapFamily, swapName) -- "lbtestgroup" (2026-08-29).
+-- The actual test of the item-111 investigation's conclusion: a real R5CompositeMeshGroup is just
+-- a flat array of per-slot R5CompositeMeshParams references (confirmed via three levels of live
+-- asset dumps RedFalcon pulled on Marita's own real outfit) -- so a custom archetype should be
+-- buildable by constructing a NEW Group referencing pieces from Config.CUSTOM_COMPOSITE_PIECES
+-- (mixing families freely) and feeding it to a fresh spawn's DefaultParams pre-build, the same
+-- proven mechanism that already makes Marita "ready and fully dressed at spawn" today.
+--
+-- Deliberately the SMALLEST possible test of this idea: takes Marita's own known-real 6-piece
+-- bundle (Feet/Hands/Head/Legs/Torso/Belt, hardcoded from the live probe dumps) and swaps out
+-- exactly ONE slot for a different catalog family, rather than building a fully custom archetype
+-- from scratch in one shot -- if this single-variable change renders correctly, the general
+-- mechanism is proven; if not, there's only one thing to root-cause instead of ten.
+--
+-- GENUINELY UNTESTED ENGINE SURFACE, MORE OF IT THAN ANYTHING TRIED THIS SESSION. Every step is
+-- individually pcall'd with a breadcrumb (print + Spawner.RefLog) IMMEDIATELY BEFORE it runs --
+-- the item-71/lbtestaddslot lesson, applied from the start this time rather than after a crash
+-- with no trace: if this crashes the game, whichever breadcrumb is the LAST one written (check
+-- LivingBase_ReferenceLog.txt, since ue4ss.log resets on relaunch) tells us exactly which call did
+-- it. Three specific things have never been called anywhere in this codebase before:
+--   1. StaticConstructObject on R5CompositeMeshGroup (proven ONLY for a plain UMG TextBlock so far,
+--      item 22 -- a different class entirely, so this is a real extrapolation, not a repeat).
+--   2. Writing a TArray of hard object references (every previous property write this session has
+--      been a scalar, a Vector/Quat struct, or a single texture/material reference -- never an
+--      array of object pointers). Tries direct Lua-table assignment first, falls back to `:Add()`
+--      per element if that yields an empty array, and reports the actual resulting count either
+--      way rather than trusting either attempt blindly.
+--   3. DuplicateObject -- never used anywhere in this codebase. Used here (rather than
+--      constructing a whole new R5CompositeMeshComponentBaseParams from scratch) specifically to
+--      AVOID also having to hand-construct the deeper CustomizationData/GameplayTag/TMap structure
+--      from nothing -- duplicating Marita's own real, already-correctly-shaped asset and patching
+--      just the Armor category's Group reference is far less new surface than building the whole
+--      thing. If DuplicateObject itself fails, this stops there rather than falling back to the
+--      much bigger from-scratch-construction task in the same pass.
+-- The final patch-verification (re-reading the duplicated params' Armor category after writing to
+-- it) exists because TMap-entry structs returned by index MAY come back as copies in this binding
+-- (unconfirmed either way) -- writing to `pair.Value.Field` could silently mutate a throwaway copy
+-- instead of the real entry, so this checks whether the write actually stuck before trusting it.
+function Spawner.TestBuildCustomOutfit(swapSlot, swapFamily, swapName, say)
+    say = say or function(m) print("[LivingBase] [test-group] " .. tostring(m) .. "\n") end
+    local function crumb(m)
+        say(m)
+        Spawner.RefLog("group", m)
+    end
+
+    if not (swapSlot and swapFamily and swapName) then
+        crumb("usage: lbtestgroup <slot> <family> <name> -- swaps ONE slot on Marita's own real outfit bundle for a catalog piece (see Config.CUSTOM_COMPOSITE_PIECES), to test whether a custom-built R5CompositeMeshGroup renders correctly.")
+        return false
+    end
+
+    -- Marita's own REAL 6-piece bundle, hardcoded from the live-probed CompositeMeshGroup dump
+    -- (item 111) -- not from Config.CUSTOM_COMPOSITE_PIECES, since her exact pieces use "Hero_"/
+    -- "Set_" naming that isn't guaranteed to match that catalog's own regex-derived rows.
+    local BASELINE = {
+        Feet  = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Feet/DA_Armor_Regular_Hero_Conquistador_Feet_01_CompositeMeshData",
+        Hands = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Hands/DA_Armor_Regular_Flibustier_Hands_01_CompositeMeshData",
+        Head  = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_03_CompositeMeshData",
+        Legs  = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Legs/DA_Armor_Regular_Flibustier_Legs_03_CompositeMeshData",
+        Torso = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_01_CompositeMeshData",
+        Belt  = "/Game/Gameplay/Character/Customization/Regular/Belts/CompositeMeshData/DA_Armor_Regular_Gunslinger_Belt_04_CompositeMeshData",
+    }
+
+    local canonSlot = nil
+    for k, _ in pairs(BASELINE) do if k:lower() == swapSlot:lower() then canonSlot = k; break end end
+    if not canonSlot then
+        crumb("unknown slot '" .. tostring(swapSlot) .. "' -- known: Feet, Hands, Head, Legs, Torso, Belt")
+        return false
+    end
+
+    local swapPath = nil
+    for _, r in ipairs(Config.CUSTOM_COMPOSITE_PIECES or {}) do
+        if r.slot == canonSlot and r.family:lower() == swapFamily:lower() and r.name:lower() == swapName:lower() then
+            swapPath = r.path; break
+        end
+    end
+    if not swapPath then
+        crumb("no catalog piece for slot=" .. canonSlot .. " family=" .. tostring(swapFamily) .. " name=" .. tostring(swapName))
+        return false
+    end
+    BASELINE[canonSlot] = swapPath
+    crumb("swap target: slot=" .. canonSlot .. " -> " .. swapFamily .. " " .. swapName .. " (" .. swapPath .. ")")
+
+    -- Resolve every piece FIRST -- pure reads via the already-proven resolveAsset, safe.
+    -- BUG FIX (2026-08-29, first live run): every path here (both the hardcoded BASELINE table
+    -- and Config.CUSTOM_COMPOSITE_PIECES' own generated rows) is missing the trailing
+    -- ".AssetName" suffix resolveAsset's StaticFindObject call actually requires -- confirmed by
+    -- the exact error this threw: "GetPackageNameFromLongName: Name wasn't long." Same auto-
+    -- append convenience every other path-fed tester in this file already has (lbtesttool/
+    -- lbtestmaterial/lbtestpose), applied here since these paths were never user-typed to begin
+    -- with.
+    local function ensureSuffix(path)
+        if path:match("%.[%w_]+$") then return path end
+        local last = path:match("([^/]+)$")
+        return last and (path .. "." .. last) or path
+    end
+    local resolvedPieces = {}
+    for slot, path in pairs(BASELINE) do
+        local obj = resolveAsset(ensureSuffix(path))
+        if not (obj and obj:IsValid()) then
+            crumb("FAILED to resolve piece for slot " .. slot .. ": " .. path)
+            return false
+        end
+        resolvedPieces[#resolvedPieces + 1] = obj
+        crumb("resolved slot=" .. slot .. " -> ok")
+    end
+
+    -- Construct the new Group.
+    local groupCls = StaticFindObject("/Script/R5.R5CompositeMeshGroup")
+    if not (groupCls and groupCls:IsValid()) then
+        crumb("R5CompositeMeshGroup class did not resolve")
+        return false
+    end
+    local okOuter, gameInstance = pcall(function() return UEHelpers.GetGameInstance() end)
+    if not (okOuter and gameInstance and gameInstance:IsValid()) then
+        crumb("could not get a GameInstance to use as Outer")
+        return false
+    end
+    crumb("about to call StaticConstructObject(R5CompositeMeshGroup) -- if nothing follows, THIS crashed.")
+    local okG, newGroup = pcall(function() return StaticConstructObject(groupCls, gameInstance) end)
+    if not (okG and newGroup and newGroup:IsValid()) then
+        crumb("StaticConstructObject(Group) FAILED: " .. tostring(newGroup))
+        return false
+    end
+    crumb("Group constructed ok.")
+
+    -- Write the piece-reference array: try direct table assignment first, then :Add() per item,
+    -- reporting the ACTUAL resulting count either way rather than trusting either attempt blindly.
+    crumb("about to write CompositeMeshesParams (array of " .. #resolvedPieces .. " object refs) -- if nothing follows, THIS crashed.")
+    local okArr, errArr = pcall(function() newGroup.CompositeMeshesParams = resolvedPieces end)
+    local wroteCount = 0
+    pcall(function() wroteCount = newGroup.CompositeMeshesParams:GetArrayNum() end)
+    if wroteCount == 0 then pcall(function() wroteCount = #newGroup.CompositeMeshesParams end) end
+    if wroteCount == 0 then
+        crumb("direct table assignment produced 0 entries (ok=" .. tostring(okArr) ..
+            ((not okArr) and (" err=" .. tostring(errArr)) or "") .. ") -- trying :Add() per piece instead.")
+        pcall(function()
+            local arr = newGroup.CompositeMeshesParams
+            for _, obj in ipairs(resolvedPieces) do
+                pcall(function() arr:Add(obj) end)
+            end
+        end)
+        pcall(function() wroteCount = newGroup.CompositeMeshesParams:GetArrayNum() end)
+        if wroteCount == 0 then pcall(function() wroteCount = #newGroup.CompositeMeshesParams end) end
+    end
+    crumb("Group.CompositeMeshesParams now reports " .. tostring(wroteCount) .. " entries (wanted " .. #resolvedPieces .. ").")
+    if wroteCount == 0 then
+        crumb("could not populate the Group's piece array by any method tried -- stopping here, not attempting to spawn with an empty outfit.")
+        return false
+    end
+
+    -- DuplicateObject/StaticDuplicateObject BOTH confirmed unavailable in this UE4SS binding
+    -- (2026-08-29, live-tested -- clean Lua "attempt to call a nil value" errors, not crashes,
+    -- for both names). Building a BRAND NEW R5CompositeMeshComponentBaseParams from scratch
+    -- instead, via the SAME StaticConstructObject call already proven working on
+    -- R5CompositeMeshGroup moments earlier in this very run -- reusing a technique just confirmed
+    -- live rather than guessing a third duplicate-object name blind.
+    -- Genuinely new here: constructing the CustomizationData array (ONE entry, Armor only --
+    -- Hairs/Eyebrows deliberately omitted for this minimal test, so those will read as whatever a
+    -- composite falls back to with no entry for that category, not a concern for what this test
+    -- is actually checking) as ONE nested Lua table literal in a single write, betting that the
+    -- SAME table->TArray marshaling that just worked for a flat array of object references
+    -- generalizes to an array of NESTED STRUCTS (containing a GameplayTag, a bool, and a
+    -- TMap-shaped sub-array) too. A genuinely new, unproven assumption -- verified via re-read
+    -- afterward exactly like the array-of-objects step already did, not trusted blindly.
+    local baseParamsCls = StaticFindObject("/Script/R5.R5CompositeMeshComponentBaseParams")
+    if not (baseParamsCls and baseParamsCls:IsValid()) then
+        crumb("R5CompositeMeshComponentBaseParams class did not resolve")
+        return false
+    end
+    crumb("about to call StaticConstructObject(R5CompositeMeshComponentBaseParams) -- if nothing follows, THIS crashed.")
+    local okP, newParams = pcall(function() return StaticConstructObject(baseParamsCls, gameInstance) end)
+    if not (okP and newParams and newParams:IsValid()) then
+        crumb("StaticConstructObject(BaseParams) FAILED: " .. tostring(newParams))
+        return false
+    end
+    crumb("BaseParams constructed ok.")
+
+    -- CONFIRMED TO CRASH THE GAME LIVE (2026-08-29) -- do not call this. The breadcrumb
+    -- immediately before this write ("about to write CustomizationData...") was the LAST line
+    -- written to LivingBase_ReferenceLog.txt/ue4ss.log before the game went down -- every step
+    -- before it (both StaticConstructObject calls, AND the flat array-of-object-references write
+    -- on the Group a few lines up) is confirmed safe; this ONE nested-table-literal assignment
+    -- (a GameplayTag + bool + TMap-shaped sub-array, all in one write) is what crashed. Left in
+    -- place, disabled, as a documented dead end -- same treatment this file already gives
+    -- SetBody/AttachActorToShip/RecreateClothingActor. Do NOT re-enable this exact call; if this
+    -- avenue is revisited, the next thing to try is writing each nested field of the
+    -- CustomizationData entry INDIVIDUALLY (construct the entry struct, assign GroupCategoryId,
+    -- then bAllowCustomization, then CompositeMeshGroupsByBodySex, as separate writes) rather than
+    -- one all-in-one table literal -- never attempted, and a real, different next step, not a
+    -- retry of what just crashed.
+    crumb("CustomizationData write SKIPPED -- confirmed to crash this game live, see this function's own comment. Stopping here.")
+    return false
+end
+--[[ CONFIRMED-CRASHING CODE BELOW, KEPT AS A RECORD ONLY -- DO NOT UNCOMMENT WITHOUT A NEW THEORY.
+This was the rest of Spawner.TestBuildCustomOutfit's body: the CustomizationData write itself
+(never got past the breadcrumb printed immediately before it -- the game crashed on this exact
+assignment), its verification re-read, and the final test spawn. Lua requires `return` to be the
+last statement in its block, so this whole tail had to be pulled out from after the early
+`return false` above rather than left dangling in place.
+    local okCD, errCD = pcall(function()
+        newParams.CustomizationData = {
+            {
+                GroupCategoryId = { TagName = "Customization.UID.Armor" },
+                bAllowCustomization = false,
+                CompositeMeshGroupsByBodySex = {
+                    { Key = "ER5BLCharacterSex::Any", Value = { CompositeMeshesParams = { newGroup } } },
+                },
+            },
+        }
+    end)
+    crumb("CustomizationData write attempt: ok=" .. tostring(okCD) .. ((not okCD) and (" err=" .. tostring(errCD)) or ""))
+
+    -- Verify the write actually stuck (same caution as the earlier array write -- don't trust a
+    -- table-assignment success blindly) by re-reading the same path fresh.
+    local verifiedCount = -1
+    pcall(function()
+        local catData = newParams.CustomizationData
+        local n = 0
+        pcall(function() n = catData:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #catData end) end
+        for i = 1, n do
+            local entry = catData[i]; if not entry then pcall(function() entry = catData:Get(i) end) end
+            pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
+            if entry then
+                local tag = ""
+                pcall(function() tag = entry.GroupCategoryId.TagName:ToString() end)
+                if tag == "Customization.UID.Armor" then
+                    local bySex = entry.CompositeMeshGroupsByBodySex
+                    local m = 0
+                    pcall(function() m = bySex:GetArrayNum() end)
+                    if m == 0 then pcall(function() m = #bySex end) end
+                    for j = 1, m do
+                        local pair = bySex[j]; if not pair then pcall(function() pair = bySex:Get(j) end) end
+                        pcall(function() if pair ~= nil and type(pair) == "userdata" and pair.get then pair = pair:get() end end)
+                        if pair then
+                            pcall(function()
+                                local grp = pair.Value.CompositeMeshesParams
+                                local c = 0
+                                pcall(function() c = grp:GetArrayNum() end)
+                                if c == 0 then pcall(function() c = #grp end) end
+                                if c > 0 then verifiedCount = c end
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    crumb("re-read verification: Armor category now shows " .. tostring(verifiedCount) .. " group(s) referenced (wanted exactly 1, our new one).")
+    if verifiedCount <= 0 then
+        crumb("CustomizationData did not verifiably stick -- stopping here rather than spawning with an empty/unknown outfit.")
+        return false
+    end
+
+    -- Spawn a fresh test actor with our custom params fed pre-build via a direct preFinish,
+    -- bypassing Spawner.SetCompositeParams/resolveAsset entirely -- those expect a PATH STRING,
+    -- not an already-resolved runtime object, so this can't reuse that shared code as-is.
+    crumb("about to spawn a test actor with the constructed params -- if nothing follows, THIS crashed.")
+    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomOutfitTest", nil,
+        function(a)
+            pcall(function()
+                local comp = a.CompositeMeshComponent
+                if comp and comp:IsValid() then
+                    comp.DefaultParams = newParams
+                end
+            end)
+        end, nil, nil, false, nil)
+    if not (actor and actor:IsValid()) then
+        crumb("Spawn FAILED.")
+        return false
+    end
+    crumb("Spawn call returned an actor -- check it visually now. Swapped slot=" .. canonSlot .. " to " .. swapFamily .. " " .. swapName .. ".")
+    pcall(function() Spawner.Toast("Custom outfit test spawned -- " .. canonSlot .. " swapped to " .. swapFamily .. " " .. swapName, 3.5) end)
+    return true
+end
+--]]
+
+-- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL
+-- (off by default) -- when ON, bypasses BOTH fit-restriction mechanisms in
+-- Spawner.TestApplyClothingPiece (the Senkamati-style compatible-bodies gate and the women's-torso
+-- resize/allow/remove rules) entirely, and the modesty guard in Spawner.TestRemoveClothingPiece,
+-- so ANY piece applies as requested and ANY remove is a true hide. RedFalcon's own framing: "we
+-- can call out that these outfits and poses have not been reviewed and many likely will not work
+-- or look improper" -- printed/toasted once here, on toggle, not repeated on every subsequent
+-- apply.
+function Spawner.ToggleClothesUnlock()
+    Config.CLOTHES_UNLOCK_ALL = not Config.CLOTHES_UNLOCK_ALL
+    if Config.CLOTHES_UNLOCK_ALL then
+        print("[LivingBase] [clothes-unlock] Custom > Clothes fit restrictions: UNLOCKED.\n")
+        print("[LivingBase] [clothes-unlock] WARNING: outfits/poses beyond the reviewed set have NOT been checked for fit -- many will clip or look wrong.\n")
+        pcall(function() Spawner.Toast("Clothes unlocked -- unreviewed outfits may clip or look wrong", 4.0) end)
+    else
+        print("[LivingBase] [clothes-unlock] Custom > Clothes fit restrictions: restored (default).\n")
+        pcall(function() Spawner.Toast("Clothes fit restrictions restored", 2.5) end)
+    end
+    return Config.CLOTHES_UNLOCK_ALL
+end
+
+-- FACIAL_SLOT_TOKENS/facialSlotOf -- "Custom > Face" (2026-08-28). Same longest-token-first
+-- substring-match discipline as CLOTHING_SLOT_TOKENS/clothingSlotOf, but a SEPARATE list --
+-- facial pieces live in a different folder tree (Character/Skeletal_Meshes/Facial/) and would
+-- never be confused with clothing anyway, but keeping the token spaces separate avoids ever
+-- needing to reason about cross-contamination between the two. "Whiskers"/"Mustache" have no
+-- substring relationship with anything else here; "Eyebrow" is checked as a prefix so it matches
+-- both "Eyebrows" (the plain plural) and the BlackSmith style's own "SK_Eyebrow_BlackSmith"
+-- (singular, no "s").
+local FACIAL_SLOT_TOKENS = {
+    { "Eyebrow", "Eyebrows" }, { "Mustache", "Mustache" }, { "Mustaches", "Mustache" },
+    { "Whiskers", "Whiskers" }, { "Beard", "Beard" },
+}
+local function facialSlotOf(meshName)
+    if not meshName then return nil end
+    for _, pair in ipairs(FACIAL_SLOT_TOKENS) do
+        if meshName:find(pair[1], 1, true) then return pair[2] end
+    end
+    return nil
+end
+
+-- Spawner.TestApplyFacialPiece(family, slot, pieceName, sexOverride) -- "Custom > Face"
+-- (2026-08-28). Same shape as Spawner.TestApplyClothingPiece, minus the whole women's-fit rules
+-- engine (Mechanisms A/B/C) -- facial hair is already confirmed genuinely male-only in the
+-- catalog (Config.CUSTOM_FACIAL's own femalePath=nil for every Beard/Mustache/Whiskers row), so
+-- there's no "does this fit a woman" question to answer; Eyebrows are a real sex-paired family
+-- and use the same auto-detect/override path clothing already does. Finds the component to
+-- replace by SLOT (facialSlotOf on each SkeletalMeshComponent's current mesh name), same
+-- Undercut-class-bug avoidance as clothing's own clothingSlotOf-based matching.
+function Spawner.TestApplyFacialPiece(family, slot, pieceName, sexOverride)
+    if not (family and slot and pieceName) or family == "" or slot == "" or pieceName == "" then
+        print("[LivingBase] [test-facial] usage: lbtestfacial <family> <slot> <name> (see Config.CUSTOM_FACIAL for the full list)\n")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-facial] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local actorSex = "Female"
+    do
+        local comp
+        pcall(function() comp = actor.CompositeMeshComponent end)
+        if comp and comp:IsValid() then
+            local sexVal
+            pcall(function() sexVal = comp:GetBodySex() end)
+            local sexN = tonumber(sexVal)
+            actorSex = (sexN == 1) and "Male" or "Female"
+        end
+    end
+
+    local matched = nil
+    for _, row in ipairs(Config.CUSTOM_FACIAL or {}) do
+        if row.family:lower() == family:lower() and row.slot:lower() == slot:lower()
+           and row.name:lower() == pieceName:lower() then
+            matched = row; break
+        end
+    end
+    if not matched then
+        print("[LivingBase] [test-facial] unknown family/slot/name '" .. family .. "'/'" .. slot .. "'/'" .. pieceName .. "'.\n")
+        return false
+    end
+
+    local overrideSex = nil
+    if sexOverride and sexOverride ~= "" then
+        local low = sexOverride:lower()
+        if low == "m" or low == "male" then overrideSex = "Male"
+        elseif low == "f" or low == "female" then overrideSex = "Female" end
+    end
+
+    local path = matched.unisexPath
+    local sex = "Unisex"
+    if not path then
+        sex = overrideSex or actorSex
+        path = (sex == "Male") and matched.malePath or matched.femalePath
+    end
+    if not path then
+        print(string.format("[LivingBase] [test-facial] %s has no %s mesh for this entry (target sex=%s).\n",
+            name, sex, actorSex))
+        pcall(function() Spawner.Toast(name .. " has no " .. sex .. " version of " .. matched.family .. " " .. matched.name, 2.5) end)
+        return false
+    end
+
+    local mesh = resolveAsset(path)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-facial] mesh did not resolve: " .. path .. "\n")
+        return false
+    end
+
+    local smcCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    local targetComp = nil
+    if smcCls and smcCls:IsValid() then
+        pcall(function()
+            local comps = actor:K2_GetComponentsByClass(smcCls)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            for i = 1, n do
+                local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() and not targetComp then
+                    local curName = ""
+                    pcall(function()
+                        local sk = c.SkeletalMesh
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                        if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+                    end)
+                    if facialSlotOf(curName) == matched.slot then targetComp = c end
+                end
+            end
+        end)
+    end
+    if not targetComp then
+        print("[LivingBase] [test-facial] " .. name .. " has no component currently in the '" .. matched.slot .. "' slot -- nothing to swap.\n")
+        pcall(function() Spawner.Toast(name .. " has nothing in the " .. matched.slot .. " slot", 2.5) end)
+        return false
+    end
+
+    local okMesh = pcall(function() targetComp:SetSkeletalMeshAsset(mesh) end)
+    if not okMesh then pcall(function() targetComp:SetSkeletalMesh(mesh, false) end) end
+    if okMesh then
+        pcall(function() targetComp:SetVisibility(true, false) end)
+        pcall(function() targetComp:SetHiddenInGame(false, false) end)
+    end
+
+    print(string.format("[LivingBase] [test-facial] target=%s sex=%s family=%s slot=%s piece=%s applied=%s\n",
+        name, sex, matched.family, matched.slot, matched.name, tostring(okMesh)))
+    pcall(function() Spawner.Toast("Face: " .. matched.family .. " " .. matched.slot .. " " .. matched.name .. " on " .. name, 2.5) end)
+    return true
+end
+
+-- Spawner.TestScaleClothingPiece(componentMatch, scaleMul, offsetZ) -- "lbtestscale" (2026-08-28).
+-- RedFalcon recalled that scaling an armor/clothing piece was possible -- it was: Spawner.
+-- NudgeComponentTransform (above, EXPERIMENTAL since 2026-08-10, built for the Senkamati
+-- pelvis-gap problem) already does exactly this via SetRelativeScale3D/K2_SetRelativeLocation,
+-- but it was only ever wired into ONE internal retry loop (senkaCrewFix's Legs-piece nudge,
+-- testbed.lua) gated by Config.SENKA_LEGS_NUDGE_SCALE/_OFFSET_Z -- both left at 1.0/0.0 (a no-op)
+-- the whole time, so it has never actually been exercised with a real value or confirmed to look
+-- right live. This exposes the same underlying mechanism generically, for ANY targeted actor's
+-- ANY component, the same "console command wraps an existing primitive" shape as every other
+-- lbtest* tool this session (lbtestclothes/lbtestarmor/lbtestmaterial). Deliberately does NOT
+-- reuse Spawner.NudgeComponentTransform itself -- that function scales/offsets EVERY component
+-- whose CURRENT mesh name matches a Lua pattern (built for one hardcoded internal call site with
+-- a known-safe pattern); this instead reuses TestSwapArmorPiece's own component/mesh-name
+-- SUBSTRING match + "list what's there if nothing matches" discovery aid, so a vague match like
+-- "Torso" can't silently also scale an unrelated piece whose name happens to contain the same
+-- Lua-pattern special characters, and a mistyped match tells you what it actually found instead
+-- of just failing.
+-- Matches the exact same targeting/matching style as lbtestarmor (component name OR current mesh
+-- name, case-insensitive substring) so if you can already find a piece with lbtestarmor, the same
+-- search term works here. scaleMul defaults to 1.0 (no-op on scale) if omitted; offsetZ defaults
+-- to 0.0 (no-op on position) -- both independently optional, so this can do a pure scale, a pure
+-- vertical nudge, or both in one call. Genuinely untested territory per NudgeComponentTransform's
+-- own comment: a leader-pose-bound skinned mesh's vertices follow the LEADER's animated bone
+-- transforms, not just this component's own transform -- a uniform scale might close a gap
+-- cleanly, or might look stretched/detached. That's a live visual call, not something a log line
+-- can confirm.
+-- Per-axis scale (2026-08-28, RedFalcon: "is there a way to do just a scale in one direction?"):
+-- scaleMul accepts EITHER a plain number (uniform X=Y=Z, unchanged behavior) OR a comma-separated
+-- "sx,sy,sz" triple for an anisotropic scale -- e.g. "1,1,1.2" stretches height only, leaving
+-- width/depth untouched. Deliberately kept in the SAME argument slot (not a new positional
+-- argument) so the existing two-argument call shape (<match> <scaleMul> <offsetZ>) never becomes
+-- ambiguous about which number means what -- a bare number and a comma-triple are trivially
+-- distinguishable, so this is purely additive.
+-- Both scaleArg and offsetArg accept EITHER a plain number OR a comma-separated "a,b,c" triple --
+-- scale's bare-number shorthand means uniform (X=Y=Z, unchanged prior behavior); offset's
+-- bare-number shorthand means Z ONLY (X=Y=0), to stay compatible with every already-tested
+-- `lbtestscale <match> <scale> <offsetZ>` call from before this addition.
+-- Full XYZ offset (2026-08-28, same day, RedFalcon: "we also need xyz offset" -- the Z-only
+-- version wasn't enough once per-axis scale showed the mismatch is more than a height problem):
+-- offsetArg follows the exact same "bare number or comma-triple" convention as scaleArg.
+function Spawner.TestScaleClothingPiece(componentMatch, scaleArg, offsetArg)
+    if not componentMatch or componentMatch == "" then
+        print("[LivingBase] [test-scale] usage: lbtestscale <slot/mesh name match> [scaleMul|sx,sy,sz] [offsetZ|ox,oy,oz]\n")
+        print("[LivingBase] [test-scale]   omit scale/offset to just LIST the target's current pieces matching that name.\n")
+        print("[LivingBase] [test-scale]   scale: one number (uniform) or \"sx,sy,sz\" for one axis only, e.g. \"1,1,1.2\" = height only.\n")
+        print("[LivingBase] [test-scale]   offset: one number (Z only, +up/-down) or \"ox,oy,oz\" to nudge all three axes at once.\n")
+        return false
+    end
+    local scaleX, scaleY, scaleZ
+    do
+        local sx, sy, sz = tostring(scaleArg or ""):match("^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+        if sx then
+            scaleX, scaleY, scaleZ = tonumber(sx) or 1.0, tonumber(sy) or 1.0, tonumber(sz) or 1.0
+        else
+            local uniform = tonumber(scaleArg) or 1.0
+            scaleX, scaleY, scaleZ = uniform, uniform, uniform
+        end
+    end
+    local offsetX, offsetY, offsetZ
+    do
+        local ox, oy, oz = tostring(offsetArg or ""):match("^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+        if ox then
+            offsetX, offsetY, offsetZ = tonumber(ox) or 0.0, tonumber(oy) or 0.0, tonumber(oz) or 0.0
+        else
+            offsetX, offsetY, offsetZ = 0.0, 0.0, tonumber(offsetArg) or 0.0
+        end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-scale] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [test-scale] SkeletalMeshComponent class did not resolve.\n")
+        return false
+    end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+
+    local needle = componentMatch:lower()
+    local all, matched = {}, {}
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName = "(none)"
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+            local compName = "?"
+            pcall(function() compName = c:GetFName():ToString() end)
+            all[#all + 1] = { comp = c, curName = curName, compName = compName }
+            if compName:lower():find(needle, 1, true) or curName:lower():find(needle, 1, true) then
+                matched[#matched + 1] = { comp = c, curName = curName, compName = compName }
+            end
+        end
+    end
+
+    if #matched == 0 then
+        print(string.format("[LivingBase] [test-scale] no piece matched '%s' on %s -- current pieces (%d):\n",
+            componentMatch, name, #all))
+        for _, a in ipairs(all) do
+            print(string.format("[LivingBase] [test-scale]    comp=%s mesh=%s\n", a.compName, a.curName))
+        end
+        return false
+    end
+
+    local noScale = (scaleX == 1.0 and scaleY == 1.0 and scaleZ == 1.0)
+    local noOffset = (offsetX == 0.0 and offsetY == 0.0 and offsetZ == 0.0)
+    if noScale and noOffset then
+        for _, m in ipairs(matched) do
+            print(string.format("[LivingBase] [test-scale] MATCH comp=%s mesh=%s\n", m.compName, m.curName))
+        end
+        return true
+    end
+
+    local scaleStr = string.format("(%.3f,%.3f,%.3f)", scaleX, scaleY, scaleZ)
+    local offsetStr = string.format("(%.1f,%.1f,%.1f)", offsetX, offsetY, offsetZ)
+    local touched = 0
+    for _, m in ipairs(matched) do
+        local okS, errS = pcall(function()
+            m.comp:SetRelativeScale3D({ X = scaleX, Y = scaleY, Z = scaleZ })
+        end)
+        local okO, errO = true, nil
+        if not noOffset then
+            okO, errO = pcall(function()
+                local loc = m.comp.RelativeLocation
+                m.comp:K2_SetRelativeLocation(
+                    { X = loc.X + offsetX, Y = loc.Y + offsetY, Z = loc.Z + offsetZ }, false, {}, false)
+            end)
+        end
+        touched = touched + 1
+        print(string.format("[LivingBase] [test-scale] comp=%s mesh=%s scale=%s(%s) offset=%s(%s)\n",
+            m.compName, m.curName, scaleStr, okS and "ok" or ("FAILED: " .. tostring(errS)),
+            offsetStr, okO and "ok" or ("FAILED: " .. tostring(errO))))
+    end
+    pcall(function()
+        Spawner.Toast(string.format("Scaled %s: %s offset%s on %s", componentMatch,
+            scaleStr, offsetStr, name), 2.5)
+    end)
+    return touched > 0
+end
+
+-- Spawner.TestArmorThicknessMorph(valueArg) -- "lbtestthickness" (2026-08-28). RedFalcon spotted
+-- `ArmorThicknessMorph` in an `lbprobedump` of a randomized female walker body and asked whether
+-- it's adjustable. Yes -- it's a plain FLOAT Blueprint variable on the target's AnimInstance
+-- (mesh:GetAnimInstance().ArmorThicknessMorph), not a struct or an execution-graph node, and it's
+-- already been WRITTEN successfully once before in this exact codebase: Spawner.
+-- ApplyBlueprintPose/MakePreBuildPoseSetter (both above, from the closed pose-porting
+-- investigation, 2026-08-14/15) each set it to `0.34999999403954` -- the real value probed off
+-- Female_Standing_01 -- and both wrote it, read it back, and confirmed it genuinely stuck; the
+-- surrounding pose-porting attempt failed for unrelated Control-Rig reasons (see that
+-- investigation's own closing notes), never because this specific property write was unsafe. That
+-- makes this a LOW-RISK lever, unlike most of this session's other experiments -- a plain float
+-- property write this codebase has already proven doesn't crash and does render.
+-- Never exposed generically before now (both prior call sites hardcode the one probed value as
+-- part of a bigger, now-abandoned pose-porting attempt). This targets the nearest spawned/locked
+-- actor (same convention as every other lbtest* tool), reads the CURRENT value first (useful on
+-- its own, since RedFalcon can now check what a given body/archetype already rolled without
+-- editing anything), and only writes if a new value is given.
+function Spawner.TestArmorThicknessMorph(valueArg)
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-thickness] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-thickness] " .. name .. " has no Mesh component.\n")
+        return false
+    end
+    local inst
+    pcall(function() inst = mesh:GetAnimInstance() end)
+    if not (inst and inst:IsValid()) then
+        print("[LivingBase] [test-thickness] " .. name .. " has no AnimInstance to read/set.\n")
+        return false
+    end
+
+    local before = "?"
+    pcall(function() before = tostring(inst.ArmorThicknessMorph) end)
+
+    local value = tonumber(valueArg)
+    if not value then
+        print(string.format("[LivingBase] [test-thickness] %s ArmorThicknessMorph = %s (no value given -- read only)\n",
+            name, before))
+        return true
+    end
+
+    local ok, err = pcall(function() inst.ArmorThicknessMorph = value end)
+    local after = "?"
+    pcall(function() after = tostring(inst.ArmorThicknessMorph) end)
+    print(string.format("[LivingBase] [test-thickness] %s ArmorThicknessMorph set %s -- BEFORE=%s AFTER=%s\n",
+        name, ok and "ok" or ("FAILED: " .. tostring(err)), before, after))
+    pcall(function() Spawner.Toast("Armor thickness: " .. after .. " on " .. name, 2.5) end)
+    return ok
+end
+
+-- Spawner.TestReportBodyMesh() -- "lbbodymesh" (2026-08-28). RedFalcon asked how to check what
+-- body mesh an actor is using -- `lbprobedump` already shows this (every SkeletalMeshComponent,
+-- including the one named "Mesh"), but it's buried in a much bigger dump. This just answers that
+-- one question directly: reads actor.Mesh's current skeletal mesh name/full path and prints/
+-- toasts it, nothing else. Same targeting as every other lbtest* tool (nearest-in-front/locked).
+function Spawner.TestReportBodyMesh()
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-bodymesh] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local shortName, fullPath = "(none)", "(none)"
+    pcall(function()
+        local bodyMesh = actor.Mesh
+        if bodyMesh and bodyMesh:IsValid() then
+            local sk = bodyMesh.SkeletalMesh
+            if not (sk and sk:IsValid()) and bodyMesh.GetSkeletalMeshAsset then sk = bodyMesh:GetSkeletalMeshAsset() end
+            if sk and sk:IsValid() then
+                shortName = sk:GetFName():ToString()
+                fullPath = sk:GetFullName()
+            end
+        end
+    end)
+    print(string.format("[LivingBase] [test-bodymesh] %s body mesh = %s (%s)\n", name, shortName, fullPath))
+    pcall(function() Spawner.Toast("Body mesh: " .. shortName .. " on " .. name, 3.0) end)
+    return true
+end
+
+-- Spawner.TestBodyMorph(xArg, yArg, zArg) -- "lbtestbodymorph" (2026-08-28). RedFalcon compared
+-- lbprobedump output for the Buccaneers Merchant vs. the standing Brethren Woman -- both roll the
+-- IDENTICAL body mesh (SK_Orient_Female_01) and IDENTICAL ArmorThicknessMorph (0.35), yet the
+-- Merchant's proportions visibly fit her clothing better. The one real difference found: `BodyMorph`
+-- (a plain FVector on the AnimInstance, same "already proven safe to write" class as
+-- ArmorThicknessMorph -- see items 62-63) -- Merchant reads (0.0, 0.203, 0.223), Standing reads
+-- (0.0, 0.836, 0.021). This is almost certainly the per-instance body-SHAPE morph (bust/waist/hip-
+-- style blend), baked differently per animated-actor class construction script despite sharing the
+-- same archetype mesh -- a much better fit candidate than blunt component scale/offset (lbtestscale)
+-- since it's presumably a real sculpted morph the mesh was built with, not a uniform stretch.
+-- Same read-only-if-no-args, write-if-given shape as Spawner.TestArmorThicknessMorph. Reads/writes
+-- a Vector via the safe `{X=,Y=,Z=}` table convention this codebase already established for that
+-- type (Spawner.WarpNear and others).
+function Spawner.TestBodyMorph(xArg, yArg, zArg)
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [test-bodymorph] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        print("[LivingBase] [test-bodymorph] " .. name .. " has no Mesh component.\n")
+        return false
+    end
+    local inst
+    pcall(function() inst = mesh:GetAnimInstance() end)
+    if not (inst and inst:IsValid()) then
+        print("[LivingBase] [test-bodymorph] " .. name .. " has no AnimInstance to read/set.\n")
+        return false
+    end
+
+    local function readVec()
+        local x, y, z = "?", "?", "?"
+        pcall(function()
+            local v = inst.BodyMorph
+            x, y, z = tostring(v.X), tostring(v.Y), tostring(v.Z)
+        end)
+        return x, y, z
+    end
+
+    local bx, by, bz = readVec()
+    local x, y, z = tonumber(xArg), tonumber(yArg), tonumber(zArg)
+    if not (x and y and z) then
+        print(string.format("[LivingBase] [test-bodymorph] %s BodyMorph = (%s, %s, %s) (need all 3 x/y/z to write -- read only)\n",
+            name, bx, by, bz))
+        return true
+    end
+
+    local ok, err = pcall(function() inst.BodyMorph = { X = x, Y = y, Z = z } end)
+    local ax, ay, az = readVec()
+    print(string.format("[LivingBase] [test-bodymorph] %s BodyMorph set %s -- BEFORE=(%s,%s,%s) AFTER=(%s,%s,%s)\n",
+        name, ok and "ok" or ("FAILED: " .. tostring(err)), bx, by, bz, ax, ay, az))
+    pcall(function() Spawner.Toast(string.format("Body morph: (%s,%s,%s) on %s", ax, ay, az, name), 3.0) end)
+    return ok
+end
+
+-- findMatchedClothingComponent(componentMatch) -- shared by the two morph-target testers below,
+-- factored out of Spawner.TestSwapArmorPiece's own targeting+matching body (same substring match
+-- on component name OR current mesh name) since both new functions need the exact same "find the
+-- piece, or list what's there" behavior TestSwapArmorPiece already has, and duplicating a third
+-- copy of that block wasn't worth it for two small functions.
+local function findMatchedClothingComponent(toolTag, componentMatch)
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format("[LivingBase] [%s] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            toolTag, maxDist))
+        return nil
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [" .. toolTag .. "] SkeletalMeshComponent class did not resolve.\n")
+        return nil
+    end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+
+    local needle = (componentMatch or ""):lower()
+    local all, matched = {}, {}
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName = "(none)"
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+            local compName = "?"
+            pcall(function() compName = c:GetFName():ToString() end)
+            all[#all + 1] = { comp = c, curName = curName, compName = compName }
+            if needle ~= "" and (compName:lower():find(needle, 1, true) or curName:lower():find(needle, 1, true)) then
+                matched[#matched + 1] = { comp = c, curName = curName, compName = compName }
+            end
+        end
+    end
+
+    if needle == "" or #matched == 0 then
+        print(string.format("[LivingBase] [%s] %s'%s' on %s -- current pieces (%d):\n",
+            toolTag, needle == "" and "no match given -- " or "no piece matched ", componentMatch or "", name, #all))
+        for _, a in ipairs(all) do
+            print(string.format("[LivingBase] [%s]    comp=%s mesh=%s\n", toolTag, a.compName, a.curName))
+        end
+        return nil
+    end
+    return matched, name
+end
+
+-- Spawner.TestListMorphTargets(componentMatch) -- "lbtestmorphlist" (2026-08-28). RedFalcon asked
+-- whether MORPH TARGETS baked into a clothing mesh itself (rather than a whole-component transform
+-- scale, lbtestscale) could be used to fix fit instead -- a genuinely different, more surgical
+-- mechanism if these meshes actually have any: a garment's own sculpted "fit"/"size" blend shape,
+-- as opposed to a blunt uniform/per-axis stretch on top of the unmodified mesh.
+-- GENUINELY UNCONFIRMED going in -- unlike BodyMorph/ArmorThicknessMorph (already proven-safe
+-- AnimInstance variable writes from the closed pose-porting investigation), this is the FIRST time
+-- this codebase has ever queried a SkeletalMeshComponent for its own morph target list. Tries the
+-- standard UE Blueprint-callable signature, `GetMorphTargetNames(TArray<FName>& OutNames)` --an
+-- out-param, same calling convention as the already-proven `LineTraceSingleForObjects` family --
+-- first; falls back to treating it as a return-value call if the out-param form yields nothing, in
+-- case this UE4SS binding marshals it differently. A component with zero morph targets is a
+-- perfectly normal, expected result for many garment pieces, not a failure.
+function Spawner.TestListMorphTargets(componentMatch)
+    if not componentMatch or componentMatch == "" then
+        print("[LivingBase] [test-morphlist] usage: lbtestmorphlist <slot/mesh name match>\n")
+        return false
+    end
+    local matched, name = findMatchedClothingComponent("test-morphlist", componentMatch)
+    if not matched then return false end
+
+    for _, m in ipairs(matched) do
+        local names = {}
+        local ok1 = pcall(function() m.comp:GetMorphTargetNames(names) end)
+        local n1 = 0
+        pcall(function() n1 = names:GetArrayNum() end)
+        if n1 == 0 then pcall(function() n1 = #names end) end
+        if n1 == 0 then
+            local ok2, ret = pcall(function() return m.comp:GetMorphTargetNames() end)
+            if ok2 and ret then
+                names = ret
+                pcall(function() n1 = names:GetArrayNum() end)
+                if n1 == 0 then pcall(function() n1 = #names end) end
+            end
+        end
+        print(string.format("[LivingBase] [test-morphlist] comp=%s mesh=%s morph targets found=%d\n",
+            m.compName, m.curName, n1))
+        for i = 1, n1 do
+            local nm = names[i]
+            if not nm then pcall(function() nm = names:Get(i) end) end
+            pcall(function() if nm ~= nil and type(nm) == "userdata" and nm.get then nm = nm:get() end end)
+            local nmStr = "?"
+            pcall(function() nmStr = tostring(nm) end)
+            print(string.format("[LivingBase] [test-morphlist]    [%d] %s\n", i, nmStr))
+        end
+    end
+    return true
+end
+
+-- Spawner.TestSetMorphTarget(componentMatch, morphName, value) -- "lbtestmorph" (2026-08-28) --
+-- sets a named morph target's weight on the matched component via the standard UE
+-- `SetMorphTarget(FName, float)` Blueprint function. Same discovery convention as every other
+-- lbtest* tool: run lbtestmorphlist first to find a real morph name, then feed it here. Also
+-- genuinely unconfirmed engine surface (see TestListMorphTargets' own comment) but this specific
+-- function is one of the most standard, long-stable Blueprint-exposed UE functions there is --
+-- lower risk than most of this session's other untested calls, not a wild guess.
+function Spawner.TestSetMorphTarget(componentMatch, morphName, valueArg)
+    if not componentMatch or componentMatch == "" or not morphName or morphName == "" then
+        print("[LivingBase] [test-morph] usage: lbtestmorph <slot/mesh name match> <morphName> <value>\n")
+        print("[LivingBase] [test-morph]   run lbtestmorphlist first to find real morph target names.\n")
+        return false
+    end
+    local matched, name = findMatchedClothingComponent("test-morph", componentMatch)
+    if not matched then return false end
+    local value = tonumber(valueArg) or 0.0
+
+    for _, m in ipairs(matched) do
+        local ok, err = pcall(function() m.comp:SetMorphTarget(morphName, value) end)
+        local cur = "?"
+        pcall(function() cur = tostring(m.comp:GetMorphTarget(morphName)) end)
+        print(string.format("[LivingBase] [test-morph] comp=%s mesh=%s morph=%s value=%s set=%s readback=%s\n",
+            m.compName, m.curName, morphName, tostring(value), ok and "ok" or ("FAILED: " .. tostring(err)), cur))
+    end
+    pcall(function() Spawner.Toast(string.format("Morph %s=%s on %s", morphName, tostring(value), name), 2.5) end)
+    return true
+end
+
+-- Spawner.TestListClothAssets(componentMatch) -- "lbtestclothassets" (2026-08-28). RedFalcon's
+-- follow-up to the morph-target dead end: "since the women's clothes seem to fit to different
+-- sizes, they likely have mesh nodes" -- clarified as UE5's Chaos Cloth simulation/clothing asset
+-- system specifically (a garment can have a bound UClothingAssetBase that deforms it dynamically
+-- against the body underneath, a DIFFERENT mechanism from both plain bone-skinning and morph
+-- targets, and one this codebase has never checked for before).
+-- Checks the SkeletalMesh ASSET (not the component) for bound clothing assets via
+-- `GetMeshClothingAssets` -- the standard UE Blueprint-callable signature on USkeletalMesh -- same
+-- out-param-then-return-value fallback shape as TestListMorphTargets, for the same "unsure how
+-- this UE4SS binding marshals an out TArray" reason. Also reads the component's own
+-- `bDisableClothSimulation` bool (a plain, always-present property on USkeletalMeshComponent in
+-- stock UE regardless of whether an asset actually uses cloth) as a second, cheaper signal.
+-- A component/mesh reporting zero clothing assets is a normal, expected result if this game's
+-- garments are all plain bone-skinned (which the Senkamati Torso's own zero-morph-targets result,
+-- item 97, makes at least plausible) -- this tool exists to find out either way, not assuming one
+-- outcome.
+function Spawner.TestListClothAssets(componentMatch)
+    if not componentMatch or componentMatch == "" then
+        print("[LivingBase] [test-clothassets] usage: lbtestclothassets <slot/mesh name match>\n")
+        return false
+    end
+    local matched, name = findMatchedClothingComponent("test-clothassets", componentMatch)
+    if not matched then return false end
+
+    for _, m in ipairs(matched) do
+        local disableClothVal = "?"
+        pcall(function() disableClothVal = tostring(m.comp.bDisableClothSimulation) end)
+
+        local mesh
+        pcall(function()
+            mesh = m.comp.SkeletalMesh
+            if not (mesh and mesh:IsValid()) and m.comp.GetSkeletalMeshAsset then mesh = m.comp:GetSkeletalMeshAsset() end
+        end)
+        if not (mesh and mesh:IsValid()) then
+            print(string.format("[LivingBase] [test-clothassets] comp=%s mesh=%s bDisableClothSimulation=%s -- could not resolve mesh asset\n",
+                m.compName, m.curName, disableClothVal))
+        else
+            local assets = {}
+            local ok1 = pcall(function() mesh:GetMeshClothingAssets(assets) end)
+            local n1 = 0
+            pcall(function() n1 = assets:GetArrayNum() end)
+            if n1 == 0 then pcall(function() n1 = #assets end) end
+            if n1 == 0 then
+                local ok2, ret = pcall(function() return mesh:GetMeshClothingAssets() end)
+                if ok2 and ret then
+                    assets = ret
+                    pcall(function() n1 = assets:GetArrayNum() end)
+                    if n1 == 0 then pcall(function() n1 = #assets end) end
+                end
+            end
+            print(string.format("[LivingBase] [test-clothassets] comp=%s mesh=%s bDisableClothSimulation=%s clothing assets found=%d\n",
+                m.compName, m.curName, disableClothVal, n1))
+            for i = 1, n1 do
+                local a = assets[i]
+                if not a then pcall(function() a = assets:Get(i) end) end
+                pcall(function() if a ~= nil and type(a) == "userdata" and a.get then a = a:get() end end)
+                local aName = "?"
+                pcall(function() if a and a:IsValid() then aName = a:GetFName():ToString() end end)
+                print(string.format("[LivingBase] [test-clothassets]    [%d] %s\n", i, aName))
+            end
+        end
+    end
+    return true
 end
 
 -- Spawner.TestSwapBodySex(say) -- THROWAWAY DEV TEST (2026-08-19): does SwapBodySex bypass the
@@ -7946,6 +11590,13 @@ function Spawner.StartPlacementPreview(actor, distance)
     Spawner._placementActor = actor
     Spawner._placementActive = true
     Spawner._placementMode = "NEW"
+    -- Auto-switch to Rotate mode (2026-08-24, numpad rebuild) -- movement nudges don't make sense
+    -- on an actor whose position this SAME follow loop is already overwriting every 33ms from
+    -- camera aim; only rotation does. NOT the same field as Spawner._placementMode just above
+    -- (that's "NEW" vs "RELOCATE" -- which kind of placement session this is) -- Spawner.
+    -- placementMode (no underscore) is the separate Move/Rotate numpad-mode concept, see its own
+    -- comment. ConfirmPlacement/CancelPlacement set it back to "MOVE" once this session ends.
+    Spawner.placementMode = "ROTATE"
     Spawner._placementPhysicsOn = false
     Spawner._placementIsStatue = isStatueClass(class)
     -- Floor-lock trial on decor too (2026-08-21, RedFalcon: "real build mode is built on camera too.
@@ -8042,6 +11693,9 @@ function Spawner.StartRelocatePreview()
     Spawner._placementActor = actor
     Spawner._placementActive = true
     Spawner._placementMode = "RELOCATE"
+    -- Auto-switch to Rotate mode -- see StartPlacementPreview's own comment on Spawner.
+    -- placementMode (no underscore, not the same field as _placementMode just above).
+    Spawner.placementMode = "ROTATE"
     Spawner._placementPhysicsOn = false
     Spawner._placementIsStatue = isStatueClass(lt.class)
     local wantFloorLock = (not Spawner._placementFreeBuild) and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
@@ -8095,6 +11749,9 @@ function Spawner.ConfirmPlacement()
     Spawner._placementActive = false
     Spawner._placementActor = nil
     Spawner._placementMode = nil
+    -- Auto-switch back to Move mode -- see StartPlacementPreview's own comment on
+    -- Spawner.placementMode.
+    Spawner.placementMode = "MOVE"
     Spawner._placementOriginalLoc = nil
     Spawner._placementOriginalRot = nil
     Spawner._placementPhysicsOn = nil
@@ -8139,6 +11796,9 @@ function Spawner.CancelPlacement()
     Spawner._placementActive = false
     Spawner._placementActor = nil
     Spawner._placementMode = nil
+    -- Auto-switch back to Move mode -- see StartPlacementPreview's own comment on
+    -- Spawner.placementMode.
+    Spawner.placementMode = "MOVE"
     Spawner._placementOriginalLoc = nil
     Spawner._placementOriginalRot = nil
     Spawner._placementPhysicsOn = nil
@@ -8238,11 +11898,49 @@ function Spawner.ToggleFreeBuild()
     pcall(function() Spawner.Toast(Spawner._placementFreeBuild and "Free Build ON -- floor lock off." or "Free Build OFF -- floor lock on.", 2.5) end)
 end
 
+-- Spawner.placementMode / Spawner.TogglePlacementMode() -- numpad-only keybind rebuild (2026-08-24,
+-- RedFalcon). Shared mutable state (same pattern as Spawner._placementFreeBuild/
+-- Spawner.editPrecisionScale above) so both main.lua's numpad key handlers AND this file's own
+-- StartPlacementPreview/StartRelocatePreview/ConfirmPlacement/CancelPlacement (which force it to
+-- ROTATE while actively placing, MOVE once that ends -- see their own comments) can read/write the
+-- SAME value. "MOVE" (default) or "ROTATE" -- which meaning the six dual-purpose numpad direction
+-- keys (7/8/9/4/6/2) currently have. Published to spawn_menu_status.txt by main.lua's
+-- publishSpawnMenuStatusIfChanged (replaces the old rotateAxis/ROTATE_AXIS= single-axis-cycle
+-- state, which this supersedes) so MoveMenu.cpp's axis-row highlight can read it too.
+Spawner.placementMode = "MOVE"
+function Spawner.TogglePlacementMode()
+    Spawner.placementMode = (Spawner.placementMode == "ROTATE") and "MOVE" or "ROTATE"
+    print("[LivingBase] Placement mode: " .. Spawner.placementMode .. ".\n")
+    pcall(function() Spawner.Toast("Mode: " .. Spawner.placementMode, 2.0) end)
+end
+
+-- Spawner.RotatePlacementActor(dYaw, dPitch, dRoll) -- rotates Spawner._placementActor DIRECTLY by
+-- a relative delta, bypassing Spawner.EditNearestInFront's target-lock/nearest-in-front pick
+-- entirely. Needed because during an ACTIVE placement/relocate follow, the actor being positioned
+-- isn't necessarily the same thing EditNearestInFront would resolve to (and doesn't need to be --
+-- Spawner._placementActor is already the exact, unambiguous actor). Rotation only -- the follow
+-- loop (beginFollowLoop, see its own comment) already fully owns this actor's POSITION every tick
+-- via K2_SetActorLocation, so nudging position here would just get overwritten on the very next
+-- tick; rotation is untouched by that loop, so it's safe and immediately visible.
+function Spawner.RotatePlacementActor(dYaw, dPitch, dRoll)
+    local actor = Spawner._placementActor
+    if not (Spawner._placementActive and actor and actor:IsValid()) then return end
+    pcall(function()
+        local r = actor:K2_GetActorRotation()
+        actor:K2_SetActorRotation({
+            Pitch = r.Pitch + (dPitch or 0),
+            Yaw   = r.Yaw   + (dYaw or 0),
+            Roll  = r.Roll  + (dRoll or 0),
+        }, false)
+    end)
+end
+
 -- Spawner.UpdateHoverHighlight/ClearHoverHighlight -- REAL FEATURE (2026-08-20, RedFalcon's
 -- request): while nothing is target-locked and nothing is being placed/relocated, ghost-highlight
 -- whatever's under the reticle right now, so it's visually clear what WOULD get picked before
--- committing to Num+/F7. Driven by a persistent poll loop in main.lua (gated on modEnabled there,
--- since that flag is a main.lua-local this file can't see directly) -- this file only does the
+-- committing to Num+/Num* (was F7 before the 2026-08-24 numpad rebuild). Driven by a persistent
+-- poll loop in main.lua (gated on the LivingBaseSpawnMenu window being open there, via
+-- isSpawnMenuWindowOpen() -- see that loop's own comment) -- this file only does the
 -- per-tick work: a proper line trace (GetKismetSystemLibrary():LineTraceSingle, confirmed working
 -- in this exact game via the bundled LineTraceMod/Scripts/main.lua reference implementation) rather
 -- than a FindAllOf("Actor") world sweep -- RedFalcon's own concern about continuous load was right
@@ -8422,6 +12120,20 @@ end
 -- RedFalcon: "make sure the light up matches the target distance") -- that's also
 -- pickTargetPreferringHover's own fallback range, so what lights up and what Num+ can actually
 -- reach now can't drift apart even if that config value changes again later.
+--
+-- HOVER_TRACE_OBJECT_TYPES (2026-08-27, widened from the original {1,2,3}) -- RedFalcon: target
+-- lock worked on people and chests but not a DestructibleStructures barrel table/wardrobe. The
+-- original {1,2,3} array was a GUESS at Unreal's default ObjectTypeQuery numbering (assumed
+-- WorldStatic/WorldDynamic/Pawn) -- confirmed to cover SOME real object types (Characters, chests,
+-- native building pieces all hit fine) but evidently not whatever type a destructible prop
+-- registers as (plausibly its own dedicated "Destructible" object type, a different enum value
+-- entirely, not just a response-channel gap the way plain decor's own gap turned out to be).
+-- Rather than guess a fourth specific number blind, widened to cover the full standard range of
+-- default UE object types under either a 0-indexed or 1-indexed reading of the enum -- costs
+-- nothing extra (a query for a type nothing actually has just never matches, it can't make
+-- anything wrongly hittable), so being generous here has no downside the way guessing a
+-- collision RESPONSE value wrong could.
+local HOVER_TRACE_OBJECT_TYPES = { 0, 1, 2, 3, 4, 5, 6 }
 function Spawner.UpdateHoverHighlight()
     -- CONFIRMED LIVE (2026-08-20): after any lbreload, Spawner.spawned starts EMPTY (a plain
     -- in-memory table, wiped by the reload) even though the actual actors are still live in the
@@ -8511,12 +12223,16 @@ function Spawner.UpdateHoverHighlight()
         -- ProbeKSLTraceFunctions, see its own comment) dumped KismetSystemLibrary's real function
         -- list -- the actual name is `LineTraceSingleForObjects` (older UE4-style naming), same
         -- argument shape otherwise.
-        local wasHit = KSL:LineTraceSingleForObjects(pawn, loc, endPoint, {1, 2, 3}, true, {}, 0, hitResult, true, zero, zero, 0.0)
-        local hitActor
-        if wasHit then
+        --
+        -- resolveHitActor/actorIsOurs (2026-08-27): pulled out of the old single-hit-only body so
+        -- BOTH the single trace below and the new multi-trace attempt above it can share the exact
+        -- same "which actor did this hit resolve to, and is it one of ours" logic instead of two
+        -- copies drifting apart.
+        local function resolveHitActor(hr)
+            local a
             -- Field name/depth for the hit actor moved across UE versions -- LineTraceMod's own
             -- reference implementation documents the split; Windrose is confirmed 5.6 (>= 5.4).
-            pcall(function() hitActor = hitResult.HitObjectHandle.ReferenceObject:Get() end)
+            pcall(function() a = hr.HitObjectHandle.ReferenceObject:Get() end)
             -- CONFIRMED LIVE (2026-08-20): in THIS build, ReferenceObject resolves to the hit
             -- PRIMITIVE COMPONENT (e.g. "StaticMeshComponent ...StaticMesh"), not the owning Actor
             -- -- contradicts what LineTraceMod's own reference implementation assumes for >=5.4,
@@ -8524,13 +12240,14 @@ function Spawner.UpdateHoverHighlight()
             -- Actor (K2_GetComponentsByClass, .Mesh are Actor-level). Walk up via GetOwner() if
             -- what we got back isn't already an Actor -- try it unconditionally rather than
             -- branching on a class check, since components have GetOwner() and Actors don't, so
-            -- this is naturally a no-op (owner stays nil, pcall'd) when hitActor is already correct.
-            if hitActor and hitActor:IsValid() then
+            -- this is naturally a no-op (owner stays nil, pcall'd) when it's already correct.
+            if a and a:IsValid() then
                 pcall(function()
-                    local owner = hitActor:GetOwner()
-                    if owner and owner:IsValid() then hitActor = owner end
+                    local owner = a:GetOwner()
+                    if owner and owner:IsValid() then a = owner end
                 end)
             end
+            return a
         end
         -- SCOPED to our own tracked spawns only (2026-08-20, RedFalcon: "we definitely only want to
         -- target spawns as otherwise its confusing") -- the raw raycast hits ANY actor, native
@@ -8541,27 +12258,107 @@ function Spawner.UpdateHoverHighlight()
         -- underlying engine object (a known wrapper-identity pitfall this codebase already works
         -- around elsewhere, e.g. the spawn ledger / Spawner.DespawnActor's own matching). Confirmed
         -- live: a genuinely-spawned-this-session object still read isOurs=false under raw `==`.
-        -- trackedActor (2026-08-20): the STABLE reference from Spawner.spawned itself, not the raw
-        -- hitActor the raycast/GetOwner() freshly resolves every single tick. Same wrapper-identity
-        -- pitfall as the isOurs fix above bit the "is this still the same thing I'm already
-        -- highlighting" check too -- comparing hitActor ~= Spawner._hoverActor with TWO
-        -- independently-fetched handles was true on basically every tick even while steadily
-        -- aiming at one object, restoring-then-reapplying the material every 150ms -- CONFIRMED
-        -- LIVE as the actual cause of the flicker RedFalcon kept seeing even after the
-        -- bTraceComplex fix and the miss-tolerance debounce, neither of which touched this. Always
-        -- storing/comparing the SAME Spawner.spawned entry's own actor reference sidesteps the
-        -- wrapper-identity problem entirely, the same way actorInstancePath() does for isOurs.
-        local isOurs = false
-        local trackedActor = nil
-        if hitActor and hitActor:IsValid() then
-            local hitPath = actorInstancePath(hitActor)
-            if hitPath then
-                for _, e in ipairs(Spawner.spawned) do
-                    if e.actor and e.actor:IsValid() and actorInstancePath(e.actor) == hitPath then
-                        isOurs = true
-                        trackedActor = e.actor
-                        break
+        local function actorIsOurs(a)
+            if not (a and a:IsValid()) then return false, nil end
+            local hitPath = actorInstancePath(a)
+            if not hitPath then return false, nil end
+            for _, e in ipairs(Spawner.spawned) do
+                if e.actor and e.actor:IsValid() and actorInstancePath(e.actor) == hitPath then
+                    return true, e.actor
+                end
+            end
+            return false, nil
+        end
+
+        local usedMulti = false
+
+        -- ORIGINAL single-hit trace (proven, confirmed live 2026-08-24) -- ALWAYS runs first and
+        -- is the baseline result. 2026-08-27 restructure: an earlier version of this function tried
+        -- the multi-trace below FIRST and let it REPLACE this result -- CONFIRMED LIVE WORSE
+        -- ("sees less now"): the multi-trace's per-element struct access returned a garbage object
+        -- (class read back as "/Script/CoreUObject.ScriptStruct", not an actor) on this build, and
+        -- since it was primary, that garbage silently overrode an otherwise-fine single-trace hit.
+        -- Reordered so single-trace is always the fallback identity and multi-trace can only ever
+        -- SUPPLEMENT it (see below), never replace a working result with a broken one.
+        local wasHit = KSL:LineTraceSingleForObjects(pawn, loc, endPoint, HOVER_TRACE_OBJECT_TYPES, true, {}, 0, hitResult, true, zero, zero, 0.0)
+        local hitActor = nil
+        if wasHit then hitActor = resolveHitActor(hitResult) end
+        local isOurs, trackedActor = actorIsOurs(hitActor)
+
+        -- MULTI-HIT SUPPLEMENT (2026-08-27, RedFalcon: target lock stopped finding a real,
+        -- confirmed-correctly-aimed target -- findNearestSpawnInFront's own separate cone/range pick
+        -- found the intended actor (Letty) at the exact same moment this single trace kept
+        -- reporting a hit on a native BP_BuildingBlock_BuildingCenterT01 instead. Read as OCCLUSION:
+        -- a mod-spawned actor standing on/near a building platform can have that platform's own
+        -- collision sitting BETWEEN the camera and it along the single ray above, so
+        -- LineTraceSingleForObjects (which stops at the very FIRST hit) never reaches the real
+        -- target. Only attempted when the single trace above did NOT already find something ours --
+        -- a working single-trace result is never second-guessed or overwritten.
+        if not isOurs then
+            local hitResults = {}
+            local okMulti, multiWasHit = pcall(function()
+                return KSL:LineTraceMultiForObjects(pawn, loc, endPoint, HOVER_TRACE_OBJECT_TYPES, true, {}, 0, hitResults, true, zero, zero, 0.0)
+            end)
+            if okMulti and multiWasHit then
+                usedMulti = true
+                local n = 0
+                pcall(function() n = hitResults:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #hitResults end) end
+                for i = 1, n do
+                    local hr = hitResults[i]
+                    if not hr then pcall(function() hr = hitResults:Get(i) end) end
+                    -- UNWRAP (2026-08-27, RedFalcon: "sees less now" -- confirmed live via the
+                    -- diagnostic: an unwrapped element's class resolved to
+                    -- "/Script/CoreUObject.ScriptStruct", not an actor at all). Same documented
+                    -- pitfall as Spawner.LetFurniturePass's own history and several other
+                    -- component-array reads in this file -- TArray-element access can hand back a
+                    -- RemoteUnrealParam WRAPPER, not the struct itself; indexing straight into the
+                    -- wrapper's fields silently returns garbage instead of erroring.
+                    pcall(function() if hr ~= nil and type(hr) == "userdata" and hr.get then hr = hr:get() end end)
+                    if hr then
+                        local a = resolveHitActor(hr)
+                        local ours, tracked = actorIsOurs(a)
+                        if ours then
+                            -- Found a real tracked spawn further along the same ray, past whatever
+                            -- the single trace stopped on -- this OVERRIDES the single-trace miss,
+                            -- since it's strictly better information (an actual lockable target),
+                            -- not a guess replacing a working answer.
+                            wasHit, hitActor, isOurs, trackedActor = true, a, true, tracked
+                            break
+                        end
                     end
+                end
+            end
+            -- Any other outcome (function missing, pcall error, no ours-hit found among the multi
+            -- results) leaves wasHit/hitActor/isOurs/trackedActor exactly as the single trace above
+            -- already set them -- no regression possible from this block.
+        end
+
+        -- CHANNEL-BASED FALLBACK (2026-08-27, third tier) -- RedFalcon: "it worked before" for
+        -- both decor and people together -- that was the 2026-08-22 era, running a plain
+        -- CHANNEL-based trace (TraceTypeQuery 0 = raw Visibility) against every spawn, all
+        -- Visibility-blocked by Spawner.EnsureRaytraceChannel. The 2026-08-24 switch to
+        -- object-type querying assumed native Pawn/WorldStatic/WorldDynamic collision would cover
+        -- everything without that -- true for Characters and ordinary decor, evidently NOT true
+        -- for every native class this game's asset catalog can place (a DestructibleStructures
+        -- prop, confirmed still unhittable after widening the object-type array and fixing the
+        -- channel list). Only tried if NEITHER trace above already found something ours -- a
+        -- working object-type result is never second-guessed, same principle as the multi-trace
+        -- supplement itself. `EnsureRaytraceChannel` now blocks raw Visibility again for exactly
+        -- this trace to find, but ONLY on non-Character actors (see that function's own comment)
+        -- -- Characters don't need this fallback since tier one already covers them via native
+        -- Pawn collision, and excluding them keeps the original 2026-08-24 IK glitch (a WALKING
+        -- Character blocking Visibility, confusing another pawn's own foot-IK trace) impossible.
+        if not isOurs then
+            local hitResult2 = {}
+            local okChan, chanWasHit = pcall(function()
+                return KSL:LineTraceSingle(pawn, loc, endPoint, 0, true, {}, 0, hitResult2, true, zero, zero, 0.0)
+            end)
+            if okChan and chanWasHit then
+                local a = resolveHitActor(hitResult2)
+                local ours, tracked = actorIsOurs(a)
+                if ours then
+                    wasHit, hitActor, isOurs, trackedActor = true, a, true, tracked
                 end
             end
         end
@@ -8584,7 +12381,8 @@ function Spawner.UpdateHoverHighlight()
                 Spawner._hoverMissLogAt = nowT
                 local cls = "?"
                 pcall(function() cls = hitActor:GetClass():GetFullName() end)
-                print(string.format("[LivingBase] [hover-diag] hit NOT-OURS actor class=%s\n", cls))
+                print(string.format("[LivingBase] [hover-diag] hit NOT-OURS actor class=%s (usedMulti=%s)\n",
+                    cls, tostring(usedMulti)))
             end
         end
         if isOurs and trackedActor ~= pawn and trackedActor ~= pc then

@@ -81,6 +81,11 @@ local LB_TO_UE = {
   NUM_FIVE = "NumPadFive", NUM_SIX = "NumPadSix", NUM_SEVEN = "NumPadSeven", NUM_EIGHT = "NumPadEight",
   NUM_NINE = "NumPadNine", NUM_ZERO = "NumPadZero",
   NUM_ADD = "Add", NUM_SUBTRACT = "Subtract", NUM_MULTIPLY = "Multiply", NUM_DIVIDE = "Divide",
+  -- Added 2026-08-24 (numpad-only keybind rebuild's Config.KEYS.toggleFreeBuild) -- was missing
+  -- entirely, so the generated registration showed the raw "NUM_DECIMAL" instead of a real Unreal
+  -- FKey name (confirmed in registrations/LivingBase.lua). Matches the other bare-word numpad
+  -- operators above (Add/Subtract/Multiply/Divide, no "NumPad" prefix).
+  NUM_DECIMAL = "Decimal",
   INS = "Insert", DEL = "Delete", PAGE_UP = "PageUp", PAGE_DOWN = "PageDown",
   OEM_COMMA = "Comma", OEM_PERIOD = "Period", OEM_FIVE = "Backslash",
   UP = "Up", DOWN = "Down", LEFT = "Left", RIGHT = "Right",
@@ -113,38 +118,24 @@ function M.ToLivingBase(ueName) return UE_TO_LB[ueName] or ueName end
 
 -- Every key LivingBase binds. `title`/`description` drive the Settings > Mods page; `key` is both
 -- the R5ModSettings saved-value key AND the Config.KEYS field name main.lua reads.
+-- Numpad-only scheme (2026-08-24 rebuild) -- spawning is GUI-only now; every key left is on the
+-- numpad and (other than toggleWindow) only works while the LivingBaseSpawnMenu window is open.
 M.KEYBIND_DEFS = {
-  { key = "toggleMod", title = "Toggle All Mod Keys",       description = "Turn EVERY key this mod binds on/off at runtime. Always stays active so there's a way back on." },
-  { key = "toggleWindow", title = "Open/Close GUI Window",  description = "Open or close the LivingBaseSpawnMenu window. Works from anywhere while playing, always active regardless of In-Game Keys." },
-  { key = "releaseMouse", title = "Focus GUI Window",       description = "Steal OS focus for the LivingBaseSpawnMenu window if it's already open, so your next click lands there. Does nothing if the window is closed." },
-  { key = "crew",      title = "Place Crew",               description = "Cycle + place a crew pawn (default look or a faction visitor re-skin)." },
-  { key = "townsman",  title = "Place Townsman",            description = "Spawn a townsman (wanders + uses furniture)." },
-  { key = "standing",  title = "Place Standing Statue",     description = "Cycle + place a standing statue / quest-NPC pose." },
-  { key = "seated",    title = "Place Floor Sitter",        description = "Cycle + place a statue that sits on the ground." },
-  { key = "chairseat", title = "Place Chair/Stool Sitter",  description = "Cycle + place a statue that sits on a chair/stool you provide." },
-  { key = "interact",  title = "Place Interactive Statue",  description = "Cycle + place a statue rifling a chest/equipment." },
-  { key = "plague",    title = "Place Senkamati Tribal",    description = "Cycle + place a friendly Senkamati tribal human." },
-  { key = "livestock", title = "Place Farm Animal",         description = "Cycle + place a friendly farm animal (boar/goat)." },
-  { key = "undo",      title = "Despawn In Front",          description = "Despawn the spawn directly in front of you, on your floor." },
-  { key = "restoreLast", title = "Undo Despawn",            description = "Restore the last despawned object(s) at their exact spot." },
-  { key = "cycleNext", title = "Cycle Targeted Look Forward",  description = "Cycle the targeted statue or decoration to the next look in its own roster." },
-  { key = "cyclePrev", title = "Cycle Targeted Look Backward", description = "Cycle the targeted statue or decoration to the previous look in its own roster." },
-  { key = "decorSpawn",    title = "Place Decor (Active Category)", description = "Place one decoration from whichever category is currently active." },
-  { key = "decorCategory", title = "Change Decor Category",         description = "Advance which decor category is active (nature/boats/wrecks/tents/storage/furniture). Doesn't spawn anything itself." },
-  { key = "editUp",    title = "Live-Edit: Raise",        description = "Raise the targeted object." },
-  { key = "editDown",  title = "Live-Edit: Lower",        description = "Lower the targeted object." },
-  { key = "editRotL",  title = "Live-Edit: Rotate Left",  description = "Rotate the targeted object left." },
-  { key = "editRotR",  title = "Live-Edit: Rotate Right", description = "Rotate the targeted object right." },
-  { key = "editRot45", title = "Live-Edit: Rotate 45\194\176",  description = "Rotate the targeted object a fixed 45 degrees." },
-  { key = "editRot180", title = "Live-Edit: Flip 180\194\176", description = "Rotate the targeted object a fixed 180 degrees." },
-  { key = "editPrecisionToggle", title = "Live-Edit: Cycle Precision", description = "Cycle slide/height precision: full -> 1/2 -> 1/4 -> 1/8 -> 2x -> full." },
-  { key = "targetLock", title = "Live-Edit: Toggle Target Lock", description = "Pin despawn/cycle/live-edit to one object so they keep acting on it even after you walk away or look elsewhere. Press again to release." },
-  { key = "editFwd",   title = "Live-Edit: Slide Forward", description = "Slide the targeted object away from you." },
-  { key = "editBack",  title = "Live-Edit: Slide Back",    description = "Slide the targeted object toward you." },
-  { key = "editLeft",  title = "Live-Edit: Slide Left",    description = "Slide the targeted object to your left." },
-  { key = "editRight", title = "Live-Edit: Slide Right",   description = "Slide the targeted object to your right." },
-  { key = "facing", title = "Flip Statue Facing",     description = "Flip statue placement 180 degrees for FUTURE spawns only." },
-  { key = "clear",  title = "Clean House (DEL x2)",   description = "Despawn ALL spawns and clear the save. Press twice to confirm." },
+  { key = "toggleWindow", title = "Open/Close GUI Window",  description = "Open or close the LivingBaseSpawnMenu window. The one key that always works, even with the window closed." },
+  { key = "releaseCursor", title = "Release Cursor",        description = "Steal OS focus for the LivingBaseSpawnMenu window so your next click lands there." },
+  { key = "numpadUp",    title = "Move/Rotate: Up / X-",     description = "Move mode: raise the targeted object. Rotate mode: rotate it around X-." },
+  { key = "numpadFwd",   title = "Move/Rotate: Forward / Y-", description = "Move mode: slide the targeted object away from you. Rotate mode: rotate it around Y-." },
+  { key = "numpadDown",  title = "Move/Rotate: Down / X+",   description = "Move mode: lower the targeted object. Rotate mode: rotate it around X+." },
+  { key = "numpadLeft",  title = "Move/Rotate: Left / Z-",   description = "Move mode: slide the targeted object left. Rotate mode: rotate it around Z-." },
+  { key = "changeMode",  title = "Toggle Move/Rotate Mode",  description = "Switch the six direction keys between Move (translate) and Rotate (per-axis)." },
+  { key = "numpadRight", title = "Move/Rotate: Right / Z+",  description = "Move mode: slide the targeted object right. Rotate mode: rotate it around Z+." },
+  { key = "numpadBack",  title = "Move/Rotate: Backward / Y+", description = "Move mode: slide the targeted object toward you. Rotate mode: rotate it around Y+." },
+  { key = "despawn",     title = "Despawn In Front",         description = "Despawn the spawn directly in front of you." },
+  { key = "targetLock",  title = "Toggle Target Lock",       description = "Pin despawn/move/rotate to one object so they keep acting on it even after you walk away or look elsewhere. Press again to release." },
+  { key = "cancelPlacement", title = "Cancel Placement",     description = "Destroy the currently-previewed object, no trace left behind." },
+  { key = "grabTarget",      title = "Grab Target To Relocate", description = "Pick up whatever's target-locked and carry it like a fresh placement." },
+  { key = "confirmPlacement", title = "Confirm Placement",   description = "Lock the currently-previewed object in place." },
+  { key = "toggleFreeBuild",  title = "Toggle Floor Clipping/Free Build", description = "Toggle floor-lock off/on globally for placement." },
 }
 
 -- Every boolean config.txt exposes, plus a few more player-relevant switches. Deliberately NOT
@@ -153,28 +144,21 @@ M.KEYBIND_DEFS = {
 --
 -- `live = true` means main.lua's poll (see its "TOGGLE POLL" section) applies a change within
 -- ~1.5s, no restart. `live` omitted/false means the setting is only read ONCE at mod load (same
--- as config.txt always worked) -- either because the setting decides a STARTUP-only state
--- (KEYS_ENABLED_ONSTART), or because turning it OFF can't be cleanly undone at runtime: none of
--- WHISTLE_CREW / UNLOCK_HIDDEN_BUILDING have a reverse
--- operation anywhere in the codebase (no "re-hide build items", no way
--- to dismiss an active whistle escort) -- turning one off mid-session would silently do nothing to
--- what's already active, which is worse than just requiring a restart. LIVE_EDIT additionally
--- claims a whole key cluster (PageUp/PageDown/comma/period/etc) that needs to stay free for other
--- mods when it's off -- see main.lua's "KEY REGISTRATION" section for that guarantee. Every
--- restart-only entry says so in its own `description` (shown in the Settings > Mods help panel),
--- not just here, since that's the only place a player actually sees it.
--- Order matches the user's own numbered layout for the Settings > Mods panel (screenshotted
--- 2026-08-07), not alphabetical or grouped-by-live-ness -- now that serialize()'s numeric-key sort
--- bug is fixed (see that function's own comment), this insertion order is what actually displays.
+-- as config.txt always worked) -- because turning it OFF can't be cleanly undone at runtime: none
+-- of WHISTLE_CREW / UNLOCK_HIDDEN_BUILDING have a reverse operation anywhere in the codebase (no
+-- "re-hide build items", no way to dismiss an active whistle escort) -- turning one off mid-session
+-- would silently do nothing to what's already active, which is worse than just requiring a
+-- restart. Every restart-only entry says so in its own `description` (shown in the Settings > Mods
+-- help panel), not just here, since that's the only place a player actually sees it.
+-- KEYS_ENABLED_ONSTART/LIVE_EDIT toggle defs REMOVED (2026-08-24, numpad-only keybind rebuild) --
+-- both flags removed from config.lua, see its own removal notes.
 M.TOGGLE_DEFS = {
-  { key = "KEYS_ENABLED_ONSTART", title = "Keys Enabled On Launch",    description = "Start with every LivingBase key ready to use. Off = starts OFF until you press the toggle key. (Restart required -- this only sets the STARTING state; use the toggle key for live on/off.)" },
   { key = "RESTORE_ON_LOAD",      title = "Auto-Restore Base On Load", description = "Automatically repopulate your saved base when you load into the world.", live = true },
   { key = "UNLOCK_HIDDEN_BUILDING",  title = "Unlock Hidden Build Pieces", description = "Surface build-menu pieces hidden from standard play (keeps normal progression gates intact). Session-only either way -- resets on relaunch. (Restart required to take effect either direction.)" },
   { key = "WHISTLE_CREW",            title = "Whistle Summons Crew",       description = "The boar whistle summons 2 crew instead of a boar. (Restart required to take effect either direction.)" },
   { key = "WHISTLE_FOLLOW_DEBUG",    title = "Whistle Follow Debug Log",   description = "Extra logging for the crew-escort follow behavior.", live = true },
   { key = "DECOR_COLLISION",      title = "Solid Decorations",         description = "Spawn decorations SOLID (you collide with them) instead of pass-through. Applies to future spawns immediately; decorations already placed keep their current collision until the world reloads.", live = true },
   { key = "LEASH_ENABLED",        title = "Leash Wanderers",           description = "Keep wandering crew/townsfolk near where you placed them.", live = true },
-  { key = "LIVE_EDIT",            title = "Enable Live-Edit Keys",     description = "Bind the live-edit key set (raise/lower/rotate/slide/precision) for fine-tuning placed objects. (Restart required to take effect either direction.)" },
 }
 
 local function is_identifier(s)
@@ -257,8 +241,11 @@ function M.WriteManifest(Config)
   -- https://www.nexusmods.com/windrose/mods/535 -- this fork's own page. NOT 519, which is the
   -- original "Living Base" mod (me123420) this fork was built on top of, credited in
   -- NEXUS_DESCRIPTION.txt but a different Nexus listing from this one.
+  -- Keep in sync with LivingBase/mod.txt's own version number (same convention
+  -- StandaloneWindow.cpp's WINDOW_TITLE constant follows on the C++ side) -- this was stuck at a
+  -- stale "2.1.7" until 2026-08-24, several versions behind mod.txt's actual "3.0.0".
   local manifest = {
-    name = M.MOD_ID, display = "Living Base Enhanced", version = "2.1.7", nexus_id = "535",
+    name = M.MOD_ID, display = "Living Base Enhanced", version = "3.0.0", nexus_id = "535",
     settings = settings,
   }
   local body = "-- Generated by LivingBase (modsettings.lua). Do not edit; regenerated on every mod load.\nreturn "

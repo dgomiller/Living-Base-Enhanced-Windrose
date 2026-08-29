@@ -788,6 +788,18 @@ shared by every world.
   DEFINITION) for each field name found. This turns "I don't know this struct's shape" from a
   blocking problem into a fully mechanical, crash-safe discovery — no need to find the struct's
   definition in an object dump first.
+  **CORRECTION, confirmed live later: this does NOT extend to compiled AnimGraph execution
+  structs (`FAnimNode_*`/`AnimGraphNode_*`).** Every struct this recipe was proven safe against
+  (a per-world save identifier, a body-shape morph vector, a single-node animation-playback
+  struct) is genuine DATA — a value that sits still until something explicitly changes it. An
+  `AnimNode_*` struct is different in kind: a live execution node inside a compiled graph,
+  rebuilt every frame by the animation runtime, not a plain value holder. Attempting the exact
+  same three-step recipe on a property whose resolved type matched `AnimNode_`/`AnimGraphNode`
+  crashed the game natively, with zero catchable output — the same pcall-uncatchable signature
+  documented elsewhere in this file for other confirmed-fatal calls. The general claim above still
+  holds for genuine data structs; it does not hold for compiled execution-graph nodes, and that
+  distinction — data struct vs. runtime execution node — is the one to check before assuming this
+  recipe is safe to reuse on a new, unfamiliar struct type.
 
 ---
 
@@ -999,6 +1011,14 @@ entry state, not the crash site), `kb 20` prints a 20-frame backtrace with argum
 after. This turns "it's crashed on every launch" into an exact function/line in minutes, instead
 of guessing from symptoms.
 
+**Faster first pass (2026-08-24)**: `cdb -z <dumpfile> -c "!analyze -v; q"` needs no symbol path
+at all — it auto-locates the exception context itself and additionally prints a bucketed
+`Failure.Bucket`/`Failure.Hash` classification, which is enough on its own to tell whether a NEW
+dump is the SAME recurring crash as a previous one (compare buckets across dumps) before spending
+time on a full backtrace read. Confirmed working against a target process (`UE4SS.dll`) that
+wasn't even this project's own mod — no local PDB needed for a triage-level read, only for
+resolving symbols inside your OWN mod's frames specifically.
+
 ### 12i. A mutex around one race can hide a second, independent race behind it
 After fixing the `GImGui` cross-thread race (12g) with a mutex serializing ImGui calls between
 the two windows' threads, the crash appeared to be gone — then came back under the same
@@ -1190,6 +1210,17 @@ installed mod's own config/settings files for hardcoded key names first, not jus
 actively building — a real collision reads identically to a crash in your own new code, and the
 two are easy to conflate without checking.
 
+**Recurred (2026-08-24)**: this exact lesson was NOT followed the next time a new key was
+assigned — a companion ImGui window's own F9 tab-switch shortcut was picked without re-checking,
+and it turned out to be `ModManager`'s (a separate installed UE4SS mod) own hardcoded
+`MenuKey = "F9"` (`ModManager/dlls/config.lua`) — pressing F9 popped that mod's own overlay up
+INSIDE the companion window instead of switching tabs. No crash this time (ImGui key checks are
+just silently ignored input, not a native call), but the same root mistake: assigning a bare
+F-row key without grepping other installed mods' config files first. **The lesson from a past
+session doesn't self-enforce** — write it into a literal pre-flight step ("before shipping ANY
+new keybind, `grep -r <candidate key> <ue4ss>/Mods/*/dlls/config.lua` across every installed
+mod") rather than trusting it'll be remembered from having been hit once already.
+
 ### 12s. A native post-hook scoped to one instance can still fire from unrelated causes — the mechanism isn't the risk, the CHOICE of bound function is (2026-08-23)
 §12p's click-detection (bind `OnClicked` to a harmless inherited UFUNCTION, hook that UFUNCTION
 scoped to one instance) worked perfectly with exactly one bound widget. The moment a SECOND widget
@@ -1312,3 +1343,387 @@ game's own frame rate just because the underlying loop's sleep interval suggests
 diagnostic console command already in the codebase (`lbtickspike`) is reusable for checking whether
 a NEW suspected timing issue is this same phenomenon or something else — run it well into a session,
 not just at launch, since this decays rather than starting broken.
+
+### 12y: A generated integration manifest is only as complete as its OWN translation table — adding a new value to the primary consumer doesn't automatically reach a SECONDARY one (2026-08-24)
+A mod's own `RegisterKeyBind` accepts this SDK's internal key names directly (e.g.
+`"NUM_DECIMAL"`), so a new keybind value works correctly in-game the moment it's added — no
+translation needed for that consumer. But a SEPARATE integration (an optional companion mod,
+`R5ModSettings`, that generates its own in-game remap UI from a manifest file this mod writes)
+expects real Unreal `FKey` names instead (`"Decimal"`, not `"NUM_DECIMAL"`) and maintains its own
+one-way lookup table for the conversion. The new key value passed silently through that lookup
+table with no entry, falling back to the untranslated raw name — no error anywhere, no crash, no
+console warning — and only became visible by actually reading the generated manifest file's
+content and noticing one row looked different in shape from all the others (`primary =
+"NUM_DECIMAL"` instead of a real Epic-style name like the surrounding rows). **Lesson**: when a
+single new value needs to flow through MULTIPLE independent consumers/translation layers (here:
+the SDK's own key-bind API directly, PLUS a second mod's separate FKey-name lookup table), adding
+it to the primary/obvious consumer is not evidence it reached every consumer — grep for every
+translation table that touches the same category of value and confirm the new one is actually
+present in each, or read the actual generated output rather than trusting the write path
+compiled/ran without error.
+
+---
+
+## 13. Placing an actor relative to a moving ship (2026-08-25)
+
+Confirmed live: an actor's position CAN be expressed in a ship's own local (forward/right/up)
+frame and stays put in that frame as the ship moves and turns — useful groundwork for any future
+"decorate/crew a ship" feature, though this mod doesn't have one yet. This investigation started
+from a separate UE4SS companion mod (not part of this project) that solves the same problem with
+a different, more roundabout technique (deriving direction from two live-queried points — a helm
+component and the ship's own origin — rather than the ship's actual rotation); its own comment
+trail records an earlier attempt at the simpler rotation-based approach being withdrawn, without
+saying why. This section is the result of testing that simpler approach directly.
+
+- **Finding the ship an actor is standing on**: `pawn.BasedMovement.MovementBase` — if the
+  engine's own moving-platform physics has picked the actor up, this resolves to the ship's
+  movement component; call `:GetOwner()` on it to get the actual ship actor. Falls back to
+  `pawn:GetAttachParentActor()` if `BasedMovement` isn't set. Both read cleanly with plain dot/
+  method access in this UE4SS build — no struct-drilling needed here (contrast §10's `islandId`,
+  a genuine struct VALUE; `BasedMovement` behaved like a normal property holding an object
+  reference in practice).
+- **The local-offset transform (yaw-only) works, and holds through real movement.** Given the
+  ship's own `K2_GetActorLocation()` and `K2_GetActorRotation().Yaw`, a local `(forward, right,
+  up)` offset maps to world space as a standard 2D rotation:
+  ```
+  worldX = shipX + forward*cos(yaw) - right*sin(yaw)
+  worldY = shipY + forward*sin(yaw) + right*cos(yaw)
+  worldZ = shipZ + up
+  ```
+  Live test: placed an actor via this math, then re-measured its offset (the inverse transform,
+  same formula solved backward) twice — once at rest, once after the ship had sailed ~1300uu and
+  turned ~49°. The recomputed local offset was IDENTICAL both times (within ~1uu/0.5° of
+  measurement noise) despite the real movement and turn. **The rotation-based approach the other
+  mod's history suggested was unreliable actually works fine for this** — at least for yaw; this
+  test never exercised a case with a very different ship size/shape, so the verdict is specific to
+  a Brig-class hull until checked on others.
+- **The actor's FINAL resting spot is not exactly the requested local offset — physics settles
+  it, and that settled offset is what actually stays stable.** Requesting `(forward=300, right=0,
+  up=100)` produced an actor that, once the engine's collision/gravity resolved where it could
+  actually stand, settled at roughly `(forward=223, right=0, up=190)` — a persistent ~77uu
+  short/91uu-higher offset from the naive request, present already by the first check after
+  placement and unchanged after that. Read as the deck's actual height/slope at that XY spot not
+  matching the flat assumption baked into a single `up` constant, with gravity/capsule collision
+  correcting for it once during the initial settle. **Practical implication for real placement
+  work**: don't trust a computed local offset as the actor's final position — place it, then
+  IMMEDIATELY re-read its actual settled local offset (same inverse-transform check) and use THAT
+  going forward as the tuned value for that spot. Once settled, it holds — this only needs doing
+  once per placement spot, not per-frame or per-voyage.
+- **Once genuinely `BasedMovement`-latched, no further per-tick work is needed to keep the actor
+  correctly seated** — confirmed by the drift check above spanning a real sail+turn with zero
+  code running in between. The engine's own moving-platform physics carries it, the same way it
+  carries the player.
+- **Verifying a placement actually latched**: read `actor.BasedMovement.MovementBase`'s owner
+  back and compare `:GetFullName()` against the ship — same pattern §2/§9 already establish for
+  composite/de-corrupt work (never trust that a call "succeeded" without an independent
+  readback). A `K2_SetActorLocation(dest, false, {}, true)` (teleport=true) is sufficient to
+  trigger the engine into re-basing the actor; no explicit attach call was needed.
+
+---
+
+## 14. Playing a specific canned animation on a live Character
+
+Confirmed live: a Character can be made to play one specific existing AnimSequence from the
+game's own animation library instead of whatever its AnimBlueprint would otherwise drive — useful
+for giving an NPC a specific activity pose (at a workbench, on a ship) rather than a generic idle.
+Getting there took three real, separate bugs, each worth knowing about on their own.
+
+- **`EAnimationMode::Type` is `AnimationBlueprint = 0, AnimationSingleNode = 1`.** Easy to get
+  backwards — a first attempt wrote `0` intending "single node" and instead wrote the mesh's
+  already-current default mode, so nothing visibly changed despite every call reporting success.
+- **The real `SetAnimationMode()` function can fail via a caught error for reasons that were
+  never root-caused** (possibly this build's reflection doesn't marshal the enum-typed parameter
+  that function expects). A plain property write to the same field (`mesh.AnimationMode = 1`) is
+  NOT an equivalent substitute here, unlike other function-vs-property cases in this codebase
+  (contrast §2's own note): the property write changes the stored flag and reads back correctly,
+  but the component's internal animation-playback instance never gets swapped to match — so the
+  OLD instance keeps actually driving rendering regardless of what gets set afterward. Confirmed
+  by a live test that read back `AnimationMode 0 -> 1` (genuinely changed) with every subsequent
+  `SetAnimation`/`Play`/`SetPosition` call ALSO reporting success — and still nothing rendered.
+  The working fix: call `mesh:PlayAnimation(animSequence, bLooping)` instead — a single function
+  built to switch modes AND start playback together, with only an object reference and a bool as
+  parameters (no raw enum to marshal), which succeeded where the granular function call did not.
+- **Skeleton/rig compatibility is not predictable from folder naming.** Animations that sound
+  like they should apply broadly (this game organizes many animations under a `Human/Regular/
+  Shared/...` path, implying reuse across "Regular" humanoid NPCs generically) are NOT safe to
+  assume compatible across every Character class that happens to use a similarly-named skeleton
+  family. Playing a genuinely foreign animation on the wrong skeleton produces a T-POSE — the
+  mesh visibly freezes in its rest pose — while AI-driven movement continues completely normally,
+  since movement and pose rendering are separate systems; a T-posed actor can still walk around.
+  This was confirmed with TWO different animations, each tested on a base class the animation
+  was NOT associated with: both T-posed. The SAME animation applied afterward to the SPECIFIC
+  base class it WAS associated with (see the next point) rendered correctly, no T-pose, on the
+  first attempt — folder-name similarity is not the signal that predicts success; a real,
+  specific class association is.
+- **Finding a genuinely compatible animation without guessing blind**: an animation that already
+  shows up as a NATIVE default/fallback value on a target class's own AnimInstance (found via a
+  live property probe on an actor of that class — reading its `AnimationData.AnimToPlay`-style
+  fields, the same struct-drilling technique §10 established) is real evidence it was authored
+  for that exact skeleton, not just a plausible-sounding guess from folder/file naming. This is
+  what finally produced a working result after two folder-plausible but class-mismatched
+  guesses both T-posed.
+- **`PlayAnimation`'s second parameter is `bLooping` — default it to `true` for an ambient pose.**
+  A one-shot play (`false`) runs the animation through once and then stops, which reads as broken
+  for a persistent "doing an activity" idle rather than a genuinely continuous one. Easy to miss
+  since a one-shot still visibly "works" on the first playthrough.
+- **The same asset can appear under two different path casings in a full pak export, and only
+  one of them actually resolves.** A full asset-path listing (built from scanning every pak
+  chunk) showed one specific mesh under both `.../WorkBenches/...` (capital B) and
+  `.../Workbenches/...` (lowercase b) as separate entries — almost certainly duplicate content
+  across different pak chunks. `StaticFindObject`/`LoadAsset` are case-sensitive enough that the
+  wrong-cased path fails to resolve, with a generic "did not resolve" message that gives no hint
+  the asset actually exists one case-variant away. Worth trying both casings before concluding an
+  asset genuinely isn't there.
+- **A folder path segment of `Environment` (as opposed to `Human/Regular`) is a strong signal the
+  animation drives an OBJECT, not a person, even when it's filed under the broader
+  `Character/Animations/` tree.** A workbench-interaction animation under an `.../Environment/
+  Workbenches/...` path T-posed a Character AND played an unrelated visual effect alongside it —
+  consistent with it actually being the workbench APPARATUS's own animation (its moving parts,
+  its spark/smoke effect), authored for that prop's own skeleton/rig, not a human one at all. The
+  matching `Environment/WorkBenches/` AnimBlueprints found in the same sweep (one per station
+  type) are almost certainly that object's own animation driver. Cheap pre-filter before even
+  trying a candidate: prefer paths under `Human/Regular/...` (where the one confirmed-working
+  animation lived) and treat an `Environment/...` path as a likely prop animation, not a
+  person-pose candidate at all.
+- **`_Hero_`-prefixed animations are NOT a separate, incompatible skeleton — confirmed live, this
+  was an over-cautious assumption that turned out wrong.** The initial theory was that "Hero"
+  meant "player-only rig," reasoning by analogy from a DIFFERENT, unrelated system (this game's
+  `Hero_`-prefixed CompositeMeshParams — a body/outfit-shape asset type, not animation — are
+  confirmed to crash the game when applied to an NPC, see the composite-system notes elsewhere).
+  That analogy does not hold for animations: a `Human/Regular/Shared/.../A_..._Hero_..._Loop`
+  sequence applied cleanly to a generic Handyman-family worker, not a named/unique character and
+  nowhere near the player. The real, confirmed-working filter remains the one above (`Human/
+  Regular/...` good, `Environment/...` bad) — the `Hero` vs. plain naming segment inside
+  `Human/Regular/` does not by itself predict compatibility either way. Don't assume a `Hero_`
+  animation is off-limits for NPC use without testing it; a genuinely different asset TYPE being
+  player-locked (composite params) does not mean every asset family sharing that naming
+  convention is equally restricted.
+- **A `Human/Regular/...` path is a useful first-pass filter, not proof — some assets filed there
+  still turn out to be OBJECT animations, not person animations.** A set of ship-cannon
+  candidates lived under a `Human/Regular/Shared/...` path (matching every heuristic above) and
+  still T-posed a Character, paired with an unrelated effect firing alongside it — the same
+  symptom the `Environment/`-path workbench candidate produced, because it turned out to be the
+  cannon's own recoil/reload animation (an object transform), not a sailor's pose, despite its
+  folder placement. **A T-pose paired with an unrelated effect firing is itself a signal to
+  abandon that specific candidate** — it suggests an object/scene animation with its own
+  AnimNotify driving that effect, not a mis-filed person pose worth retrying. The one filter that
+  has actually held up every time remains the positive one from the point above: does this exact
+  asset already show up as a genuine native AnimInstance default/fallback value on a real
+  Character of the target skeleton family. Folder path — even a "should be safe" one — is a
+  hint, never a substitute for that check.
+- **A combat/ability animation can carry a real gameplay-damage AnimNotify that fires even when
+  played this way on a completely inert, non-hostile actor — confirmed live, this actually
+  injured the player.** Playing a Senkamati Caster's own "create spikes" attack animation on a
+  placed, untamed, non-AI statue via this exact `PlayAnimation` mechanism caused REAL damage to
+  the nearby player character. AnimNotify events fire off the animation's own timeline
+  regardless of who or what is playing it and regardless of AI/hostility state — an inert prop
+  with no controller and no intent to attack is not exempt just because nothing is "deciding" to
+  cast the spell. There's no established-safe way from Lua/UE4SS reflection to strip or suppress
+  an AnimSequence's own baked-in notifies before playing it. **Treat any combat/ability-sounding
+  animation candidate (attack windups, spell casts, spike/projectile-themed names) as a real risk
+  to test from a safe distance or with health to spare** — this class of animation is not the
+  same kind of "worst case is a T-pose" experiment an idle/activity pose candidate is.
+
+## 15. `ExecuteWithDelay`'s callback does not run on the game thread — and nesting it inside `ExecuteInGameThread` is its own separate, differently-broken thing
+
+Two distinct, confirmed-live rules, easy to conflate into one wrong mental model:
+
+- **`LoadAsset` (and likely other game-thread-only engine calls) throws if called from inside an
+  `ExecuteWithDelay` callback directly.** The exact error is `Function 'LoadAsset' can only be
+  called from within the game thread`. A console-command handler or a key-bind callback's own
+  synchronous body IS on the game thread (confirmed: the same `LoadAsset` call succeeds fine from
+  there) — it's specifically the code that runs LATER, once an `ExecuteWithDelay` timer actually
+  fires, that isn't. This looked at first like a "cold asset, needs more retries" problem (a
+  manually-triggered resolve earlier in the session made a later automatic one succeed) — that
+  was a red herring; the real fix is hopping back via `ExecuteInGameThread` immediately before the
+  actual engine call, every time, not retrying more.
+- **Calling `ExecuteWithDelay` from literally inside the callback function passed to
+  `ExecuteInGameThread` throws `No overload found for function 'ExecuteWithDelay'`.** So the fix
+  for the first rule can't simply be "wrap the whole retry function's body, recursive call and
+  all, in one `ExecuteInGameThread`" — that just trades one error for the other. The correct
+  shape, confirmed working: the `ExecuteInGameThread` call (the actual engine-touching work) and
+  the NEXT `ExecuteWithDelay` call (scheduling the next retry tick) must be direct top-level
+  SIBLING statements in the retry function — never one nested inside the other's callback body.
+  Calling `ExecuteWithDelay` as the very first, synchronous action inside an
+  `ExecuteInGameThread` callback is fine either way; it's specifically
+  `ExecuteInGameThread(function() ... ExecuteWithDelay(...) ... end)` — the reverse nesting — that
+  throws.
+- **Consequence of `ExecuteInGameThread` being fire-and-forget/async**: a caller can't
+  synchronously know whether the work it just queued succeeded before deciding whether to
+  schedule a retry. The simplest robust pattern found: just retry a fixed number of times
+  unconditionally rather than trying to gate on a success flag — re-doing an already-successful
+  effect (a material swap, a faction copy) is harmless, and trying to read a "did that work" flag
+  immediately after queuing it is reading a value that's at best one tick stale by design.
+
+## 16. Comparing two independently-obtained component references with `==` is unreliable in this UE4SS build — compare `GetFName():ToString()` instead
+
+Confirmed twice, in two unrelated features: a body-mesh-exclusion check (`comp == bodyMesh`,
+comparing a reference read from `actor.Mesh` against one pulled from a
+`K2_GetComponentsByClass` array) silently evaluated false on every single comparison — not an
+error, just always the wrong branch — so a "skip this one component" step never actually skipped
+it. Switching to `comp:GetFName():ToString() == bodyMesh:GetFName():ToString()` fixed it
+immediately, confirmed via an explicit slot-count log showing the exclusion finally taking
+effect. **This failure mode produces no error and no crash — it just silently always takes the
+same branch**, which makes it easy to misread as "the whole feature doesn't work" rather than
+"one specific identity check never fires." Actor-level `==` (comparing two actor references, not
+components) has not shown this problem anywhere — treat this as a component-specific gotcha, not
+a blanket "never use `==`" rule.
+
+## 17. Windrose Mod Settings supports real slider ("scalar") and dropdown ("discrete") widgets, not just toggle/keybind — found by extracting strings from its own compiled DLL, not from its Lua source
+
+The third-party Windrose Mod Settings mod's own Lua layer (`R5ModSettings.lua`) is pure generic
+file I/O (load/save a Lua table, publish a shared variable) — it contains no type-specific
+validation or widget-selection logic at all. That logic lives entirely in a bundled native DLL
+(`dlls/main.dll`), unreadable as source. A plain `type = "number"` setting registration (the
+obvious-seeming choice, and the only type ever documented anywhere in a working example) is
+silently coerced into a checkbox — readable/writable only as 0 or 1 — with no error, no warning,
+nothing to suggest a different type exists. **Confirmed working alternative, found via a raw
+UTF-16LE string extraction of the DLL rather than more registration-schema guessing**: the
+strings `WBP_Settings_EntryScalar`/`WBP_Settings_EntryDiscrete`/`WBP_Settings_EntrySwitcher`
+(this game's own native settings-screen slider/dropdown/toggle widget classes, also used for
+ordinary graphics/audio settings) are directly referenced, alongside the literal lowercase
+strings `"scalar"` and `"discrete"` and a `"[{}] Skipped unsupported setting mod={} key={}
+type={} options={}"` diagnostic format string — real evidence of an actual type-dispatch branch,
+not just a checkbox default. Setting `type = "scalar"` (with guessed `min`/`max` fields — the
+DLL's exact expected field names are still unconfirmed, since they live in compiled code) DID
+render a real slider, confirmed live. **No integer-step/interval field was found anywhere in the
+DLL's strings** (checked for "step"/"interval"/"integer"/"round"/"delta", no hits) — the slider
+appears to be a continuous float with no snapping option exposed through this registration
+schema; a value like `8.21` is a completely normal thing for a player to land on while dragging
+it. If a whole number is actually required, round it explicitly on the Lua side when reading the
+saved value back, rather than assuming the UI can be made to snap.
+
+**Technique worth reusing on its own**: when a third-party mod's Lua-visible source doesn't
+explain an observed behavior (here: "why does a number setting render as a checkbox"), and it
+ships a compiled DLL, extracting printable strings from that DLL (both plain ASCII and, easy to
+miss, UTF-16LE — Windows/Unreal code frequently uses wide strings, which a naive ASCII-only
+`strings`-style scan won't find at all) can reveal real internal type names, log format strings,
+and referenced native class paths — genuine evidence to test against, rather than continuing to
+guess at a black box from the outside.
+
+## 18. Line-trace-based targeting: object-type queries aren't a strict superset of channel-based ones, and a "does this component exist" check needs `:IsValid()`, not `~= nil`
+
+Building an interactive "aim and pick a world object" targeting system on top of UE4SS's exposed
+`KismetSystemLibrary` trace functions hit two separate, easy-to-miss pitfalls — both confirmed
+live, both worth checking for in any similar targeting system.
+
+- **A component-existence check returned by a reflection call can be non-nil but still invalid.**
+  `GetComponentByClass(SomeClass)` on an actor that has NO component of that class does not return
+  Lua `nil` in this UE4SS build — it returns a non-nil userdata sentinel. A check written as
+  `result ~= nil` is therefore **always true**, regardless of whether the component actually
+  exists, silently breaking any logic gated on it (in this case, an entire fix intended to only
+  skip one category of actor ended up skipping EVERY actor, for as long as several rounds of
+  otherwise-correct-looking follow-up fixes, because nothing ever got past this check to run in
+  the first place). The correct check is `result ~= nil and result:IsValid()` — same rule already
+  established for actor/component array elements elsewhere (§16), now confirmed to apply to a
+  plain single-object existence check too, not just arrays. **This failure mode produces no error
+  and no crash — it silently no-ops the exact code path meant to fix something**, which reads
+  identically to "the fix didn't work" and can burn multiple debugging rounds before anyone
+  thinks to check whether the code even ran at all (a plain unconditional log line right before
+  the return, checked against the actual log file, is what caught it here).
+- **An object-type-based line trace (`LineTraceSingleForObjects`/`LineTraceMultiForObjects`) does
+  not reliably hit every native class a channel-based trace (`LineTraceSingle` against a specific
+  `ECollisionChannel`) would.** Confirmed live: after fixing every other variable, a specific
+  native "destructible" prop class remained unhittable via an object-type trace querying a wide,
+  generous range of standard object types — while a plain CHANNEL-based trace (against the same
+  channel the object-type query's own equivalent SHOULD have covered) hit it immediately once
+  something explicitly forced that channel's response to Block. The two trace styles are not
+  interchangeable substitutes for "find whatever's under the reticle" in every case; a robust
+  targeting system should treat them as complementary, layered tiers — try the object-type trace
+  first (cheaper conceptually, and it's what a modern UE project is generally built around), then
+  fall back to a channel-based trace against the same logical channel if nothing was found —
+  rather than assuming one fully subsumes the other. Widening an object-type query's own type list
+  costs nothing (a type nothing has just never matches), so do that too, but don't rely on it
+  alone to close every gap.
+- **When retrofitting a fix like this onto a wide, unopinionated raytrace (e.g. one meant to hit
+  literally anything a mod might place, sourced from a broad in-game asset catalog, not just a
+  small curated set of known classes), test against the WIDEST, weirdest class actually reachable
+  through that catalog, not just the first few obvious cases.** A "destructible" furniture prop
+  built on this game's resource/harvest-node system (visually identical to ordinary decor, but
+  using a different underlying collision setup) is exactly the kind of outlier a narrow test pass
+  (walking Characters, a couple of ordinary decor items) would never surface — it only showed up
+  once the actual target class list widened past what the original targeting system was built and
+  tested against.
+
+## 19. Constructing a composite outfit from scratch: the real 3-level asset structure, what's safe to build via Lua, and what crashes (2026-08-29)
+
+### 19a. The real structure, confirmed via direct asset-JSON exports (not a live probe this time)
+
+Everything §2/§2d already document treats a composite's outfit as something you SWAP (a different
+class's whole `DefaultParams` bakes in at build time) or PATCH (one `BuildedCompositeMeshes` slot's
+mesh, post-build). Neither answers "can I construct a genuinely NEW, custom combination of pieces
+from scratch." Exporting a real character's own params asset to JSON (via an external tool run
+directly against the `.uasset` files, not a live in-game probe) revealed the actual structure, three
+levels deep:
+
+1. **`R5CompositeMeshComponentBaseParams`** (what `DefaultParams` points at) — a `CustomizationData`
+   array, one entry per category (`Customization.UID.Armor`, `.Hairs`, `.Facial.Eyebrows`, etc.).
+   Each entry has a `GroupCategoryId` (`FGameplayTag`), a `bAllowCustomization` bool, and
+   `CompositeMeshGroupsByBodySex` — a `TMap`-shaped list of `{Key: sex enum, Value: {a list of
+   R5CompositeMeshGroup references}}`. A category with `bAllowCustomization=false` (a fixed
+   character's Armor) lists exactly ONE group; a real player-facing picker category (Hairs,
+   Eyebrows) lists dozens — this literally IS the backing data for the game's own character-creation
+   hair/eyebrow selector.
+2. **`R5CompositeMeshGroup`** — just a flat `CompositeMeshesParams` array of `R5CompositeMeshParams`
+   references, one per body part. Confirmed on a real NPC's own outfit group: SIX pieces (Feet,
+   Hands, Head, Legs, Torso, Belt) pulled from THREE different named armor families in the game's own
+   catalog — proof that a "Group" is an arbitrary bundle, not a single-family outfit.
+3. **`R5CompositeMeshParams`** (the bottom level, one per body part) — finally holds the real data:
+   `BaseMesh.AssetPathName` (a plain `SkeletalMesh` soft-path, per sex), `Attachments` (socket-
+   attached extras — pistols, pouches — each with its own full baked `Rotation`/`Translation`/
+   `Scale3D` transform, i.e. socket offsets ARE data, not something computed), and
+   `ColorData.ColorIndexesMap` (confirming color is consumed at THIS level, build-time-only — the
+   root cause of the already-documented "post-build `ColorController`/`ColorParams` writes never
+   render" dead end, not a contradiction of it).
+
+Every catalog family that already has ordinary content (confirmed for one family: 12 pieces across 4
+body parts, 3 numbered variants each) almost certainly already has its own `R5CompositeMeshParams`
+("...CompositeMeshData") asset per piece — meaning a custom outfit does NOT require authoring new
+per-piece data from scratch, only a new Group referencing EXISTING pieces from whatever families you
+want, mixed freely.
+
+### 19b. What's actually constructible from Lua — confirmed piece by piece, live
+
+- **`StaticConstructObject` generalizes beyond the one class it had ever been tried on.** Already
+  proven for a plain UMG `TextBlock` (toast-notification work, elsewhere in this project); confirmed
+  live this session on a completely different, unrelated class (`R5CompositeMeshGroup`, then
+  separately `R5CompositeMeshComponentBaseParams`) — both constructed cleanly, no crash, no special
+  handling needed beyond resolving the right `/Script/Module.ClassName` path first.
+- **Writing a `TArray` of HARD OBJECT REFERENCES works via plain Lua-table assignment.** Every
+  property write documented elsewhere in this file up to now has been a scalar, a Vector/Quat-shaped
+  struct, or a single object/texture reference — never an array of object pointers. Confirmed live:
+  `groupObject.CompositeMeshesParams = { obj1, obj2, ..., objN }` (a flat Lua table of already-
+  resolved `UObject` references) populated the array correctly on the first attempt, verified by
+  re-reading `GetArrayNum()` afterward — no `:Add()`-per-element fallback needed.
+- **`DuplicateObject` and `StaticDuplicateObject` are BOTH absent from this UE4SS binding's global
+  namespace.** Calling either produces a clean Lua "attempt to call a nil value" error — safe to
+  probe (a nonexistent global can never reach the engine), but confirms there is no direct
+  duplicate-an-existing-asset primitive exposed here. If you need a modified copy of an existing
+  DataAsset, the only currently-known route is constructing a NEW instance of the same class via
+  `StaticConstructObject` and populating its fields yourself, not cloning-then-patching.
+- **Constructing the top-level `CustomizationData` array as ONE nested Lua table literal in a single
+  assignment CRASHES THE GAME LIVE, confirmed.** The literal being assigned:
+  `{ { GroupCategoryId = {TagName=...}, bAllowCustomization = false, CompositeMeshGroupsByBodySex =
+  { {Key=..., Value={CompositeMeshesParams={...}}} } } }` — i.e. an array containing one struct that
+  itself contains a `GameplayTag` sub-table, a bool, and a `TMap`-shaped sub-array of Key/Value
+  pairs, all assigned in one write. The crash happened on this EXACT line — confirmed via a
+  breadcrumb logged immediately before the call (see §"pre-call breadcrumbs" discipline, this
+  project's own established practice): nothing followed it in the log, ever, across the attempt.
+  Every simpler operation earlier in the SAME run (both `StaticConstructObject` calls, the flat
+  array-of-objects write above) completed cleanly moments before — so this is not a general failure
+  of object construction or array writes, it's specific to this level of nested-heterogeneous-
+  structure in one assignment. **Not yet tried, and the real next experiment if this is revisited**:
+  writing each nested field of the `CustomizationData` entry INDIVIDUALLY (the entry struct, then
+  `GroupCategoryId` alone, then `bAllowCustomization` alone, then the `TMap`-shaped sub-array alone)
+  rather than one all-in-one table literal — since the flat single-shape array write proved fine, the
+  crash may be about how much heterogeneous nesting was asked for in one write, not nested writes as
+  a category.
+
+### 19c. A related, already-proven primitive worth remembering here
+
+§2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE
+`BuildedCompositeMeshes` slot post-build: hide → `SetSkeletalMeshAsset` (fallback `SetSkeletalMesh`)
+→ **`SetLeaderPoseComponent`** rebind to the actor's own body mesh → show. `SetLeaderPoseComponent`
+is therefore NOT new/unproven engine surface the way this section's other findings are — it was
+already a working, shipped technique before this investigation started; worth checking this file
+before treating a call as untested just because it's new to the specific feature being built.

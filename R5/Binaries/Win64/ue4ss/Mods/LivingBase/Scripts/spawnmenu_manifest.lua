@@ -259,12 +259,71 @@ local function walking_women_path_and_label(name)
     return {"Walking Women"}, tostring(name)
 end
 
+-- Custom > Poses > <Top Category> > <Subcategory> > <Name> (2026-08-27) -- Config.CUSTOM_POSES
+-- rows already carry their own topCategory/subCategory/name fields (imported straight from
+-- Other\Poses.xlsx), so this is a near-identity mapping -- the only real work is nesting under a
+-- shared "Custom.Poses" branch and omitting the subcategory segment when a row has none (Magic/
+-- Statues/Misc sheets have no subcategory column at all). Unlike every other roster here, this
+-- one's SPAWN_MENU_HANDLERS entry (main.lua) doesn't spawn anything -- it applies the pose to
+-- whatever's already targeted -- so there's nothing new for undo/despawn/persist.txt to track;
+-- see that handler's own comment.
+local function custom_poses_path_and_label(row)
+    local path = {"Custom", "Poses", row.topCategory}
+    if row.subCategory and row.subCategory ~= "" then
+        path[#path + 1] = row.subCategory
+    end
+    return path, row.name
+end
+
+-- Custom > Skin Tones (2026-08-28) -- Config.CUSTOM_SKIN_TONES is a flat name list (same shape as
+-- Config.FEMALE_RESKIN_TARGETS above), so this mirrors walking_women_path_and_label's simplicity --
+-- no subcategory nesting needed, the family name IS the leaf.
+local function custom_skin_tones_path_and_label(name)
+    return {"Custom", "Skin Tones"}, tostring(name)
+end
+
+-- Custom > Hair > Default|Hat|Headband|Bandana > <Style> (2026-08-28, RedFalcon: "sub categorize
+-- Hat and No Hat" -- expanded same day to all four real variants once RedFalcon caught Marita's
+-- own Bandana-variant hairstyle missing from the original two-way split; see Config.CUSTOM_HAIR's
+-- own comment in config.lua for the full story). Config.CUSTOM_HAIR rows already carry `variant`
+-- as a plain string -- the only real work is using it as the subcategory name directly.
+local function custom_hair_path_and_label(row)
+    return {"Custom", "Hair", row.variant}, row.name
+end
+
+-- Custom > Clothes > <Family> > <Slot> > <Name> (2026-08-28). Config.CUSTOM_CLOTHES rows already
+-- carry family/slot/name -- straightforward three-level nest, one deeper than hair's since
+-- clothing genuinely has both a family AND a slot axis, not just one style axis.
+local function custom_clothes_path_and_label(row)
+    return {"Custom", "Clothes", row.family, row.slot}, row.name
+end
+
+-- Custom > Clothes > Remove > <Slot|All> (2026-08-28). Config.CLOTHES_REMOVE rows carry just
+-- `slot` -- a flat one-level list under its own "Remove" branch, sibling to the per-family
+-- branches above.
+local function custom_clothes_remove_path_and_label(row)
+    return {"Custom", "Clothes", "Remove"}, row.slot
+end
+
+-- Custom > Face > <Family> > <Slot> > <Name> (2026-08-28). Same three-level nest as Clothes,
+-- since facial pieces genuinely have both a family (style) AND a slot (Eyebrows/Beard/Mustache/
+-- Whiskers) axis.
+local function custom_facial_path_and_label(row)
+    return {"Custom", "Face", row.family, row.slot}, row.name
+end
+
 -- Roster descriptors: name (matches the `roster =` value written out and used to look entries
 -- back up), the rows to walk, and a function turning one row into (path_parts, leaf_label). Add
 -- more entries here to extend generation to another roster -- the append/never-clobber mechanics
 -- below are already generic, only this list needs to grow.
 local function roster_descriptors(Config)
     return {
+        {name = "CUSTOM_POSES", rows = Config.CUSTOM_POSES, path_and_label = custom_poses_path_and_label},
+        {name = "SKIN_TONES", rows = Config.CUSTOM_SKIN_TONES, path_and_label = custom_skin_tones_path_and_label},
+        {name = "HAIR", rows = Config.CUSTOM_HAIR, path_and_label = custom_hair_path_and_label},
+        {name = "CLOTHES", rows = Config.CUSTOM_CLOTHES, path_and_label = custom_clothes_path_and_label},
+        {name = "CLOTHES_REMOVE", rows = Config.CLOTHES_REMOVE, path_and_label = custom_clothes_remove_path_and_label},
+        {name = "FACIAL", rows = Config.CUSTOM_FACIAL, path_and_label = custom_facial_path_and_label},
         {name = "SENKAMATI_LOOKS", rows = Config.SENKAMATI_LOOKS, path_and_label = senkamati_path_and_label},
         {name = "STANDING_STATUES", rows = Config.STANDING_STATUES, path_and_label = statue_path_and_label("Standing")},
         {name = "SEATED_STATUES", rows = Config.SEATED_STATUES, path_and_label = statue_path_and_label("Seated")},

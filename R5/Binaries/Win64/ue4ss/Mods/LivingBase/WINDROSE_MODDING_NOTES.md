@@ -1701,23 +1701,34 @@ want, mixed freely.
   duplicate-an-existing-asset primitive exposed here. If you need a modified copy of an existing
   DataAsset, the only currently-known route is constructing a NEW instance of the same class via
   `StaticConstructObject` and populating its fields yourself, not cloning-then-patching.
-- **Constructing the top-level `CustomizationData` array as ONE nested Lua table literal in a single
-  assignment CRASHES THE GAME LIVE, confirmed.** The literal being assigned:
-  `{ { GroupCategoryId = {TagName=...}, bAllowCustomization = false, CompositeMeshGroupsByBodySex =
-  { {Key=..., Value={CompositeMeshesParams={...}}} } } }` — i.e. an array containing one struct that
-  itself contains a `GameplayTag` sub-table, a bool, and a `TMap`-shaped sub-array of Key/Value
-  pairs, all assigned in one write. The crash happened on this EXACT line — confirmed via a
-  breadcrumb logged immediately before the call (see §"pre-call breadcrumbs" discipline, this
-  project's own established practice): nothing followed it in the log, ever, across the attempt.
-  Every simpler operation earlier in the SAME run (both `StaticConstructObject` calls, the flat
-  array-of-objects write above) completed cleanly moments before — so this is not a general failure
-  of object construction or array writes, it's specific to this level of nested-heterogeneous-
-  structure in one assignment. **Not yet tried, and the real next experiment if this is revisited**:
-  writing each nested field of the `CustomizationData` entry INDIVIDUALLY (the entry struct, then
-  `GroupCategoryId` alone, then `bAllowCustomization` alone, then the `TMap`-shaped sub-array alone)
-  rather than one all-in-one table literal — since the flat single-shape array write proved fine, the
-  crash may be about how much heterogeneous nesting was asked for in one write, not nested writes as
-  a category.
+- **Constructing a `CustomizationData`-shaped array-of-structs entry, narrowed down step by step,
+  isolates the crash to ONE specific operation: constructing a `GameplayTag` from scratch.**
+  The original one-shot write (an array containing one struct with a `GameplayTag` sub-table, a
+  bool, and a `TMap`-shaped sub-array, all assigned together) crashed the game live. Splitting
+  into three separate writes (the category tag, then the bool, then the `TMap` sub-array) crashed
+  again — but now isolated to the FIRST and simplest of the three, ruling out "too much nesting in
+  one write" as the cause. Splitting THAT into two even finer sub-steps settled it: (a) writing the
+  array with one COMPLETELY EMPTY entry (`{ {} }`, no tag at all) — **survives cleanly**, confirmed
+  live, proving the array-of-structs mechanism itself is fine; (b) then, on that same fetched-back
+  entry, assigning `GroupCategoryId = { TagName = "..." }` — **CONFIRMED TO CRASH THE GAME LIVE**,
+  every time, in isolation from everything else. A breadcrumb logged immediately before this exact
+  call was the last line written to any log across every attempt — nothing runs after it.
+  This is the first attempt anywhere in this investigation at CONSTRUCTING a `GameplayTag` from
+  scratch and handing it to the engine; every prior successful read of one elsewhere in this
+  project was already-registered, already-valid data loaded from a real asset. `GameplayTag`s are
+  normally validated against a registered tag hierarchy at construction time — a bare table
+  (`{TagName = "some.string"}`) apparently does not satisfy whatever that validation expects,
+  unlike a plain `FVector`/`FName` string, which have no registry to consult at all. Every other
+  operation tried in this whole investigation (both `StaticConstructObject` calls, the flat
+  array-of-object-references write, and the empty-struct array write above) completed cleanly —
+  this failure is specific to fabricating a `GameplayTag` value out of nothing, not a general
+  problem with structs, arrays, or nested writes.
+  **The one untried, more-promising alternative**: rather than constructing a tag from a raw
+  string, read an ALREADY-VALID `GameplayTag` struct value off a real asset that already carries
+  the category you want (e.g. an existing character's own `CustomizationData` entry already
+  tagged `Customization.UID.Armor`) and copy THAT value into the new entry — a value copy between
+  two struct fields, with no fresh tag fabrication happening at all, which may sidestep whatever
+  validation a from-scratch construction fails. Not yet attempted.
 
 ### 19c. A related, already-proven primitive worth remembering here
 

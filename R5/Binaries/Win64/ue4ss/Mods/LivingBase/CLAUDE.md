@@ -3729,6 +3729,71 @@ edit/despawn/undo/cycle toolkit. In order:
      writes work fine, the crash may be specific to how much heterogeneous nested structure was
      asked for in one assignment, not nested writes in general. A genuinely different next
      experiment, not a retry of what just crashed.
+     **Same-day (2026-08-29) implementation, RedFalcon: "ok, let's do it"**: built exactly that
+     staged approach. `Spawner.TestBuildCustomOutfit` now writes the `CustomizationData` entry
+     across THREE separate assignments instead of one: (1) `newParams.CustomizationData = { {
+     GroupCategoryId = {TagName=...} } }` — array + one entry + just the category tag; (2) fetches
+     that entry back out of the array (same unwrap-by-`:get()` pattern used everywhere else in this
+     file, so the next two writes target the SAME live struct, not a disconnected fresh table) and
+     sets `entry.bAllowCustomization = false` alone; (3) sets
+     `entry.CompositeMeshGroupsByBodySex = { {Key=..., Value={CompositeMeshesParams={newGroup}}} }`
+     alone — the TMap-shaped sub-array, isolated from the other two fields this time. Each step has
+     its own breadcrumb and its own early-return on failure, so a crash on any one step pinpoints
+     exactly which of the three nested pieces is the actual problem, rather than "somewhere in the
+     one big write." The original one-shot version's exact crashing code is no longer kept
+     block-commented in the file (superseded by this real next attempt, per its own recommendation
+     above) — this entry's history is the record instead. `lint.py` clean (`compile: 10 scripts
+     OK`), deployed.
+     **Fifth live run: CONFIRMED TO CRASH AGAIN — but narrowed to step 1 exactly, the simplest of
+     the three.** "about to write CustomizationData step 1/3 (array + one entry + just the category
+     tag)" was the last breadcrumb; steps 2 and 3 were never reached. This rules out the "too much
+     heterogeneous nesting in one write" theory (step 1 alone is about as small as it gets) and
+     points somewhere more specific: this was the FIRST attempt anywhere in this codebase at
+     CONSTRUCTING a `GameplayTag` from scratch and handing it to the engine — every prior read of one
+     elsewhere in this project was already-registered, already-valid data loaded from a real asset.
+     GameplayTags are normally validated against a registered tag hierarchy; a bare Lua table may not
+     satisfy whatever that validation expects, unlike a plain `FVector`/`FName` string with no
+     registry to consult.
+     RedFalcon, asked directly given two crashes in a row: **"let's do the [narrower test]. while
+     crashing causes some time loss, its not horrible"** — explicit informed consent to keep
+     iterating despite the real cost. Split step 1 itself into two even finer sub-steps: 1a assigns a
+     COMPLETELY EMPTY entry (`{ {} }`, no tag at all) to isolate whether appending ANY entry to this
+     specific array-of-structs type is the problem, independent of GameplayTag; if 1a survives, 1b
+     sets `GroupCategoryId` as its own separate write afterward (fetched back out of the array, not
+     embedded in the original literal) — if THAT crashes, it confirms GameplayTag construction
+     specifically as the trigger, the most surgical isolation this investigation can reach. `lint.py`
+     clean (`compile: 10 scripts OK`), deployed.
+     **Sixth live run: settled it — step 1a survives, step 1b CONFIRMED TO CRASH.** RedFalcon
+     re-ran `lbtestgroup Torso Dogface 01`: the log shows step 1a's result line
+     (`step 1a result: ok=true`) then the step 1b breadcrumb ("about to write CustomizationData
+     step 1b (GroupCategoryId alone, on the fetched entry)") as the very last line, with nothing
+     after it. This is the most surgical isolation this investigation reached: an array containing
+     one COMPLETELY EMPTY struct entry writes and reads back fine — the array-of-structs mechanism
+     itself was never the problem — and the crash is narrowly, repeatably specific to constructing
+     a fresh `GameplayTag` from a bare Lua table (`{TagName = "Customization.UID.Armor"}`) and
+     assigning it to a struct field. Every simpler operation tried across this whole investigation
+     (both `StaticConstructObject` calls, the flat array-of-object-references write, the
+     empty-struct array write) worked cleanly — this is not a general array/struct/nesting
+     problem, it's specific to fabricating a `GameplayTag` value out of nothing.
+     **Disabled at the confirmed line, matching this file's treatment of every other confirmed-
+     fatal call** (`SetBody`/`AttachActorToShip`/`RecreateClothingActor`): `Spawner.
+     TestBuildCustomOutfit` now returns `false` with a clear message right where step 1b's write
+     used to be; steps 2/3, 3/3, the verification re-read, and the actual test spawn were never
+     reached and were removed as unreachable code rather than kept commented out (recoverable from
+     git history, commit `c8a1fc7` onward, if a real fix is ever found). Written up as a durable
+     finding in `WINDROSE_MODDING_NOTES.md` §19b (and the public mirror/repo, same day) along with
+     the one untried, more-promising alternative: read an ALREADY-VALID `GameplayTag` struct value
+     off a real asset that already carries the wanted category (e.g. an existing character's own
+     `CustomizationData` entry) and copy that value into the new entry, rather than constructing
+     one from a raw string — a value copy, not a fresh fabrication, which may sidestep whatever
+     validation the from-scratch construction fails. **Not yet attempted.**
+     **Net status of the custom-archetype investigation, closed out for this round**: the
+     underlying insight (a group is a flat array of existing per-piece references, mixable across
+     families) is confirmed correct, and `StaticConstructObject` + flat object-reference-array
+     writes are both proven generically safe techniques going forward. The one remaining blocker to
+     assembling a complete custom `CustomizationData` wrapper from scratch is this GameplayTag
+     construction issue — real next step is the copy-not-construct alternative above, not another
+     variant of building a tag from a string.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

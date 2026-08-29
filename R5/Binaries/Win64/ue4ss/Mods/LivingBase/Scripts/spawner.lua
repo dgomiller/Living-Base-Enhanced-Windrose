@@ -9287,105 +9287,69 @@ function Spawner.TestBuildCustomOutfit(swapSlot, swapFamily, swapName, say)
     end
     crumb("BaseParams constructed ok.")
 
-    -- CONFIRMED TO CRASH THE GAME LIVE (2026-08-29) -- do not call this. The breadcrumb
-    -- immediately before this write ("about to write CustomizationData...") was the LAST line
-    -- written to LivingBase_ReferenceLog.txt/ue4ss.log before the game went down -- every step
-    -- before it (both StaticConstructObject calls, AND the flat array-of-object-references write
-    -- on the Group a few lines up) is confirmed safe; this ONE nested-table-literal assignment
-    -- (a GameplayTag + bool + TMap-shaped sub-array, all in one write) is what crashed. Left in
-    -- place, disabled, as a documented dead end -- same treatment this file already gives
-    -- SetBody/AttachActorToShip/RecreateClothingActor. Do NOT re-enable this exact call; if this
-    -- avenue is revisited, the next thing to try is writing each nested field of the
-    -- CustomizationData entry INDIVIDUALLY (construct the entry struct, assign GroupCategoryId,
-    -- then bAllowCustomization, then CompositeMeshGroupsByBodySex, as separate writes) rather than
-    -- one all-in-one table literal -- never attempted, and a real, different next step, not a
-    -- retry of what just crashed.
-    crumb("CustomizationData write SKIPPED -- confirmed to crash this game live, see this function's own comment. Stopping here.")
-    return false
-end
---[[ CONFIRMED-CRASHING CODE BELOW, KEPT AS A RECORD ONLY -- DO NOT UNCOMMENT WITHOUT A NEW THEORY.
-This was the rest of Spawner.TestBuildCustomOutfit's body: the CustomizationData write itself
-(never got past the breadcrumb printed immediately before it -- the game crashed on this exact
-assignment), its verification re-read, and the final test spawn. Lua requires `return` to be the
-last statement in its block, so this whole tail had to be pulled out from after the early
-`return false` above rather than left dangling in place.
-    local okCD, errCD = pcall(function()
-        newParams.CustomizationData = {
-            {
-                GroupCategoryId = { TagName = "Customization.UID.Armor" },
-                bAllowCustomization = false,
-                CompositeMeshGroupsByBodySex = {
-                    { Key = "ER5BLCharacterSex::Any", Value = { CompositeMeshesParams = { newGroup } } },
-                },
-            },
-        }
+    -- CONFIRMED TO CRASH TWICE, each time narrowed further (2026-08-29): (1) the ORIGINAL one-shot
+    -- version -- a single assignment with all three fields (GroupCategoryId/bAllowCustomization/
+    -- CompositeMeshGroupsByBodySex) of one entry in one nested table literal; (2) the FIRST attempt
+    -- at splitting into 3 steps still crashed, but on the FIRST and SIMPLEST of the three --
+    -- array + one entry + just the category tag, nothing else. That rules out "too much nesting in
+    -- one write" as the theory (this is about as small as it gets) and points somewhere more
+    -- specific: every place this whole file has ever successfully READ a GameplayTag, it was
+    -- already-registered, already-valid data loaded from a real asset -- this was the FIRST attempt
+    -- anywhere in this codebase at CONSTRUCTING one from scratch and handing it to the engine.
+    -- GameplayTags are normally validated against a registered tag hierarchy; a bare Lua table may
+    -- not satisfy whatever that validation expects, unlike a plain FVector/FName string which have
+    -- no such registry to consult. Splitting step 1 itself into two even finer sub-steps to isolate
+    -- that specifically: 1a adds a COMPLETELY EMPTY entry (no tag at all) -- if THIS alone crashes,
+    -- the problem is with appending ANY entry to this specific TArray-of-struct type, unrelated to
+    -- GameplayTag; if 1a survives, 1b sets GroupCategoryId as its OWN separate write afterward
+    -- (fetched back out of the array, not embedded in the original literal) -- if THAT crashes,
+    -- it confirms GameplayTag construction specifically is the trigger.
+    crumb("about to write CustomizationData step 1a (array + one COMPLETELY EMPTY entry) -- if nothing follows, THIS crashed.")
+    local okStep1a, errStep1a = pcall(function()
+        newParams.CustomizationData = { {} }
     end)
-    crumb("CustomizationData write attempt: ok=" .. tostring(okCD) .. ((not okCD) and (" err=" .. tostring(errCD)) or ""))
+    crumb("step 1a result: ok=" .. tostring(okStep1a) .. ((not okStep1a) and (" err=" .. tostring(errStep1a)) or ""))
+    if not okStep1a then
+        crumb("stopping here -- even a completely empty entry in the array failed. The array-of-structs mechanism itself is the problem, not GameplayTag.")
+        return false
+    end
 
-    -- Verify the write actually stuck (same caution as the earlier array write -- don't trust a
-    -- table-assignment success blindly) by re-reading the same path fresh.
-    local verifiedCount = -1
+    -- Fetch the entry back OUT of the array so the next writes target the SAME live struct, not a
+    -- fresh disconnected table -- same unwrap pattern used everywhere else in this file.
+    local entry = nil
     pcall(function()
         local catData = newParams.CustomizationData
-        local n = 0
-        pcall(function() n = catData:GetArrayNum() end)
-        if n == 0 then pcall(function() n = #catData end) end
-        for i = 1, n do
-            local entry = catData[i]; if not entry then pcall(function() entry = catData:Get(i) end) end
-            pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
-            if entry then
-                local tag = ""
-                pcall(function() tag = entry.GroupCategoryId.TagName:ToString() end)
-                if tag == "Customization.UID.Armor" then
-                    local bySex = entry.CompositeMeshGroupsByBodySex
-                    local m = 0
-                    pcall(function() m = bySex:GetArrayNum() end)
-                    if m == 0 then pcall(function() m = #bySex end) end
-                    for j = 1, m do
-                        local pair = bySex[j]; if not pair then pcall(function() pair = bySex:Get(j) end) end
-                        pcall(function() if pair ~= nil and type(pair) == "userdata" and pair.get then pair = pair:get() end end)
-                        if pair then
-                            pcall(function()
-                                local grp = pair.Value.CompositeMeshesParams
-                                local c = 0
-                                pcall(function() c = grp:GetArrayNum() end)
-                                if c == 0 then pcall(function() c = #grp end) end
-                                if c > 0 then verifiedCount = c end
-                            end)
-                        end
-                    end
-                end
-            end
-        end
+        entry = catData[1]
+        if not entry then pcall(function() entry = catData:Get(1) end) end
+        pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
     end)
-    crumb("re-read verification: Armor category now shows " .. tostring(verifiedCount) .. " group(s) referenced (wanted exactly 1, our new one).")
-    if verifiedCount <= 0 then
-        crumb("CustomizationData did not verifiably stick -- stopping here rather than spawning with an empty/unknown outfit.")
+    if not entry then
+        crumb("could not fetch the entry back out of CustomizationData after step 1a -- stopping here.")
         return false
     end
 
-    -- Spawn a fresh test actor with our custom params fed pre-build via a direct preFinish,
-    -- bypassing Spawner.SetCompositeParams/resolveAsset entirely -- those expect a PATH STRING,
-    -- not an already-resolved runtime object, so this can't reuse that shared code as-is.
-    crumb("about to spawn a test actor with the constructed params -- if nothing follows, THIS crashed.")
-    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomOutfitTest", nil,
-        function(a)
-            pcall(function()
-                local comp = a.CompositeMeshComponent
-                if comp and comp:IsValid() then
-                    comp.DefaultParams = newParams
-                end
-            end)
-        end, nil, nil, false, nil)
-    if not (actor and actor:IsValid()) then
-        crumb("Spawn FAILED.")
-        return false
-    end
-    crumb("Spawn call returned an actor -- check it visually now. Swapped slot=" .. canonSlot .. " to " .. swapFamily .. " " .. swapName .. ".")
-    pcall(function() Spawner.Toast("Custom outfit test spawned -- " .. canonSlot .. " swapped to " .. swapFamily .. " " .. swapName, 3.5) end)
-    return true
+    -- CONFIRMED TO CRASH THE GAME LIVE (2026-08-29): step 1a (an array + one COMPLETELY EMPTY
+    -- entry, no tag) survives cleanly -- the array-of-structs mechanism itself is fine. This next
+    -- write, constructing a FRESH FGameplayTag from a bare Lua table ({TagName = "..."}) and
+    -- assigning it to GroupCategoryId, is what crashes -- the breadcrumb immediately before it was
+    -- the last line written to either ue4ss.log or LivingBase_ReferenceLog.txt before the game
+    -- went down, with the crash happening between that breadcrumb and the next one. This is the
+    -- FIRST attempt anywhere in this codebase at CONSTRUCTING a GameplayTag from scratch --
+    -- every prior read of one elsewhere in this project was already-registered, already-valid
+    -- data loaded from a real asset. GameplayTags are normally validated against a registered tag
+    -- hierarchy; a bare Lua table apparently does not satisfy whatever that validation expects,
+    -- unlike a plain FVector/FName string with no registry to consult. DO NOT re-enable this exact
+    -- write without a genuinely new theory -- see WINDROSE_MODDING_NOTES.md SS19b for the
+    -- write-up and the untried alternative (copy an ALREADY-VALID GameplayTag struct value read
+    -- off a real asset's own CustomizationData entry, instead of constructing one from a table).
+    crumb("stopping here -- GroupCategoryId (constructing a GameplayTag from a bare Lua table) CONFIRMED to crash the game. Not attempting it again without a new theory.")
+    return false
+    -- Steps 2/3 (bAllowCustomization), 3/3 (CompositeMeshGroupsByBodySex), the verification
+    -- re-read, and the actual test spawn were never reached and are removed rather than kept as
+    -- unreachable dead code -- see WINDROSE_MODDING_NOTES.md SS19b for what they would have done;
+    -- resurrect from git history (commit c8a1fc7 onward) if a real fix for the GameplayTag write
+    -- is ever found and this needs picking back up.
 end
---]]
 
 -- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL
 -- (off by default) -- when ON, bypasses BOTH fit-restriction mechanisms in

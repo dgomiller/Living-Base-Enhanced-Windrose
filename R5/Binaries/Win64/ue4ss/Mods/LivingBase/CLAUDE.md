@@ -3794,6 +3794,138 @@ edit/despawn/undo/cycle toolkit. In order:
      assembling a complete custom `CustomizationData` wrapper from scratch is this GameplayTag
      construction issue — real next step is the copy-not-construct alternative above, not another
      variant of building a tag from a string.
+     **Same-day (2026-08-29) continuation, RedFalcon: "let's use your idea"**: implemented the
+     copy-not-construct alternative — read Marita's own real, already-valid `GroupCategoryId` off
+     her real BaseParams asset and assigned that VALUE (not a fabricated `{TagName=...}` table) onto
+     the fetched-back entry. **Confirmed live: this worked, no crash** — the whole staged sequence
+     (empty entry → copy real tag → `bAllowCustomization` → `CompositeMeshGroupsByBodySex`) completed
+     and verified cleanly. The spawned actor came out **fully nude** — a live probe showed
+     `BuildedCompositeMeshes` at 0 for every category, not just the swapped one. Two more diagnostics
+     narrowed this: `Spawner.TestCopyWholeParams` (copying an existing character's ENTIRE
+     `CustomizationData` array wholesale onto a fresh object, no modification) built correctly,
+     ruling out "fresh `StaticConstructObject`'d objects never build"; appending real Hairs/Eyebrows
+     entries alongside the custom Armor one (still unmodified) didn't help either, ruling out
+     "missing categories." Suspecting the staged fetch/mutate/reinsert pattern itself was producing a
+     self-consistent-but-disconnected value, tried building the WHOLE entry (copied tag included) as
+     ONE single table literal instead — same shape as the very first crash, but with a copied tag.
+     **This crashed too, twice, reproducibly** — both mixed with real pre-existing entries in one
+     write, and completely alone. This is the decisive result: rules out "GameplayTag fabrication
+     specifically" (a copied tag crashes too) and "mixing fresh + real entries" (crashes alone too).
+     **The real, generalized rule**: constructing a brand-new struct value via a table literal, in
+     one shot, AS A NEW ARRAY ELEMENT, crashes — regardless of contents. Only the staged
+     empty-then-mutate-in-place pattern is safe, and it doesn't produce a working build. Both crashes
+     disabled at the confirmed line (same treatment as every other confirmed-fatal call), findings
+     written up in `WINDROSE_MODDING_NOTES.md` §19b.
+     **The pivot that actually worked, same day**: RedFalcon asked "since I know the params exist as
+     an entry in the PAK files, is it possible to make a physical file for it?" — stepping back from
+     runtime construction entirely to editing a REAL asset file OFFLINE. This turned into a full,
+     independent tooling investigation (FModel already installed; `UAssetGUI` and Epic's own
+     `UnrealPak.exe` fetched fresh) that hit and resolved several real problems in sequence:
+     - `UAssetGUI`'s own CLI (`tojson`/`fromjson`) produced zero output/zero files no matter what was
+       tried (confirmed identical behavior run interactively by RedFalcon, ruling out an automation-
+       environment quirk) — abandoned in favor of driving the GUI directly, which DID work and gave
+       real, informative dialogs.
+     - `UAssetGUI` refused to open a raw-exported `.uasset` at all: **"UE5 Zen Loader assets cannot
+       be loaded directly into UAssetGUI"** — this game ships Zen/IoStore containers, not the legacy
+       format the tool expects. Its own error dialog named the fix: `retoc` (fetched fresh,
+       MIT-licensed, by the same author as a second tool used later).
+     - `retoc to-legacy <Paks folder> <output> --filter "<name>" --version UE5_6` (an all-zero AES
+       key as the standard "not really encrypted" placeholder, already established for this game's
+       own paks) successfully extracted real, legacy-format `.uasset`+`.uexp` pairs for Marita's own
+       BaseParams and Group — filter is a plain substring match, not a glob (`*Marita*` matched
+       nothing, plain `Marita` matched 23 real assets).
+     - Editing in `UAssetGUI`: the Export Data grid's object-reference values are READ-ONLY
+       (resolved-name display only) — the actual edit happens in the **Import Data** grid instead,
+       where each reference shows as a `Package`-type row (full path) plus a same-class-type row
+       (short name, `OuterIndex` pointing at the package row), both plain editable text. Retargeting
+       both rows to a different family's piece (Torso: Flibustier → Jeweler) worked on the first try,
+       confirmed via the Export Data view updating to show the new resolved name. No manual Name Map
+       edit needed — typing a brand-new string directly into an editable name field auto-registers it
+       on save (confirmed: the new string didn't exist anywhere in the source package beforehand).
+     - Duplicating Marita's Group+BaseParams under a NEW package path (`.../Armor/Custom/
+       DA_Custom_MaritaGroup`/`DA_Custom_MaritaParams`, set via the General Information tab's
+       `PackageName` field — Save As only renames the destination FILE, not this internal identity
+       field) → `retoc to-zen <staged folder> <output>.utoc --version UE5_6` → packaged with
+       Epic's own `UnrealPak.exe` — **failed**: "PakEntry mismatch" on every single entry when trying
+       to extract/verify (a real version/format mismatch between this specific `UnrealPak.exe` build
+       and what these tools produce/expect) → switched to `repak` (fetched fresh, same author as
+       `retoc`) for all pak-level work from here on, no further mismatch issues.
+     - First live test (`lbtestpak`, a new `Spawner.SetCompositeParams`/`compositeLook.params`-based
+       tester — zero runtime construction, just a real asset load): **`params=MISS`** — the new
+       asset never resolved at all. **CRASHED** on the very next spawn (an ordinary, unrelated
+       default Gatherer spawn, since params never loaded) — but the crash dump's own embedded
+       `LogPakFile`/`LogIoDispatcher` lines showed no mount message for the new container at all,
+       and a SECOND clean (non-corrupted) attempt with a fixed sidecar pak reproduced the identical
+       `MISS` with NO crash — strong evidence the crash was coincidental, not caused by the new pak.
+     - Diagnosed via `repak info`: the working installed mod's own sidecar `.pak` uses mount point
+       `/`; `retoc to-zen`'s own auto-generated one used `../../../` (the game's own root-container
+       convention) instead. Fixed by building a fresh, EMPTY `.pak` via `repak pack --mount-point "/"
+       --version V11` (repak's own compat table tops out at V11/UE~5.3 "likely later," confirmed
+       working here on UE 5.6) — reused verbatim as the sidecar for every later test, since an
+       IoStore mod's own tiny companion pak legitimately has ZERO file entries either way (confirmed
+       by checking the ALREADY-WORKING installed mod's own pak the same way — 0 entries there too,
+       not itself a sign of anything broken).
+     - STILL `MISS` even with the sidecar fixed. Found via `retoc info` on the `.utoc` itself
+       (a SEPARATE mount-point field from the sidecar `.pak`'s own): the working mod's `.utoc` has a
+       DEEP, asset-scoped mount point (`.../Adventurer/Meshes/`); `retoc to-zen` hardcodes the
+       generic root (`../../../`) with **no CLI flag to override it** — independently corroborated:
+       another modder (unrelated UE5 game, found via a web search RedFalcon prompted) hit and
+       diagnosed this exact same `retoc` limitation, going as far as recompiling a patched copy to
+       expose it. Found a public workaround instead of recompiling: `retoc unpack-raw <utoc>
+       <dir>` round-trips a container through a plain, hand-editable `manifest.json` (with its own
+       `mount_point` field); editing that field and `pack-raw`-ing it back DID let the mount point
+       be set arbitrarily.
+     - STILL `MISS` after that fix too (tested on the new-path Marita asset) — by this point, three
+       independently-real problems (sidecar mount point, container mount point, and whatever was
+       still failing) had been found and fixed on the SAME new-path asset with no success, pointing
+       at something more fundamental than packaging mechanics.
+     - **RedFalcon: "let's use Letty for now"** — switched the test from a brand-new asset path to
+       OVERRIDING an EXISTING, already-real, already-referenced one (Letty's own real Group asset,
+       same filename/package identity, no duplication, no `PackageName` change) — since her own real
+       `BaseParams` already references that exact path, no `lbtestpak`/`compositeLook` override is
+       even needed; she just needs to spawn normally. First attempt (using the mount-point-corrected
+       `.utoc` from the raw-manifest workaround): she spawned with only 3 of her normal pieces built
+       (Hands/Hair/Eyebrows; Feet/Legs/Torso/Belt all missing) — confirmed via UAssetGUI that the
+       edited asset ITSELF was correct (4 clean entries, Torso correctly retargeted) — RedFalcon's
+       own idea to check the actual packaged container directly in FModel found the real cause:
+       **`KeyNotFoundException: Couldn't find chunk 0x<id> | 6`** — the manual `unpack-raw`/
+       `pack-raw` mount-point round-trip had corrupted the container's own `ContainerHeader` chunk
+       (chunk type 6): the raw chunk bytes get copied across verbatim, but they're tied to the
+       ORIGINAL container's own ID, which changes on rebuild — `retoc info` never catches this (it
+       doesn't cross-check header/ID consistency) but a real parser does immediately.
+     - **Realized the mount-point detour was very likely unnecessary for an OVERRIDE specifically**
+       (IoStore resolves by a hash of the PACKAGE NAME STRING, not by container mount point — mount
+       point matters far more for legacy-pak-style addressing) — swapped back to the PLAIN,
+       uncorrupted `retoc to-zen` output for Letty (root mount point, but a properly self-consistent
+       `ContainerHeader`), keeping only the `repak`-built sidecar fix. RedFalcon confirmed the
+       container reads clean in FModel (no chunk errors, exact expected 4-entry array) before even
+       testing in-game.
+     - **CONFIRMED LIVE, WORKING, END TO END**: full game restart, spawned the REAL quest-NPC Letty
+       (`BP_NPC_QuestStatic_Letty_C`) via this mod's completely ordinary, pre-existing spawn path —
+       zero runtime code changes of any kind — and she rendered wearing `SK_Armor_Jeweler_01_Female_
+       Torso_Long_01` (the swapped-in Jeweler torso) with a full 6 `BuildedCompositeMeshes` entries
+       (not the broken 3 from the corrupted container). **The first genuinely successful custom-
+       outfit-piece swap this entire investigation (both the runtime-construction arc above and this
+       offline-tooling arc) ever produced.**
+     - **The single most important finding, confirmed by direct comparison**: the SAME clean,
+       uncorrupted build method returned `MISS` for a brand-new package path and worked completely
+       for an override of an existing one — ruling out container malformation as the explanation for
+       the new-path failure (a non-corrupted new-path container was tested in between the two
+       corrupted-container attempts and also returned `MISS`). **A genuinely new asset path cannot be
+       made to resolve at runtime in this game no matter how correctly the container is built;
+       overriding an existing, already-known path works immediately.** Most likely explanation: this
+       Shipping build resolves packages against a manifest baked in at cook time, not by discovering
+       new content dynamically — exactly the mechanism every already-installed third-party content
+       mod already relies on (replace, never add). **Practical, permanent constraint on any future
+       custom-archetype/outfit feature built this way: it must reskin an existing real
+       character/NPC's own asset, never introduce a wholly independent new one.**
+     Full recipe (tools, exact steps, both key findings) written up generally in
+     `WINDROSE_MODDING_NOTES.md` §19c-2/§19c-3, mirrored to the public `Windrose_Modding_Notes.txt`
+     and the `Windrose-UE4SS-Modding-Notes` repo (commit `0400c47`), same day.
+     **Not yet cleaned up**: `LivingBaseLettyTest` (the working test pak, currently overriding the
+     real Letty's Torso with the Jeweler piece) is still installed in the live game — a real,
+     confirmed-working demonstration, not yet decided whether to keep, extend into a real feature, or
+     remove now that the recipe itself is proven and written down.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

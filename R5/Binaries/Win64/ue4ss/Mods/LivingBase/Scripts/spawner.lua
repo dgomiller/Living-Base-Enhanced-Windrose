@@ -9287,68 +9287,206 @@ function Spawner.TestBuildCustomOutfit(swapSlot, swapFamily, swapName, say)
     end
     crumb("BaseParams constructed ok.")
 
-    -- CONFIRMED TO CRASH TWICE, each time narrowed further (2026-08-29): (1) the ORIGINAL one-shot
-    -- version -- a single assignment with all three fields (GroupCategoryId/bAllowCustomization/
-    -- CompositeMeshGroupsByBodySex) of one entry in one nested table literal; (2) the FIRST attempt
-    -- at splitting into 3 steps still crashed, but on the FIRST and SIMPLEST of the three --
-    -- array + one entry + just the category tag, nothing else. That rules out "too much nesting in
-    -- one write" as the theory (this is about as small as it gets) and points somewhere more
-    -- specific: every place this whole file has ever successfully READ a GameplayTag, it was
-    -- already-registered, already-valid data loaded from a real asset -- this was the FIRST attempt
-    -- anywhere in this codebase at CONSTRUCTING one from scratch and handing it to the engine.
-    -- GameplayTags are normally validated against a registered tag hierarchy; a bare Lua table may
-    -- not satisfy whatever that validation expects, unlike a plain FVector/FName string which have
-    -- no such registry to consult. Splitting step 1 itself into two even finer sub-steps to isolate
-    -- that specifically: 1a adds a COMPLETELY EMPTY entry (no tag at all) -- if THIS alone crashes,
-    -- the problem is with appending ANY entry to this specific TArray-of-struct type, unrelated to
-    -- GameplayTag; if 1a survives, 1b sets GroupCategoryId as its OWN separate write afterward
-    -- (fetched back out of the array, not embedded in the original literal) -- if THAT crashes,
-    -- it confirms GameplayTag construction specifically is the trigger.
-    crumb("about to write CustomizationData step 1a (array + one COMPLETELY EMPTY entry) -- if nothing follows, THIS crashed.")
-    local okStep1a, errStep1a = pcall(function()
-        newParams.CustomizationData = { {} }
-    end)
-    crumb("step 1a result: ok=" .. tostring(okStep1a) .. ((not okStep1a) and (" err=" .. tostring(errStep1a)) or ""))
-    if not okStep1a then
-        crumb("stopping here -- even a completely empty entry in the array failed. The array-of-structs mechanism itself is the problem, not GameplayTag.")
+    -- REWRITTEN (2026-08-29), after a THIRD confirmed-nude live spawn using the STAGED approach
+    -- below (fetch an entry out of the array, mutate it field-by-field across several separate
+    -- writes, then re-embed it into a fresh array at the end). That staged version never crashed
+    -- and every individual readback along the way reported the correct value -- but the actor
+    -- STILL built 0 BuildedCompositeMeshes even after appending Marita's real Hairs/Eyebrows
+    -- entries verbatim (which ruled out "missing categories" as the cause; Spawner.
+    -- TestCopyWholeParams had already ruled out "fresh objects can't build at all"). The one
+    -- remaining suspect: fetching a struct element back OUT of a TArray, mutating it across
+    -- MULTIPLE separate calls, then re-embedding it into a NEW array may produce a value that
+    -- reads back self-consistently in Lua without ever being the thing the native build code
+    -- actually consumes -- this file's own comment elsewhere already flags exactly this risk
+    -- ("TMap-entry structs returned by index may come back as copies, unproven either way").
+    -- The two things PROVEN to work end-to-end are both SINGLE, FLAT, ONE-SHOT array writes:
+    -- Group.CompositeMeshesParams (a flat array of object references) and
+    -- Spawner.TestCopyWholeParams's wholesale array-to-array copy. This rewrite builds the ENTIRE
+    -- CustomizationData array as ONE single nested table literal in ONE assignment -- the same
+    -- shape as the ORIGINAL crash from 2026-08-29's earlier attempts, except this time
+    -- GroupCategoryId is the COPIED real tag object (realArmorTag), not a freshly-fabricated
+    -- {TagName=...} table -- the crash was already isolated specifically to FABRICATING a tag,
+    -- not to one-shot nested writes in general, so this is safe to attempt (not a retry of the
+    -- confirmed crash) and removes the staged fetch-mutate-reinsert pattern entirely.
+    local MARITA_REAL_PARAMS_PATH = "/Game/Gameplay/Character/AI/NPC/FactionActors/Smugglers/CompositeMesh/MaritaSuares/DA_NPC_QuestStatic_Smugglers_MaritaSuares_CompositeMeshComponentParams"
+    crumb("about to resolve Marita's own real BaseParams asset, to borrow an already-valid Armor GameplayTag and real Hairs/Eyebrows entries from it (pure read) -- if nothing follows, THIS crashed.")
+    local realParams = resolveAsset(ensureSuffix(MARITA_REAL_PARAMS_PATH))
+    if not (realParams and realParams:IsValid()) then
+        crumb("could not resolve Marita's real BaseParams asset -- stopping here.")
         return false
     end
+    crumb("resolved Marita's real BaseParams ok.")
 
-    -- Fetch the entry back OUT of the array so the next writes target the SAME live struct, not a
-    -- fresh disconnected table -- same unwrap pattern used everywhere else in this file.
-    local entry = nil
+    local realArmorTag, realHairsEntry, realEyebrowsEntry = nil, nil, nil
     pcall(function()
-        local catData = newParams.CustomizationData
-        entry = catData[1]
-        if not entry then pcall(function() entry = catData:Get(1) end) end
-        pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
+        local catData = realParams.CustomizationData
+        local n = 0
+        pcall(function() n = catData:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #catData end) end
+        for i = 1, n do
+            local e = catData[i]
+            if not e then pcall(function() e = catData:Get(i) end) end
+            pcall(function() if e ~= nil and type(e) == "userdata" and e.get then e = e:get() end end)
+            if e then
+                local tag = ""
+                pcall(function() tag = e.GroupCategoryId.TagName:ToString() end)
+                if tag:find("Armor") then realArmorTag = e.GroupCategoryId end
+                if tag:find("Hairs") then realHairsEntry = e end
+                if tag:find("Eyebrows") then realEyebrowsEntry = e end
+            end
+        end
     end)
-    if not entry then
-        crumb("could not fetch the entry back out of CustomizationData after step 1a -- stopping here.")
+    if not realArmorTag then
+        crumb("could not find a real Armor-category GroupCategoryId on Marita's own params to borrow -- stopping here.")
+        return false
+    end
+    crumb("found: ArmorTag=" .. tostring(realArmorTag ~= nil) .. " Hairs=" .. tostring(realHairsEntry ~= nil) .. " Eyebrows=" .. tostring(realEyebrowsEntry ~= nil))
+
+    -- CONFIRMED TO CRASH THE GAME LIVE, THREE TIMES NOW, EACH TIME NARROWED FURTHER (2026-08-29,
+    -- prior attempts, no longer executed): (1) mixing a freshly-built entry with real pre-existing
+    -- entries in one write; (2) even JUST our own fresh Armor entry alone (copied tag, nothing
+    -- mixed in) as ONE single table-literal assignment. Both crashed identically -- ruling OUT
+    -- "mixing with real entries" as the cause and pointing at something more fundamental:
+    -- CONSTRUCTING A BRAND-NEW STRUCT VALUE VIA A LUA TABLE LITERAL, IN ONE SHOT, AS A FRESH ARRAY
+    -- ELEMENT crashes -- regardless of whether the GameplayTag inside it is fabricated or copied,
+    -- and regardless of what else is in the array. This REFINES (doesn't overturn) the original
+    -- GameplayTag-fabrication theory: the actual unsafe operation is "materialize a whole new
+    -- struct from a table literal as a new TArray element in one write," which a fabricated
+    -- GameplayTag happened to trigger via the SIMPLEST possible route (the earlier 1a/1b split),
+    -- but is NOT specific to GameplayTags at all.
+    -- THE ONLY PATTERN CONFIRMED SAFE for adding a new struct element to this array: insert a
+    -- COMPLETELY EMPTY placeholder first (`{ {} }`), fetch it back out, THEN mutate its fields
+    -- one at a time via SEPARATE property assignments on that live handle -- never construct a
+    -- populated struct as part of the array-insertion literal itself. That staged approach does
+    -- NOT crash (confirmed several times this session) -- but has not yet produced a working
+    -- build either (BuildedCompositeMeshes stayed at 0 every time it was tried), a SEPARATE,
+    -- still-open problem from the crash risk documented here. See WINDROSE_MODDING_NOTES.md
+    -- SS19b for the full write-up. DO NOT retry a one-shot populated-struct-literal array insertion
+    -- without a genuinely new theory.
+    crumb("stopping here -- a one-shot table-literal construction of a NEW struct array element CONFIRMED to crash the game, regardless of GameplayTag fabricated-vs-copied or what else is in the array. Not attempting this shape again without a new theory.")
+    return false
+end
+
+-- Spawner.TestCopyWholeParams() -- "lbtestcopyparams" (2026-08-29). Diagnostic for
+-- Spawner.TestBuildCustomOutfit: even with a confirmed-safe GameplayTag COPY (not a from-scratch
+-- construction) and a female-compatible catalog piece (Jeweler, not the male-only Dogface),
+-- the spawned test actor STILL reports 0 BuildedCompositeMeshes -- meaning the problem may not be
+-- our specific CustomizationData content at all, but something more fundamental: a freshly
+-- StaticConstructObject'd R5CompositeMeshComponentBaseParams may never build, regardless of what's
+-- written into it. This isolates that directly: construct a fresh BaseParams the SAME way
+-- lbtestgroup does, but instead of building our OWN Group/CustomizationData from scratch, copy
+-- Marita's ENTIRE real CustomizationData array WHOLESALE onto it (one array-to-array assignment,
+-- no per-field construction, no new Group at all) and spawn a test actor with THAT.
+-- If this builds correctly (renders Marita's real outfit -- BuildedCompositeMeshes > 0), it proves
+-- StaticConstructObject-based BaseParams CAN build fine, and the bug is specific to something in
+-- our own from-scratch Group/CustomizationData construction (worth then bisecting further: is it
+-- the NEW Group object specifically, as opposed to referencing an EXISTING one).
+-- If it's STILL 0 even with an exact copy of known-good data, that's a much bigger finding: a
+-- freshly-constructed BaseParams object may be structurally unable to build at all (missing some
+-- internal initialization LoadAsset provides that StaticConstructObject doesn't) -- which would be
+-- a real blocker for the whole custom-archetype approach via this route, not just a data bug.
+function Spawner.TestCopyWholeParams(say)
+    say = say or function(m) print("[LivingBase] [test-copyparams] " .. tostring(m) .. "\n") end
+    local function crumb(m)
+        say(m)
+        Spawner.RefLog("copyparams", m)
+    end
+
+    local MARITA_REAL_PARAMS_PATH = "/Game/Gameplay/Character/AI/NPC/FactionActors/Smugglers/CompositeMesh/MaritaSuares/DA_NPC_QuestStatic_Smugglers_MaritaSuares_CompositeMeshComponentParams"
+    local function ensureSuffix(path)
+        if path:match("%.[%w_]+$") then return path end
+        local last = path:match("([^/]+)$")
+        return last and (path .. "." .. last) or path
+    end
+    local realParams = resolveAsset(ensureSuffix(MARITA_REAL_PARAMS_PATH))
+    if not (realParams and realParams:IsValid()) then
+        crumb("could not resolve Marita's real BaseParams asset -- stopping here.")
+        return false
+    end
+    crumb("resolved Marita's real BaseParams ok.")
+
+    local baseParamsCls = StaticFindObject("/Script/R5.R5CompositeMeshComponentBaseParams")
+    if not (baseParamsCls and baseParamsCls:IsValid()) then
+        crumb("R5CompositeMeshComponentBaseParams class did not resolve")
+        return false
+    end
+    local okOuter, gameInstance = pcall(function() return UEHelpers.GetGameInstance() end)
+    if not (okOuter and gameInstance and gameInstance:IsValid()) then
+        crumb("could not get a GameInstance to use as Outer")
+        return false
+    end
+    crumb("about to call StaticConstructObject(R5CompositeMeshComponentBaseParams) -- if nothing follows, THIS crashed.")
+    local okP, newParams = pcall(function() return StaticConstructObject(baseParamsCls, gameInstance) end)
+    if not (okP and newParams and newParams:IsValid()) then
+        crumb("StaticConstructObject(BaseParams) FAILED: " .. tostring(newParams))
+        return false
+    end
+    crumb("BaseParams constructed ok.")
+
+    crumb("about to copy Marita's ENTIRE real CustomizationData array wholesale onto our fresh object -- if nothing follows, THIS crashed.")
+    local okCopy, errCopy = pcall(function()
+        newParams.CustomizationData = realParams.CustomizationData
+    end)
+    crumb("copy result: ok=" .. tostring(okCopy) .. ((not okCopy) and (" err=" .. tostring(errCopy)) or ""))
+    if not okCopy then
+        crumb("stopping here -- copying the whole array failed.")
         return false
     end
 
-    -- CONFIRMED TO CRASH THE GAME LIVE (2026-08-29): step 1a (an array + one COMPLETELY EMPTY
-    -- entry, no tag) survives cleanly -- the array-of-structs mechanism itself is fine. This next
-    -- write, constructing a FRESH FGameplayTag from a bare Lua table ({TagName = "..."}) and
-    -- assigning it to GroupCategoryId, is what crashes -- the breadcrumb immediately before it was
-    -- the last line written to either ue4ss.log or LivingBase_ReferenceLog.txt before the game
-    -- went down, with the crash happening between that breadcrumb and the next one. This is the
-    -- FIRST attempt anywhere in this codebase at CONSTRUCTING a GameplayTag from scratch --
-    -- every prior read of one elsewhere in this project was already-registered, already-valid
-    -- data loaded from a real asset. GameplayTags are normally validated against a registered tag
-    -- hierarchy; a bare Lua table apparently does not satisfy whatever that validation expects,
-    -- unlike a plain FVector/FName string with no registry to consult. DO NOT re-enable this exact
-    -- write without a genuinely new theory -- see WINDROSE_MODDING_NOTES.md SS19b for the
-    -- write-up and the untried alternative (copy an ALREADY-VALID GameplayTag struct value read
-    -- off a real asset's own CustomizationData entry, instead of constructing one from a table).
-    crumb("stopping here -- GroupCategoryId (constructing a GameplayTag from a bare Lua table) CONFIRMED to crash the game. Not attempting it again without a new theory.")
-    return false
-    -- Steps 2/3 (bAllowCustomization), 3/3 (CompositeMeshGroupsByBodySex), the verification
-    -- re-read, and the actual test spawn were never reached and are removed rather than kept as
-    -- unreachable dead code -- see WINDROSE_MODDING_NOTES.md SS19b for what they would have done;
-    -- resurrect from git history (commit c8a1fc7 onward) if a real fix for the GameplayTag write
-    -- is ever found and this needs picking back up.
+    local n = -1
+    pcall(function() n = newParams.CustomizationData:GetArrayNum() end)
+    if n <= 0 then pcall(function() n = #newParams.CustomizationData end) end
+    crumb("re-read verification: our fresh object's CustomizationData now shows " .. tostring(n) .. " entries (Marita's real one should have several -- Armor/Hairs/Eyebrows etc).")
+    if n <= 0 then
+        crumb("copy did not verifiably stick -- stopping here.")
+        return false
+    end
+
+    crumb("about to spawn a test actor with the wholesale-copied params -- if nothing follows, THIS crashed.")
+    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CopyParamsTest", nil,
+        function(a)
+            pcall(function()
+                local comp = a.CompositeMeshComponent
+                if comp and comp:IsValid() then
+                    comp.DefaultParams = newParams
+                end
+            end)
+        end, nil, nil, false, nil)
+    if not (actor and actor:IsValid()) then
+        crumb("Spawn FAILED.")
+        return false
+    end
+    crumb("Spawn call returned an actor -- lbprobedump it now and check BuildedCompositeMeshes. If it now shows Marita's real outfit (built pieces), StaticConstructObject-based BaseParams CAN build fine and the bug is in our own from-scratch group construction. If it's STILL 0, the problem is more fundamental -- a freshly-constructed BaseParams object may not build at all.")
+    return true
+end
+
+-- Spawner.TestSpawnWithCustomParamsPath(paramsPath, say) -- "lbtestpak [path]" (2026-08-29).
+-- Sidesteps the entire runtime-construction crash investigation (Spawner.TestBuildCustomOutfit)
+-- by loading a REAL, properly-serialized DataAsset built OFFLINE (via retoc + UAssetGUI, converting
+-- a duplicated copy of Marita's own real BaseParams/Group to legacy format, editing the Torso piece
+-- reference to a different family in UAssetGUI, then converting back to Zen/IoStore and packing
+-- into a small content pak the exact same way the third-party nude-body-mesh mods already installed
+-- here work) -- zero StaticConstructObject, zero hand-built structs, zero crash risk, since this is
+-- the SAME `Spawner.SetCompositeParams`/compositeLook.params pre-build swap already proven working
+-- for Config.FEMALE_CHARACTER_PARAMS' own real characters, just pointed at a NEW real asset instead
+-- of an existing one. Defaults to the specific custom asset built this session
+-- (/Game/.../Armor/Custom/DA_Custom_MaritaParams) if no path is given.
+function Spawner.TestSpawnWithCustomParamsPath(paramsPath, say)
+    say = say or function(m) print("[LivingBase] [test-pak] " .. tostring(m) .. "\n") end
+    paramsPath = paramsPath or "/Game/Gameplay/Character/Customization/Regular/Armor/Custom/DA_Custom_MaritaParams"
+    if not paramsPath:match("%.[%w_]+$") then
+        local last = paramsPath:match("([^/]+)$")
+        paramsPath = last and (paramsPath .. "." .. last) or paramsPath
+    end
+    say("about to spawn a test actor with compositeLook.params = " .. paramsPath .. " -- this is a REAL asset load (resolveAsset), not a runtime construction.")
+    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomPakTest", nil, nil, nil, nil, false,
+        { params = paramsPath }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- lbprobedump it now and check visually. If DefaultParams resolved and BuildedCompositeMeshes shows real pieces including the swapped Torso, the offline-asset-editing route works end to end.")
+    return true
 end
 
 -- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL

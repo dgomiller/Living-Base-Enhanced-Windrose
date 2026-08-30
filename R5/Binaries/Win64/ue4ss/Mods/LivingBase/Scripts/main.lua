@@ -3018,6 +3018,62 @@ else
     log("lbtestgroup unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestcopyparams" (2026-08-29) -- diagnostic for lbtestgroup: after two
+-- confirmed-clean runs (no crash, GameplayTag copy worked, verification passed) still produced a
+-- fully nude spawn (0 BuildedCompositeMeshes), this checks whether a freshly StaticConstructObject'd
+-- BaseParams can build AT ALL by copying Marita's entire real CustomizationData array onto it
+-- wholesale, bypassing all of lbtestgroup's own from-scratch Group construction. See
+-- Spawner.TestCopyWholeParams's own header comment for what each outcome would mean.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcopyparams", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcopyparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestCopyWholeParams(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcopyparams")
+    registerCmdInfo("lbtestcopyparams", "lbtestcopyparams", "DIAGNOSTIC: spawns a test actor whose fresh BaseParams' CustomizationData is a wholesale copy of Marita's own real one -- checks whether a StaticConstructObject-based BaseParams can build at all.")
+else
+    log("lbtestcopyparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestpak [path]" (2026-08-29) -- tests the offline-asset-editing route
+-- (retoc + UAssetGUI, see Spawner.TestSpawnWithCustomParamsPath's own header comment): loads a
+-- REAL DataAsset built outside the game and packed into R5/Content/Paks/LivingBaseCustomTest/,
+-- via the exact same compositeLook.params pre-build swap already proven safe elsewhere in this
+-- mod -- zero runtime construction, zero crash risk.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestpak", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestpak] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local pathArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSpawnWithCustomParamsPath(pathArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestpak [path]")
+    registerCmdInfo("lbtestpak", "lbtestpak [path]", "Spawns a test actor using a REAL custom DataAsset built via retoc+UAssetGUI and packed as a content mod -- defaults to the Marita-Group-with-Jeweler-Torso test asset if no path given.")
+else
+    log("lbtestpak unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the
 -- off-by-default escape hatch that bypasses every women's-clothing fit rule in
 -- Spawner.TestApplyClothingPiece/TestRemoveClothingPiece. See Spawner.ToggleClothesUnlock's own

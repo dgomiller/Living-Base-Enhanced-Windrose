@@ -1723,12 +1723,182 @@ want, mixed freely.
   array-of-object-references write, and the empty-struct array write above) completed cleanly —
   this failure is specific to fabricating a `GameplayTag` value out of nothing, not a general
   problem with structs, arrays, or nested writes.
-  **The one untried, more-promising alternative**: rather than constructing a tag from a raw
-  string, read an ALREADY-VALID `GameplayTag` struct value off a real asset that already carries
-  the category you want (e.g. an existing character's own `CustomizationData` entry already
-  tagged `Customization.UID.Armor`) and copy THAT value into the new entry — a value copy between
-  two struct fields, with no fresh tag fabrication happening at all, which may sidestep whatever
-  validation a from-scratch construction fails. Not yet attempted.
+  **UPDATE — the alternative above was tried, and REFINES rather than confirms the original
+  theory.** Reading an already-valid `GameplayTag` off a real asset (Marita's own real character
+  params, the exact asset her walking re-skin already loads normally) and COPYING that value onto
+  the fetched-back entry (`entry.GroupCategoryId = realTag`, a struct-to-struct value copy, no
+  fabrication) **worked — confirmed live, no crash.** Building the rest of the entry via the SAME
+  staged pattern (separate writes for the bool, then the `TMap`-shaped sub-array) also survived.
+  So far, so good — but the resulting actor spawned **fully nude**: a live probe showed the build
+  produced ZERO composite mesh pieces for ANY category, not just the one being tested. A separate
+  diagnostic (copying an existing character's ENTIRE `CustomizationData` array wholesale onto a
+  freshly-constructed params object, no modification at all) confirmed a fresh object CAN build
+  correctly — ruling out "fresh objects never build." Appending real Hairs/Eyebrows entries
+  alongside the custom one (still copied verbatim, unmodified) also didn't help — ruling out
+  "missing categories" as the cause.
+  Suspecting the staged fetch/mutate/reinsert pattern itself might be producing a value that reads
+  back self-consistently in the scripting layer without being what the native build code actually
+  consumes, the next attempt tried building the WHOLE entry (copied tag included) as ONE single
+  table-literal assignment — the same shape as the very first crash, except with a copied tag
+  instead of a fabricated one. **This ALSO crashed, twice, reproducibly** — both when combined with
+  real pre-existing entries in the same write, and even completely alone (just the one custom
+  entry, nothing else in the array). This is the decisive result: it rules out "GameplayTag
+  fabrication specifically" as the actual cause, and rules out "mixing freshly-built and
+  pre-existing entries" too. **The real rule, as best understood now: constructing a brand-new
+  struct value via a table literal, in one shot, AS A NEW ARRAY ELEMENT, crashes — regardless of
+  what's inside it or what else is in the array.** The only pattern ever confirmed to add a new
+  struct element without crashing is: insert a COMPLETELY EMPTY placeholder first (a literal like
+  `{ {} }`), fetch it back out of the array, then mutate its fields ONE AT A TIME via separate
+  property assignments on that live handle — never construct a populated struct as part of the
+  insertion literal itself.
+  **Net status**: the crash risk for this kind of custom construction is now well understood and
+  avoidable (use the staged empty-then-mutate pattern). What's NOT yet solved is why that safe
+  pattern doesn't actually produce a working build — that remains open, and is a different problem
+  from the crash risk documented here. Worth checking whether the TMap-shaped sub-array (itself
+  built from nested table literals inside the staged writes) has the same "silently disconnected"
+  risk as the outer entry did, even though it doesn't crash.
+
+### 19c-2. The actual working recipe, found once the runtime approach was abandoned: edit a REAL asset offline, don't construct one at runtime
+
+Everything in §19a/§19b is about constructing a composite outfit's data FROM LUA, AT RUNTIME, inside
+the running game — and that whole approach hit a real, understood wall (§19b's own closing note).
+Stepping back and asking a different question — "can we edit an EXISTING real asset file directly,
+outside the game, and ship it as a small content pak?" — turned up a genuinely different, complete,
+CRASH-FREE pipeline that actually works end to end. This is the recipe that should be reached for
+first for this whole class of problem; the runtime-construction approach in §19a/§19b is now a
+closed, documented dead end, not a starting point.
+
+**Tools needed** (all free, all already used successfully elsewhere in this project's own history):
+a proper asset browser/exporter (e.g. FModel) with a `.usmap` mappings file for the game (UE4SS can
+usually generate one itself — a console command wrapping the engine's own `DumpUSMAP()` function,
+already used earlier in this project); a low-level UE5 IoStore/Zen ⇄ Legacy pak converter (`retoc`,
+open source, MIT-licensed); a `.uasset` property editor that understands the LEGACY (non-Zen) format
+(`UAssetGUI`, also open source, also wants the same `.usmap`); and a modern `.pak` container writer
+(`repak` — NOT the game's own bundled `UnrealPak.exe`, which choked on both extracting a
+retoc-produced legacy pak AND apparently on this specific game's own real paks with checksum/version
+mismatches; `repak` had none of these problems).
+
+**The recipe, step by step:**
+
+1. **Export the REAL target asset(s) from the game**, in a properly cooked, byte-exact form — not a
+   converted/human-readable export. FModel's own JSON export (the same feature already used earlier
+   in this session to read `CustomizationData` structure) is genuinely useful for UNDERSTANDING the
+   asset's shape, but is a DIFFERENT schema from what `UAssetGUI` can edit and re-save — it does not
+   round-trip. What's actually needed for editing is the real, cooked binary asset. This game ships
+   its content as UE5 Zen/IoStore containers (`.utoc`/`.ucas`/`.pak` triples), and `UAssetGUI` cannot
+   open a Zen asset directly ("UE5 Zen Loader assets cannot be loaded directly into UAssetGUI") — it
+   needs the OLDER "legacy" `.uasset`+`.uexp` format instead. Get there with:
+   ```
+   retoc --aes-key <64-zero-hex-chars> to-legacy <game's Content/Paks folder> <output dir> \
+       --filter "<a substring matching just the asset(s) you want>" --version <UE version enum, e.g. UE5_6>
+   ```
+   The `--filter` substring match is a plain filename filter, not a glob (`*Name*` matched nothing;
+   plain `Name` matched everything containing it) — narrow it enough to avoid pulling the whole game's
+   content across (which `to-legacy` CAN do — it's designed to convert an entire game — but is
+   unnecessary and slow for editing one or two specific assets). The all-zero AES key is the standard
+   placeholder for a game whose containers are not meaningfully encrypted (confirmed for this game
+   elsewhere in this file, §9) — `retoc` still requires SOME key be supplied even when it turns out
+   not to matter.
+2. **Edit the extracted `.uasset` in UAssetGUI.** A composite-outfit "Group" asset's per-piece object
+   references (§19a's mid-level asset, an array of `R5CompositeMeshParams` references) are NOT edited
+   via the Export Data grid directly (that view is read-only, showing only the CURRENTLY-resolved
+   name) — they're edited via the **Import Data** grid instead. Each object reference in this game's
+   asset format shows up as TWO import rows: one `Package`-type row holding the full `/Game/...` path,
+   and one row of the actual class type (e.g. `R5CompositeMeshParams`) holding just the short asset
+   name, with its `OuterIndex` pointing back at the package row. Both are plain editable TEXT fields
+   (`ObjectName`) — double-click to edit, type a completely different asset's full path/short name
+   into these two rows, and the reference is retargeted to point at that different asset entirely, no
+   need to add a new import at all. **No manual Name Map bookkeeping is needed** — typing a brand new
+   string into an editable name field like this auto-registers it in the package's own Name Map on
+   save; confirmed directly, since the very first such edit used a string that didn't exist anywhere
+   in the source package and it saved and re-opened cleanly with the new value showing correctly in
+   the (read-only) Export Data view afterward.
+3. **Decide: a brand-new custom asset, or an override of an existing one — this decision matters a
+   lot, see §19c-3 below.** If duplicating into a new asset (File → Save As under a new filename),
+   ALSO change its own `PackageName` field (General Information tab) to a genuinely new `/Game/...`
+   path — Save As only changes the destination FILENAME, the asset's own internal identity string is
+   a separate field that has to be set explicitly, and it (not the .uasset's filename) is what other
+   packages' cross-references and the engine's own resolution actually key on.
+4. **Convert the edited legacy asset(s) back to Zen/IoStore format**, staged under a folder tree that
+   mirrors the game's own logical `/Game/...` path structure (a physical folder path of
+   `<stage>/<ProjectName>/Content/Foo/Bar/MyAsset.uasset` maps to the logical package
+   `/Game/Foo/Bar/MyAsset` — "R5" in this game's own case is literally the project name, the same way
+   "/Game/" is UE's own standard alias for "<ProjectName>/Content/"):
+   ```
+   retoc to-zen <staged folder> <output>.utoc --version <UE version enum>
+   ```
+   This alone is enough — **do NOT go further and try to hand-edit the resulting container's own
+   internal mount point via `retoc unpack-raw`/`pack-raw`** (a real, exposed feature — the two
+   commands round-trip a container through a plain, hand-editable `manifest.json` with its own
+   `mount_point` field) **unless you have a specific, confirmed reason to need it.** `to-zen` hardcodes
+   the container's own internal mount point to the game's own default root convention
+   (`../../../`) with no CLI flag to override it — a real, confirmed limitation of the public tool
+   (independently corroborated: another modder, working on an unrelated UE5 game, hit and diagnosed
+   this exact same limitation, going as far as recompiling their own patched copy of `retoc` to expose
+   it). It turned out not to matter for the working recipe below (an override resolves fine with the
+   plain default root mount point) — and forcing a different one via the raw-chunk round-trip
+   introduced a real, confirmed corruption: the container's own `ContainerHeader` chunk gets copied
+   across VERBATIM from the original build, but its identity is tied to the ORIGINAL container's own
+   ID, which changes on rebuild — the result is a `.utoc` that reports success from `retoc info` (it
+   doesn't check header/ID consistency) but throws a hard, specific error the moment a real parser
+   (FModel/CUE4Parse) tries to actually resolve anything in it:
+   `KeyNotFoundException: Couldn't find chunk 0x<newId> | 6` (chunk type `6` is the ContainerHeader
+   itself). **Confirming a container is genuinely sound before trusting it in-game**: open it in
+   FModel and browse to the asset — a clean read with no exceptions is real evidence; `retoc info`
+   succeeding is not, since it never cross-checks the header's own embedded identity against the
+   container's actual one.
+5. **Build the sidecar `.pak` with `repak`, not `retoc`'s own bundled one, and not the game's bundled
+   `UnrealPak.exe`.** A Zen/IoStore mod's own tiny companion `.pak` file (alongside its real
+   `.utoc`/`.ucas` payload) legitimately has ZERO file entries in its own index — confirmed by
+   checking an already-installed, confirmed-working third-party content mod the exact same way — so
+   an empty index is not itself a sign of a broken pak. What DOES matter and DOES differ: `retoc
+   to-zen`'s own auto-generated `.pak` companion used mount point `../../../` (matching the game's own
+   root container's convention), while the already-working installed mod's own `.pak` used mount
+   point `/` instead. Building a fresh, empty `.pak` with the correct mount point is simple and safe:
+   ```
+   repak pack --mount-point "/" --version V11 <a genuinely empty directory>
+   ```
+   (`repak`'s own version-compatibility table tops out at V11/"Fnv64BugFix", covering UE 4.26 through
+   at least 5.3 and "likely" later — confirmed working here on a UE 5.6 game.) This ONE repak-built
+   empty `.pak`, reused verbatim as the sidecar for every different `.utoc`/`.ucas` payload built this
+   way, was sufficient — no per-asset regeneration needed, since it never has any real content of its
+   own regardless of what it accompanies.
+6. **Install as `<GameContentRoot>/Paks/<AnyModName>/<AnyModName>-Windows.{pak,ucas,utoc}`** — the
+   same subfolder-per-mod layout already confirmed elsewhere in this file (§11) to auto-mount
+   recursively with no manifest registration needed. **Requires a full game relaunch, not a hot
+   reload** — pak/container mounting only happens at startup (§11, reconfirmed here).
+
+### 19c-3. New asset paths are not discoverable; overriding an existing path works cleanly
+
+This is the single most important finding from the whole investigation, and the reason step 3 above
+matters: **a genuinely brand-new package path — one that never existed anywhere in the original,
+shipped game — could not be made to resolve from Lua (`resolveAsset`/`LoadAsset` reported a clean
+miss, not an error) no matter how correctly-formed the container was**, confirmed against a
+container built the exact same clean way that DOES work for an override (see below) — ruling out
+container malformation as the explanation. **Overriding an EXISTING, already-known asset path — same
+recipe, only the target/package-name choice differs — worked immediately and completely**: editing a
+real character's own real "Group" asset in place (same filename, same internal `PackageName`, no
+duplication at all) to retarget one of its piece references to a completely different family's
+piece, packaging THAT, and simply letting the character's own untouched, already-shipped top-level
+outfit asset go on referencing it by the same path it always has — produced the character wearing
+the swapped piece, fully, correctly, on the very first clean-container attempt, with zero runtime
+Lua code changes of any kind (no `compositeLook` override, no `StaticConstructObject`, nothing — she
+was spawned via this mod's completely ordinary, pre-existing spawn path, and simply looked different
+because the file the engine reads for her outfit now contains different data).
+The most likely underlying reason (not independently confirmed, but consistent with all
+observations): a Shipping-cooked UE5 game commonly resolves packages against a manifest/global name
+map baked in at COOK TIME, not by discovering arbitrary new content dynamically at runtime — a path
+already in that baked catalog resolves regardless of which container currently supplies its bytes
+(that's the entire mechanism every already-installed third-party content mod in this game relies on),
+but a path that was never in it in the first place has nothing for a bare string-path load to find,
+even inside an otherwise perfectly valid container.
+**Practical consequence for building a genuinely custom archetype/outfit**: it cannot be a brand-new
+asset at a brand-new path. It has to live at the path of some existing, already-referenced asset — in
+practice, this means picking a real existing character/NPC (or a rarely-used/little-noticed one, to
+minimize unwanted side effects) and overriding ITS OWN outfit-group asset, rather than authoring
+something wholly new and independent. This is a real constraint on the design, not just an
+implementation detail — any custom-outfit feature built this way is fundamentally "reskin an existing
+identity," never "add a new one," for as long as this constraint holds.
 
 ### 19c. A related, already-proven primitive worth remembering here
 

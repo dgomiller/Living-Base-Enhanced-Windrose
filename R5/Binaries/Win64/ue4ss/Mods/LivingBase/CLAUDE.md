@@ -4001,6 +4001,37 @@ edit/despawn/undo/cycle toolkit. In order:
      (`LivingBaseCustomTest`, `LivingBaseClassTest` under `Content/Paks/LogicMods/`) remain installed
      in the live game alongside `LivingBaseLettyTest` and the properly-installed `KasperShipRespawn`/
      `Pirate Signals` mods — none of this has been reverted yet.
+     **Same-night follow-up: the SDK-stub path was tested, not just theorized** (2026-08-29).
+     RedFalcon started installing UE 5.6 mid-session and asked to push a PoC through before bed.
+     Added `lbgeneratesdk`/`lbgenuhtheaders` console commands (`main.lua`, commit `14acb24`)
+     wrapping UE4SS's own bundled `GenerateSDK()`/`GenerateUHTCompatibleHeaders()` — no external
+     Dumper-7 needed, output lands at `ue4ss/UHTHeaderDump/` (350 modules, 35,204 files) and
+     `ue4ss/CXXHeaderDump/`. Built a minimal standalone UE 5.6 project (`Other\SDKPoC\`, outside
+     this repo) with a module literally named `R5` (so the resulting class identity is
+     `/Script/R5.*`, matching the real game) containing the REAL generated headers for
+     `UR5CompositeMeshComponentBaseParams`/`UR5CompositeMeshGroup`/
+     `FR5CompositeMeshComponentRandomizedSection`/`FR5CompositeMeshGroupForBodySex`, a stub
+     `R5BusinessRules` module for just the `ER5BLCharacterSex` enum, and a deliberately
+     simplified stub `UR5CompositeMeshParams` (skips its own deeper dependency chain, not needed
+     for this PoC). **The one real gotcha**: the dumper's own `//CROSS-MODULE INCLUDE V2: ...`
+     lines are informational COMMENTS, not real `#include` directives — first build failed with
+     `FGameplayTag`/`ER5BLCharacterSex` undeclared and a `TMap` default-constructor error until
+     the real includes (`GameplayTagContainer.h`, `ER5BLCharacterSex.h`, `Engine/DataAsset.h`)
+     were added by hand wherever the dump only left a comment. Second build succeeded clean via
+     `Engine\Build\BatchFiles\Build.bat SDKPoCEditor Win64 Development -Project=... -WaitMutex
+     -FromMsBuild`, driven entirely from PowerShell, no Visual Studio GUI needed. RedFalcon then
+     opened the project in the real Editor and confirmed the end-to-end proof live: Content
+     Browser → right-click empty space in a real Content folder → Miscellaneous → Data Asset →
+     the "Pick Class For Data Asset Instance" dialog genuinely lists
+     `R5CompositeMeshComponentBaseParams`/`R5CompositeMeshGroup`/`R5CompositeMeshParams` alongside
+     native engine classes. This is real, validated confirmation (not just a plausible theory)
+     that author-time-default authoring of Windrose's own composite-outfit classes in a real
+     Editor is achievable — full detail and forward plan captured in memory
+     (`project_sdk_stub_ue_editor.md`, this is a separate environment from UE4SS/Lua so kept out
+     of this mod's own docs beyond this pointer); a dedicated "Windrose Unreal SDK Modding Notes"
+     doc is planned once this track resumes properly, per RedFalcon's own call. **Not yet done,
+     explicitly deferred to a future session**: actually populating a created instance with real
+     data and cooking/packaging it back into a Windrose-loadable pak.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

@@ -1989,6 +1989,19 @@ session (a full Editor install, an SDK/stub generation pass, Visual Studio, real
 setup) and was not pursued — worth returning to as a real, credible next step if the "reskin an
 existing identity" constraint ever becomes a genuine limitation worth the extra tooling investment.
 
+**2026-08-29 update — this path has since been validated, not just theorized.** UE4SS ships its own
+`GenerateSDK()`/`GenerateUHTCompatibleHeaders()` functions built in (no external Dumper-7 needed);
+LivingBase wraps them as `lbgeneratesdk`/`lbgenuhtheaders` (see `main.lua`). A minimal standalone
+UE 5.6 project was built against the resulting header stubs for `R5CompositeMeshComponentBaseParams`/
+`R5CompositeMeshGroup`/`R5CompositeMeshComponentRandomizedSection`, compiled clean, and opened in the
+real Editor — the Content Browser's Data Asset picker genuinely lists these Windrose classes as
+instantiable asset types alongside native engine ones. One gotcha for anyone repeating this: the
+dumper's own `//CROSS-MODULE INCLUDE V2: ...` lines are informational COMMENTS, not real `#include`
+directives — add the real includes by hand (the referenced type's own header) wherever the dump
+mentions one. Full detail on this track lives in a separate project memory file, not duplicated here
+since it's a different environment (real Editor/C++, not UE4SS/Lua) — a dedicated "Windrose Unreal
+SDK Modding Notes" doc is planned once this track resumes properly rather than blending the two.
+
 ### 19c. A related, already-proven primitive worth remembering here
 
 §2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE

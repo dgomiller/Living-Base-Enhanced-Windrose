@@ -3074,6 +3074,65 @@ else
     log("lbtestpak unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbscanhooks <classPath>" (2026-08-29) -- PURE READ diagnostic: scans a native
+-- class's own CDO for soft-object/soft-class reference properties and reports their default target
+-- paths. Motivation: WINDROSE_MODDING_NOTES.md SS19c-3's own finding (a brand-new asset path never
+-- resolves unless something already-loaded references it) plus a confirmed-working third-party mod
+-- (KasperShipRespawn, ships a genuinely new widget/settings asset, loaded purely via letting native
+-- code -- R5ReviveComponent -- resolve its own already-existing hardcoded reference) together imply
+-- other native classes may have similar UNPOPULATED soft-reference slots worth finding and filling.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbscanhooks", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbscanhooks] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local classArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestScanSoftRefs(classArg) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbscanhooks <classPath>")
+    registerCmdInfo("lbscanhooks", "lbscanhooks <full /Script/Module.ClassName path>", "PURE READ: scans a native class's CDO for soft-object/soft-class reference properties -- looking for unpopulated 'hook point' asset paths worth filling with custom content.")
+else
+    log("lbscanhooks unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestassetreg <PackageName> <AssetName>" (2026-08-29) -- tests
+-- AssetRegistryHelpers:GetAsset(), the resolution mechanism the already-installed, already-enabled
+-- BPModLoaderMod uses to discover brand-new Blueprint mod classes -- against our own confirmed-new,
+-- confirmed-currently-unresolvable (via resolveAsset) DA_Custom_MaritaParams path. See
+-- Spawner.TestResolveViaAssetRegistry's own header comment for the full reasoning.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestassetreg", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestassetreg] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local packageArg = Parameters and Parameters[1]
+            local assetArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestResolveViaAssetRegistry(packageArg, assetArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestassetreg <PackageName> <AssetName>")
+    registerCmdInfo("lbtestassetreg", "lbtestassetreg <PackageName> <AssetName>", "PURE READ: resolves an asset via AssetRegistryHelpers:GetAsset() instead of resolveAsset -- tests whether a genuinely new package path is discoverable through this different API.")
+else
+    log("lbtestassetreg unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the
 -- off-by-default escape hatch that bypasses every women's-clothing fit rule in
 -- Spawner.TestApplyClothingPiece/TestRemoveClothingPiece. See Spawner.ToggleClothesUnlock's own

@@ -1900,6 +1900,95 @@ something wholly new and independent. This is a real constraint on the design, n
 implementation detail — any custom-outfit feature built this way is fundamentally "reskin an existing
 identity," never "add a new one," for as long as this constraint holds.
 
+### 19c-4. A real third-party counter-example investigated exhaustively — same conclusion holds; the wall is the TOOLING, not the engine
+
+A separate, independently-installed third-party mod was found shipping a package at a path that
+provably does not exist anywhere in the base game (confirmed directly against the same asset catalog
+used throughout this file, not assumed) — genuinely new content, apparently working. This looked like
+a real counter-example to §19c-3 and was investigated exhaustively rather than dismissed:
+
+- The mod's own Lua never resolves its new class by path at all — it only watches for the ENGINE
+  itself to construct a live instance (a UE4SS `NotifyOnNewObject`-style listener), then reacts.
+  Something else has to be doing the actual first load.
+- That "something else" turned out to be a well-known, engine-native "Blueprint mod" convention: a
+  bundled UE4SS component watches a SPECIFIC folder (`Content/Paks/LogicMods/`, one subfolder per
+  mod, each carrying its own small `config.lua` naming the class to load) and, for each pak found
+  there, resolves the class via `AssetRegistryHelpers:GetAsset({PackageName=.., AssetName=..})` — a
+  different, higher-level API than the plain `StaticFindObject`/`LoadObject` combo used everywhere
+  else in this investigation — then explicitly spawns one instance itself.
+- Every element of that convention was reproduced exactly and tested directly, one variable at a
+  time, ruling each one out in turn: the sidecar `.pak`'s own mount point: no effect. The container's
+  own internal mount point: no effect (and hand-patching it introduces real corruption risk, see
+  §19c-2 step 4 — not needed for an override, and didn't help here either). The `GetAsset` API in
+  place of `StaticFindObject`/`LoadObject`: no effect — it also depends on the target already being
+  known, it isn't itself a magic loader. The `LogicMods` folder, flat: no effect. The `LogicMods`
+  folder, correctly nested one-subfolder-per-mod with its own `config.lua`, exactly matching the
+  working mod's own layout: no effect — the SAME native tool (`GetAsset`, called by the SAME bundled
+  loader component, not by this investigation's own Lua) still reported the identical "not valid"
+  failure for a duplicated real `DataAsset` at this new path. Asset TYPE (a plain `DataAsset` object
+  vs. a genuine Blueprint ACTOR CLASS): no effect either — repeating the exact same test with a
+  duplicated, repathed Blueprint actor class (not a data object) still produced the IDENTICAL
+  "ModClass ... is not valid" failure, through the exact same native mechanism, at a genuinely new
+  path with zero base-game references.
+- Every controllable variable was matched to the working mod's own setup and still failed
+  identically. The one variable that couldn't be controlled or matched: HOW the working mod's own
+  package was actually built. Its own public source repository's own build documentation was found
+  and checked directly rather than left as a guess — it states plainly: "The LogicMods .pak, .utoc,
+  and .ucas files are cooked Unreal artifacts. They require a compatible <Game>/Unreal development
+  environment and are not reproducible in a generic GitHub Actions runner." This rules out the
+  simplest theory (a fully generic, game-agnostic Unreal project with zero game-specific setup) —
+  but does NOT mean the author had the target game's own proprietary source either, which is not
+  realistic for a commercial game's modding community. The much more plausible reconciliation: an
+  SDK-stub-based modding setup — generating C++ header stubs for the target game's own reflected
+  native classes (a real, established technique; tools like Dumper-7 do exactly this by inspecting a
+  RUNNING game's own reflection data, no source access needed at all) and building a SEPARATE Unreal
+  project against those generated stubs, so the editor can compile and cook content that references
+  or even derives from the target game's own native types, without ever touching the game's actual
+  proprietary implementation. That is what "a compatible <Game>/Unreal development environment"
+  most plausibly describes — genuinely game-specific setup, but built from the game's own PUBLICLY
+  INSPECTABLE reflection data, not from anything only the original developer would have.
+  Whichever exact variant it was, the same underlying point holds: a REAL Unreal Editor cook, of
+  SOME kind, is what bakes the Asset Registry metadata a new package needs to be discoverable — the
+  tool chain in §19c-2 (`retoc` converting already-cooked bytes between Zen and Legacy format,
+  `UAssetGUI` hand-editing the result) can duplicate an EXISTING package's structure byte-for-byte —
+  exactly why overriding an existing path works flawlessly — but it never performs a real cook, so it
+  cannot fabricate the registry metadata a genuine cook generates for a package that never existed
+  before.
+  **This draws a real, usable line, and it may be wider than it first looks**: an SDK-stub-based
+  project needs the game's reflected CLASS LAYOUT (property names/types/offsets, generatable from a
+  running game with no source access, exactly what tools like Dumper-7 produce), not its underlying
+  C++ IMPLEMENTATION. Authoring a new instance of a plain DATA class (setting property values in the
+  Editor's own asset-creation UI) only ever needs that layout — the actual game-specific COMPILED
+  LOGIC is irrelevant to a DataAsset, which has none of its own. That means this route is NOT
+  necessarily limited to purely generic/vanilla content the way a first pass at this reasoning
+  suggests — it could plausibly extend to authoring genuinely NEW instances of this investigation's
+  own actual target classes too (`R5CompositeMeshComponentBaseParams`/`R5CompositeMeshGroup`/etc.),
+  since those are exactly the same kind of plain, logic-free reflected data classes. What it almost
+  certainly CANNOT do is author new instances of a class whose own COMPILED BEHAVIOR matters (a
+  native Actor/Component with real gameplay logic baked into its C++, not just data fields) — for
+  those, only the class's layout is knowable this way, not what it actually DOES at runtime, which
+  matters far more for something like a working Blueprint Actor than for a static outfit-params
+  asset.
+
+**Conclusion, now tested far past the point of reasonable doubt with the tools actually used today**:
+within THIS session's toolset (byte-level conversion/editing of already-cooked assets, no real Editor
+cook pipeline of any kind), a wholly new, independent asset path cannot be made discoverable at
+runtime by any means found — not a different resolution API, not a different install location/
+convention, not a different asset type. Overriding an existing, already-referenced path remains the
+one proven, reliable, repeatable way to ship custom content with these specific tools, and is what
+this whole investigation's own working recipe (§19c-2/§19c-3) is built on.
+A genuinely different, NOT YET ATTEMPTED path was identified and reasoned through, not just
+theorized in the abstract: building an SDK-stub-based Unreal Editor project (generating C++ header
+stubs for this game's own reflected native classes via a tool like Dumper-7, no source access
+needed, then authoring and cooking new content against those stubs in a real, separate editor
+project) would very plausibly let a genuinely new asset — for a plain data class, quite possibly
+even this game's own proprietary composite-outfit classes specifically — become properly discoverable
+at runtime, since a real cook is what bakes the Asset Registry metadata this whole investigation
+found missing every other way. This is a substantially bigger undertaking than anything in this
+session (a full Editor install, an SDK/stub generation pass, Visual Studio, real Unreal project
+setup) and was not pursued — worth returning to as a real, credible next step if the "reskin an
+existing identity" constraint ever becomes a genuine limitation worth the extra tooling investment.
+
 ### 19c. A related, already-proven primitive worth remembering here
 
 §2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE

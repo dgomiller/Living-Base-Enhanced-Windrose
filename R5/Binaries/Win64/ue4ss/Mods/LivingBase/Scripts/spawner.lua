@@ -9489,6 +9489,161 @@ function Spawner.TestSpawnWithCustomParamsPath(paramsPath, say)
     return true
 end
 
+-- Spawner.TestScanSoftRefs(classPath) -- "lbscanhooks <classPath>" (2026-08-29). PURE READ, no
+-- writes, no spawns -- diagnostic for a genuinely new idea: §19c-3's own finding (a brand-new
+-- package path never resolves; overriding an EXISTING referenced path always does) implies a
+-- NATIVE C++ class's own hardcoded default soft-object/soft-class reference (baked into its CDO at
+-- compile time) is JUST AS VALID an "existing reference" as another data asset's own field --
+-- confirmed independently by a third-party mod (KasperShipRespawn) that ships a genuinely new
+-- widget/settings asset at a path absent from every base-game pak, and gets it loaded purely by
+-- letting native code (R5ReviveComponent, hooked but never explicitly asset-loaded by that mod's
+-- own Lua) resolve its own already-existing reference to it. If OTHER native classes have similar
+-- UNPOPULATED soft-reference slots (a field with a real default path, but no actual asset shipped
+-- there in vanilla), those would be genuine, safe "hook points" for adding wholly new content
+-- without needing to override something already visibly in use, the way Letty's own override does.
+-- This function: resolves a class's own CDO (`/Script/Foo.Bar` -> `/Script/Foo.Default__Bar`, the
+-- same convention already confirmed present in UE4SS_ObjectDump.txt), walks its declared properties
+-- UP THE FULL CLASS HIERARCHY (same proven-safe walk `dumpObjectProperties` already uses), and for
+-- any property whose value drills down (via the same "read GetFullName() off the struct wrapper to
+-- discover its OWN type, then StaticFindObject + ForEachProperty on THAT" recipe already established
+-- safe in WINDROSE_MODDING_NOTES.md SS10) into something whose type name contains "SoftObjectPath"
+-- or "SoftClassPath", reads its own AssetPath.PackageName/AssetName sub-fields (an FTopLevelAssetPath
+-- pair of FNames, the modern FSoftObjectPath's own internal shape) and reports the resulting path.
+-- Every single field read stays individually pcall-wrapped, same discipline as everywhere else this
+-- struct-drilling recipe is used -- one bad field must not stop the scan or escalate into a crash.
+function Spawner.TestScanSoftRefs(classPath)
+    local function say(m) print("[LivingBase] [scan-softrefs] " .. tostring(m) .. "\n") end
+    if not classPath or classPath == "" then
+        say("usage: lbscanhooks <full /Script/Module.ClassName path> -- scans that class's CDO for soft-object/soft-class reference properties and reports their default target paths.")
+        return false
+    end
+
+    local modulePart, className = classPath:match("^(/Script/[%w_]+)%.([%w_]+)$")
+    if not (modulePart and className) then
+        say("could not parse '" .. classPath .. "' as /Script/Module.ClassName -- stopping here.")
+        return false
+    end
+    local cdoPath = modulePart .. ".Default__" .. className
+    say("resolving CDO: " .. cdoPath)
+    local cdo = StaticFindObject(cdoPath)
+    if not (cdo and cdo:IsValid()) then
+        say("could not resolve CDO -- class may not exist under this exact path, or its CDO isn't loaded yet.")
+        return false
+    end
+    say("CDO resolved ok. Walking declared properties up the full class hierarchy...")
+
+    local cls
+    pcall(function() cls = cdo:GetClass() end)
+    local totalChecked, totalFound = 0, 0
+    while cls and cls:IsValid() do
+        local hierClassName = "?"
+        pcall(function() hierClassName = cls:GetFName():ToString() end)
+        pcall(function()
+            cls:ForEachProperty(function(prop)
+                totalChecked = totalChecked + 1
+                local pname = "?"
+                pcall(function() pname = prop:GetFName():ToString() end)
+                local okv, val = pcall(function() return cdo[pname] end)
+                if not (okv and val ~= nil and type(val) == "userdata") then return end
+
+                -- Discover the VALUE's own type (works for both a struct wrapper and a plain
+                -- UObject reference) via the same GetFullName()-based recipe already proven safe.
+                local fullName = nil
+                pcall(function() fullName = val:GetFullName() end)
+                if not fullName then return end
+                if not (fullName:find("SoftObjectPath") or fullName:find("SoftClassPath")) then return end
+
+                totalFound = totalFound + 1
+                local structType = fullName:match("^%S+%s+(.+)$") or fullName
+                local structCls = StaticFindObject(structType)
+                local packageName, assetName, subPath = nil, nil, nil
+                if structCls and structCls:IsValid() then
+                    pcall(function()
+                        structCls:ForEachProperty(function(sp)
+                            local spName = "?"
+                            pcall(function() spName = sp:GetFName():ToString() end)
+                            if spName == "AssetPath" then
+                                local okap, apVal = pcall(function() return val[spName] end)
+                                if okap and apVal then
+                                    pcall(function() packageName = tostring(apVal["PackageName"]) end)
+                                    pcall(function() assetName = tostring(apVal["AssetName"]) end)
+                                end
+                            elseif spName == "SubPathString" then
+                                pcall(function() subPath = tostring(val[spName]) end)
+                            end
+                        end)
+                    end)
+                end
+                local resolvedPathStr = (packageName and assetName)
+                    and (packageName .. "." .. assetName .. (subPath and subPath ~= "" and (":" .. subPath) or ""))
+                    or "<could not drill AssetPath -- structType=" .. tostring(structType) .. ">"
+                print(string.format("[LivingBase] [scan-softrefs]   [%s] %s (%s) = %s\n",
+                    hierClassName, pname, structType, resolvedPathStr))
+            end)
+        end)
+        local nextCls
+        pcall(function() nextCls = cls:GetSuperStruct() end)
+        cls = nextCls
+    end
+    say("done. checked " .. totalChecked .. " properties across the class hierarchy, found " .. totalFound .. " soft-reference-typed ones (listed above, if any).")
+    return true
+end
+
+-- Spawner.TestResolveViaAssetRegistry(packageName, assetName, say) -- "lbtestassetreg <PackageName>
+-- <AssetName>" (2026-08-29). PURE READ/RESOLVE, no spawn. Direct test of a genuinely different
+-- resolution path than resolveAsset's StaticFindObject/LoadAsset combo, found by reading the
+-- ALREADY-INSTALLED, ALREADY-ENABLED `BPModLoaderMod` (a UE4SS-bundled component, bundled with THIS
+-- exact game install) own source: it discovers a brand-new Blueprint actor class shipped in a
+-- Content/Paks/LogicMods/ pak via `AssetRegistryHelpers:GetAsset({PackageName=.., AssetName=..})`
+-- -- NOT via StaticFindObject/LoadAsset -- then explicitly spawns one instance of it, which is what
+-- first makes the class discoverable to everyone else's plain StaticFindObject calls afterward.
+-- `GetAsset` is a generic UAssetRegistryHelpers API, not class-specific -- it should resolve a plain
+-- DataAsset instance (our own use case) exactly the same way it resolves a Blueprint class for
+-- BPModLoaderMod. Testing this directly against our own confirmed-new, confirmed-currently-
+-- unresolvable path (SS19c-3's own finding) is the most direct way to find out whether that finding
+-- was actually about "new paths never resolve" in general, or specifically about resolveAsset's own
+-- StaticFindObject/LoadAsset mechanism not being the right tool for a genuinely new package.
+function Spawner.TestResolveViaAssetRegistry(packageName, assetName, say)
+    say = say or function(m) print("[LivingBase] [test-assetreg] " .. tostring(m) .. "\n") end
+    if not (packageName and assetName) then
+        say("usage: lbtestassetreg <PackageName> <AssetName> -- e.g. /Game/Gameplay/Character/Customization/Regular/Armor/Custom/DA_Custom_MaritaParams DA_Custom_MaritaParams")
+        return false
+    end
+    local AssetRegistryHelpers = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryHelpers")
+    if not (AssetRegistryHelpers and AssetRegistryHelpers:IsValid()) then
+        say("AssetRegistryHelpers CDO did not resolve -- stopping here.")
+        return false
+    end
+    say("AssetRegistryHelpers resolved ok.")
+
+    local okData, AssetData = pcall(function()
+        return {
+            PackageName = UEHelpers.FindOrAddFName(packageName),
+            AssetName = UEHelpers.FindOrAddFName(assetName),
+        }
+    end)
+    if not okData then
+        say("could not build AssetData (FindOrAddFName failed): " .. tostring(AssetData))
+        return false
+    end
+
+    say("about to call AssetRegistryHelpers:GetAsset(PackageName=" .. packageName .. ", AssetName=" .. assetName ..
+        ") -- a different, higher-level resolution API than resolveAsset's StaticFindObject/LoadAsset -- if nothing follows, THIS crashed.")
+    local ok, result = pcall(function() return AssetRegistryHelpers:GetAsset(AssetData) end)
+    if not ok then
+        say("GetAsset call FAILED/threw: " .. tostring(result))
+        return false
+    end
+    if not (result and result:IsValid()) then
+        say("GetAsset returned an invalid/nil object -- this path is not resolvable via AssetRegistry either.")
+        return false
+    end
+    local fullName = "?"
+    pcall(function() fullName = result:GetFullName() end)
+    say("SUCCESS: GetAsset resolved a real, valid object: " .. fullName)
+    return result
+end
+
 -- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL
 -- (off by default) -- when ON, bypasses BOTH fit-restriction mechanisms in
 -- Spawner.TestApplyClothingPiece (the Senkamati-style compatible-bodies gate and the women's-torso

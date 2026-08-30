@@ -3926,6 +3926,81 @@ edit/despawn/undo/cycle toolkit. In order:
      real Letty's Torso with the Jeweler piece) is still installed in the live game — a real,
      confirmed-working demonstration, not yet decided whether to keep, extend into a real feature, or
      remove now that the recipe itself is proven and written down.
+     **Same-day continuation: a real third-party counter-example found and investigated
+     exhaustively — §19c-3's own conclusion holds up.** RedFalcon found an installed third-party mod
+     (`zKasper_RespawnSelector_P`/KasperShipRespawn) shipping `DA_ReviveSettings`/
+     `WBP_RespawnNotification` at paths RedFalcon believed were absent from every base-game pak —
+     installed and tested properly (its own zip showed the real intended location,
+     `R5/Content/Paks/~mods/`, not the `ue4ss/Mods/` root RedFalcon had moved it to just for FModel
+     inspection) and CONFIRMED WORKING (the death-screen buttons genuinely appeared in-game). Checked
+     both paths directly against `pakcontents.xlsx` before drawing any conclusion: **both are
+     genuinely vanilla** (`R5/Content/Gameplay/Character/Player/PlayerState/DA_ReviveSettings.uasset`
+     in `pakchunk0_s3`; `R5/Content/UI/HUD/Notifications/WBP_RespawnNotification.uasset` in
+     `pakchunk0_s4`) — RedFalcon's own belief they were new was an honest miss on a casing difference
+     (`PlayerState` vs. the `Playerstate` folder name glanced at). This is a SECOND independent
+     confirmation of the override mechanism, not a counter-example.
+     A SECOND third-party mod (`Pirate Signals`, a client/server chat transport with a compiled
+     ImGui-overlay DLL) turned out to be a genuine counter-example: `/Game/Mods/
+     WindroseChatTransport/ModActor` — confirmed via `pakcontents.xlsx` to have ZERO hits, genuinely
+     absent from every base-game pak — resolves successfully via `StaticFindObject`, used by both its
+     own client Lua and (per its server-side `main.lua`) via a `resolve_transport_class()` helper.
+     Traced the actual mechanism: an ALREADY-INSTALLED, ALREADY-ENABLED bundled UE4SS component,
+     `BPModLoaderMod`, watches `Content/Paks/LogicMods/` (one subfolder per mod, each with its own
+     `config.lua` naming the class), resolves the class via `AssetRegistryHelpers:GetAsset(...)` — a
+     different, higher-level API than `resolveAsset`'s `StaticFindObject`/`LoadAsset` combo — then
+     explicitly `SpawnActor`s one instance itself, which is what first makes the class "known" to
+     everyone else's plain `StaticFindObject` calls afterward.
+     Built two new PURE-READ diagnostic tools to test this properly: `Spawner.TestScanSoftRefs`
+     (`lbscanhooks <classPath>`) walks a native class's own CDO for soft-object/soft-class reference
+     properties (looking for native "hook point" slots a mod could fill) — tested on
+     `R5.R5ReviveComponent`, found 0 (a dead end for THAT specific class, not proof the general idea
+     is wrong). `Spawner.TestResolveViaAssetRegistry` (`lbtestassetreg <PackageName> <AssetName>`)
+     calls `AssetRegistryHelpers:GetAsset()` directly, mirroring `BPModLoaderMod`'s own mechanism,
+     against our own confirmed-new `DA_Custom_MaritaParams` path.
+     **Systematically tested and ruled out every controllable variable, one at a time, all against
+     our own confirmed-new asset path**: sidecar `.pak` mount point — already fixed, no effect.
+     Container's own internal mount point — already tested clean via FModel earlier the same day
+     (the round-2 Marita container, pre-dating any raw-chunk surgery), no effect. `AssetRegistry
+     API` in place of `resolveAsset` — clean failure, no crash, but still `MISS`. `LogicMods` folder,
+     files flat with no subfolder — no effect. `LogicMods` folder, correctly nested one-subfolder-
+     per-mod (`LogicMods/LivingBaseCustomTest/`) exactly matching Pirate Signals' own layout — no
+     effect. A matching `config.lua` telling `BPModLoaderMod` exactly where to look — no effect:
+     `BPModLoaderMod`'s OWN log showed the identical `"ModClass for 'LivingBaseCustomTest' is not
+     valid"` failure, using the EXACT SAME native tool/API that succeeds for Pirate Signals, called
+     by that tool's own code rather than ours. Asset TYPE (a plain `DataAsset` object vs. a genuine
+     Blueprint ACTOR CLASS) — duplicated `BP_NPC_QuestStatic_Letty` (a real Blueprint actor,
+     unmodified except its own `PackageName` repathed to `/Game/Mods/LivingBaseClassTest/TestActor`)
+     via the exact same retoc+UAssetGUI+repak recipe, installed identically — **IDENTICAL FAILURE**,
+     same `BPModLoaderMod` log line, same native mechanism, at a genuinely new path.
+     Every single controllable variable now matched to the working mod's own setup, all failed
+     identically. Checked Pirate Signals' own public GitHub repo (`71Krazs/PirateSignals`, found by
+     RedFalcon) for the real answer rather than guessing further — its own `docs/BUILDING.md` states
+     the cooked containers "require a compatible Windrose/Unreal development environment and are not
+     reproducible in a generic [CI] runner." RedFalcon correctly pushed back on an early draft
+     conclusion here that assumed real proprietary source access (not realistic for a commercial
+     game's modding community) — the more plausible reconciliation is an SDK-stub-based setup
+     (generating C++ header stubs for the game's own reflected native classes via a tool like
+     Dumper-7, no source access needed, then building a separate Unreal project against those stubs)
+     — genuinely game-specific, but built from the game's own publicly-inspectable reflection data,
+     not anything only the original developer would have.
+     **Conclusion, tested far past reasonable doubt**: within this session's own toolset (byte-level
+     conversion of already-cooked assets via `retoc`/`UAssetGUI`/`repak`, no real Editor cook
+     pipeline), a wholly new asset path cannot be made discoverable at runtime by any means found.
+     §19c-3's own finding and the whole working recipe stand exactly as already documented.
+     **A genuinely new, credible, NOT-yet-attempted path was identified along the way**: since
+     authoring a new instance of a plain DATA class only needs the class's REFLECTED LAYOUT (not its
+     compiled C++ logic, which a `DataAsset` has none of), an SDK-stub-based Editor project could
+     plausibly extend even to this investigation's own actual target classes
+     (`R5CompositeMeshComponentBaseParams`/etc.), not just generic vanilla content — a substantially
+     bigger undertaking (a full Editor install, SDK/stub generation, Visual Studio) than anything
+     attempted this session, not pursued, but a real candidate if the "reskin an existing identity"
+     constraint ever becomes a genuine limitation worth the extra investment.
+     Full write-up as `WINDROSE_MODDING_NOTES.md` §19c-4, mirrored to the public
+     `Windrose_Modding_Notes.txt` and the `Windrose-UE4SS-Modding-Notes` repo (commit `ba3833b`),
+     same day. **Cleanup still pending**: several test paks/configs from this arc
+     (`LivingBaseCustomTest`, `LivingBaseClassTest` under `Content/Paks/LogicMods/`) remain installed
+     in the live game alongside `LivingBaseLettyTest` and the properly-installed `KasperShipRespawn`/
+     `Pirate Signals` mods — none of this has been reverted yet.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

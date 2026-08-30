@@ -3327,6 +3327,28 @@ else
     log("lbdumpusmap unavailable -- RegisterConsoleCommandHandler or DumpUSMAP missing in this UE4SS build.")
 end
 
+-- "lbgeneratesdk" / "lbgenuhtheaders" (2026-08-29) -- same Ctrl-key-conflict workaround as
+-- lbdumpusmap above, for UE4SS's own BUILT-IN C++/UHT header generators (bundled in the "Keybinds"
+-- mod, default Ctrl+H / Ctrl+Num9 -- broken here for the same reason every other Ctrl-based default
+-- is, see WINDROSE_MODDING_NOTES.md's own "Ctrl is permanently unusable" note). Real motivation:
+-- WINDROSE_MODDING_NOTES.md SS19c-4's own closing finding -- an SDK-stub-based separate Unreal
+-- Editor project (built against generated header stubs for this game's own reflected native
+-- classes, no source access needed) is the one credible, not-yet-attempted path toward authoring
+-- genuinely NEW content (including this game's own proprietary composite-outfit classes), since
+-- retoc-style byte editing can only ever override an EXISTING asset path. GenerateUHTCompatibleHeaders()
+-- specifically produces headers in the format Unreal's own Header Tool expects, which is what a real
+-- separate project's build pipeline needs to compile against.
+if RegisterConsoleCommandHandler and GenerateSDK then
+    registerDumpCommand("lbgeneratesdk", function() GenerateSDK() end, "GenerateSDK")
+else
+    log("lbgeneratesdk unavailable -- RegisterConsoleCommandHandler or GenerateSDK missing in this UE4SS build.")
+end
+if RegisterConsoleCommandHandler and GenerateUHTCompatibleHeaders then
+    registerDumpCommand("lbgenuhtheaders", function() GenerateUHTCompatibleHeaders() end, "GenerateUHTCompatibleHeaders")
+else
+    log("lbgenuhtheaders unavailable -- RegisterConsoleCommandHandler or GenerateUHTCompatibleHeaders missing in this UE4SS build.")
+end
+
 -- Console commands "lbprobe" / "lbprobedump" (2026-08-18) -- replace the old HOME/PAUSE diagnostic
 -- keybinds (RedFalcon's request: console commands over physical keys for these). Same two-step
 -- design as before, same functions, just triggered by typing instead of pressing a key: lbprobe

@@ -10858,6 +10858,202 @@ function Spawner.TestSpawnCustomBody(paramsPath, bodyMeshPath, say)
     return ok
 end
 
+-- Spawner.TestInspectFunctionSig(classPath, funcName, say) -- "lbinspectfn <ClassPath> <FuncName>"
+-- (2026-08-31). PURE READ, no invocation, no crash risk -- reflecting on a function's own
+-- parameter list is always safe (SS3l), only INVOKING an unfamiliar one is a real gamble.
+-- Generalizes the exact recipe Spawner.ProbeNiagaraFuncSignature/ProbeCPDIndexSignature already
+-- used once each for one hardcoded class/function -- built as a genuinely reusable tool after
+-- CreateDynamicMaterialInstance on a leaf mesh component turned out to need 4 parameters, not the
+-- 1 an existing (never-actually-run) function in this file assumed. Resolves the class, walks its
+-- functions for a name match, then lists each parameter's name/type/flags in declaration order --
+-- the ONLY reliable way to know a function's real shape before risking a call, per SS3q's own
+-- "trust the formula, not trial-and-error" lesson.
+function Spawner.TestInspectFunctionSig(classPath, funcName, say)
+    say = say or function(m) print("[LivingBase] [inspect-fn] " .. tostring(m) .. "\n") end
+    if not (classPath and funcName) then
+        say("usage: lbinspectfn <ClassPath e.g. /Script/Engine.SkeletalMeshComponent> <FuncName e.g. CreateDynamicMaterialInstance>")
+        return false
+    end
+    local cls
+    pcall(function() cls = StaticFindObject(classPath) end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve class: " .. classPath)
+        return false
+    end
+    local targetFn
+    pcall(function()
+        cls:ForEachFunction(function(fn)
+            if targetFn then return end
+            local n = "?"
+            pcall(function() n = fn:GetFName():ToString() end)
+            if n == funcName then targetFn = fn end
+        end)
+    end)
+    if not (targetFn and targetFn:IsValid()) then
+        say(funcName .. " not found on " .. classPath .. " (or its own declared functions -- ForEachFunction may not walk the full super-chain, try the class that actually declares it if this misses).")
+        return false
+    end
+    local numParms = "?"
+    pcall(function() numParms = targetFn:GetNumParms() end)
+    local retOffset = "?"
+    pcall(function() retOffset = targetFn:GetReturnValueOffset() end)
+    say(string.format("-- %s::%s -- GetNumParms()=%s GetReturnValueOffset()=%s --", classPath, funcName, tostring(numParms), tostring(retOffset)))
+    local i = 0
+    pcall(function()
+        targetFn:ForEachProperty(function(prop)
+            i = i + 1
+            local pname = "?"
+            pcall(function() pname = prop:GetFName():ToString() end)
+            local ptype = "?"
+            pcall(function() ptype = prop:GetClass():GetFName():ToString() end)
+            local extra = ""
+            pcall(function()
+                local pc = prop.PropertyClass
+                if pc and pc:IsValid() then extra = " -> " .. pc:GetFName():ToString() end
+            end)
+            pcall(function()
+                if extra == "" then
+                    local st = prop.Struct
+                    if st and st:IsValid() then extra = " -> " .. st:GetFName():ToString() end
+                end
+            end)
+            say(string.format("  [%d] %s : %s%s", i, pname, ptype, extra))
+        end)
+    end)
+    say(string.format("total properties listed: %d", i))
+    return true
+end
+
+-- Spawner.TestSetPieceColor(actor, bodyPart, colorVec, say) -- "lbtestcolor <bodyPart> <R> <G> <B>"
+-- (2026-08-31). GENUINELY UNTESTED, REAL CRASH RISK -- same caution class as
+-- Spawner.TestSetSkinDecor above (never actually run before tonight), NOT the same as the
+-- CONFIRMED-crashing CreateDynamicMaterialInstance call on the COMPOSITE component itself (SS about
+-- comp:CreateDynamicMaterialInstance, 2026-08-19) or the Kismet-library version (2026-08-26,
+-- unrelated ghost-material context) -- this calls a LEAF mesh COMPONENT's own
+-- CreateDynamicMaterialInstance, the exact untested combination TestSetSkinDecor already uses
+-- safely-in-theory for skin decor textures, just pointed at an EQUIPPED OUTFIT PIECE instead of the
+-- base body Mesh, and at color-shaped VECTOR params instead of texture params.
+--
+-- Motivation (RedFalcon, 2026-08-31): the ArchetypePreset/body-mesh wall was solved by bypassing
+-- the higher-level composite-system PROPERTY entirely and operating directly on the underlying
+-- RENDER COMPONENT post-build (Spawner.TestSetBaseBodyMesh) -- the ORIGINAL "color is dead" finding
+-- (SS2 area, three ways confirmed dead: per-controller tint, whole-look ColorParams, both
+-- read-back-correct-but-never-renders) only ever tested the SAME higher-level
+-- ColorParams/ColorController property layer, never a direct material-instance write on the actual
+-- equipped mesh -- worth re-testing with the same "operate on the component, not the config
+-- property" insight that just worked for body mesh, before concluding color is dead by the SAME
+-- mechanism that made body/archetype look dead.
+--
+-- Tries several plausible parameter names since a material's own full exposed-parameter list isn't
+-- easily enumerable from Lua (MaterialInstanceConstant's own VectorParameterValues/
+-- TextureParameterValues arrays only show parameters some earlier instance already OVERRODE, not
+-- the master material's full possible set) -- reports success/failure per name tried rather than
+-- guessing just one and giving an inconclusive result either way.
+local COLOR_PARAM_CANDIDATES = { "BaseColor", "Color", "TintColor", "MaskColor", "ColorTint", "Tint" }
+function Spawner.TestSetPieceColor(bodyPart, colorVec, say)
+    say = say or function(m) print("[LivingBase] [test-color] " .. tostring(m) .. "\n") end
+    -- findNearestSpawnInFront is a module-LOCAL helper in THIS file -- only callable from in here,
+    -- not from main.lua's own console-command handler (confirmed live: "attempt to call a nil
+    -- value (global 'findNearestSpawnInFront')" when it was called from main.lua instead). Same
+    -- target-picker convention Spawner.TestSetSkinDecor already uses, for the same reason.
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    say(string.format("target piece has %d material slot(s). Trying CreateDynamicMaterialInstance + %d candidate color param name(s) on each.",
+        numMats, #COLOR_PARAM_CANDIDATES))
+
+    local anySuccess = false
+    for slotIdx = 0, numMats - 1 do
+        -- Real signature confirmed via the SDK header dump (2026-08-31), NOT live reflection (a
+        -- live ForEachFunction/ForEachProperty walk to inspect this same signature crashed the game
+        -- natively -- a genuinely new caution, reflection is not unconditionally safe either for a
+        -- large native class's own function list): PrimitiveComponent.h ->
+        -- CreateDynamicMaterialInstance(int32 ElementIndex, UMaterialInterface* SourceMaterial,
+        -- FName OptionalName) -- 3 real params + 1 return = 4 declared properties, matching the
+        -- live "UFunction expected 4 parameters, received 1" error from the original 1-arg attempt
+        -- exactly. Passing the slot's own CURRENT material as SourceMaterial (a sensible base for
+        -- the dynamic instance) and "" for OptionalName (same convention already used elsewhere in
+        -- this file for this exact parameter). A 4th placeholder table is ALSO supplied in case
+        -- this function's return isn't auto-detected the normal way (same Out-param pattern SS3m
+        -- already establishes) -- read back from either the plain return or the placeholder,
+        -- whichever comes back valid.
+        local curMat = nil
+        pcall(function() curMat = target:GetMaterial(slotIdx) end)
+        local curMatValid = curMat ~= nil and (pcall(function() return curMat:IsValid() end)) and curMat:IsValid()
+        say(string.format("  slot[%d] GetMaterial() -> %s", slotIdx, curMatValid and "valid" or "nil/invalid"))
+        local mid = nil
+        -- 2026-08-31, FOURTH attempt. Both {} and nil for the 4th slot produced the IDENTICAL
+        -- "expected 4, received 4" error -- the 4th value doesn't change the outcome, meaning it
+        -- isn't the real problem and this error string is likely a generic marshaling-failure
+        -- wrapper, not a precise diagnosis. Varying the other untested variable instead (this
+        -- project's own established discipline -- change one thing at a time): whether curMat
+        -- (arg2, UMaterialInterface*) is genuinely valid. Logged above, and passing nil for it here
+        -- regardless, on the theory that an invalid/wrongly-typed object reference for THIS param
+        -- specifically might be what's actually failing marshaling, independent of arg4.
+        local okCreate, errCreate = pcall(function()
+            mid = target:CreateDynamicMaterialInstance(slotIdx, nil, "", nil)
+        end)
+        if not (okCreate and mid and mid:IsValid()) then
+            say(string.format("  slot[%d] CreateDynamicMaterialInstance FAILED%s", slotIdx,
+                (not okCreate) and (": " .. tostring(errCreate)) or " (returned invalid)"))
+        else
+            say(string.format("  slot[%d] CreateDynamicMaterialInstance OK -- trying param names...", slotIdx))
+            for _, pname in ipairs(COLOR_PARAM_CANDIDATES) do
+                local okSet, errSet = pcall(function() mid:SetVectorParameterValue(pname, colorVec) end)
+                say(string.format("    slot[%d] SetVectorParameterValue('%s') = %s%s", slotIdx, pname,
+                    tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+                if okSet then anySuccess = true end
+            end
+        end
+    end
+    say(string.format("done. any SetVectorParameterValue succeeded: %s -- check visually + lbprobedump's probe-mat lines regardless (success here only means the call didn't error, same as the original ColorParams finding's own 'read back correct, never renders' gotcha).",
+        tostring(anySuccess)))
+    return anySuccess
+end
+
 -- Spawner.ProbeClassCustomization(classPath, say) -- backing function for "lbprobeclass". RedFalcon
 -- asked whether the Armor.* controller breakdown could be surveyed across the class roster WITHOUT
 -- spawning every actor into the world first. §7 (WINDROSE_MODDING_NOTES.md) already confirmed a

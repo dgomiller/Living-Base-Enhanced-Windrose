@@ -299,6 +299,47 @@ piece/body combination will.
 natively partway through the `SkeletalMesh`-class query, despite working cleanly for a plain
 `DataAsset` query moments earlier — see SS3r below, a genuine, separate lesson.
 
+**Same-night follow-up on COLOR specifically, once RedFalcon reasonably asked "if body mesh can now
+be swapped post-build, why not re-evaluate color too" — genuinely re-tested, and the original
+conclusion holds, now for a much better-understood reason.** Body mesh worked by bypassing the
+config PROPERTY entirely and swapping the render component directly (a discrete asset swap). The
+natural question: does the same "operate on the component, not the property" trick work for color?
+Tested directly, exhaustively, this session:
+- `mesh:CreateDynamicMaterialInstance(slotIdx)` (1 arg, what an existing but never-actually-run
+  function in this file assumed) — Lua-level error, "UFunction expected 4 parameters, received 1."
+- The real signature, found SAFELY via the SDK header dump rather than live reflection
+  (`PrimitiveComponent.h`): `CreateDynamicMaterialInstance(int32 ElementIndex, UMaterialInterface*
+  SourceMaterial, FName OptionalName)` — 3 real params + 1 return = 4 declared properties.
+- **Calling with exactly the 3 real parameters (matching the header exactly) CRASHED THE GAME
+  NATIVELY on the very first call, zero log output** — this specific UFunction's own UE4SS
+  reflection metadata genuinely expects 4 supplied values despite the C++ signature showing 3.
+- Calling with 4 arguments (3 real + a 4th placeholder) did NOT crash, but consistently errored
+  ("expected 4, received 4") — tried the 4th slot as both an empty table and `nil`, and tried the
+  `SourceMaterial` argument as both a valid resolved material and `nil`: **all four combinations
+  produced the IDENTICAL error**, strong evidence the error is a generic marshaling-failure wrapper
+  (not a precise per-argument diagnosis) and that no argument-value combination fixes it — this is a
+  binding-level limitation for this specific UFunction, not a call-shape mistake.
+- This is the THIRD independently-confirmed failure mode for `CreateDynamicMaterialInstance` in this
+  project's own history (the composite-component-level call crashed before; the Kismet-library
+  version crashed before, in an unrelated ghost-material context; now the leaf-component version
+  fails/crashes too) — a real, converging pattern: this function is not safely invokable from this
+  UE4SS binding in ANY tested form, not a fluke tied to one specific call site.
+- **Separately confirmed there is no fallback "swap to an existing pre-colored variant" option
+  either** (the mechanism that DOES work for skin tone, e.g. `MI_Native_Male_Large` ->
+  `MI_African_Female_Medium`) — searched the game's own materials directly via
+  `lbtestlistclass`: the armor material family (`MI_TS_ArmorRegular_01`) has no numbered
+  color-variant siblings at all, only an `_LOD1` level-of-detail variant. Skin tone is a small,
+  discrete, pre-baked set (a handful of ethnicity materials) — exactly why a swap works. Garment
+  color is a CONTINUOUS parameter the shared material exposes, with no discrete alternate
+  instances to swap to at all.
+**Conclusion, now resting on exhausting every architecturally-plausible route, not just the
+config-property layer**: garment color is consumed once at construction time with no safe
+intervention point found anywhere — pre-build write (crashes), post-build property write (silently
+never renders), post-build direct material manipulation (fails/crashes in every tested form), and
+pre-baked-variant swap (no such variants exist for this axis). This is genuinely different from body
+mesh and skin tone, both of which are discrete asset swaps with real existing alternatives to switch
+between — color has neither a safe write path nor alternatives to switch to.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

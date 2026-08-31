@@ -3130,6 +3130,68 @@ else
     log("lbtestbody unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbinspectfn <ClassPath> <FuncName>" (2026-08-31) -- PURE READ, no invocation.
+-- See Spawner.TestInspectFunctionSig's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbinspectfn", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbinspectfn] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local classArg = Parameters and Parameters[1]
+            local funcArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestInspectFunctionSig(classArg, funcArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbinspectfn <ClassPath> <FuncName>")
+    registerCmdInfo("lbinspectfn", "lbinspectfn <ClassPath> <FuncName>", "PURE READ: lists a function's real declared parameter list before risking a call -- no invocation, no crash risk.")
+else
+    log("lbinspectfn unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcolor <bodyPart> <R> <G> <B>" (2026-08-31) -- GENUINELY UNTESTED, REAL
+-- CRASH RISK. Aims at the nearest/locked actor in front (same target convention as lbtestdecor),
+-- creates a dynamic material instance on the given BuildedCompositeMeshes piece, tries several
+-- plausible color parameter names. See Spawner.TestSetPieceColor's own header comment for the full
+-- reasoning and risk profile.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcolor", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcolor] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local rArg = tonumber(Parameters and Parameters[2]) or 1.0
+            local gArg = tonumber(Parameters and Parameters[3]) or 0.0
+            local bArg = tonumber(Parameters and Parameters[4]) or 0.0
+            if not bodyPartArg then
+                say("usage: lbtestcolor <bodyPart enum int, e.g. 7 for Torso> <R 0-1> <G 0-1> <B 0-1>")
+                return true
+            end
+            local colorVec = { R = rArg, G = gArg, B = bArg, A = 1.0 }
+            local ok, err = pcall(function() Spawner.TestSetPieceColor(bodyPartArg, colorVec, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcolor <bodyPart> <R> <G> <B>")
+    registerCmdInfo("lbtestcolor", "lbtestcolor <bodyPart> <R> <G> <B>", "GENUINELY UNTESTED, REAL CRASH RISK: creates a dynamic material instance on a BuildedCompositeMeshes piece, tries several color parameter names.")
+else
+    log("lbtestcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbplayerclass" (2026-08-31) -- PURE READ: reports the player's own live pawn
 -- class path and current ArchetypePreset. See Spawner.TestReportPlayerClass's own header comment.
 if RegisterConsoleCommandHandler then

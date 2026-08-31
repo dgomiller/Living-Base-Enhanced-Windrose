@@ -4129,6 +4129,26 @@ edit/despawn/undo/cycle toolkit. In order:
      `SkeletalMesh`-class query despite working fine for a plain `DataAsset` query -- fixed by
      reading only the specific known-safe fields directly. Full writeup:
      `WINDROSE_MODDING_NOTES.md` SS2e's own second addendum and new SS3r (the crash).
+     **Same-night follow-up #7: RedFalcon reasonably asked "if body mesh can now be swapped, why
+     not re-check color too" -- exhaustively re-tested, original "color is dead" conclusion holds,
+     now for a much clearer reason.** Tried `CreateDynamicMaterialInstance` on the actual equipped
+     piece's own leaf mesh component (never tested before -- only composite-component-level and
+     Kismet-library versions were previously confirmed-crashed) across FOUR argument combinations:
+     the header-exact 3 real args (CRASHED NATIVELY, first call, zero log output), then 4 args
+     varying the 4th placeholder (table vs `nil`) and the SourceMaterial arg (valid material vs
+     `nil`) -- all four non-crashing combinations produced the IDENTICAL "expected 4, received 4"
+     error, strong evidence this is a binding-level limitation, not a call-shape mistake. Third
+     independently-confirmed failure mode for this exact UFunction in this project's history.
+     Separately confirmed no fallback exists either: searched the game's own materials directly
+     (`lbtestlistclass`) and found the armor material family has no color-variant siblings at all
+     (only an `_LOD1` variant) -- unlike skin tone's small discrete set of ethnicity materials,
+     color has no alternate instances to swap to. **Conclusion: garment color has no safe
+     intervention point anywhere.** New tool along the way: `lbinspectfn <ClassPath> <FuncName>` --
+     lists a function's real declared parameters via safe reflection before risking invocation
+     (built after ANOTHER real crash: a pure reflection walk, not even an invocation, crashed
+     natively on `SkeletalMeshComponent`'s own function list -- a second, separate confirmation
+     that reflection isn't unconditionally safe either, joining SS3r). Full writeup:
+     `WINDROSE_MODDING_NOTES.md` SS2e's third addendum.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

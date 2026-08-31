@@ -3103,6 +3103,33 @@ else
     log("lbtestlook unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestbody <paramsPath> <bodyMeshPath>" (2026-08-31) -- spawns with the proven
+-- custom outfit, then swaps the base body mesh post-build (sidesteps the confirmed-blocked
+-- ArchetypePreset route entirely). See Spawner.TestSpawnCustomBody's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbody", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbody] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsArg = Parameters and Parameters[1]
+            local bodyMeshArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomBody(paramsArg, bodyMeshArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbody <paramsPath> <bodyMeshPath>")
+    registerCmdInfo("lbtestbody", "lbtestbody <paramsPath> <bodyMeshPath>", "Spawns with a custom outfit then swaps the base body mesh post-build -- tests a selected body mesh independent of the blocked ArchetypePreset route.")
+else
+    log("lbtestbody unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbplayerclass" (2026-08-31) -- PURE READ: reports the player's own live pawn
 -- class path and current ArchetypePreset. See Spawner.TestReportPlayerClass's own header comment.
 if RegisterConsoleCommandHandler then

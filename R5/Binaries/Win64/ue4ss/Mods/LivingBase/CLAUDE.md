@@ -4111,6 +4111,24 @@ edit/despawn/undo/cycle toolkit. In order:
      Handyman-family (peaceful) reuse target, not the combat-armed Walker this probe happened to
      use -- combat-capable "Barbies" are a real later stretch goal, same recipe, not a different
      wall. Full writeup: `WINDROSE_MODDING_NOTES.md` new SS2e.
+     **Same-night follow-up #6: a selected body mesh CONFIRMED LIVE -- via a completely different
+     mechanism than the blocked ArchetypePreset route, no new class authoring needed at all.**
+     Instead of fighting the reassertion wall, swapped `actor.Mesh` (the LEADER component) directly
+     post-build -- the exact same hide->SetSkeletalMeshAsset->show pattern already proven safe for
+     one outfit piece (`Spawner.SetBodyPartMesh`), just applied to the leader itself. Target mesh
+     (`SK_African_Female_01`) found via `lbtestlistclass /Script/Engine SkeletalMesh African`.
+     Spawned the Gatherer base with the proven custom outfit, swapped the body mesh post-build:
+     **RedFalcon confirmed live, outfit stayed on, body correctly changed.** Live probe afterward
+     confirmed the skin material came through correctly too (`MI_African_Female_Medium`, matching
+     textures) -- the new mesh's own default material slot, no separate step needed. **This means
+     full "Barbies" (chosen body + chosen outfit) works on an EXISTING NPC class TODAY -- the bigger
+     AR5AICharacter-interface-stubbing project is NOT a prerequisite for this**, only for a
+     genuinely new pawn class with the archetype as a compiled default (a separate, optional, later
+     goal). A real crash was hit and fixed along the way: `lbtestlistclass`'s first version (a
+     generic `ForEachProperty` walk over every `FAssetData` field) crashed natively on a
+     `SkeletalMesh`-class query despite working fine for a plain `DataAsset` query -- fixed by
+     reading only the specific known-safe fields directly. Full writeup:
+     `WINDROSE_MODDING_NOTES.md` SS2e's own second addendum and new SS3r (the crash).
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

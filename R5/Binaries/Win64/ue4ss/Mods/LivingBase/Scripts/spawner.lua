@@ -10790,6 +10790,74 @@ function Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)
     return ok
 end
 
+-- Spawner.TestSetBaseBodyMesh(actor, meshPath, say) -- swaps the actor's own BASE body mesh
+-- (actor.Mesh, the LEADER component every BuildedCompositeMeshes piece leader-poses off of) to a
+-- different real body mesh, post-build -- e.g. a chosen ethnicity's own standalone body mesh
+-- (2026-08-31: /Game/Character/Skeletal_Meshes/Human/Regular/African/Meshes/SK_African_Female_01,
+-- found via lbtestlistclass). This is the SAME hide->SetSkeletalMeshAsset->show pattern
+-- Spawner.SetBodyPartMesh already proves safe for swapping ONE outfit piece -- just applied to the
+-- LEADER itself instead of a follower, so no SetLeaderPoseComponent rebind step is needed (the
+-- leader doesn't leader-pose off itself). Deliberately does NOT touch ArchetypePreset/BeginPlay's
+-- reassertion logic at all -- confirmed (SS2's 2026-08-31 addendum) that pre-build archetype writes
+-- always get stomped back to the class's own default; this sidesteps that wall entirely by
+-- operating on the render mesh directly, after the build (and BeginPlay's reassertion) has already
+-- finished. Real open question this answers: does the leader-pose relationship between the new body
+-- mesh and the existing (unchanged) outfit pieces survive a differently-shaped body underneath, or
+-- does a piece fitted for one body shape clip/gap against a different one (SS11's own "a mesh that
+-- attaches and animates correctly is not the same as one that FITS" finding) -- this is a real,
+-- separate risk from whether the swap itself works at all.
+function Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
+    say = say or function(m) print("[LivingBase] [test-bodymesh] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say("actor.Mesh not valid")
+        return false
+    end
+    local mesh = resolveAsset(meshPath)
+    if not mesh then
+        say("mesh unresolved: " .. tostring(meshPath))
+        return false
+    end
+    pcall(function() body:SetVisibility(false, false) end)
+    local ok = pcall(function() body:SetSkeletalMeshAsset(mesh) end)
+    if not ok then ok = pcall(function() body:SetSkeletalMesh(mesh, false) end) end
+    pcall(function() body:SetVisibility(true, false) end)
+    say(string.format("base body mesh swap %s (%s)", ok and "OK" or "FAILED", meshPath))
+    return ok
+end
+
+-- Spawner.TestSpawnCustomBody(paramsPath, archetypePath, bodyMeshPath, say) -- "lbtestbody
+-- <paramsPath> <bodyMeshPath>" (2026-08-31). Spawns Config.SENKA_FEMALE_BASE_CLASS with the proven
+-- custom outfit, then swaps its base body mesh post-build via Spawner.TestSetBaseBodyMesh. The
+-- decisive "selected body mesh" test, sidestepping the confirmed-blocked ArchetypePreset route
+-- entirely.
+function Spawner.TestSpawnCustomBody(paramsPath, bodyMeshPath, say)
+    say = say or function(m) print("[LivingBase] [test-body] " .. tostring(m) .. "\n") end
+    local function ensureFullPath(p)
+        if not p then return nil end
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    paramsPath = ensureFullPath(paramsPath)
+    bodyMeshPath = ensureFullPath(bodyMeshPath)
+    say("about to spawn with compositeLook.params=" .. tostring(paramsPath))
+    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomBodyTest", nil, nil, nil, nil, false,
+        { params = paramsPath }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- now swapping base body mesh to " .. tostring(bodyMeshPath))
+    local ok = Spawner.TestSetBaseBodyMesh(actor, bodyMeshPath, say)
+    say("lbprobedump it now -- check the CharacterMesh0 mesh name in the probe-mesh lines.")
+    return ok
+end
+
 -- Spawner.ProbeClassCustomization(classPath, say) -- backing function for "lbprobeclass". RedFalcon
 -- asked whether the Armor.* controller breakdown could be surveyed across the class roster WITHOUT
 -- spawning every actor into the world first. §7 (WINDROSE_MODDING_NOTES.md) already confirmed a

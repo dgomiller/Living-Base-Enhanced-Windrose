@@ -267,6 +267,38 @@ capable "Barbies" remain a real, later stretch goal (RedFalcon's own call — st
 [to] manage"), not a different technical wall — the same AIControllerClass/AIPawnParams-reference
 recipe applies either way, just pointed at a combat-capable donor's own values instead.
 
+**2026-08-31, same day — a selected body mesh CONFIRMED LIVE, via a completely different mechanism
+than the blocked `ArchetypePreset` route, no new class authoring needed at all.** Rather than fighting
+`ArchetypePreset`'s reassertion wall, swapped the actor's own BASE body mesh (`actor.Mesh`, the
+LEADER component every `BuildedCompositeMeshes` piece leader-poses off of) directly, post-build — the
+exact same `hide → SetSkeletalMeshAsset → show` pattern §2d's `Spawner.SetBodyPartMesh` already
+proves safe for one outfit piece, just applied to the leader itself (no `SetLeaderPoseComponent`
+rebind needed, since the leader doesn't leader-pose off itself). Target mesh found via
+`lbtestlistclass /Script/Engine SkeletalMesh African`:
+`/Game/Character/Skeletal_Meshes/Human/Regular/African/Meshes/SK_African_Female_01`. **Confirmed
+live: spawned `Config.SENKA_FEMALE_BASE_CLASS` with the already-proven custom outfit, swapped the
+base body mesh post-build, and got a genuinely different, correctly-chosen body — the outfit stayed
+on, nothing broke.** This deliberately never touches `ArchetypePreset`/`BeginPlay`'s reassertion
+logic at all — it operates entirely AFTER the build (and BeginPlay) have already finished, so the wall
+simply never applies. **This means full "Barbies" (chosen body mesh + chosen outfit) is achievable
+on an EXISTING NPC class today — the much bigger `AR5AICharacter`-interface-stubbing undertaking
+(SS2e above) is not a prerequisite for this, only for a genuinely NEW pawn class with the archetype
+baked in as a compiled default, which remains a separate, optional, later goal.**
+**Skin material confirmed correct too, via the same live probe**: the new body mesh's own material
+slot 2 now reads `MI_African_Female_Medium`, with correctly-matched textures
+(`T_African_Female_Medium_A/N/SRM`) — the new mesh's own default material came through cleanly,
+nothing leftover from whatever archetype/skin was previously active. `SetSkeletalMeshAsset` alone
+doesn't touch material overrides, so the new asset's own baked-in default material slots simply took
+over — body shape AND skin tone both solved by the one mesh swap, no separate material step needed.
+Also unconfirmed for other outfits/pieces:
+SS11's own "a mesh that fits one body shape can clip against a different one" finding — the Jeweler
+torso happened to look right on the new body in this one test, but that's not a guarantee every
+piece/body combination will.
+**A crash confirmed and fixed along the way**: `lbtestlistclass`'s first version (a generic
+`ForEachProperty` walk over every field of the returned `FAssetData` structs) crashed the game
+natively partway through the `SkeletalMesh`-class query, despite working cleanly for a plain
+`DataAsset` query moments earlier — see SS3r below, a genuine, separate lesson.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

@@ -2016,6 +2016,42 @@ mentions one. Full detail on this track lives in a separate project memory file,
 since it's a different environment (real Editor/C++, not UE4SS/Lua) — a dedicated "Windrose Unreal
 SDK Modding Notes" doc is planned once this track resumes properly rather than blending the two.
 
+**2026-08-31 update — the new-path wall (SS19c-3) is BROKEN THROUGH, and the actual mechanism is now
+fully understood, not just a validated theory.** A real `R5CompositeMeshGroup` instance, authored and
+cooked by the SDK-stub project above, then packaged the exact same retoc/repak way as every other
+content pak in this file, was made genuinely resolvable at runtime -- confirmed live, both via
+`AssetRegistryHelpers:GetAsset()` and (after a one-line fix, below) via this mod's own
+`resolveAsset`/`Spawner.SetCompositeParams` pipeline. Two things had to both be true, and neither
+alone was sufficient:
+1. **The package must live under `/Game/Mods/...`, not an arbitrary new top-level folder.** The
+   IDENTICAL asset, cooked and packaged by the IDENTICAL toolchain, resolved at
+   `/Game/Mods/LivingBaseExtended/DA_Test_Group2` and missed at `/Game/LBE/DA_Test_Group` -- the
+   only variable that changed was the path. This strongly implies Windrose's own cook process
+   whitelists `/Game/Mods/` specifically to support the LogicMods third-party-mod convention (the
+   same folder `BPModLoaderMod`/Pirate Signals already use) -- not a general "any new path works if
+   cooked properly" result. **A genuinely new package needs BOTH a real Editor cook (SS19c-4's own
+   finding -- byte-hacked retoc/UAssetGUI content never works regardless of path) AND a
+   `/Game/Mods/...` path.** Confirmed directly against a real third-party counter-example too: Pirate
+   Signals' own transport pak (`/Game/Mods/WindroseChatTransport/ModActor`) was installed and probed
+   with this mod's own tools and resolved cleanly via the same API -- it was never actually confirmed
+   to work by this investigation before this session, only assumed from its Nexus description.
+2. **`StaticFindObject`/`LoadAsset` (what `resolveAsset` already used) still cannot see a package
+   under `/Game/Mods/...` even once it's confirmed resolvable -- only `AssetRegistryHelpers:GetAsset()`
+   can.** These are genuinely different resolution paths reaching different internal state, not two
+   ways of asking the same question. **Fix, now shipped**: `resolveAsset` (`spawner.lua`) falls back to
+   `AssetRegistryHelpers:GetAsset()` when `StaticFindObject`/`LoadAsset` both miss, splitting the input
+   path into `PackageName`/`AssetName` on the last dot. This is a one-line-of-behavior fix to a single
+   shared helper, so it transparently fixes `SetCompositeParams`/`DeCorrupt`/every other caller for
+   `/Game/Mods/` content, not just the diagnostic test commands.
+**Net effect**: authoring genuinely NEW Windrose content (not just overriding an existing path) is a
+solved problem now, for plain data classes, provided it's packaged under `/Game/Mods/...`. The
+remaining, still-untested step is populating a real `R5CompositeMeshComponentBaseParams` (the TOP
+level, not the `R5CompositeMeshGroup` used for this discoverability test -- `compositeLook.params`
+feeds `comp.DefaultParams`, which expects a BaseParams object specifically, confirmed live: handing it
+a Group instead produces a technically-successful resolve but a fully nude build, since a Group has no
+`CustomizationData` to read) with real piece references and confirming a genuinely custom outfit
+renders end to end.
+
 ### 19d. A related, already-proven primitive worth remembering here
 
 §2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE

@@ -4032,6 +4032,25 @@ edit/despawn/undo/cycle toolkit. In order:
      doc is planned once this track resumes properly, per RedFalcon's own call. **Not yet done,
      explicitly deferred to a future session**: actually populating a created instance with real
      data and cooking/packaging it back into a Windrose-loadable pak.
+     **Same-night follow-up #2: the new-path wall is broken, mechanism fully identified**
+     (2026-08-31). Cooked a real `R5CompositeMeshGroup` instance via the renamed
+     `LivingBaseExtended` project (see below), packaged it the same retoc/repak way as every other
+     content pak here, and found it resolves via `AssetRegistryHelpers:GetAsset()` at
+     `/Game/Mods/LivingBaseExtended/DA_Test_Group2` but MISSES at `/Game/LBE/DA_Test_Group` --
+     identical toolchain, only the path changed. Confirmed against a live third-party control too:
+     installed Pirate Signals' own real transport pak and found its
+     `/Game/Mods/WindroseChatTransport/ModActor` resolves the same way (never actually verified by
+     this project before, only assumed). Conclusion: Windrose's own cook process whitelists
+     `/Game/Mods/...` specifically for the LogicMods convention -- a real Editor cook AND that path
+     are both required together. Separately, `StaticFindObject`/`LoadAsset` (what `resolveAsset`
+     already used) still can't see it even once `GetAsset` proves it's resolvable -- fixed by
+     giving `resolveAsset` itself (`spawner.lua`) a fallback to `AssetRegistryHelpers:GetAsset()`,
+     so every existing caller (`SetCompositeParams`, `DeCorrupt`, etc.) picks up `/Game/Mods/`
+     content transparently. Confirmed live end to end: `lbtestpak` on the new path now reports
+     `params=ok` instead of `MISS`. The nude result on that specific test is expected, not a new
+     problem -- the test asset is a `R5CompositeMeshGroup` (middle level), and `DefaultParams`
+     needs the top-level `R5CompositeMeshComponentBaseParams` instead. Full writeup:
+     `WINDROSE_MODDING_NOTES.md` SS19c-3's own 2026-08-31 addendum.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

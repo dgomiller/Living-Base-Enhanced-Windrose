@@ -1131,12 +1131,45 @@ end
 -- BeginPlay) — crew may hold the override where citizens didn't. All pcall'd;
 -- logs each step so an in-game test can tell us how far it got. EXPERIMENTAL.
 --------------------------------------------------------------------
+-- 2026-08-31: StaticFindObject/LoadAsset (resolveAsset's own two tools) cannot discover a
+-- genuinely NEW package -- one that never existed in the base game's own cook-time catalog --
+-- confirmed exhaustively (WINDROSE_MODDING_NOTES.md SS19c-3). But AssetRegistryHelpers:GetAsset()
+-- CAN, for a new package placed under /Game/Mods/... specifically (the LogicMods convention's own
+-- whitelisted namespace, apparently baked into this game's own cook process to support exactly
+-- this modding convention) -- confirmed live: a genuinely new R5CompositeMeshGroup instance,
+-- cooked by a separate SDK-stub Unreal project (see LivingBaseExtended) and packaged the same
+-- retoc/repak way as every other content pak here, resolved via GetAsset at
+-- /Game/Mods/LivingBaseExtended/DA_Test_Group2 when StaticFindObject/LoadAsset both missed it.
+-- Cached module-scope (never re-resolved once found, same pattern as every other CDO cache in
+-- this file) since it never changes across a session.
+local _assetRegistryHelpers = nil
+local function resolveViaAssetRegistry(path)
+    local packageName, assetName = path:match("^(.+)%.([^%.]+)$")
+    if not (packageName and assetName) then return nil end
+    if _assetRegistryHelpers == nil then
+        _assetRegistryHelpers = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryHelpers") or false
+    end
+    if not _assetRegistryHelpers then return nil end
+    local ok, result = pcall(function()
+        return _assetRegistryHelpers:GetAsset({
+            PackageName = UEHelpers.FindOrAddFName(packageName),
+            AssetName = UEHelpers.FindOrAddFName(assetName),
+        })
+    end)
+    if ok and result and result:IsValid() then return result end
+    return nil
+end
+
 local function resolveAsset(path)
     if not path then return nil end
     local o = StaticFindObject(path)
     if o and o:IsValid() then return o end
     pcall(function() LoadAsset(path) end)
     o = StaticFindObject(path)
+    if o and o:IsValid() then return o end
+    -- Last resort, only reached when both calls above already failed (a normal existing-asset
+    -- path never gets here) -- see the comment above resolveViaAssetRegistry for why this exists.
+    o = resolveViaAssetRegistry(path)
     if o and o:IsValid() then return o end
     return nil
 end

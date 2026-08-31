@@ -1569,29 +1569,43 @@ same branch**, which makes it easy to misread as "the whole feature doesn't work
 components) has not shown this problem anywhere — treat this as a component-specific gotcha, not
 a blanket "never use `==`" rule.
 
-## 17. Windrose Mod Settings supports real slider ("scalar") and dropdown ("discrete") widgets, not just toggle/keybind — found by extracting strings from its own compiled DLL, not from its Lua source
+## 17. Windrose Mod Settings CAN probably render a real slider ("scalar") and dropdown ("discrete") widget — a single unconfirmed exploratory test, not a proven, ready-to-use recipe (2026-08-29)
+
+**Status check (2026-08-31): this was never revisited, never adopted, and its central claim is
+weaker than the confidence it was originally written with.** `modsettings.lua`'s actual shipping
+integration only registers `type = "toggle"`/`type = "keybind"` (`M.TOGGLE_DEFS`/`M.KEYBIND_DEFS`)
+— the `"scalar"` type described below has never been used in a real setting, and git history shows
+this section was written once and never touched again. Treat everything below as a promising lead
+worth re-testing before relying on it, not a settled capability.
 
 The third-party Windrose Mod Settings mod's own Lua layer (`R5ModSettings.lua`) is pure generic
 file I/O (load/save a Lua table, publish a shared variable) — it contains no type-specific
 validation or widget-selection logic at all. That logic lives entirely in a bundled native DLL
 (`dlls/main.dll`), unreadable as source. A plain `type = "number"` setting registration (the
-obvious-seeming choice, and the only type ever documented anywhere in a working example) is
-silently coerced into a checkbox — readable/writable only as 0 or 1 — with no error, no warning,
-nothing to suggest a different type exists. **Confirmed working alternative, found via a raw
-UTF-16LE string extraction of the DLL rather than more registration-schema guessing**: the
-strings `WBP_Settings_EntryScalar`/`WBP_Settings_EntryDiscrete`/`WBP_Settings_EntrySwitcher`
-(this game's own native settings-screen slider/dropdown/toggle widget classes, also used for
-ordinary graphics/audio settings) are directly referenced, alongside the literal lowercase
-strings `"scalar"` and `"discrete"` and a `"[{}] Skipped unsupported setting mod={} key={}
-type={} options={}"` diagnostic format string — real evidence of an actual type-dispatch branch,
-not just a checkbox default. Setting `type = "scalar"` (with guessed `min`/`max` fields — the
-DLL's exact expected field names are still unconfirmed, since they live in compiled code) DID
-render a real slider, confirmed live. **No integer-step/interval field was found anywhere in the
-DLL's strings** (checked for "step"/"interval"/"integer"/"round"/"delta", no hits) — the slider
-appears to be a continuous float with no snapping option exposed through this registration
-schema; a value like `8.21` is a completely normal thing for a player to land on while dragging
-it. If a whole number is actually required, round it explicitly on the Lua side when reading the
-saved value back, rather than assuming the UI can be made to snap.
+obvious-seeming choice, and the only type ever documented anywhere in a working example) rendered
+as a checkbox instead — readable/writable only as 0 or 1 — with no error, no warning, nothing to
+suggest a different type exists. **Found via a raw UTF-16LE string extraction of the DLL rather
+than more registration-schema guessing**: the strings
+`WBP_Settings_EntryScalar`/`WBP_Settings_EntryDiscrete`/`WBP_Settings_EntrySwitcher` (this game's
+own native settings-screen slider/dropdown/toggle widget classes, also used for ordinary
+graphics/audio settings) are directly referenced, alongside the literal lowercase strings
+`"scalar"` and `"discrete"` and a `"[{}] Skipped unsupported setting mod={} key={} type={}
+options={}"` diagnostic format string — real evidence of an actual type-dispatch branch, not just
+a checkbox default. Setting `type = "scalar"` (with guessed `min`/`max` fields — the DLL's exact
+expected field names are still unconfirmed, since they live in compiled code) DID render a real
+slider widget on screen, confirmed live. **What was NOT confirmed**: whether a value actually
+dragged on that slider round-trips correctly — saves, and reads back as the right number through
+the same `ReadSavedFile`/shared-variable path `TOGGLE_DEFS` entries are proven to use. Rendering a
+widget and a working read/write round trip are different claims; only the first was ever tested.
+**No integer-step/interval field was found anywhere in the DLL's strings** (checked for
+"step"/"interval"/"integer"/"round"/"delta", no hits) — the slider appears to be a continuous float
+with no snapping option exposed through this registration schema; a value like `8.21` is a
+completely normal thing for a player to land on while dragging it, IF the guessed `min`/`max`
+field names are even the real ones. If a whole number is actually required, round it explicitly on
+the Lua side when reading the saved value back, rather than assuming the UI can be made to snap.
+**Before shipping anything on this**: re-confirm the round trip end to end (write a real value via
+the slider, restart or re-read, confirm the Lua side sees the same number), not just that the
+widget appears.
 
 **Technique worth reusing on its own**: when a third-party mod's Lua-visible source doesn't
 explain an observed behavior (here: "why does a number setting render as a checkbox"), and it
@@ -2002,7 +2016,7 @@ mentions one. Full detail on this track lives in a separate project memory file,
 since it's a different environment (real Editor/C++, not UE4SS/Lua) — a dedicated "Windrose Unreal
 SDK Modding Notes" doc is planned once this track resumes properly rather than blending the two.
 
-### 19c. A related, already-proven primitive worth remembering here
+### 19d. A related, already-proven primitive worth remembering here
 
 §2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE
 `BuildedCompositeMeshes` slot post-build: hide → `SetSkeletalMeshAsset` (fallback `SetSkeletalMesh`)

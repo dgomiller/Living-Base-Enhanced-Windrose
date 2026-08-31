@@ -4150,6 +4150,51 @@ edit/despawn/undo/cycle toolkit. In order:
      that reflection isn't unconditionally safe either, joining SS3r). Full writeup:
      `WINDROSE_MODDING_NOTES.md` SS2e's third addendum.
 
+     **Same-night follow-up #8: RedFalcon pushed back again ("if we swap outfits... theyre always
+     som shade of brown [Gatherer] / red [BotC]... i think they are entity specific, a color theme")
+     -- correct, and it led to the actual working mechanism, overturning item 35's dead-end verdict
+     for real this time.** The missing layer was Custom Primitive Data (CPD) -- every
+     `AR5AICharacter` carries a `CPDEffectsComponent`, and `PrimitiveComponent.h`
+     (`SetCustomPrimitiveDataFloat`/`Vector4`, plain BlueprintCallable, no crash risk) is a
+     completely different, bypassed-until-now mechanism from `CreateDynamicMaterialInstance`.
+     Extracted the equipped piece's own master material (`MI_ArmorRegular_01` -> `M_Common_Cloth`)
+     offline via `retoc to-legacy` + UAssetGUI's undocumented `tojson` CLI verb and read its NameMap
+     directly -- it spells out the exact CPD layout as designer comments: index 3/4/5 = Cloth/Hair
+     Main/Secondary/DetailColor, 7/8 = Dirt/Blood (explaining an earlier confusing "moldy blood+mud"
+     result that came from a Vector4 write's 4-consecutive-floats semantics being misunderstood at
+     first). Confirmed live via a clean, ONE-float-at-a-time bisection (no overlap): all 3 color
+     slots + both effect slots landed exactly where the comment said. Each value is a 0..23 index
+     into a real, shared, named palette asset RedFalcon found directly
+     (`/Game/Common/Textures/Gradients/CRV_CharacterClothPalette`, a `CurveLinearColorAtlas`, 24
+     named swatches Harp->BrownCopper) -- confirmed IDENTICAL across Gatherer and BotC, a universal
+     palette, not per-archetype. **Finished mechanism**: `target:SetCustomPrimitiveDataVector4(3,
+     {mainIdx, secondaryIdx, detailIdx, 0})` on the equipped piece's own leaf mesh component. New
+     tools: `lbtestcpd`/`lbtestcpdidx`/`lbtestcpdfloat`/`lbtestcpdcolor`/`lbtestbasecpd`/`lbtesteye`
+     (spawner.lua/main.lua), `lbtestbodystill`/`lbfreeze` (a no-AI stationary spawn + freeze/resume,
+     built mid-investigation so color changes on a walking actor were actually visible to judge).
+     **CONFIRMED LIVE, same night, extending to every remaining customization category**: RedFalcon
+     found `DA_NPC_Common_CompositeMeshColorCustomizationParams.uasset` (the Citizen-family
+     counterpart to the Gatherer's own `DA_Hero_...` one) ALSO references hair/eyebrows/eyes, not
+     just cloth -- consistent with the material comment's own "Cloth/Hair MainColor" wording.
+     Confirmed via `ER5BLCompositeMeshBodyPartType`'s real enum ordinals (`Hairs=3`, `Eyebrows=1`,
+     matching every BodyPart value already seen in `lbprobecolors` dumps): the SAME CPD03/04/05
+     Main/Secondary/Detail write on the HAIR and EYEBROW pieces' own leaf components genuinely
+     recolors them, same mechanism, same palette. **Eyes are a hybrid**: the material assignment
+     itself (`MI_Eye`, confirmed identical across every Gatherer probe dump all session) is NOT one
+     of the 5 discrete `MI_EyeRound_<Color>_01` variants (Blue/Brown/Evil/Green/Grey -- confirmed
+     the EXHAUSTIVE list via `lbtestlistclass` against the live AssetRegistry, filtering out animal/
+     creature eyes and unrelated FX materials that share the substring "Eye") -- her native look
+     comes from `MI_Eye` ITSELF being ALSO CPD-driven, via `CPD15 EyeColor` on `actor.Mesh` directly
+     (a value of `3` showed no visible change, matching the exact same "unlucky value" trap Main
+     hit at `23` before `20` worked -- a proper sweep through 0/1/2/4/5/6/7 confirmed real, visible
+     color changes). So: cloth/hair/eyebrows all use the shared 24-entry `CRV_CharacterClothPalette`
+     via CPD03/04/05 on their own piece; eyes use CPD15 on the base mesh (their own value range,
+     not yet mapped to a named palette the way cloth's was); AND a separate discrete 5-variant
+     material swap exists for eyes as an alternate lever (`lbtesteye`) for a completely different
+     iris style, not just a palette-shifted version of the current one. Full recipe, palette table,
+     and every dead end along the way: `WINDROSE_MODDING_NOTES.md` SS2e's CPD addendum (search
+     "REOPENED AND SOLVED").
+
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).
   **The engine drops most repeat keydown events for these specific keys** before UE4SS
@@ -4161,7 +4206,19 @@ edit/despawn/undo/cycle toolkit. In order:
 - Archetype/skin/ethnicity randomization cannot be pinned pre-build — it re-randomizes on
   `BeginPlay` regardless (proven with 7 Warrior spawns rolling 5 different ethnicities
   despite a pinned preset). Any "make appearance deterministic" request runs into this.
-- **Outfit/hair COLOR cannot be changed on this mod's NPCs, at all** — confirmed dead three
+- **UPDATE (2026-08-31): outfit/garment COLOR CAN be changed after all** — the item-35 conclusion
+  below (`ColorParams`/`ColorController` dead, `CreateDynamicMaterialInstance` dead) is correct as
+  far as it went but was NOT the full picture: those are both config/material-instance layers, and
+  color is actually consumed one layer BELOW that, via Custom Primitive Data (CPD) — a plain
+  `int32`+`FVector4` write (`SetCustomPrimitiveDataVector4(3, {mainIdx, secondaryIdx, detailIdx, 0})`
+  on the equipped piece's own leaf mesh component), each value a 0..23 index into a real shared
+  palette asset (`/Game/Common/Textures/Gradients/CRV_CharacterClothPalette`). No crash risk, fully
+  confirmed live. See item 112's "Same-night follow-up #7"/§2e's CPD addendum in
+  `WINDROSE_MODDING_NOTES.md` for the full recipe before touching this again — don't re-derive it.
+  Everything below this line describes the OLDER, narrower conclusion (still true for those specific
+  mechanisms, just no longer the final word on color as a whole):
+- **Outfit/hair COLOR cannot be changed on this mod's NPCs via `ColorParams`/`ColorController`/
+  `CreateDynamicMaterialInstance`** — confirmed dead three
   separate ways (see item 35): per-controller tint and whole-look `ColorParams` palette both
   set + read back correctly post-build but never visibly render (the game only consumes
   color ONCE, during a pawn's initial construction); setting `ColorParams` pre-build instead

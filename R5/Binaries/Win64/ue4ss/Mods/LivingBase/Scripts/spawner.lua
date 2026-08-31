@@ -10858,6 +10858,54 @@ function Spawner.TestSpawnCustomBody(paramsPath, bodyMeshPath, say)
     return ok
 end
 
+-- Spawner.TestSpawnCustomBodyStill(paramsPath, bodyMeshPath, say) -- "lbtestbodystill <paramsPath>
+-- <bodyMeshPath>" (2026-08-31). Same as Spawner.TestSpawnCustomBody, plus one extra step:
+-- Spawner.SetAILogic(actor, false) right after the spawn+body-swap -- stops the AIController's own
+-- StateTree decision-making (a real, already-proven mechanism, used all session for the frozen
+-- Senkamati "idle" comparison rows) without touching the mesh/animation/composite in any way. Built
+-- because the live color/CPD tests tonight kept landing on a WALKING actor, making it hard to tell
+-- whether a color write actually changed anything mid-stride. Same target this whole investigation
+-- has been using (Gatherer base + custom Jeweler outfit + African body), just stationary.
+function Spawner.TestSpawnCustomBodyStill(paramsPath, bodyMeshPath, say)
+    say = say or function(m) print("[LivingBase] [test-bodystill] " .. tostring(m) .. "\n") end
+    local ok = Spawner.TestSpawnCustomBody(paramsPath, bodyMeshPath, say)
+    if not ok then
+        say("body spawn/swap failed -- not attempting to freeze AI.")
+        return false
+    end
+    -- TestSpawnCustomBody doesn't hand back the actor -- grab it the same way every other target-
+    -- picker in this file does (nearest spawn in front, since we just placed it there).
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say("spawned ok, but couldn't re-find it to freeze AI -- try lbfreeze manually.")
+        return true
+    end
+    local actor = e.actor
+    local okFreeze = Spawner.SetAILogic(actor, false)
+    say(string.format("SetAILogic(false) = %s -- she should be standing still now.", tostring(okFreeze)))
+    return true
+end
+
+-- Spawner.TestFreezeNearest(wantFreeze, say) -- "lbfreeze [on|off]" (2026-08-31). Standalone
+-- freeze/resume for whatever's nearest/locked. findNearestSpawnInFront is a spawner.lua-local --
+-- only callable from IN HERE, not from main.lua's own console-command handler (confirmed live:
+-- "attempt to call a nil value (global 'findNearestSpawnInFront')" when called from main.lua
+-- instead, the same forward-reference trap this file has hit several times before). main.lua's
+-- lbfreeze handler just passes the parsed boolean through to this.
+function Spawner.TestFreezeNearest(wantFreeze, say)
+    say = say or function(m) print("[LivingBase] [test-freeze] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local okSet = Spawner.SetAILogic(e.actor, not wantFreeze)
+    say(string.format("SetAILogic(%s) = %s", tostring(not wantFreeze), tostring(okSet)))
+    return okSet
+end
+
 -- Spawner.TestInspectFunctionSig(classPath, funcName, say) -- "lbinspectfn <ClassPath> <FuncName>"
 -- (2026-08-31). PURE READ, no invocation, no crash risk -- reflecting on a function's own
 -- parameter list is always safe (SS3l), only INVOKING an unfamiliar one is a real gamble.
@@ -11052,6 +11100,766 @@ function Spawner.TestSetPieceColor(bodyPart, colorVec, say)
     say(string.format("done. any SetVectorParameterValue succeeded: %s -- check visually + lbprobedump's probe-mat lines regardless (success here only means the call didn't error, same as the original ColorParams finding's own 'read back correct, never renders' gotcha).",
         tostring(anySuccess)))
     return anySuccess
+end
+
+-- Spawner.TestSetColorID(colorId, say) -- "lbtestcolorid <N>" (2026-08-31).
+-- NEW LEAD, found via lbprobedump's own property walk, not composite-system reflection at all:
+-- AR5AICharacter (confirmed in the SDK header dump, R5AICharacter.h) owns its OWN plain property
+--   UPROPERTY(BlueprintReadWrite, EditAnywhere, ReplicatedUsing=OnRep_ColorID) uint8 ColorID;
+-- sitting directly on the ACTOR, a full level above CompositeMeshComponent/ColorParams/
+-- ColorIndexesMap entirely -- everything tested tonight up to this point (top-level
+-- ColorCustomizationParams DataAsset edit: no effect; per-piece ColorIndexesMap DataAsset edit: no
+-- effect; CreateDynamicMaterialInstance in every tried argument shape: dead) was still inside the
+-- composite-mesh-config layer. This is a DIFFERENT layer -- a small per-instance seed living on the
+-- character itself, and the SAME pattern (uint8 ColorID + OnRep_ColorID) also exists verbatim on
+-- AR5AISimplePawn and as a plain field on FR5AIMobSharedData (R5AIMobSharedData.h) -- i.e. this
+-- looks like the project-wide "pick one of N pre-baked color themes for this spawn" mechanism, not
+-- something specific to humanoid NPCs. Matches RedFalcon's own "color theme, not a specific color,
+-- entity-specific" theory exactly (2026-08-31: "if we swap outfits and such on the gatherer,
+-- theyre always some shade of brown... I dont think they are clothing specific, i think they are
+-- entity specific").
+--
+-- The decompiled .cpp bodies in the header dump are stub-empty (OnRep_ColorID does nothing visible
+-- in the dump -- UHT dumps reconstruct signatures, not real function bodies), so what OnRep_ColorID
+-- actually DOES natively is unknown from static inspection alone -- has to be tested live.
+--
+-- ColorID is BlueprintReadWrite + EditAnywhere (not private/protected-only), so plain Lua property
+-- assignment (actor.ColorID = N) should be reflectable exactly like ArchetypePreset/other properties
+-- already written this session. OnRep_* functions normally only auto-fire when a REPLICATED value
+-- changes on a CLIENT receiving it over the network, not from a local same-machine write -- so this
+-- also manually calls actor:OnRep_ColorID() right after the property write, on the theory that
+-- forcing the same function the network would have called is safe and sufficient in a
+-- single-player/listen-server context (same "reassert what BeginPlay/replication would have done"
+-- shape as the archetype-preset and body-mesh work earlier tonight).
+function Spawner.TestSetColorID(colorId, say)
+    say = say or function(m) print("[LivingBase] [test-colorid] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+
+    local before = nil
+    local okRead = pcall(function() before = actor.ColorID end)
+    say(string.format("ColorID before: %s (readable=%s)", tostring(before), tostring(okRead)))
+
+    local wantId = tonumber(colorId)
+    if wantId == nil then
+        say(string.format("invalid colorId arg: %s", tostring(colorId)))
+        return false
+    end
+
+    local okSet, errSet = pcall(function() actor.ColorID = wantId end)
+    say(string.format("set actor.ColorID = %d: %s%s", wantId, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    if not okSet then return false end
+
+    local after = nil
+    pcall(function() after = actor.ColorID end)
+    say(string.format("ColorID after write (read back): %s", tostring(after)))
+
+    local okRep, errRep = pcall(function() actor:OnRep_ColorID() end)
+    say(string.format("actor:OnRep_ColorID() call: %s%s", tostring(okRep),
+        (not okRep) and (" err=" .. tostring(errRep)) or ""))
+
+    say("done -- check visually now (no reload needed, this is a live actor already in the world).")
+    return okSet
+end
+
+-- Spawner.TestSetCPDColor(bodyPart, colorVec, say) -- "lbtestcpd <bodyPart> <R> <G> <B>" (2026-08-31).
+-- NEW LEAD, found by reading the SDK header dump for PrimitiveComponent.h (the same header that gave
+-- CreateDynamicMaterialInstance's real signature) rather than guessing further inside the
+-- material-instance API that's now confirmed dead in every tried shape.
+--
+-- The actor's own property list (lbprobedump) already showed a component called
+-- `CPDEffectsComponent` (R5CustomPrimitiveDataEffectsComponent) on every AR5AICharacter --
+-- "CPD" = Custom Primitive Data, a real, common UE5 mechanism: a small per-INSTANCE float/vector
+-- buffer a material reads directly (via a "Custom Primitive Data" material-expression node) WITHOUT
+-- needing a MaterialInstanceDynamic at all. This would explain every negative result so far in one
+-- shot: no pre-baked color-variant materials exist because the base material is shared and TINTED
+-- per-instance via CPD; CreateDynamicMaterialInstance is the wrong tool entirely (nothing here is
+-- driven by a real material-instance parameter); and the per-piece ColorIndexesMap / top-level
+-- ColorGroups / ColorID edits/writes all landing with zero visible effect is consistent with those
+-- being upstream CONFIGURATION for a native step that computes and writes CPD values ONCE (at
+-- construction), rather than the CPD buffer itself.
+--
+-- PrimitiveComponent.h exposes this as ordinary BlueprintCallable functions -- same simple
+-- int32/FVector4 argument shapes used all over the rest of the engine API, NOT the same marshaling
+-- path that broke for CreateDynamicMaterialInstance (a different UFUNCTION, confirmed independently
+-- dead 3 separate times):
+--   SetVectorParameterForCustomPrimitiveData(FName ParameterName, FVector4 Value) -- resolves a
+--     material's own NAMED custom-primitive-data binding internally, no index guessing needed.
+--   GetCustomPrimitiveDataIndexForVectorParameter(FName ParameterName) const -- read-only lookup,
+--     returns -1 if the material has no such named CPD parameter. Called FIRST, for every candidate
+--     name, before writing anything -- this is presumably safe (pure lookup) and lets the log show
+--     which name (if any) the material actually recognizes, rather than guessing blind.
+--   SetCustomPrimitiveDataVector4(int32 DataIndex, FVector4 Value) -- raw index fallback, tried at
+--     indices 0..7 regardless of whether any named lookup hit, in case this material's CPD binding
+--     isn't exposed under a friendly name at all.
+-- FVector4's own fields are X/Y/Z/W (confirmed via the struct's UPROPERTY names in Engine headers),
+-- NOT R/G/B/A like FLinearColor (the shape lbtestcolor's colorVec already uses for
+-- SetVectorParameterValue) -- built fresh here rather than reusing colorVec's table directly.
+local CPD_COLOR_PARAM_CANDIDATES = {
+    "Main", "Secondary", "Detail", "MainColor", "SecondaryColor", "DetailColor",
+    "Color", "TintColor", "BaseColor", "PrimaryColor", "Color_Main", "Color_0", "Color_1", "Color_2",
+}
+function Spawner.TestSetCPDColor(bodyPart, colorVec, say)
+    say = say or function(m) print("[LivingBase] [test-cpd] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+
+    local vec4 = { X = colorVec.R or colorVec.X or 1.0, Y = colorVec.G or colorVec.Y or 0.0,
+        Z = colorVec.B or colorVec.Z or 0.0, W = colorVec.A or colorVec.W or 1.0 }
+    say(string.format("target piece found. Trying %d named CPD candidate(s), then raw index fallback 0..7.",
+        #CPD_COLOR_PARAM_CANDIDATES))
+
+    -- 2026-08-31, SECOND attempt after a real crash on the FIRST candidate name, first call, zero
+    -- log output past "target piece found" -- i.e. inside GetCustomPrimitiveDataIndexForVectorParameter
+    -- itself, a supposedly pure read-only lookup. The one thing this call did differently from
+    -- CreateDynamicMaterialInstance's own working leg: a plain Lua STRING was passed where the
+    -- function wants an FName. This file already has an established safe pattern for that exact
+    -- conversion (UEHelpers.FindOrAddFName, resolveViaAssetRegistry's own PackageName/AssetName
+    -- construction) that was skipped here originally -- using it now before concluding this is a
+    -- 4th independently-dead mechanism.
+    local anyNamedHit = false
+    for _, pname in ipairs(CPD_COLOR_PARAM_CANDIDATES) do
+        local fname = nil
+        local okName, errName = pcall(function() fname = UEHelpers.FindOrAddFName(pname) end)
+        if not okName then
+            say(string.format("  name '%s' -> FindOrAddFName FAILED: %s", pname, tostring(errName)))
+        else
+            local idx = nil
+            local okGet, errGet = pcall(function() idx = target:GetCustomPrimitiveDataIndexForVectorParameter(fname) end)
+            local idxNum = tonumber(idx)
+            say(string.format("  name '%s' -> index %s (call ok=%s%s)", pname, tostring(idx), tostring(okGet),
+                (not okGet) and (" err=" .. tostring(errGet)) or ""))
+            if okGet and idxNum ~= nil and idxNum >= 0 then
+                anyNamedHit = true
+                local okSet, errSet = pcall(function() target:SetVectorParameterForCustomPrimitiveData(fname, vec4) end)
+                say(string.format("    SetVectorParameterForCustomPrimitiveData('%s') = %s%s", pname, tostring(okSet),
+                    (not okSet) and (" err=" .. tostring(errSet)) or ""))
+            end
+        end
+    end
+
+    say("raw index fallback (0..7), regardless of named-lookup results above:")
+    for idx = 0, 7 do
+        local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataVector4(idx, vec4) end)
+        say(string.format("  SetCustomPrimitiveDataVector4(%d) = %s%s", idx, tostring(okSet),
+            (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    end
+
+    say(string.format("done (anyNamedHit=%s) -- check visually now, no reload needed.", tostring(anyNamedHit)))
+    return true
+end
+
+-- Spawner.TestSetCPDIndex(bodyPart, idx, colorVec, say) -- "lbtestcpdidx <bodyPart> <index> <R> <G> <B>"
+-- (2026-08-31). BREAKTHROUGH CONFIRMED: Spawner.TestSetCPDColor's blind "write red into every raw
+-- index 0..7" fallback produced RedFalcon's first ever VISIBLE color change tonight ("looks like a
+-- moldy white and brown, but definitely changed") -- CPD is a real, live-writable mechanism for this
+-- mesh. But writing all 8 indices identically at once also very likely stomped OTHER CPD-driven
+-- effects sharing this same component's buffer (R5CustomPrimitiveDataEffectsComponent on the actor
+-- suggests weathering/wear/blood-mask slots live in this same array) -- the "moldy" look is
+-- consistent with a correct-ish tint blended with corrupted wetness/dirt-mask channels, not with the
+-- color mechanism itself being wrong. This isolates ONE index at a time (leaving the rest of the CPD
+-- array untouched) to find which single slot is the actual color channel, and confirm a clean
+-- (non-moldy) result once found.
+function Spawner.TestSetCPDIndex(bodyPart, idx, colorVec, say)
+    say = say or function(m) print("[LivingBase] [test-cpdidx] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+
+    local wantIdx = tonumber(idx)
+    if wantIdx == nil then
+        say(string.format("invalid index arg: %s", tostring(idx)))
+        return false
+    end
+    local vec4 = { X = colorVec.R or colorVec.X or 1.0, Y = colorVec.G or colorVec.Y or 0.0,
+        Z = colorVec.B or colorVec.Z or 0.0, W = colorVec.A or colorVec.W or 1.0 }
+
+    local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataVector4(wantIdx, vec4) end)
+    say(string.format("SetCustomPrimitiveDataVector4(%d, {%.2f,%.2f,%.2f,%.2f}) = %s%s", wantIdx,
+        vec4.X, vec4.Y, vec4.Z, vec4.W, tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    say("done -- check visually now, no reload needed. Only this ONE index was touched.")
+    return okSet
+end
+
+-- Spawner.TestSetCPDPaletteColor(bodyPart, mainIdx, secondaryIdx, detailIdx, say) --
+-- "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>" (2026-08-31). THE REAL MECHANISM,
+-- confirmed via offline inspection, not guessing: extracted the equipped piece's actual master
+-- material (MI_ArmorRegular_01 -> parent M_Common_Cloth, via retoc + UAssetGUI's undocumented CLI
+-- `tojson` mode) and read its own NameMap, which spells out the FULL Custom Primitive Data layout as
+-- designer comments:
+--   CPD00 RandomID              CPD08 BloodWounds Intensity
+--   CPD03 Cloth/Hair MainColor  CPD11 Effect FireWeapon
+--   CPD04 Cloth SecondaryColor  CPD12 Effect SharpWeapon
+--   CPD05 Cloth DetailColor     CPD15 EyeColor, CPD16-23 BodyDecor/FaceDecor/SkinAging
+-- This explains BOTH of tonight's earlier CPD results in one shot: Spawner.TestSetCPDIndex's "moldy
+-- blood+mud" progression was hitting RandomID/Dirt/BloodWounds directly (index 0-7 as tried), and
+-- crucially `SetCustomPrimitiveDataVector4(idx, ...)` does NOT address 8 independent "slots" the way
+-- that test assumed -- idx is a flat FLOAT offset, and a Vector4 write spans 4 CONSECUTIVE floats, so
+-- those writes were overlapping into each other AND into unrelated effect slots the whole time.
+-- MainColor/SecondaryColor/DetailColor sit at exactly consecutive floats 3/4/5, so ONE
+-- SetCustomPrimitiveDataVector4(3, {Main, Secondary, Detail, 0}) call addresses precisely those 3
+-- slots and nothing else -- no Dirt(7)/BloodWounds(8) contamination this time.
+--
+-- Also confirms the VALUE SHAPE was wrong before: these are the SAME 0..23 PALETTE INDEX values as
+-- FR5BLCharacterColorData.Value (SelectedColors/ColorData, already found and confirmed to differ per
+-- NPC: Gatherer's Torso=8/5/6, BotC's Torso=23/4/2) -- NOT raw 0..1 RGB like the earlier {1,0,0} red
+-- attempt. The shader reads this float and looks it up in a CurveLinearColorAtlas (a real UE color-
+-- palette-texture asset type, confirmed present in M_Common_Cloth's own NameMap) to get the actual
+-- RGB. Pass BotC's own real values onto Gatherer's own actor for the cleanest possible confirmation
+-- test, rather than an arbitrary guess.
+function Spawner.TestSetCPDPaletteColor(bodyPart, mainIdx, secondaryIdx, detailIdx, say)
+    say = say or function(m) print("[LivingBase] [test-cpdcolor] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+
+    local m = tonumber(mainIdx) or 0
+    local s = tonumber(secondaryIdx) or 0
+    local d = tonumber(detailIdx) or 0
+    local vec4 = { X = m, Y = s, Z = d, W = 0.0 }
+    say(string.format("writing CPD floats 3/4/5 (Main/Secondary/Detail) = %d/%d/%d via ONE SetCustomPrimitiveDataVector4(3, ...) call.",
+        m, s, d))
+    local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataVector4(3, vec4) end)
+    say(string.format("SetCustomPrimitiveDataVector4(3, {%d,%d,%d,0}) = %s%s", m, s, d, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    say("done -- check visually now, no reload needed.")
+    return okSet
+end
+
+-- Spawner.TestSetCPDFloat(bodyPart, idx, value, say) -- "lbtestcpdfloat <bodyPart> <index> <value>"
+-- (2026-08-31). Isolated SINGLE-FLOAT write (SetCustomPrimitiveDataFloat, not Vector4) -- ZERO
+-- overlap with neighboring indices, unlike every earlier CPD test tonight (Spawner.TestSetCPDIndex
+-- and Spawner.TestSetCPDPaletteColor both used SetCustomPrimitiveDataVector4, which writes 4
+-- CONSECUTIVE floats per call).
+--
+-- Re-reading TestSetCPDIndex's own original sequence (index0 X=1 -> "Only Blood", index1 X=1 ->
+-- "Blood+little mud", index2 X=1 -> "Blood+full mud", index3-7 X=1 -> "same as index2") through THAT
+-- lens: each call was cumulative on the SAME live actor (not reset between calls), so by index7 floats
+-- 0 THROUGH 7 were ALL already 1 -- consistent with blood/dirt actually living at floats 0-2 (not
+-- 7-8 as M_Common_Cloth's own comment claimed), the comment being stale, OR MainColor/Secondary/
+-- Detail at floats 3-5 simply not producing a visually distinct jump from palette index 0 to 1. Can't
+-- tell which from that data -- this tool exists to find out empirically, one clean float at a time,
+-- rather than trust the comment mapping any further.
+function Spawner.TestSetCPDFloat(bodyPart, idx, value, say)
+    say = say or function(m) print("[LivingBase] [test-cpdfloat] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then
+        say("BuildedCompositeMeshes not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    local target = nil
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() target = el.EquippedMesh end)
+                break
+            end
+        end
+    end
+    if not (target and target:IsValid()) then
+        say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        return false
+    end
+
+    local wantIdx = tonumber(idx)
+    local wantValue = tonumber(value)
+    if wantIdx == nil or wantValue == nil then
+        say(string.format("invalid args: index=%s value=%s", tostring(idx), tostring(value)))
+        return false
+    end
+    local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataFloat(wantIdx, wantValue) end)
+    say(string.format("SetCustomPrimitiveDataFloat(%d, %.2f) = %s%s", wantIdx, wantValue, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    say("done -- check visually now, no reload needed. Only this ONE float was touched, zero overlap.")
+    return okSet
+end
+
+-- Spawner.TestSetBaseCPDFloat(idx, value, say) -- "lbtestbasecpd <index> <value>" (2026-08-31).
+-- Same isolated single-float CPD write as Spawner.TestSetCPDFloat, but targets actor.Mesh (the
+-- LEADER/base body component) directly instead of looking up a BuildedCompositeMeshes piece by
+-- BodyPart. Needed for EyeColor (CPD15, per M_Common_Cloth's own comment map) -- eyes are a
+-- material SLOT on the base body mesh itself (MI_Eye, confirmed in every probe-mesh dump tonight
+-- sitting alongside the skin/hair/mouth materials on CharacterMesh0), not a separate
+-- BuildedCompositeMeshes entry with its own BodyPart, so the bodyPart-lookup tool can't reach it.
+function Spawner.TestSetBaseCPDFloat(idx, value, say)
+    say = say or function(m) print("[LivingBase] [test-basecpd] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return false
+    end
+    local wantIdx = tonumber(idx)
+    local wantValue = tonumber(value)
+    if wantIdx == nil or wantValue == nil then
+        say(string.format("invalid args: index=%s value=%s", tostring(idx), tostring(value)))
+        return false
+    end
+    local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataFloat(wantIdx, wantValue) end)
+    say(string.format("actor.Mesh:SetCustomPrimitiveDataFloat(%d, %.2f) = %s%s", wantIdx, wantValue, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    say("done -- check visually now, no reload needed.")
+    return okSet
+end
+
+-- Spawner.TestSetEyeColor(colorName, say) -- "lbtesteye <colorName>" (2026-08-31). Eyes are NOT
+-- CPD-driven -- confirmed by lbtestbasecpd(15, ...) doing nothing -- there's a small, discrete,
+-- pre-made set of eye-color material INSTANCES instead
+-- (/Game/Character/Shaders/InstanceMaterials/Eyes/Round/MI_EyeRound_<Color>_01: Blue/Brown/Evil/
+-- Green/Grey), the SAME "swap to an existing variant" mechanism already proven safe for skin tone
+-- (a plain SetMaterial call, nothing like the crashy CreateDynamicMaterialInstance). Finds the eye
+-- material SLOT on actor.Mesh by checking each slot's CURRENT material name for "Eye" (case-
+-- insensitive), then swaps just that slot.
+--
+-- CONFIRMED EXHAUSTIVE 2026-08-31 via lbtestlistclass against the live AssetRegistry (not just an
+-- offline pak-name-substring guess): every MaterialInstanceConstant with "Eye" in its path, across
+-- the WHOLE game, is either one of these 5 human eye-color variants, the plain base `MI_Eye`
+-- itself (no color suffix -- almost certainly the Gatherer/every un-recolored NPC's own native
+-- material, since none of the 5 named variants matched what RedFalcon actually sees), an animal/
+-- creature eye material (Dodo/Crocodile/Wolf/Goat/Boar/SwampToad -- unrelated skeletons), or an
+-- unrelated FX/post-process material whose name just happens to contain "Eye"
+-- ("...StrictEyeAdaptation"/"...DisableDepth..."). There is no 6th human eye COLOR beyond these 5 --
+-- "Default"/"Native" (below) is the plain base material, not a recolor.
+local EYE_COLOR_NAMES = { "Blue", "Brown", "Evil", "Green", "Grey" }
+local EYE_DEFAULT_PATH = "/Game/Character/Shaders/InstanceMaterials/Eyes/MI_Eye.MI_Eye"
+function Spawner.TestSetEyeColor(colorName, say)
+    say = say or function(m) print("[LivingBase] [test-eye] " .. tostring(m) .. "\n") end
+    if not colorName then
+        say("usage: lbtesteye <Blue|Brown|Evil|Green|Grey|Default>")
+        return false
+    end
+    local isDefault = (colorName:lower() == "default" or colorName:lower() == "native")
+    local matched = nil
+    if not isDefault then
+        for _, n in ipairs(EYE_COLOR_NAMES) do
+            if n:lower() == colorName:lower() then matched = n; break end
+        end
+        if not matched then
+            say(string.format("unknown color '%s' -- known: %s, Default", colorName, table.concat(EYE_COLOR_NAMES, ", ")))
+            return false
+        end
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return false
+    end
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    local eyeSlot = nil
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = target:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm and nm:lower():find("eye") then eyeSlot = slot; break end
+        end
+    end
+    if eyeSlot == nil then
+        say(string.format("no material slot on actor.Mesh looked like an eye material (checked %d slots).", numMats))
+        return false
+    end
+    local path
+    if isDefault then
+        path = EYE_DEFAULT_PATH
+    else
+        local assetName = "MI_EyeRound_" .. matched .. "_01"
+        path = "/Game/Character/Shaders/InstanceMaterials/Eyes/Round/" .. assetName .. "." .. assetName
+    end
+    local newMat = resolveAsset(path)
+    if not (newMat and newMat:IsValid()) then
+        say("could not resolve " .. path)
+        return false
+    end
+    local okSet, errSet = pcall(function() target:SetMaterial(eyeSlot, newMat) end)
+    say(string.format("SetMaterial(%d, %s) = %s%s", eyeSlot, (matched or "Default"), tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    say("done -- check visually now, no reload needed.")
+    return okSet
+end
+
+-- Spawner.TestProbeSelectedColors(say) -- "lbprobecolors" (2026-08-31). PURE READ, no spawn/write.
+--
+-- RedFalcon's own pushback on the "baked into the material, not recolorable" theory: "we have
+-- established i can use the exact same command to set an article of clothing on an npc, and
+-- dependant on that NPC, not the article of clothing, it is a different color." Correct, and it
+-- sent this investigation one level up the chain it hadn't checked yet.
+--
+-- ArchetypePreset itself (UR5CharacterCustomizationPresetArchetype, confirmed via SDK header dump)
+-- owns PresetGroups -> GroupOptions -> ColorData (TArray<FR5BLCharacterColorData>, one entry per
+-- BodyPart: {BodyPart, Value, bOverrideDefaultColor}) -- a genuinely per-ARCHETYPE (i.e. per-NPC-class)
+-- color source, distinct from both the top-level Hero ColorCustomizationParams config AND the
+-- per-piece ColorIndexesMap, neither of which showed any effect tonight. This would exactly explain
+-- "same piece, different NPC, different color."
+--
+-- BUT PresetGroups is a TArray<TSoftObjectPtr<...>> -- and TSoftObjectPtr fields are a CONFIRMED DEAD
+-- END in this UE4SS build (Spawner.SetLootMesh's own header comment, 2026-08-17: LoadSynchronous/
+-- IsValid/IsNull/ToString/GetPath/Get all throw "attempt to call a TSoftObjectPtrUserdata value",
+-- and even plain field access like .AssetPathName just hands back the same opaque userdata --
+-- there is no way to resolve one from Lua). Also, UR5CharacterCustomizationPresetArchetype extends
+-- UR5JsonRuntimePDA (Transient) -- a genuinely offline-unreachable asset besides: a full-content
+-- retoc scan across EVERY pak in Content/Paks for the literal substring "PresetArchetype1" found
+-- ZERO matches (checked 2026-08-31), meaning whatever backs this class isn't sitting in the pak as
+-- ordinary cooked bytes retoc can find at all -- almost certainly synthesized/parsed at runtime, not
+-- statically inspectable the way the two DataAsset edits earlier tonight were.
+--
+-- The way around BOTH walls at once: don't walk the archetype/preset chain itself -- by the time a
+-- composite mesh is actually BUILT for a live NPC, everything from that chain (mesh picks, color
+-- picks) has already been RESOLVED into a concrete, plain (non-soft-ptr) struct sitting directly on
+-- the CompositeMeshComponent itself: `CurrentCustomizationData`/`SavedCustomizationData`
+-- (ScriptStruct R5BusinessRules.R5BLCharacterCustomizationData -- already seen, unexplored, in every
+-- lbprobedump run tonight). That struct's OWN `SelectedColors` field is a TArray<FR5BLCharacterColorData>
+-- -- the SAME {BodyPart, Value, bOverrideDefaultColor} shape as the archetype's ColorData, but a
+-- plain array on an object we already have full read/write Lua access to, no soft-ptr chain
+-- involved. This reads BOTH CurrentCustomizationData and SavedCustomizationData's SelectedColors
+-- for the nearest/locked actor -- if Value differs meaningfully between two DIFFERENT NPCs wearing
+-- the SAME piece (Gatherer vs a naturally-red NPC), that's the smoking gun confirming this is the
+-- real per-NPC color source, before attempting any write.
+function Spawner.TestProbeSelectedColors(say)
+    say = say or function(m) print("[LivingBase] [probe-colors] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+
+    local function dumpSelectedColors(structFieldName)
+        local struct = nil
+        local okRead = pcall(function() struct = comp[structFieldName] end)
+        if not (okRead and struct) then
+            say(string.format("%s: not readable", structFieldName))
+            return
+        end
+        local arr = nil
+        pcall(function() arr = struct.SelectedColors end)
+        if not arr then
+            say(string.format("%s.SelectedColors: not readable", structFieldName))
+            return
+        end
+        local n = 0
+        pcall(function() n = arr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #arr end) end
+        say(string.format("%s.SelectedColors: %d entr%s", structFieldName, n, n == 1 and "y" or "ies"))
+        for i = 1, n do
+            local el = nil
+            pcall(function() el = arr[i] end)
+            if el == nil then pcall(function() el = arr:Get(i) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            if el then
+                local bp, val, ov = nil, nil, nil
+                pcall(function() bp = el.BodyPart end)
+                pcall(function() val = el.Value end)
+                pcall(function() ov = el.bOverrideDefaultColor end)
+                say(string.format("  [%d] BodyPart=%s Value=%s bOverrideDefaultColor=%s",
+                    i, tostring(bp), tostring(val), tostring(ov)))
+            else
+                say(string.format("  [%d] (unreadable element)", i))
+            end
+        end
+    end
+
+    dumpSelectedColors("CurrentCustomizationData")
+    dumpSelectedColors("SavedCustomizationData")
+    say("done -- pure read, nothing changed.")
+    return true
+end
+
+-- Spawner.TestSetSelectedColor(bodyPart, newValue, say) -- "lbtestselcolor <bodyPart> <newValue>"
+-- (2026-08-31). GENUINELY UNTESTED, REAL CRASH RISK -- first live write attempt following
+-- Spawner.TestProbeSelectedColors's own smoking-gun finding: SavedCustomizationData.SelectedColors
+-- genuinely DIFFERS per NPC for the identical BodyPart (Gatherer's Torso: 8/5/6, BotC's Torso:
+-- 23/4/2) -- the first color-data location tonight that actually correlates with the visible
+-- difference RedFalcon pointed out ("dependant on that NPC, not the article of clothing, it is a
+-- different color").
+--
+-- Two genuinely unknown things this tests at once (unavoidable -- there's no smaller safe slice):
+--   1. Whether writing el.Value on a TArray<FStruct> element accessed via arr[i] actually persists
+--      back into the live array, or is a copy-semantics dead end (the exact trap that already burned
+--      ColorParams/per-controller writes earlier tonight -- "read back correct, never renders").
+--      Immediately reads back right after writing to catch this specific failure mode.
+--   2. Whether SetBody(FGameplayTag InBodyType, ER5BLCharacterSex InBodySex, bool bForceLoad) -- the
+--      most direct-looking rebuild trigger on R5CompositeMeshComponent (confirmed via the SDK header
+--      dump) -- actually re-reads SavedCustomizationData.SelectedColors when forced, as opposed to
+--      re-pulling from ArchetypePreset/DefaultParams and ignoring our edit (the SAME reassertion
+--      pattern that made the archetype/color walls look dead earlier, before the CPD and body-mesh
+--      wins showed operating on the right underlying data CAN work). Passes the actor's OWN current
+--      GetBodyType()/GetBodySex() back in (read first) so this is a "reload with edits" call, not an
+--      actual body-type change.
+function Spawner.TestSetSelectedColor(bodyPart, newValue, say)
+    say = say or function(m) print("[LivingBase] [test-selcolor] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return false
+    end
+
+    local struct = nil
+    pcall(function() struct = comp.SavedCustomizationData end)
+    if not struct then
+        say("SavedCustomizationData not readable")
+        return false
+    end
+    local arr = nil
+    pcall(function() arr = struct.SelectedColors end)
+    if not arr then
+        say("SavedCustomizationData.SelectedColors not readable")
+        return false
+    end
+    local n = 0
+    pcall(function() n = arr:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #arr end) end
+
+    local wantBodyPart = tonumber(bodyPart)
+    local wantValue = tonumber(newValue)
+    if wantBodyPart == nil or wantValue == nil then
+        say(string.format("invalid args: bodyPart=%s newValue=%s", tostring(bodyPart), tostring(newValue)))
+        return false
+    end
+
+    local touched = 0
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = arr[i] end)
+        if el == nil then pcall(function() el = arr:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                local before = nil
+                pcall(function() before = el.Value end)
+                local okSet, errSet = pcall(function() el.Value = wantValue end)
+                local after = nil
+                pcall(function() after = el.Value end)
+                say(string.format("  [%d] BodyPart=%s: Value %s -> wrote %s -> read back %s (write call ok=%s%s)",
+                    i, tostring(bp), tostring(before), tostring(wantValue), tostring(after), tostring(okSet),
+                    (not okSet) and (" err=" .. tostring(errSet)) or ""))
+                if okSet then touched = touched + 1 end
+            end
+        end
+    end
+    if touched == 0 then
+        say(string.format("no SelectedColors entries found for BodyPart=%s -- nothing written.", tostring(bodyPart)))
+        return false
+    end
+
+    -- Re-read directly from the array (not the stale `el` local) to double-check persistence.
+    say("re-reading fresh from the array after writing (catches copy-semantics dead ends):")
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = arr[i] end)
+        if el == nil then pcall(function() el = arr:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp, val = nil, nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                pcall(function() val = el.Value end)
+                say(string.format("  [%d] BodyPart=%s Value=%s", i, tostring(bp), tostring(val)))
+            end
+        end
+    end
+
+    local bodyType, bodySex = nil, nil
+    pcall(function() bodyType = comp:GetBodyType() end)
+    pcall(function() bodySex = comp:GetBodySex() end)
+    say(string.format("current GetBodyType()=%s GetBodySex()=%s -- calling SetBody() with the SAME values + bForceLoad=true to try to force a rebuild.",
+        tostring(bodyType), tostring(bodySex)))
+    local okRebuild, errRebuild = pcall(function() comp:SetBody(bodyType, bodySex, true) end)
+    say(string.format("SetBody(sameType, sameSex, true) = %s%s", tostring(okRebuild),
+        (not okRebuild) and (" err=" .. tostring(errRebuild)) or ""))
+
+    say(string.format("done (%d entries written). Check visually now.", touched))
+    return true
 end
 
 -- Spawner.ProbeClassCustomization(classPath, say) -- backing function for "lbprobeclass". RedFalcon

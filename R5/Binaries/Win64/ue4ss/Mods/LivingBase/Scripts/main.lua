@@ -3130,6 +3130,63 @@ else
     log("lbtestbody unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestbodystill <paramsPath> <bodyMeshPath>" (2026-08-31) -- same as lbtestbody,
+-- plus SetAILogic(actor, false) right after -- a stationary version for judging visual changes
+-- (color, materials) without a walking animation making it hard to tell. See
+-- Spawner.TestSpawnCustomBodyStill's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbodystill", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbodystill] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsArg = Parameters and Parameters[1]
+            local bodyMeshArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyStill(paramsArg, bodyMeshArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbodystill <paramsPath> <bodyMeshPath>")
+    registerCmdInfo("lbtestbodystill", "lbtestbodystill <paramsPath> <bodyMeshPath>", "Same as lbtestbody, then freezes the AI (StopLogic) so the actor stands still -- easier to judge visual changes on.")
+else
+    log("lbtestbodystill unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbfreeze [on|off]" (2026-08-31) -- freezes/unfreezes the nearest/locked actor's
+-- AI (StopLogic/StartLogic) without touching mesh/animation/composite at all. Defaults to freezing
+-- (off = resume). Standalone version of the freeze step lbtestbodystill already does automatically,
+-- for use on any already-placed actor (e.g. the real Gatherer/BotC comparisons from tonight's color
+-- investigation).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfreeze", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbfreeze] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local modeArg = (Parameters and Parameters[1] or "on"):lower()
+            local wantFreeze = not (modeArg == "off" or modeArg == "resume" or modeArg == "unfreeze")
+            local ok, err = pcall(function() Spawner.TestFreezeNearest(wantFreeze, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbfreeze [on|off]")
+    registerCmdInfo("lbfreeze", "lbfreeze [on|off]", "Freezes (default) or resumes ('off') the nearest/locked actor's AI (StopLogic/StartLogic) -- stands still for easier visual inspection.")
+else
+    log("lbfreeze unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbinspectfn <ClassPath> <FuncName>" (2026-08-31) -- PURE READ, no invocation.
 -- See Spawner.TestInspectFunctionSig's own header comment.
 if RegisterConsoleCommandHandler then
@@ -3190,6 +3247,301 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestcolor", "lbtestcolor <bodyPart> <R> <G> <B>", "GENUINELY UNTESTED, REAL CRASH RISK: creates a dynamic material instance on a BuildedCompositeMeshes piece, tries several color parameter names.")
 else
     log("lbtestcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcolorid <N>" (2026-08-31) -- NEW LEAD found via lbprobedump's own property
+-- walk: AR5AICharacter owns a plain `uint8 ColorID` (ReplicatedUsing=OnRep_ColorID), a layer ABOVE
+-- CompositeMeshComponent/ColorParams entirely -- see Spawner.TestSetColorID's own header comment for
+-- the full reasoning. Aims at the nearest/locked actor in front (same target convention as
+-- lbtestcolor/lbtestdecor). Sets actor.ColorID directly then manually calls actor:OnRep_ColorID().
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcolorid", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcolorid] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local idArg = Parameters and Parameters[1]
+            if not idArg then
+                say("usage: lbtestcolorid <N, e.g. 0-9>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.TestSetColorID(idArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcolorid <N>")
+    registerCmdInfo("lbtestcolorid", "lbtestcolorid <N>", "Sets the nearest/locked actor's AR5AICharacter.ColorID property directly and calls OnRep_ColorID() to force re-apply. New lead above the composite-mesh-config layer entirely.")
+else
+    log("lbtestcolorid unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcpd <bodyPart> <R> <G> <B>" (2026-08-31) -- NEW LEAD found via
+-- PrimitiveComponent.h's own Custom Primitive Data API (SetVectorParameterForCustomPrimitiveData /
+-- SetCustomPrimitiveDataVector4), a completely different mechanism than the confirmed-dead
+-- CreateDynamicMaterialInstance path. See Spawner.TestSetCPDColor's own header comment for the full
+-- reasoning. Aims at the nearest/locked actor in front, same target convention as lbtestcolor.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcpd", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcpd] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local rArg = tonumber(Parameters and Parameters[2]) or 1.0
+            local gArg = tonumber(Parameters and Parameters[3]) or 0.0
+            local bArg = tonumber(Parameters and Parameters[4]) or 0.0
+            if not bodyPartArg then
+                say("usage: lbtestcpd <bodyPart enum int, e.g. 7 for Torso> <R 0-1> <G 0-1> <B 0-1>")
+                return true
+            end
+            local colorVec = { R = rArg, G = gArg, B = bArg, A = 1.0 }
+            local ok, err = pcall(function() Spawner.TestSetCPDColor(bodyPartArg, colorVec, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcpd <bodyPart> <R> <G> <B>")
+    registerCmdInfo("lbtestcpd", "lbtestcpd <bodyPart> <R> <G> <B>", "Tries the Custom Primitive Data color API (SetVectorParameterForCustomPrimitiveData + raw index fallback) on a BuildedCompositeMeshes piece -- new lead above the material-instance dead end.")
+else
+    log("lbtestcpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcpdidx <bodyPart> <index> <R> <G> <B>" (2026-08-31) -- BREAKTHROUGH
+-- ISOLATION TEST. lbtestcpd's blind "write all 8 raw indices at once" fallback produced the first
+-- ever visible color change tonight ("moldy white and brown, but definitely changed") -- this
+-- writes only ONE CPD index at a time so the real color slot can be found and confirmed clean
+-- (without the moldy artifacting from stomping other effect slots at the same time). See
+-- Spawner.TestSetCPDIndex's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcpdidx", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcpdidx] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local idxArg = Parameters and Parameters[2]
+            local rArg = tonumber(Parameters and Parameters[3]) or 1.0
+            local gArg = tonumber(Parameters and Parameters[4]) or 0.0
+            local bArg = tonumber(Parameters and Parameters[5]) or 0.0
+            if not (bodyPartArg and idxArg) then
+                say("usage: lbtestcpdidx <bodyPart enum int, e.g. 7 for Torso> <CPD index 0-7> <R 0-1> <G 0-1> <B 0-1>")
+                return true
+            end
+            local colorVec = { R = rArg, G = gArg, B = bArg, A = 1.0 }
+            local ok, err = pcall(function() Spawner.TestSetCPDIndex(bodyPartArg, idxArg, colorVec, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcpdidx <bodyPart> <index> <R> <G> <B>")
+    registerCmdInfo("lbtestcpdidx", "lbtestcpdidx <bodyPart> <index> <R> <G> <B>", "Writes ONE CPD index at a time (isolation test) to find which slot is the real color channel without stomping other effect slots.")
+else
+    log("lbtestcpdidx unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>" (2026-08-31) --
+-- THE REAL MECHANISM. M_Common_Cloth's own NameMap (extracted+converted offline via retoc +
+-- UAssetGUI's undocumented `tojson` CLI mode) spells out CPD03/04/05 = Cloth Main/Secondary/
+-- DetailColor, each a 0..23 PALETTE INDEX (same Value field as SelectedColors/ColorData), looked up
+-- in a CurveLinearColorAtlas by the shader. Writes exactly those 3 floats in ONE
+-- SetCustomPrimitiveDataVector4(3, ...) call -- no Dirt/BloodWounds contamination this time. See
+-- Spawner.TestSetCPDPaletteColor's own header comment for the full reasoning.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcpdcolor", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcpdcolor] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local mainArg = Parameters and Parameters[2]
+            local secArg = Parameters and Parameters[3]
+            local detArg = Parameters and Parameters[4]
+            if not (bodyPartArg and mainArg) then
+                say("usage: lbtestcpdcolor <bodyPart enum int, e.g. 7 for Torso> <mainIdx 0-23> <secondaryIdx 0-23> <detailIdx 0-23>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.TestSetCPDPaletteColor(bodyPartArg, mainArg, secArg, detArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>")
+    registerCmdInfo("lbtestcpdcolor", "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>", "Writes the real CPD03/04/05 Main/Secondary/DetailColor palette indices (0-23) in one clean Vector4 write -- confirmed via offline material inspection.")
+else
+    log("lbtestcpdcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcpdfloat <bodyPart> <index> <value>" (2026-08-31) -- isolated SINGLE-FLOAT
+-- CPD write (SetCustomPrimitiveDataFloat), zero overlap with neighboring indices, for empirically
+-- bisecting the real color index rather than trusting M_Common_Cloth's own (possibly stale) comment
+-- labels any further. See Spawner.TestSetCPDFloat's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcpdfloat", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestcpdfloat] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local idxArg = Parameters and Parameters[2]
+            local valueArg = Parameters and Parameters[3]
+            if not (bodyPartArg and idxArg and valueArg) then
+                say("usage: lbtestcpdfloat <bodyPart enum int, e.g. 7 for Torso> <CPD float index> <value>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.TestSetCPDFloat(bodyPartArg, idxArg, valueArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcpdfloat <bodyPart> <index> <value>")
+    registerCmdInfo("lbtestcpdfloat", "lbtestcpdfloat <bodyPart> <index> <value>", "Writes ONE isolated CPD float (no overlap) to empirically bisect the real color index.")
+else
+    log("lbtestcpdfloat unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestbasecpd <index> <value>" (2026-08-31) -- same as lbtestcpdfloat but
+-- targets actor.Mesh (the base body component) directly, for CPD channels that live on the base
+-- mesh's own material slots (e.g. CPD15 EyeColor, on the MI_Eye slot) rather than a
+-- BuildedCompositeMeshes piece. See Spawner.TestSetBaseCPDFloat's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbasecpd", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbasecpd] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local idxArg = Parameters and Parameters[1]
+            local valueArg = Parameters and Parameters[2]
+            if not (idxArg and valueArg) then
+                say("usage: lbtestbasecpd <CPD float index, e.g. 15 for EyeColor> <value>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.TestSetBaseCPDFloat(idxArg, valueArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbasecpd <index> <value>")
+    registerCmdInfo("lbtestbasecpd", "lbtestbasecpd <index> <value>", "Writes ONE isolated CPD float on actor.Mesh directly (base body component) -- for EyeColor (CPD15) and similar base-mesh-slot channels.")
+else
+    log("lbtestbasecpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtesteye <colorName>" (2026-08-31) -- eyes aren't CPD-driven; swaps the eye
+-- material slot on actor.Mesh to one of the game's own discrete pre-made eye-color materials
+-- (Blue/Brown/Evil/Green/Grey), the same safe swap mechanism already proven for skin tone. See
+-- Spawner.TestSetEyeColor's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtesteye", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtesteye] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local colorArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSetEyeColor(colorArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtesteye <colorName>")
+    registerCmdInfo("lbtesteye", "lbtesteye <Blue|Brown|Evil|Green|Grey|Default>", "Swaps the eye material slot on actor.Mesh to a pre-made eye-color variant (or back to the plain native default) -- eyes aren't CPD-driven, unlike cloth/hair/eyebrows.")
+else
+    log("lbtesteye unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobecolors" (2026-08-31) -- PURE READ, no spawn/write. Reads the nearest/
+-- locked actor's CompositeMeshComponent.CurrentCustomizationData/SavedCustomizationData.SelectedColors
+-- -- a per-NPC, non-soft-ptr color source one level above everything tried tonight. See
+-- Spawner.TestProbeSelectedColors's own header comment for the full reasoning.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobecolors", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobecolors] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestProbeSelectedColors(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobecolors")
+    registerCmdInfo("lbprobecolors", "lbprobecolors", "PURE READ: dumps the nearest/locked actor's CurrentCustomizationData/SavedCustomizationData.SelectedColors (BodyPart/Value/bOverrideDefaultColor) -- a per-NPC color source above the material/CPD layer.")
+else
+    log("lbprobecolors unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestselcolor <bodyPart> <newValue>" (2026-08-31) -- GENUINELY UNTESTED, REAL
+-- CRASH RISK. Writes SavedCustomizationData.SelectedColors[*].Value for the given BodyPart on the
+-- nearest/locked actor, then calls SetBody() with the actor's own current type/sex + bForceLoad=true
+-- to try to force a rebuild. See Spawner.TestSetSelectedColor's own header comment for the full
+-- reasoning -- this follows directly from lbprobecolors's smoking-gun finding (SelectedColors
+-- genuinely differs per NPC for the same BodyPart).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestselcolor", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestselcolor] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local valueArg = Parameters and Parameters[2]
+            if not (bodyPartArg and valueArg) then
+                say("usage: lbtestselcolor <bodyPart enum int, e.g. 7 for Torso> <newValue int, e.g. 0-23>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.TestSetSelectedColor(bodyPartArg, valueArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestselcolor <bodyPart> <newValue>")
+    registerCmdInfo("lbtestselcolor", "lbtestselcolor <bodyPart> <newValue>", "GENUINELY UNTESTED, REAL CRASH RISK: writes SavedCustomizationData.SelectedColors[*].Value for a BodyPart, then calls SetBody() to try to force a rebuild.")
+else
+    log("lbtestselcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbplayerclass" (2026-08-31) -- PURE READ: reports the player's own live pawn

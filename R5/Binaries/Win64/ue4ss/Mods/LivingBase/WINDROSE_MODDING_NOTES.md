@@ -332,13 +332,108 @@ Tested directly, exhaustively, this session:
   discrete, pre-baked set (a handful of ethnicity materials) — exactly why a swap works. Garment
   color is a CONTINUOUS parameter the shared material exposes, with no discrete alternate
   instances to swap to at all.
-**Conclusion, now resting on exhausting every architecturally-plausible route, not just the
-config-property layer**: garment color is consumed once at construction time with no safe
+**Conclusion at that point, now resting on exhausting every architecturally-plausible route, not just
+the config-property layer**: garment color is consumed once at construction time with no safe
 intervention point found anywhere — pre-build write (crashes), post-build property write (silently
 never renders), post-build direct material manipulation (fails/crashes in every tested form), and
 pre-baked-variant swap (no such variants exist for this axis). This is genuinely different from body
 mesh and skin tone, both of which are discrete asset swaps with real existing alternatives to switch
 between — color has neither a safe write path nor alternatives to switch to.
+
+**REOPENED AND SOLVED, same night, by RedFalcon's own sharp pushback**: the conclusion above only
+ever tested the composite-config layer (`ColorParams`/`ColorController`/`SelectedColors`) and
+material-instance manipulation (`CreateDynamicMaterialInstance`). RedFalcon pointed out a real
+observation neither of those explained: "if we swap outfits and such on the gatherer, theyre always
+som shade of brown. on BotC its always some shade of red... I dont think they are clothing specific,
+i think they are entity specific. like a color theme not a specific color" — implying a THIRD layer,
+tied to the NPC/entity rather than the config asset or the material call. That layer turned out to be
+**Custom Primitive Data (CPD)**, a real, common UE5 mechanism entirely bypassed by every earlier
+attempt: a small per-INSTANCE float buffer a material reads directly via a "Custom Primitive Data"
+material-expression node, needing no `MaterialInstanceDynamic` at all — explaining in one shot why no
+color-variant material instances exist (SS above) and why `CreateDynamicMaterialInstance` was never
+going to be the right tool regardless of its own binding problems.
+
+**Found via a real diagnostic trail, not a lucky guess**:
+1. Every `AR5AICharacter`(-family) actor carries a `CPDEffectsComponent`
+   (`R5CustomPrimitiveDataEffectsComponent`) — "CPD" in the name was the actual clue.
+2. `UPrimitiveComponent` (confirmed via the SDK header dump, `PrimitiveComponent.h`) exposes plain
+   BlueprintCallable CPD functions: `SetCustomPrimitiveDataFloat(int32 DataIndex, float Value)`,
+   `SetCustomPrimitiveDataVector4(int32 DataIndex, FVector4 Value)` (writes 4 CONSECUTIVE floats
+   starting at `DataIndex` — NOT 4 independent "slots" multiplied by index, a real early
+   misunderstanding this session that produced a confusing "moldy blood+mud" result before it was
+   corrected), plus named-parameter variants
+   (`SetVectorParameterForCustomPrimitiveData(FName, FVector4)`,
+   `GetCustomPrimitiveDataIndexForVectorParameter(FName)` — the latter genuinely crashed once when
+   passed a raw Lua STRING where the binding wants a real `FName`; fixed with the same
+   `UEHelpers.FindOrAddFName(str)` conversion already established elsewhere in this codebase for
+   exactly this class of parameter).
+3. **The exact CPD layout was found offline, not guessed**: extracted the equipped piece's own
+   material chain (`MI_ArmorRegular_01` → parent `M_Common_Cloth`) via `retoc to-legacy` +
+   UAssetGUI's undocumented `tojson` CLI verb, and read the master material's own NameMap, which
+   spells out designer comments for every CPD float index in use:
+   ```
+   CPD00 RandomID              CPD08 BloodWounds Intensity
+   CPD03 Cloth/Hair MainColor  CPD11 Effect FireWeapon
+   CPD04 Cloth SecondaryColor  CPD12 Effect SharpWeapon
+   CPD05 Cloth DetailColor     CPD15 EyeColor, CPD16-23 BodyDecor/FaceDecor/SkinAging
+   ```
+   `CPD07`/`CPD08` (Dirt/Blood) being adjacent to `CPD03-05` (color) is exactly what produced the
+   earlier "moldy blood+mud" red herring when this was still being explored with overlapping
+   4-float Vector4 writes at the wrong offsets, before the comment map was in hand.
+4. **Confirmed live via a clean, isolated bisection** (`SetCustomPrimitiveDataFloat`, ONE float at a
+   time — no overlap, unlike a Vector4 write): index 3 = Main, 4 = Secondary, 5 = Detail, each an
+   independent garment-region color selector; index 7/8 independently confirmed as Dirt/Blood,
+   matching the comment map exactly and cross-validating the whole offset scheme.
+5. **The value written to each of those 3 floats is a 0..23 PALETTE INDEX**, not raw RGB — the same
+   `Value` field already found (and previously assumed dead) in `FR5BLCharacterColorData`
+   (`SelectedColors`/`ColorData`, both DataAsset- and struct-level). The actual palette is a real,
+   shared, named 24-color `CurveLinearColorAtlas` asset,
+   `/Game/Common/Textures/Gradients/CRV_CharacterClothPalette` (found by RedFalcon directly via a
+   JSON export of that `.uasset`), confirmed identical across DIFFERENT NPCs (Gatherer, BotC) — one
+   universal palette, not baked per-archetype:
+   ```
+   0 Harp            6 Crimson          12 EmeraldGreen    18 Purple
+   1 IceBerg         7 Carmine          13 ColdGreen       19 Violet
+   2 Ivory           8 Bordeaux         14 OliveGreen      20 Lilac
+   3 BlueCharcoal    9 PaleOrange       15 LightBlue       21 ChocolateBrown
+   4 BlackOlive     10 YellowGreen      16 NavyBlue        22 BrownLeather
+   5 WoodBark       11 PaleGold         17 OceanBlue       23 BrownCopper
+   ```
+
+**The finished, safe, reusable recolor mechanism**: on the equipped piece's own leaf
+`SkeletalMeshComponent` (the same one `BuildedCompositeMeshes[i].EquippedMesh` already resolves to
+for outfit work), call `target:SetCustomPrimitiveDataVector4(3, {X=mainIdx, Y=secondaryIdx,
+Z=detailIdx, W=0})` — one clean call, three garment regions, using indices from the palette table
+above. No crash risk (a plain `int32` + `FVector4` write, nothing like
+`CreateDynamicMaterialInstance`'s confirmed-dead binding), confirmed live, repeatedly, with zero
+errors. This is a genuinely different, safe layer below everything else tried in this section —
+**garment color IS achievable after all**, just not through the composite-config or material-instance
+layers this section originally exhausted.
+
+**CONFIRMED LIVE, same night, extending to every remaining customization category — hair, eyebrows,
+and eyes all recolor via the same or a closely related mechanism.** `ER5BLCompositeMeshBodyPartType`'s
+real enum ordinals (`Hairs=3`, `Eyebrows=1`, `Torso=7` — matching every `BodyPart` value already seen
+in `lbprobecolors` dumps exactly) let the same `SetCustomPrimitiveDataVector4(3, {main, secondary,
+detail, 0})` write be targeted at the hair and eyebrow pieces' own leaf components instead of a
+garment piece — **confirmed live, both genuinely recolor**, same mechanism, same shared palette.
+
+Eyes are a hybrid, worth its own note: the material actually assigned (`MI_Eye`, confirmed identical
+across every Gatherer probe dump all session) is a plain, shared, generic material — NOT one of the 5
+discrete pre-made `MI_EyeRound_<Color>_01` variants (Blue/Brown/Evil/Green/Grey). That 5-item list was
+confirmed EXHAUSTIVE via a live `IAssetRegistry:GetAssetsByClass()` sweep for every
+`MaterialInstanceConstant` with "Eye" anywhere in its path across the whole game — everything else
+matching that substring is an animal/creature eye material (Dodo/Crocodile/Wolf/Goat/Boar/SwampToad)
+or an unrelated FX/post-process material (`"...StrictEyeAdaptation"`) with no bearing on human
+characters at all. Since `MI_Eye` itself doesn't match any NPC's actual rendered eye color by default,
+it turns out to ALSO be CPD-driven — `CPD15 EyeColor` (from the same master-material comment map),
+written directly on `actor.Mesh` (the base body component, since the eye material is a SLOT on the
+base mesh, not a separate `BuildedCompositeMeshes` piece). One early test (value `3`) showed no
+change — the exact same "unlucky value" trap the cloth Main channel hit at `23` before `20` worked —
+a proper sweep through the rest of the range confirmed real, clearly visible color shifts. So there
+are TWO independent, both-safe levers for eyes: the CPD15 palette shift on the current material
+(mirrors cloth/hair/eyebrows exactly, value range and named palette not yet mapped), and the discrete
+5-variant material swap (a completely different iris style, not just a different shade of the current
+one) — genuinely different axes, not redundant with each other.
 
 ---
 

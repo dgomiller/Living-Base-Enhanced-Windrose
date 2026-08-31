@@ -9810,35 +9810,35 @@ function Spawner.TestListAssetsByClass(classModule, className, nameFilter, say)
     say("GetAssetsByClass returned. Reading results table...")
     -- Each element is an FAssetData STRUCT VALUE returned from inside a TArray -- the exact shape
     -- WINDROSE_MODDING_NOTES.md SS2c documents: prints as "UScriptStruct: <hex>" if dot-accessed
-    -- naively. The fix for THIS shape: call :GetFullName()/:ForEachProperty() DIRECTLY on the
-    -- value, no separate StaticFindObject round-trip -- bracket-index the SAME value per field.
+    -- naively. CONFIRMED LIVE CRASH (2026-08-31): a generic ForEachProperty walk over EVERY field
+    -- (the first version of this function) worked fine for a plain DataAsset class but crashed the
+    -- game natively partway through a SkeletalMesh-class query -- almost certainly TagsAndValues
+    -- or some other complex/large field FAssetData carries for heavier asset types, same crash
+    -- class SS3l already documents ("reflecting is safe, but a generic walk into an unfamiliar
+    -- field is not, regardless of how safe the container itself is"). Fixed by reading ONLY the
+    -- three specific, known-safe fields every FAssetData has, bracket-indexed directly -- never a
+    -- blind ForEachProperty walk over a struct type this varied again.
     local count = 0
     for i, entry in pairs(results) do
         count = count + 1
         local real = entry
         pcall(function() if entry.get then real = entry:get() end end)
-        local fieldsFound = {}
-        local okFields = pcall(function()
-            real:ForEachProperty(function(prop)
-                local ok2, name = pcall(function() return prop:GetFName():ToString() end)
-                if ok2 and name then
-                    local ok3, val = pcall(function() return real[name] end)
-                    local ok4, s = pcall(function()
-                        if not ok3 or val == nil then return "?" end
-                        if type(val) == "userdata" and val.ToString then return val:ToString() end
-                        return tostring(val)
-                    end)
-                    fieldsFound[#fieldsFound + 1] = name .. "=" .. (ok4 and s or "?")
-                end
+        local function readField(name)
+            local ok3, val = pcall(function() return real[name] end)
+            if not (ok3 and val) then return nil end
+            local ok4, s = pcall(function()
+                if type(val) == "userdata" and val.ToString then return val:ToString() end
+                return tostring(val)
             end)
-        end)
-        local joined = table.concat(fieldsFound, ", ")
+            return ok4 and s or nil
+        end
+        local packageNameStr = readField("PackageName")
+        local packagePathStr = readField("PackagePath")
+        local assetNameStr = readField("AssetName")
+        local joined = string.format("PackageName=%s, PackagePath=%s, AssetName=%s",
+            tostring(packageNameStr), tostring(packagePathStr), tostring(assetNameStr))
         if not nameFilter or joined:lower():find(nameFilter:lower(), 1, true) then
-            if okFields and #fieldsFound > 0 then
-                say(string.format("  [%s] %s", tostring(i), joined))
-            else
-                say(string.format("  [%s] ForEachProperty failed or empty: %s", tostring(i), tostring(real)))
-            end
+            say(string.format("  [%s] %s", tostring(i), joined))
         end
     end
     say(string.format("Total entries: %d%s", count, nameFilter and (" (filtered to those matching '" .. nameFilter .. "')") or ""))

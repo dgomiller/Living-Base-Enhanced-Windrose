@@ -477,6 +477,25 @@ and note a genuine RETURN value does NOT need (and, confirmed live, actively bre
 add) an extra placeholder Out-param table the way a true Blueprint OUT parameter would (see 3m for
 that different, Out-param case) — the plain Lua return of the call already carries it.
 
+### 3r. A generic `ForEachProperty` walk over `FAssetData` is safe for one asset class and a real crash for another (2026-08-31)
+
+`ForEachProperty`/reflection walks are documented elsewhere in this file (SS3l) as "100% safe every
+time... it never actually calls anything" — true for reading a class's own DECLARED properties, but
+NOT unconditionally true for walking every field of a STRUCT VALUE whose shape can vary by what kind
+of object it describes. `IAssetRegistry:GetAssetsByClass()` returns an array of `FAssetData` structs
+(see SS9c's own addendum for the tool this was built for) — a generic `ForEachProperty` walk over
+every field of each returned struct worked cleanly for a plain `DataAsset`-derived class (244
+entries, zero issues) and **crashed the game natively** partway through an identical query against
+`SkeletalMesh` instead — almost certainly `TagsAndValues` or some other field `FAssetData` carries
+that varies wildly in size/shape by asset type (mesh assets carry substantially more asset-registry
+tag data than a plain small DataAsset does). **Fix: read only the specific, known-safe fields you
+actually need (`PackageName`/`PackagePath`/`AssetName`, bracket-indexed directly), never a blind
+`ForEachProperty` walk over a struct type whose full shape varies by what it's describing.** The
+lesson from SS3l still holds for a class's own fixed property list; it does not extend to "every
+struct returned from every API," and this is the second confirmed case (after SS10's own
+`AnimNode_*` correction) where a previously-safe recipe needed a real, class-specific carve-out
+rather than being trusted blindly on a new target.
+
 ---
 
 ## 4. Restore-on-load design (why it looks the way it does)

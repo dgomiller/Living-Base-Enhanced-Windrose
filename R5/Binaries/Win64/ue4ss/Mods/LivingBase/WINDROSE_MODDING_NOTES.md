@@ -2052,6 +2052,57 @@ a Group instead produces a technically-successful resolve but a fully nude build
 `CustomizationData` to read) with real piece references and confirming a genuinely custom outfit
 renders end to end.
 
+**2026-08-31, later same day -- that remaining step is done, CONFIRMED LIVE with a real piece of
+clothing rendering on a genuinely new, independent character.** Two more real findings on the way
+there, both worth remembering:
+- **A byte-relabeled copy of already-shipped content is NOT equivalent to a fresh cook, even under
+  `/Game/Mods/...`.** First attempt: took Letty's own real `BaseParams`+`Group` (already proven,
+  unmodified originals), renamed their `PackageName` fields via UAssetGUI to a new `/Game/Mods/...`
+  path (the same text-edit technique already proven for retargeting a deep reference), retargeted the
+  `BaseParams`' own import of the `Group` to match. Result: **MISS**, on both packages, via the
+  asset-registry API -- confirmed directly, this is not a guess. Conclusion: `/Game/Mods/...` is
+  necessary but not sufficient -- the package also needs an actual fresh cook (real cook-time identity
+  metadata), not just a relabeled copy of bytes that were originally cooked as something else. This
+  matches and extends this section's own earlier finding (SS19c-4): a real cook is what a genuinely new
+  package needs, full stop, regardless of path.
+- **The fix: author the container fresh in the Editor (so it gets real cook identity), but retarget its
+  DEEP piece reference via the already-proven UAssetGUI text-edit trick afterward, leaving the
+  container's own `PackageName` untouched.** Built a real `R5CompositeMeshComponentBaseParams` +
+  `R5CompositeMeshGroup` pair from scratch via headless Editor Python (`unreal.AssetToolsHelpers`,
+  `set_editor_property` for nested structs/`TMap`/hard object-reference arrays -- all worked directly,
+  no crash-risk analog to the Lua/runtime construction wall documented above, since this goes through
+  the Editor's own first-party object-authoring path, not live reflection into a running game process),
+  referencing a placeholder piece purely to have something valid for the array slot. Cooked for real (0
+  errors) -- confirmed resolvable via the asset-registry API immediately, and via this mod's own
+  `resolveAsset` after its fallback fix. Composite build with the placeholder in place produced 0
+  pieces (expected -- the placeholder is a deliberately gutted stub with no real mesh data). Converted
+  ONLY the `Group` package to legacy, retargeted its ONE deep object-reference import from the
+  placeholder to a real existing piece asset -- same two-row Import Data edit as every override in this
+  file -- converted back to Zen, reinstalled. **Confirmed live: a real piece of clothing rendered on the
+  new, independent character.** The container's own `PackageName` was never touched in this second
+  pass, only the one deep reference -- exactly mirroring how an override already worked, just inside a
+  brand-new container instead of an existing character's real asset.
+- **One real Python-API gap worth knowing**: no exposed Editor-Python function can construct a
+  `GameplayTag` from a raw string -- every `GameplayTagLibrary` function (`make_literal_gameplay_tag`,
+  `make_gameplay_tag_container_from_array`, etc.) requires an ALREADY-VALID `GameplayTag` as input, and
+  the struct's own `tag_name` property is read-only even in the constructor. The one tag-valued field
+  in this whole chain (`GroupCategoryId`) had to be set via the Editor's own normal property-picker UI
+  by hand, after registering the desired tag name in the project's own `Config/DefaultGameplayTags.ini`
+  (a tag is just a declared string -- it doesn't need to match anything about the real target game,
+  only exist in the AUTHORING project so the picker can find it). Confirmed safe to script everything
+  else around this one manual step and re-verify it landed correctly via a follow-up read-back script
+  before cooking. Also worth knowing: Python enum names for an exposed `UENUM` strip the leading `E`
+  (`ER5BLCharacterSex` in C++ is `unreal.R5BLCharacterSex` in Python) -- an easy first guess to get
+  wrong.
+**The full recipe for genuinely new content, now proven start to finish**: (1) author the top-level
+container(s) fresh via the Editor (GUI or headless Python, either works) at a path under
+`/Game/Mods/...`; (2) cook for real; (3) if a deep reference needs to point at existing real content the
+authoring project doesn't have, convert just that ONE package to legacy, retarget the reference via
+UAssetGUI's Import Data grid, convert back to Zen -- never touch the container's own `PackageName` in
+this pass; (4) package with `repak` and install as a normal content mod; (5) load it through
+`resolveAsset`'s asset-registry fallback (or `AssetRegistryHelpers:GetAsset()` directly). Every step of
+this is now individually confirmed, not theorized.
+
 ### 19d. A related, already-proven primitive worth remembering here
 
 §2d's `Spawner.SetBodyPartMesh` already established the working recipe for swapping ONE

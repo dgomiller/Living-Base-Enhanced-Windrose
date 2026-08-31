@@ -4051,6 +4051,23 @@ edit/despawn/undo/cycle toolkit. In order:
      problem -- the test asset is a `R5CompositeMeshGroup` (middle level), and `DefaultParams`
      needs the top-level `R5CompositeMeshComponentBaseParams` instead. Full writeup:
      `WINDROSE_MODDING_NOTES.md` SS19c-3's own 2026-08-31 addendum.
+     **Same-night follow-up #3: "get clothes on her" -- CONFIRMED LIVE, a real piece of clothing
+     rendering on a genuinely new, independent character** (2026-08-31, later). First attempt
+     (byte-relabeling Letty's own real BaseParams/Group to a new `/Game/Mods/...` path via
+     UAssetGUI, reusing her already-proven Jeweler-torso retarget) MISSED -- confirming
+     `/Game/Mods/` alone isn't sufficient, a genuine fresh cook is ALSO required, not just a
+     relabeled copy of already-shipped bytes. Fix: authored a real
+     `R5CompositeMeshComponentBaseParams`/`R5CompositeMeshGroup` pair FRESH via headless Editor
+     Python (`unreal.AssetToolsHelpers`, nested-struct/`TMap`/hard-object-array property sets all
+     worked directly -- no crash-risk analog to the Lua/runtime construction wall, since this is
+     the Editor's own first-party authoring path) with a placeholder piece reference, cooked for
+     real, then retargeted ONLY that one deep piece reference to a real Windrose piece via
+     UAssetGUI's Import Data grid (same trick as every override, container's own `PackageName`
+     never touched). Real gap found along the way: no Editor-Python function can build a
+     `GameplayTag` from a raw string (every `GameplayTagLibrary` function needs an already-valid
+     tag as input) -- that one field had to be set by hand via the Editor's own property picker,
+     after registering the tag name in `Config/DefaultGameplayTags.ini`. Full recipe, all 5 steps
+     individually confirmed: `WINDROSE_MODDING_NOTES.md` SS19c-3's second same-day addendum.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

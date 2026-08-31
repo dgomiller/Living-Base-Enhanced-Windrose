@@ -3074,6 +3074,35 @@ else
     log("lbtestpak unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestlook <paramsPath> <archetypePath>" (2026-08-31) -- the decisive combined
+-- test: does Config.SENKA_FEMALE_BASE_CLASS (confirmed via 4 live probes to have a completely
+-- stable, non-randomized ArchetypePreset by default) actually respect a pre-build archetype
+-- override, combined with our own proven custom outfit? See Spawner.TestSpawnCustomLook's own
+-- header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestlook", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestlook] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local paramsArg = Parameters and Parameters[1]
+            local archetypeArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomLook(paramsArg, archetypeArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestlook <paramsPath> <archetypePath>")
+    registerCmdInfo("lbtestlook", "lbtestlook <paramsPath> <archetypePath>", "Spawns Config.SENKA_FEMALE_BASE_CLASS with BOTH a custom outfit and a custom archetype override -- tests whether this base class respects an archetype override the way mob/crew classes never do.")
+else
+    log("lbtestlook unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbscanhooks <classPath>" (2026-08-29) -- PURE READ diagnostic: scans a native
 -- class's own CDO for soft-object/soft-class reference properties and reports their default target
 -- paths. Motivation: WINDROSE_MODDING_NOTES.md SS19c-3's own finding (a brand-new asset path never
@@ -3131,6 +3160,35 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestassetreg", "lbtestassetreg <PackageName> <AssetName>", "PURE READ: resolves an asset via AssetRegistryHelpers:GetAsset() instead of resolveAsset -- tests whether a genuinely new package path is discoverable through this different API.")
 else
     log("lbtestassetreg unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestlistclass <ClassModule> <ClassName>" (2026-08-31) -- enumerates every
+-- registered asset of a given class via IAssetRegistry:GetAssetsByClass(), for finding sibling
+-- assets (e.g. other ethnicity/profession PresetArchetype variants) that live under a package root
+-- retoc's own offline pak scan can't find. See Spawner.TestListAssetsByClass's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestlistclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestlistclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local moduleArg = Parameters and Parameters[1]
+            local classArg = Parameters and Parameters[2]
+            local filterArg = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestListAssetsByClass(moduleArg, classArg, filterArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestlistclass <ClassModule> <ClassName> [nameFilter]")
+    registerCmdInfo("lbtestlistclass", "lbtestlistclass <ClassModule> <ClassName> [nameFilter]", "PURE READ: lists every registered asset of a given class via AssetRegistry:GetAssetsByClass() -- finds sibling assets an offline pak scan can't. Optional substring filter to narrow output.")
+else
+    log("lbtestlistclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the

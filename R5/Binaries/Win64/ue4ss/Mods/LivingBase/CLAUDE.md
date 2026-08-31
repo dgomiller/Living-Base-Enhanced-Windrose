@@ -4068,6 +4068,33 @@ edit/despawn/undo/cycle toolkit. In order:
      tag as input) -- that one field had to be set by hand via the Editor's own property picker,
      after registering the tag name in `Config/DefaultGameplayTags.ini`. Full recipe, all 5 steps
      individually confirmed: `WINDROSE_MODDING_NOTES.md` SS19c-3's second same-day addendum.
+     **Same-night follow-up #4: tried to move up a layer (a full custom NPC -- African body/skin
+     archetype, not just outfit) -- archetype override CONFIRMED still blocked, generalizing the
+     wall rather than finding an exception** (2026-08-31, later). `Config.SENKA_FEMALE_BASE_CLASS`
+     (Gatherer) showed an IDENTICAL `ArchetypePreset` across 4 separate live probes with zero
+     pre-build writes -- looked like a possible exception to SS2's "BeginPlay re-randomizes it"
+     wall. Built `lbtestlook <paramsPath> <archetypePath>` to test directly: pinning a real,
+     curated player character-creation archetype preset
+     (`DA_Customization_Hero_Preset_African_Issa`, found via a new `lbtestlistclass` diagnostic --
+     see below) pre-build resolved fine (`archetype=ok`, no error) alongside the proven custom
+     outfit -- but a post-spawn live probe showed `ArchetypePreset` had reverted to the class's own
+     default; only the outfit stuck. **Real explanation: Gatherer's own reassertion source
+     apparently has just ONE entry, so it always reasserts the same value regardless of what's
+     written -- stability was never evidence of skipping the wall.** Closes off the one
+     plausible-looking exception; the wall generalizes to every `CompositeMeshComponent` class
+     tested so far, not just mob/crew ones. A genuine fix would need a brand-new Actor/Blueprint
+     class with the archetype baked in as a real compiled class default (not a runtime write) --
+     investigated but NOT attempted: `AR5Character` (the real native base, confirmed to own
+     `CompositeMeshComponent` directly) implements ~18 custom R5 interfaces, each needing a real
+     stub definition just to compile a subclass, with a genuine unverified vtable-mismatch risk if
+     simplified -- a materially bigger and riskier undertaking than tonight's DataAsset work, not
+     started.
+     **New reusable tool along the way**: `lbtestlistclass <ClassModule> <ClassName> [nameFilter]`
+     -- enumerates every registered asset of a class via `IAssetRegistry:GetAssetsByClass()`, found
+     necessary when `/R5BusinessRules/`-rooted content (a native module's own bundled content root)
+     turned out completely invisible to `retoc`'s offline pak scan despite the running game
+     resolving it live every time. Full writeup: `WINDROSE_MODDING_NOTES.md` SS2's own 2026-08-31
+     addendum (the wall) and SS9c's own addendum (the retoc blind spot + the new tool).
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

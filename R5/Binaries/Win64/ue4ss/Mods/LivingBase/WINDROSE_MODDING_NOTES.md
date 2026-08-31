@@ -32,6 +32,22 @@ FinishSpawningActor(actor, transform, ScaleMethod=1)
 Proven 2026-07-09: with `ArchetypeAfrican` pinned pre-build, 7 Warrior spawns rolled **5 different
 ethnicities**. Same wall `CLAUDE.md` records for `BP_NPC_Citizen_Walker`. **Do not retry.**
 
+**Generalized 2026-08-31: this is not a mob/crew-specific quirk — confirmed on a non-mob base too.**
+`Config.SENKA_FEMALE_BASE_CLASS` (the Handyman Gatherer, this mod's own proven walking-women base)
+shows the IDENTICAL `ArchetypePreset` value across every spawn with zero pre-build writes involved —
+looked at first like evidence this class might not re-randomize at all. Testing it directly (pinning
+a real, curated player character-creation archetype preset pre-build, combined with a proven custom
+outfit in the same spawn) disproved that: the pre-build write resolved and applied with no error
+(`archetype=ok`), but a post-spawn live probe showed `ArchetypePreset` had reverted to the class's OWN
+default by the time the actor was fully live — the outfit stuck, the archetype did not. **The real
+explanation: this class's own reassertion source apparently has only ONE entry, so it always
+reasserts the SAME value regardless of what's written pre-build — stability was never evidence of
+skipping the reassertion, just evidence of a single-entry source.** Do not assume a class is exempt
+from this wall just because it happens to look stable across ordinary spawns; test an actual override
+directly, the same way this was just re-confirmed. This closes off the one plausible-looking exception
+to the original wall — it appears to be universal to every class with a `CompositeMeshComponent`, not
+scoped to mob/crew classes specifically.
+
 Crew archetypes live at
 `/R5BusinessRules/Character/Customization/NPC/ShipCrew/Sailor/Preset/DA_Mob_Regular_Sailor_Preset_Archetype<Ethnicity>`
 (Adventurer, African, Albion, Fable, Native, Orient, Scum). Mobs use ONE preset
@@ -737,6 +753,25 @@ reading a real dropped instance's `MeshComponent:GetStaticMesh()` directly (a li
 dump grep) works regardless of whether that asset happened to be loaded when the last full dump ran
 — the two techniques are complementary, not interchangeable: dump-grep for a broad sweep, live probe
 for confirming one specific item you can currently see.
+
+**A native module's own bundled content root can be completely invisible to `retoc`'s offline pak
+scan, while the game's own AssetRegistry knows about it fine (2026-08-31).** A real, live-resolvable
+asset (`comp.ArchetypePreset`, confirmed valid via a live probe on multiple spawns) lives under
+`/R5BusinessRules/Character/Customization/...` — NOT `/Game/...` — and a `retoc to-legacy` filename
+scan across the ENTIRE `Content/Paks` folder found zero matches for it under any filter, even ones
+confirmed to work for ordinary `/Game/`-rooted content moments earlier. `/R5BusinessRules/` is very
+likely a separate native-module content mount (matching a real C++ module name, same convention this
+project's own SDK-stub work uses), stored somewhere `retoc`'s generic pak scan doesn't reach — not a
+sign the asset doesn't exist. **The fix: ask the game's own AssetRegistry directly instead of
+continuing to guess offline.** `IAssetRegistry:GetAssetsByClass(FTopLevelAssetPath, OutArray,
+bSearchSubClasses)` enumerates every registered asset of a given class, regardless of package root or
+whether it's currently loaded — wrapped as `lbtestlistclass <ClassModule> <ClassName> [nameFilter]`
+in this mod. One real gotcha hit building it: each result is an `FAssetData` STRUCT VALUE returned
+from inside a `TArray` — the exact shape already documented above (`§2c`) — printing it naively gives
+`"UScriptStruct: <hex>"`; the fix is the same `:GetFullName()`/`:ForEachProperty()`-on-the-value-
+directly recipe, not a fresh problem. This tool is generally useful any time an asset's PATH is known
+(from a live probe) but its exact identity/siblings need confirming and static extraction can't find
+it — broader than just this one investigation.
 
 ---
 

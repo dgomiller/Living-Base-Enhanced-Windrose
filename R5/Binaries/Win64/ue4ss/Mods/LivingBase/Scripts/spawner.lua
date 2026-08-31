@@ -9522,6 +9522,41 @@ function Spawner.TestSpawnWithCustomParamsPath(paramsPath, say)
     return true
 end
 
+-- Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say) -- "lbtestlook <paramsPath>
+-- <archetypePath>" (2026-08-31). The decisive combined test: does a NON-mob/crew base class
+-- (Config.SENKA_FEMALE_BASE_CLASS, the Handyman Gatherer -- confirmed via 4 separate live probes
+-- tonight to have a completely STABLE, non-randomized ArchetypePreset by default, unlike
+-- Warrior/mob-family classes) actually RESPECT a pre-build archetype override the way mob/crew
+-- classes never do? Combines our own already-proven custom outfit (compositeLook.params) with a
+-- real player character-creation preset (compositeLook.archetype) as the archetype override --
+-- e.g. one of the dedicated African "Hero" presets found via lbtestlistclass
+-- (DA_Customization_Hero_Preset_African_Issa/_Zuri, /R5BusinessRules/Character/Customization/
+-- Player/Presets/), curated complete looks meant for the player character creator, not part of the
+-- mob-randomization pool at all. If this sticks, a genuinely custom body/skin archetype AND
+-- clothing together is solved with zero new asset authoring -- just two existing real asset paths.
+function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say)
+    say = say or function(m) print("[LivingBase] [test-look] " .. tostring(m) .. "\n") end
+    local function ensureFullPath(p)
+        if not p then return nil end
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    paramsPath = ensureFullPath(paramsPath)
+    archetypePath = ensureFullPath(archetypePath)
+    say("about to spawn with compositeLook.params=" .. tostring(paramsPath) .. " archetype=" .. tostring(archetypePath))
+    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomLookTest", nil, nil, nil, nil, false,
+        { params = paramsPath, archetype = archetypePath }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- lbprobedump it now. Check comp.ArchetypePreset: if it shows the requested archetype path (not the class's own default), the archetype override actually stuck on this base class.")
+    return true
+end
+
 -- Spawner.TestScanSoftRefs(classPath) -- "lbscanhooks <classPath>" (2026-08-29). PURE READ, no
 -- writes, no spawns -- diagnostic for a genuinely new idea: §19c-3's own finding (a brand-new
 -- package path never resolves; overriding an EXISTING referenced path always does) implies a
@@ -9675,6 +9710,100 @@ function Spawner.TestResolveViaAssetRegistry(packageName, assetName, say)
     pcall(function() fullName = result:GetFullName() end)
     say("SUCCESS: GetAsset resolved a real, valid object: " .. fullName)
     return result
+end
+
+-- Spawner.TestListAssetsByClass(classModule, className, say) -- "lbtestlistclass <ClassModule>
+-- <ClassName>" (2026-08-31). PURE READ, no spawn. Built while chasing the archetype-randomization
+-- question: a live probe on 4 separate Gatherer spawns tonight showed the IDENTICAL
+-- ArchetypePreset every time (R5CharacterCustomizationPresetArchetype
+-- /R5BusinessRules/Character/Customization/NPC/Handyman/Gatherer/
+-- DA_Customization_Handyman_Gatherer_PresetArchetype1) -- not randomized at all for this class
+-- family, unlike Warrior/mob-family classes (SS2's own "5 different ethnicities" finding). The
+-- "PresetArchetype1" naming implies numbered siblings may exist (2, 3, ... possibly per
+-- ethnicity), but this specific asset lives under an "/R5BusinessRules/..." package root that
+-- retoc's own offline pak scan cannot find at all (confirmed: filename-substring search across the
+-- WHOLE Content/Paks folder found zero hits for an asset the running game resolves live, every
+-- time) -- likely a separate plugin content mount retoc's generic scanner doesn't cover. Since the
+-- game's OWN AssetRegistry clearly knows about it, ask THAT directly instead of continuing to
+-- guess offline: `IAssetRegistry:GetAssetsByClass(FTopLevelAssetPath, OutArray, bSearchSubClasses)`
+-- enumerates every registered asset of a given class, regardless of whether it's currently loaded
+-- -- the real fix for "static extraction can't find it," matching this whole project's own
+-- long-standing preference for a live probe over static archaeology once one dead end is hit.
+function Spawner.TestListAssetsByClass(classModule, className, nameFilter, say)
+    say = say or function(m) print("[LivingBase] [test-listclass] " .. tostring(m) .. "\n") end
+    if not (classModule and className) then
+        say("usage: lbtestlistclass <ClassModule e.g. /Script/R5> <ClassName e.g. R5CharacterCustomizationPresetArchetype> [nameFilter substring]")
+        return false
+    end
+    if nameFilter == "" then nameFilter = nil end
+    local AssetRegistryHelpers = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryHelpers")
+    if not (AssetRegistryHelpers and AssetRegistryHelpers:IsValid()) then
+        say("AssetRegistryHelpers CDO did not resolve -- stopping here.")
+        return false
+    end
+    local ok, AssetRegistry = pcall(function() return AssetRegistryHelpers:GetAssetRegistry() end)
+    if not (ok and AssetRegistry and AssetRegistry:IsValid()) then
+        say("GetAssetRegistry() failed/invalid: " .. tostring(AssetRegistry))
+        return false
+    end
+    say("AssetRegistry resolved ok.")
+
+    local okPath, classPath = pcall(function()
+        return {
+            PackageName = UEHelpers.FindOrAddFName(classModule),
+            AssetName = UEHelpers.FindOrAddFName(className),
+        }
+    end)
+    if not okPath then
+        say("could not build FTopLevelAssetPath: " .. tostring(classPath))
+        return false
+    end
+
+    local results = {}
+    say("about to call GetAssetsByClass(" .. classModule .. "." .. className .. ") -- if nothing follows, THIS crashed.")
+    local okCall, err = pcall(function()
+        AssetRegistry:GetAssetsByClass(classPath, results, false)
+    end)
+    if not okCall then
+        say("GetAssetsByClass call FAILED/threw: " .. tostring(err))
+        return false
+    end
+    say("GetAssetsByClass returned. Reading results table...")
+    -- Each element is an FAssetData STRUCT VALUE returned from inside a TArray -- the exact shape
+    -- WINDROSE_MODDING_NOTES.md SS2c documents: prints as "UScriptStruct: <hex>" if dot-accessed
+    -- naively. The fix for THIS shape: call :GetFullName()/:ForEachProperty() DIRECTLY on the
+    -- value, no separate StaticFindObject round-trip -- bracket-index the SAME value per field.
+    local count = 0
+    for i, entry in pairs(results) do
+        count = count + 1
+        local real = entry
+        pcall(function() if entry.get then real = entry:get() end end)
+        local fieldsFound = {}
+        local okFields = pcall(function()
+            real:ForEachProperty(function(prop)
+                local ok2, name = pcall(function() return prop:GetFName():ToString() end)
+                if ok2 and name then
+                    local ok3, val = pcall(function() return real[name] end)
+                    local ok4, s = pcall(function()
+                        if not ok3 or val == nil then return "?" end
+                        if type(val) == "userdata" and val.ToString then return val:ToString() end
+                        return tostring(val)
+                    end)
+                    fieldsFound[#fieldsFound + 1] = name .. "=" .. (ok4 and s or "?")
+                end
+            end)
+        end)
+        local joined = table.concat(fieldsFound, ", ")
+        if not nameFilter or joined:lower():find(nameFilter:lower(), 1, true) then
+            if okFields and #fieldsFound > 0 then
+                say(string.format("  [%s] %s", tostring(i), joined))
+            else
+                say(string.format("  [%s] ForEachProperty failed or empty: %s", tostring(i), tostring(real)))
+            end
+        end
+    end
+    say(string.format("Total entries: %d%s", count, nameFilter and (" (filtered to those matching '" .. nameFilter .. "')") or ""))
+    return results
 end
 
 -- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL

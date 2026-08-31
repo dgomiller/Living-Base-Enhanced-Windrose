@@ -3103,6 +3103,30 @@ else
     log("lbtestlook unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbplayerclass" (2026-08-31) -- PURE READ: reports the player's own live pawn
+-- class path and current ArchetypePreset. See Spawner.TestReportPlayerClass's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbplayerclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbplayerclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestReportPlayerClass(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbplayerclass")
+    registerCmdInfo("lbplayerclass", "lbplayerclass", "PURE READ: reports the player's own pawn class path and current ArchetypePreset.")
+else
+    log("lbplayerclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbscanhooks <classPath>" (2026-08-29) -- PURE READ diagnostic: scans a native
 -- class's own CDO for soft-object/soft-class reference properties and reports their default target
 -- paths. Motivation: WINDROSE_MODDING_NOTES.md SS19c-3's own finding (a brand-new asset path never

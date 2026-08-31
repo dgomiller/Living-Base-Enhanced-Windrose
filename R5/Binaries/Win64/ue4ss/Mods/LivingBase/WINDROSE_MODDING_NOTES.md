@@ -214,6 +214,61 @@ make that distinction quickly, but still needs a live actor for any pawn class.
 
 ---
 
+## 2e. Anatomy of a full NPC, confirmed via a comprehensive live probe (2026-08-31)
+
+RedFalcon's real end goal: "Barbies" — a full custom NPC (chosen body/skin archetype AND clothing)
+that can then be dressed, for both male and female presets, starting with peaceful (non-combat)
+professions before eventually extending to combat-capable ones too. Before building further, a full
+`lbprobedump` sweep of a real, wild `BP_NPC_Citizen_Walker_C` (aimed at in Tortuga, not one of this
+mod's own spawns) settled exactly what "building an NPC from scratch" would actually require.
+
+**Real class hierarchy, corrected from an earlier guess**: `BP_NPC_Citizen_Walker_C` →
+`BP_NPC_Base_C` → `BP_R5AICharacter_Base_C` → **`AR5AICharacter`** → `ACharacter` → `Pawn` → `Actor`
+→ `Object`. **`AR5AICharacter` is a SIBLING of `AR5Character` (the earlier, wrong guess for "the"
+player/character base), not a subclass of it** — confirmed by reading both classes' own generated
+headers directly; `AR5AICharacter` extends `ACharacter` on its own. It implements ~26 custom R5
+interfaces of its own (more than `AR5Character`'s ~18) and owns `ActivateCharacter()` — the exact
+native function this file's own §1 spawn recipe already calls to "bring an NPC to life," confirming
+this is genuinely the right native base for any AI-driven NPC, not a guess.
+
+**The practical finding: almost nothing about "what makes an NPC" is compiled behavior that needs
+replicating — it's almost entirely reference fields, on top of one unavoidable native base class.**
+- **Behavior is exactly two references**, both already fully understood how to work with (a class
+  reference and a DataAsset reference — no logic needed): `Pawn.AIControllerClass` → a Blueprint
+  AIController class (e.g. `BP_NPC_AIController_Citizen_Walker_C`) governs how she thinks and moves;
+  `AR5AICharacter.AIPawnParams` → a `R5AIPawnParams` DataAsset the controller reads for behavior
+  tuning. A THIRD reference, `AbilitySystemParams` (another DataAsset), governs combat/ability
+  stats — present on every NPC, but only load-bearing for combat-capable ones.
+- **Appearance is the already-solved `R5CompositeMeshComponent` system** documented throughout this
+  file — `DefaultParams`/`ArchetypePreset`/`ColorParams`/`MorphParams`/`BodyDecorParams`, all plain
+  references.
+- **Animation is also just a reference**, not custom logic: `Mesh.AnimClass` → `R5PawnAnimInstance`
+  (a data-driven AnimBlueprint reading exposed variables like `IsWalking`/`IsFemale`/`BodyMorph` —
+  the SAME kind of thing a new pawn just needs to point at, not rebuild).
+- **Real correction to how `CustomizationData`'s `GroupCategoryId` tags actually work, confirmed
+  live**: it's per-body-part, not one flat bucket. Confirmed tags on this real NPC:
+  `Customization.UID.Armor.Head`/`.Torso`/`.Belt`/`.Hands`/`.Legs`/`.Feet`, plus `.Hairs` and
+  `.Facial.Eyebrows`/`.Mustache`/`.Whiskers`/`.Beard`. §19's own custom-outfit test used a single flat
+  `Customization.UID.Armor` tag for the whole outfit — that worked for a one-piece proof of concept,
+  but a genuinely complete, multi-slot custom outfit needs a separate `CustomizationData` entry per
+  slot with its own specific tag, not one entry covering everything.
+- **The one real, unavoidable cost**: `AR5AICharacter`'s own ~26-interface compile requirement, for
+  anyone wanting a genuinely NEW pawn CLASS (as opposed to reusing an existing one and only swapping
+  its composite-mesh DataAsset references, which is what every walking-women reskin in this file
+  already does). Everything that class would reference — AIController, pawn-params, outfit,
+  animation — is reusable AS-IS from existing content; only the class itself needs authoring.
+
+**Practical implication for "Barbies," peaceful-first**: `BP_NPC_Citizen_Walker_C` (this probe's own
+subject) is combat-armed — weapons, ammo, `CombatComponent`, `AR5AICharacter`'s own
+`AbilitySystemParams`/`AIBehaviorAttributeSet` all load-bearing. A Handyman-family base (Gatherer,
+already this mod's own proven walking-women/outfit-test target) is the simpler reuse target to start
+from — fewer components genuinely doing anything, nothing combat-related to reason about. Combat-
+capable "Barbies" remain a real, later stretch goal (RedFalcon's own call — start peaceful, "its less
+[to] manage"), not a different technical wall — the same AIControllerClass/AIPawnParams-reference
+recipe applies either way, just pointed at a combat-capable donor's own values instead.
+
+---
+
 ## 3. THE CRASH TRAPS (each cost hours)
 
 ### 3a. Stale UObject pointers — the big one

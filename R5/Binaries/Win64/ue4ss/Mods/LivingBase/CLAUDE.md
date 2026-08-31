@@ -4095,6 +4095,22 @@ edit/despawn/undo/cycle toolkit. In order:
      turned out completely invisible to `retoc`'s offline pak scan despite the running game
      resolving it live every time. Full writeup: `WINDROSE_MODDING_NOTES.md` SS2's own 2026-08-31
      addendum (the wall) and SS9c's own addendum (the retoc blind spot + the new tool).
+     **Same-night follow-up #5: RedFalcon's real end goal stated plainly -- "Barbies" (full custom
+     male/female NPCs, dressed), peaceful professions first.** Before building further, did a full
+     `lbprobedump` sweep of a real, wild `BP_NPC_Citizen_Walker_C` (Tortuga) to settle exactly what
+     building an NPC from scratch requires. Corrected an earlier guess: the real native AI-NPC base
+     is `AR5AICharacter` -- a SIBLING of `AR5Character` (extends `ACharacter` directly), not a
+     subclass of it, with ~26 interfaces of its own (more than `AR5Character`'s ~18) and owning
+     `ActivateCharacter()` (the exact function SS1's spawn recipe already calls). Real finding:
+     almost nothing about "what makes an NPC" is compiled behavior -- it's reference fields on top
+     of one unavoidable native base. `AIControllerClass` (a Blueprint AIController reference) +
+     `AIPawnParams` (a DataAsset) is the ENTIRE behavior definition; appearance is the already-solved
+     composite system; animation is also just an AnimBP reference. Real correction along the way:
+     `GroupCategoryId` tags are per-body-part (`.Armor.Head/.Torso/.Belt/.Hands/.Legs/.Feet`,
+     `.Hairs`, `.Facial.*`), not the single flat tag SS19's own outfit test used. Plan: start with a
+     Handyman-family (peaceful) reuse target, not the combat-armed Walker this probe happened to
+     use -- combat-capable "Barbies" are a real later stretch goal, same recipe, not a different
+     wall. Full writeup: `WINDROSE_MODDING_NOTES.md` new SS2e.
 
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).

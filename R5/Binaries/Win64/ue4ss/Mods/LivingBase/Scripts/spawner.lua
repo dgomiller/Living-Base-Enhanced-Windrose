@@ -9557,6 +9557,45 @@ function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say)
     return true
 end
 
+-- Spawner.TestReportPlayerClass(say) -- "lbplayerclass" (2026-08-31). PURE READ. The character
+-- creator screen must spawn/preview SOME actor that takes an arbitrary chosen archetype preset
+-- with ZERO randomization -- players expect exactly what they picked, unlike every NPC/mob class
+-- tested so far (all confirmed to reassert their own archetype from a fixed source regardless of
+-- pre-build writes, see SS2's 2026-08-31 addendum). If that's the PLAYER'S OWN pawn class, spawning
+-- a SEPARATE instance of it with an archetype set pre-build might sidestep the whole reassertion
+-- wall using only already-existing content -- no new Actor/Blueprint authoring needed at all. This
+-- reports the player's own live pawn class path plus its current ArchetypePreset, as the starting
+-- point for that test.
+function Spawner.TestReportPlayerClass(say)
+    say = say or function(m) print("[LivingBase] [player-class] " .. tostring(m) .. "\n") end
+    local ok, result = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        if not (pc and pc:IsValid()) then return nil, "no valid PlayerController" end
+        local pawn = pc.Pawn
+        if not (pawn and pawn:IsValid()) then return nil, "PlayerController has no valid Pawn" end
+        local classFullName = "?"
+        pcall(function() classFullName = pawn:GetClass():GetFullName() end)
+        local pathName = "?"
+        pcall(function() pathName = pawn:GetClass():GetPathName() end)
+        local archetypeStr = "(none)"
+        pcall(function()
+            local comp = pawn.CompositeMeshComponent
+            if comp and comp:IsValid() and comp.ArchetypePreset and comp.ArchetypePreset:IsValid() then
+                archetypeStr = comp.ArchetypePreset:GetFullName()
+            end
+        end)
+        return { classFullName = classFullName, pathName = pathName, archetypeStr = archetypeStr }
+    end)
+    if not ok or not result then
+        say("FAILED: " .. tostring(result))
+        return false
+    end
+    say("Player pawn class (GetFullName): " .. result.classFullName)
+    say("Player pawn class (GetPathName, spawn-ready): " .. result.pathName)
+    say("Player's own current ArchetypePreset: " .. result.archetypeStr)
+    return result
+end
+
 -- Spawner.TestScanSoftRefs(classPath) -- "lbscanhooks <classPath>" (2026-08-29). PURE READ, no
 -- writes, no spawns -- diagnostic for a genuinely new idea: §19c-3's own finding (a brand-new
 -- package path never resolves; overriding an EXISTING referenced path always does) implies a

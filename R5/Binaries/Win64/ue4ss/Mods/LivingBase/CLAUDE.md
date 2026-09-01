@@ -4195,6 +4195,40 @@ edit/despawn/undo/cycle toolkit. In order:
      and every dead end along the way: `WINDROSE_MODDING_NOTES.md` SS2e's CPD addendum (search
      "REOPENED AND SOLVED").
 
+     **Same-night follow-up #9: body-SHAPE variety (proportions within one shared body mesh) also
+     confirmed reachable, on the statue/posed-actor class family, using entirely existing content.**
+     RedFalcon asked whether existing shape variation (e.g. Marita vs. the Standing Woman, both
+     sharing a body mesh) could be exposed as selectable options, not custom sculpting. The old
+     closed `BodyMorph` investigation (a Vector AnimInstance variable feeding a Control Rig) already
+     found the right VARIABLE differs between real characters but confirmed writing it live never
+     renders (Control Rig binding doesn't re-evaluate post-construction) -- reopened by finding the
+     actual upstream asset: `R5CompositeMeshComponentMorphParams` (`comp.MorphParams`) is a plain,
+     ordinary, offline-inspectable DataAsset (confirmed via UAssetGUI/FModel export -- unlike
+     `ArchetypePreset`'s JSON-runtime chain), structurally identical to `DefaultParams` (a plain
+     object reference), with a real ready-made roster already in the pak
+     (`DA_NPC_Common_MorphParams_Large/Medium/Neutral/Random/Small`, plus per-role ones like
+     `DA_NPC_Citizen_Worker_MorphParams`).
+     **Decisive real-world evidence found first, no override needed**: RedFalcon's own fresh
+     `lbprobedump`s caught `BP_AnimatedActor_BotC_Female_Standing_01_C` and
+     `BP_AnimatedActor_Buccaneers_Merchant_01_C` -- two different statue classes, both independently
+     rolling the SAME Orient body archetype that spawn -- referencing two DIFFERENT `MorphParams`
+     assets, confirming the mechanism is real before any test override was tried.
+     **Override then tested directly (extended `Spawner.SetCompositeParams`/`Spawner.Spawn`'s
+     `compositeLook` with a new `morphParams` field, plus `lbtestmorphparams <path> [classPath]`)
+     -- result is CLASS-FAMILY SPECIFIC**: on `Config.SENKA_FEMALE_BASE_CLASS` (an `AR5AICharacter`
+     Handyman AI pawn), the override reads back correctly (unlike `ArchetypePreset`, it doesn't get
+     reasserted) but produces NO visible change -- same "sticks, doesn't render" signature as the
+     original closed `BodyMorph` finding, just one layer up. On
+     `BP_AnimatedActor_BotC_Female_Standing_01_C` (the SAME `R5AnimatedCustomizableActor` family the
+     two real differently-shaped statues above belong to), the identical override WORKED PERFECTLY --
+     spawning her with the Merchant's own `MorphParams` produced an EXACT proportion match to the
+     Merchant, confirmed across 8 repeated spawns (her own default randomizes size, so 8/8 identical
+     non-default matches rules out coincidence entirely).
+     **Practical takeaway**: body-shape variety via `MorphParams` is real, safe (plain object
+     reference write, no crash risk), and needs zero custom asset authoring -- but only proven so far
+     for the statue/posed-actor family, not the walking AI-pawn family. Full writeup:
+     `WINDROSE_MODDING_NOTES.md` SS2e's MorphParams addendum (search "body-SHAPE variety").
+
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).
   **The engine drops most repeat keydown events for these specific keys** before UE4SS

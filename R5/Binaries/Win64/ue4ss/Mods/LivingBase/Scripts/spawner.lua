@@ -881,7 +881,7 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     if makeFriendly then fp = Spawner.GetFriendlyFactionParams() end
     local effPreFinish = preFinish
     local hasLook = compositeLook and (compositeLook.params or compositeLook.archetype
-        or compositeLook.bodyTypes or compositeLook.colorParams)
+        or compositeLook.bodyTypes or compositeLook.colorParams or compositeLook.morphParams)
     if fp or hasLook then
         local base = preFinish
         effPreFinish = function(a)
@@ -892,7 +892,7 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
                 pcall(function()
                     Spawner.SetCompositeParams(a, compositeLook.params,
                         compositeLook.archetype, compositeLook.sex, compositeLook.bodyTypes,
-                        compositeLook.colorParams)
+                        compositeLook.colorParams, compositeLook.morphParams)
                 end)
             end
             if fp then Spawner.MakeFriendly(a, fp) end
@@ -1598,7 +1598,7 @@ end
 -- deferred spawn window (preFinish) so the pawn BUILDS its look from these at
 -- BeginPlay, instead of re-skinning after the fact (which the rebuild API won't
 -- do on a live AI pawn). All pcall'd; prints what it set.
-function Spawner.SetCompositeParams(actor, paramsPath, archetypePath, sex, bodyTypesPath, colorPath)
+function Spawner.SetCompositeParams(actor, paramsPath, archetypePath, sex, bodyTypesPath, colorPath, morphPath)
     -- Unconditional -- was gated behind Config.VERBOSE until 2026-08-07, which meant a compositeLook
     -- that silently failed to resolve (e.g. a typo'd archetype path) gave zero trace, same class of
     -- bug already fixed once this session for Spawner.Spawn's own SPAWN FAILED branches.
@@ -1622,17 +1622,32 @@ function Spawner.SetCompositeParams(actor, paramsPath, archetypePath, sex, bodyT
     -- blue-top/red-white-bottom look every faction-visitor reskin was stuck with). Each faction/role
     -- ships its own "..._PresetColor" asset of this same type -- that's the fix.
     local color  = resolveAsset(colorPath)
+    -- MorphParams (R5CompositeMeshComponentMorphParams) -- 2026-08-31, RedFalcon found this is a
+    -- PLAIN, ORDINARY cooked DataAsset (unlike ArchetypePreset's JSON-runtime chain, invisible to
+    -- offline tooling) -- confirmed via a direct JSON export of DA_NPC_Common_MorphParams_Medium:
+    -- MorphControllers, one per body-part GameplayTag (Morph.Zone.Body/Head/Nose/Ears/Brows), each
+    -- an Axis3 barycentric blend (Value + a 3-corner AllowedRange triangle) with bRandomizeMorph --
+    -- explaining why two actors sharing the same archetype mesh (Merchant vs. a BotC woman, both
+    -- Orient) still end up with different proportions: this asset's own randomization, not a fixed
+    -- shape per archetype. A real roster of pre-made alternates already exists in the pak
+    -- (DA_NPC_Common_MorphParams_Large/Medium/Neutral/Random/Small, plus per-role ones) -- same
+    -- SHAPE as DefaultParams (a plain object reference on the composite component), which IS
+    -- successfully overridable pre-build (unlike ArchetypePreset, which gets reasserted) -- this is
+    -- the first live test of whether MorphParams behaves like the former or the latter.
+    local morph  = resolveAsset(morphPath)
     if bodies then pcall(function() comp.BodyTypeParams = bodies end) end
     if params then pcall(function() comp.DefaultParams = params end) end
     if arch   then pcall(function() comp.ArchetypePreset = arch end) end
     if color  then pcall(function() comp.ColorParams = color end) end
+    if morph  then pcall(function() comp.MorphParams = morph end) end
     -- Optional sex override: 1=Male, 2=Female. The archetype's own sex usually wins.
     if sex and sex ~= 0 then pcall(function() comp:SetCharacterSex(sex) end) end
-    say(string.format("preFinish set bodies=%s params=%s archetype=%s color=%s sex=%s (pre-build)",
+    say(string.format("preFinish set bodies=%s params=%s archetype=%s color=%s morph=%s sex=%s (pre-build)",
         bodies and "ok" or (bodyTypesPath and "MISS" or "-"),
         params and "ok" or (paramsPath and "MISS" or "-"),
         arch and "ok" or (archetypePath and "MISS" or "-"),
-        color and "ok" or (colorPath and "MISS" or "-"), tostring(sex or "-")))
+        color and "ok" or (colorPath and "MISS" or "-"),
+        morph and "ok" or (morphPath and "MISS" or "-"), tostring(sex or "-")))
     return true
 end
 
@@ -9554,6 +9569,44 @@ function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say)
         return false
     end
     say("Spawn call returned an actor -- lbprobedump it now. Check comp.ArchetypePreset: if it shows the requested archetype path (not the class's own default), the archetype override actually stuck on this base class.")
+    return true
+end
+
+-- Spawner.TestSpawnCustomMorphParams(morphParamsPath, say) -- "lbtestmorphparams <morphParamsPath>"
+-- (2026-08-31). Tests whether comp.MorphParams (a plain object reference, structurally identical
+-- to DefaultParams -- see Spawner.SetCompositeParams's own header comment for the full reasoning)
+-- can be overridden pre-build the way DefaultParams (outfit) already can, or whether it gets
+-- reasserted from a fixed source the way ArchetypePreset does. Spawns with the SAME proven custom
+-- outfit already used all session, plus this MorphParams override, so any visible shape change is
+-- unambiguous against the already-familiar baseline look.
+function Spawner.TestSpawnCustomMorphParams(morphParamsPath, say, classPath)
+    say = say or function(m) print("[LivingBase] [test-morphparams] " .. tostring(m) .. "\n") end
+    local function ensureFullPath(p)
+        if not p then return nil end
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    morphParamsPath = ensureFullPath(morphParamsPath)
+    -- 2026-08-31, SECOND attempt: RedFalcon's own fresh probe dumps caught two REAL, unmodified
+    -- AnimatedActor statue classes (BotC Standing / Buccaneers Merchant) using two genuinely
+    -- DIFFERENT MorphParams assets while sharing the same Orient body archetype -- definitive proof
+    -- MorphParams IS the real lever for this class FAMILY, at least. The first attempt tested only
+    -- Config.SENKA_FEMALE_BASE_CLASS (an AR5AICharacter/Handyman AI pawn) and saw no visible effect
+    -- -- optionally target a DIFFERENT class here (an R5AnimatedCustomizableActor / BP_AnimatedActor_
+    -- family, the SAME native base those two real statues share) to see if the override behaves
+    -- differently on that class family specifically.
+    classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
+    say("about to spawn " .. tostring(classPath) .. " with compositeLook.morphParams=" .. tostring(morphParamsPath))
+    local actor = Spawner.Spawn(classPath, "MorphParamsTest", nil, nil, nil, nil, false,
+        { morphParams = morphParamsPath }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- check her proportions visually, and lbprobedump to confirm comp.MorphParams shows the requested path (not the class's own default) if you want to double check it stuck.")
     return true
 end
 

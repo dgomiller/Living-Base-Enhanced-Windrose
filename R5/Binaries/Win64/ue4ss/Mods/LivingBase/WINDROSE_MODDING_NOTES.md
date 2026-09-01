@@ -435,6 +435,52 @@ are TWO independent, both-safe levers for eyes: the CPD15 palette shift on the c
 5-variant material swap (a completely different iris style, not just a different shade of the current
 one) — genuinely different axes, not redundant with each other.
 
+**CONFIRMED LIVE, same night: body-SHAPE variety (bust/waist/hip-style proportions within one shared
+body mesh) is also achievable, on at least one whole class family, using entirely existing content —
+no custom asset authoring needed.** This was previously investigated in a closed session and
+concluded dead: a per-instance body-shape blend (`BodyMorph`, a plain Vector variable on the
+AnimInstance) differs between two real characters sharing the identical archetype mesh — confirmed
+via direct comparison — but every attempt to WRITE it live (pre-build, post-build, with matching
+supporting variables set too) reported success and changed nothing visible, traced to a Control Rig
+graph binding that doesn't re-evaluate after construction.
+
+Reopened by finding the actual upstream DATA ASSET that feeds that blend:
+`R5CompositeMeshComponentMorphParams` — a plain, ordinary, offline-inspectable DataAsset (unlike the
+JSON-runtime `ArchetypePreset` chain), holding one `Axis3` barycentric-blend controller per body zone
+(Body/Head/Nose/Ears/Brows), each with a `Value`/`AllowedRange` (a 3-corner blend triangle) and a
+`bRandomizeMorph` flag. It's referenced by the composite component as a plain object property
+(`comp.MorphParams`), structurally identical to `DefaultParams` (outfit) rather than
+`ArchetypePreset` (which gets reasserted). A real, ready-made roster of alternates already exists in
+the pak: `DA_NPC_Common_MorphParams_Large/Medium/Neutral/Random/Small`, plus per-role ones
+(`DA_NPC_Citizen_Townsman_MorphParams`, `DA_NPC_Citizen_Worker_MorphParams`, several mob-family ones).
+
+**Decisive live evidence, found from real gameplay, not a test override**: two different
+in-game statue-type actor classes, both independently rolling the identical shared body-mesh
+archetype, were caught referencing two DIFFERENT `MorphParams` assets — one the generic default, the
+other a role-specific one — and visibly have different proportions as a result. This confirmed the
+mechanism is real BEFORE any override was attempted.
+
+**The override itself was then tested and confirmed working — but the result is class-family
+specific, not universal**:
+- On the ORIGINAL closed investigation's class family (an AI-controlled NPC pawn, e.g. a walking
+  Handyman-based actor) — setting `comp.MorphParams` to a different asset pre-build reads back
+  correctly (the reference genuinely sticks, unlike `ArchetypePreset`) but produces **no visible
+  change** — the same "write succeeds, doesn't render" signature as the original closed `BodyMorph`
+  investigation, just one layer up.
+- On a DIFFERENT class family — a posed/statue-type actor (the same family the two real, differently-
+  shaped statues above belong to) — the identical pre-build override **worked perfectly**: spawning
+  one class with a DIFFERENT class's own `MorphParams` reference produced an EXACT proportion match to
+  that other class, not the spawned class's own (normally randomized) default — confirmed across
+  multiple repeated spawns, ruling out coincidence.
+
+**Practical conclusion**: body-shape variety via `MorphParams` is a real, safe, no-crash-risk,
+existing-content-only lever — but only proven so far for the statue/posed-actor class family, not the
+walking AI-pawn family. For "Barbies" work specifically targeting a walking NPC base, this may still
+need the AR5AICharacter class family's own equivalent trigger (untested: a post-build write plus the
+same rebuild-trigger sequence already proven for outfit changes — never actually tried for
+`MorphParams` specifically, only pre-build was), or accepting body-shape variety on statue-type actors
+for now while pursuing outfit/color/hair/eyes variety on the walking-pawn family as already proven.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

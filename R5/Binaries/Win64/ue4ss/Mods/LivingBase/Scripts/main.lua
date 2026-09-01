@@ -3103,6 +3103,35 @@ else
     log("lbtestlook unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestmorphparams <morphParamsPath>" (2026-08-31) -- tests whether
+-- comp.MorphParams (found to be a plain, ordinary cooked DataAsset, unlike ArchetypePreset's
+-- JSON-runtime chain) can be overridden pre-build -- if it sticks, real existing body-shape/size
+-- presets (DA_NPC_Common_MorphParams_Large/Medium/Neutral/Random/Small etc.) become selectable.
+-- See Spawner.TestSpawnCustomMorphParams's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmorphparams", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestmorphparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local morphArg = Parameters and Parameters[1]
+            local classArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomMorphParams(morphArg, say, classArg) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmorphparams <morphParamsPath> [classPath]")
+    registerCmdInfo("lbtestmorphparams", "lbtestmorphparams <morphParamsPath> [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with a custom MorphParams (body-shape preset) override -- tests whether it sticks pre-build like DefaultParams, or reasserts like ArchetypePreset.")
+else
+    log("lbtestmorphparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbtestbody <paramsPath> <bodyMeshPath>" (2026-08-31) -- spawns with the proven
 -- custom outfit, then swaps the base body mesh post-build (sidesteps the confirmed-blocked
 -- ArchetypePreset route entirely). See Spawner.TestSpawnCustomBody's own header comment.

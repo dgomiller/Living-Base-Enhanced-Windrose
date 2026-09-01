@@ -113,6 +113,37 @@ FIXED -- "Drops" decor not restoring after a reload
   properly on load. Anything placed before this fix will need to be
   despawned and re-placed once to pick up the correction.
 
+ADDED -- "Custom" GUI category: Poses, Skin Tones, Hair, and Clothes
+- A new spawn-tree branch that works differently from every other
+  category: its entries don't place a new actor, they modify whatever
+  is currently target-locked (Numpad +), in place.
+- Poses (221 entries) -- plays a specific real animation on the
+  targeted actor (idle stances, sitting poses, work-bench activity,
+  combat animations, and more), organized by category/subcategory.
+  Works on walking crew/NPCs, posed statues, and native mob skeletons
+  alike. A small number of combat/ability-themed poses carry real
+  gameplay damage baked into their own animation, regardless of who's
+  playing them -- test those from a safe distance.
+- Skin Tones (9 entries) -- swaps the targeted actor's skin material to
+  one of the game's 7 ethnicity families, plus two "Corrupted"
+  (Senkamati) variants. Sex-detected automatically.
+- Hair (109 entries) -- swaps the targeted actor's hairstyle, organized
+  by style, then by headwear-compatible variant (Default / Hat /
+  Headband / Bandana), then by cut number for styles with more than
+  one. Sex-detected automatically.
+- Clothes (304 entries) -- swaps one clothing/armor slot at a time,
+  organized by family then slot then piece name, spanning the ordinary
+  armor catalog plus the tribal Senkamati sets. A built-in fit-safety
+  net substitutes plain underwear instead of clipping for known-
+  incompatible body/piece combinations, and holds back several male-cut
+  families from female targets by default -- both cases say clearly
+  on-screen when a substitution happened. "Clothes > Remove" (16
+  entries: one per slot, plus "All") removes a piece instead of
+  swapping it.
+- New console command: lbunlockclothes -- toggles the Clothes
+  fit-safety net above on/off (off by default), for anyone who wants
+  full control and accepts the clipping risk.
+
 ======================================================================
 v2.1.5 (2026-08-18) -- previous version: v2.1.0
 ======================================================================

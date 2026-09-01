@@ -3171,6 +3171,35 @@ else
     log("lbtestmorphshape unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestbodytypes <bodyTypesPath> [classPath]" (2026-09-01) -- tests whether
+-- constraining comp.BodyTypeParams to a single custom entry (built offline via the
+-- LivingBaseExtended SDK-stub Editor project) can force a deterministic body archetype from
+-- construction onward, without ever touching the confirmed-dead ArchetypePreset route or doing a
+-- post-build mesh swap. See Spawner.TestSpawnCustomBodyTypes's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbodytypes", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbodytypes] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyTypesArg = Parameters and Parameters[1]
+            local classArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyTypes(bodyTypesArg, classArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbodytypes <bodyTypesPath> [classPath]")
+    registerCmdInfo("lbtestbodytypes", "lbtestbodytypes <bodyTypesPath> [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with comp.BodyTypeParams constrained to a single custom entry -- tests whether narrowing this list forces a deterministic body archetype.")
+else
+    log("lbtestbodytypes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbteststatuebody <bodyMeshPath> <presetName> [classPath]" (2026-09-01) -- the
 -- statue equivalent of lbtestbody: explicitly forces BOTH the body-mesh family AND the MorphParams
 -- shape preset on a statue-family class (defaults to the real Standing Woman class, which normally

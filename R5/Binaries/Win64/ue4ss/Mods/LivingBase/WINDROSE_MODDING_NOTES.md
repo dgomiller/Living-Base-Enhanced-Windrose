@@ -299,6 +299,37 @@ piece/body combination will.
 natively partway through the `SkeletalMesh`-class query, despite working cleanly for a plain
 `DataAsset` query moments earlier — see SS3r below, a genuine, separate lesson.
 
+**2026-09-01, a cleaner alternative to the mesh swap above was tried and CLOSED, negative — the
+mesh swap remains the one working mechanism.** The mesh-swap above works, but it's a post-build
+patch; the natural next question was whether the body archetype could instead be forced
+DETERMINISTICALLY from construction onward, with no post-hoc patching, by constraining
+`comp.BodyTypeParams` (a plain, ordinary DataAsset — a flat `TArray` of per-body-type entries,
+confirmed via a live JSON export of the real `DA_NPC_BodyTypesParams_Common`: 14 entries, 7
+families × Male/Female) down to a single entry, authored offline via the `LivingBaseExtended`
+SDK-stub Editor project (see §19c). Theory: since `ArchetypePreset` is the already-confirmed-dead
+reassertion wall, maybe the archetype's own selection could be starved of any OTHER option to pick
+by narrowing the pool it picks from, rather than fighting the wall directly.
+
+Tested live on the Gatherer with a custom `BodyTypeParams` containing exactly one entry (African
+Female). Result, per `lbprobedump`: `comp.BodyTypeParams` itself genuinely stuck (unlike
+`ArchetypePreset`, confirmed via readback — not reasserted), and `GetAvailableBodyTypes()` honestly
+reflects the narrowed pool (both an unfiltered and a Female-scoped query report exactly the one
+African entry; a Male-scoped query reports zero). But `GetBodyType()` resolved to
+`Customization.Morph.BodyType.Adventurer` anyway — the Gatherer's own native family, completely
+unrelated to the custom list — and the actual rendered body was `SK_Adventurer_Male_01` (wrong
+family AND wrong sex; `IsBodySexChangeAvailable` also flipped to `false`).
+
+**Conclusion**: `comp.ArchetypePreset` (left untouched in this test) is what actually DECIDES which
+family+sex gets requested; `BodyTypeParams` is only the POOL that request gets resolved against, not
+the selector itself. Since the narrowed pool no longer contained an entry matching what
+`ArchetypePreset` was asking for (Adventurer+Female, the Gatherer's real default), resolution failed
+and the engine silently substituted a hardcoded absolute-fallback body instead of picking the one
+remaining (wrong-family) entry. This generalizes the existing `ArchetypePreset` wall rather than
+finding a way around it — narrowing `BodyTypeParams` can't route around that wall, since the wall is
+upstream of it. **Don't re-chase this lever for forcing a body archetype without a genuinely new
+theory.** The post-build mesh-swap technique above remains the one proven, working mechanism for a
+chosen body archetype, and needs no custom asset authoring at all.
+
 **Same-night follow-up on COLOR specifically, once RedFalcon reasonably asked "if body mesh can now
 be swapped post-build, why not re-evaluate color too" — genuinely re-tested, and the original
 conclusion holds, now for a much better-understood reason.** Body mesh worked by bypassing the

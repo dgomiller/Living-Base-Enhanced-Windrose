@@ -9610,6 +9610,74 @@ function Spawner.TestSpawnCustomMorphParams(morphParamsPath, say, classPath)
     return true
 end
 
+-- Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, classPath, say) -- "lbtestbodytypes
+-- <bodyTypesPath> [classPath]" (2026-09-01). RedFalcon's own idea: since ArchetypePreset itself is
+-- the JSON-runtime, offline-unreachable chain that reasserts a random pick regardless of any Lua
+-- override, and swapping actor.Mesh directly (post-build) reliably changes the mesh but silently
+-- resets whatever shape was computed against it -- what if the archetype's own selection is
+-- constrained INSTEAD, by giving it nothing else to pick from? comp.BodyTypeParams (a plain,
+-- ordinary, offline-editable DataAsset -- confirmed via a live JSON export of the real
+-- DA_NPC_BodyTypesParams_Common: a flat TArray<UR5CompositeMeshComponentBodyTypeParams*>, 14
+-- entries, 7 families x Male/Female) is what the archetype presumably picks FROM. A custom version
+-- containing only ONE entry (e.g. DA_Custom_BodyTypesParams_AfricanFemale, authored via the
+-- LivingBaseExtended Editor project, referencing the real existing
+-- DA_NPC_BodyTypes_AfricanFemaleParams) should, if this theory holds, force that one body type
+-- deterministically from construction onward -- no post-hoc mesh swap needed at all, which would
+-- also mean the morph SHAPE gets computed correctly against it from the start, unlike every
+-- mesh-swap-based attempt tried so far. Genuinely untested going in -- this is the first live test
+-- of comp.BodyTypeParams as a constraint lever rather than an additive one (its own existing use in
+-- Spawner.SetCompositeParams, `bodyTypesPath`, was previously only ever used to WIDEN a female
+-- archetype's own options, never to narrow them to one).
+--
+-- CONFIRMED LIVE, CLOSED, NEGATIVE (2026-09-01): tested on the Gatherer (Config.
+-- SENKA_FEMALE_BASE_CLASS) with a custom BodyTypeParams containing exactly one entry (African
+-- Female). Result, per lbprobedump: comp.BodyTypeParams itself DID stick (unlike ArchetypePreset,
+-- it isn't reasserted -- confirmed via readback), and GetAvailableBodyTypes() genuinely reports
+-- the narrowed pool (filter=0 and filter=2 both show exactly 1 entry: African; filter=1, presumably
+-- Male-scoped, shows 0) -- so the theory that this DataAsset is a plain, non-reasserted list was
+-- right. But GetBodyType() resolved to "Customization.Morph.BodyType.Adventurer" anyway -- the
+-- Gatherer's OWN native family, unrelated to our custom list -- and the actual rendered body was
+-- SK_Adventurer_Male_01 (wrong family AND wrong sex; IsBodySexChangeAvailable also flipped to
+-- false). Conclusion: comp.ArchetypePreset (left untouched here, still the class's own
+-- DA_Customization_Handyman_Gatherer_PresetArchetype1) is what actually DECIDES which
+-- family+sex gets requested -- BodyTypeParams is only the POOL that request gets looked up
+-- against, not the selector itself. Since our narrowed pool no longer contained an entry
+-- matching what ArchetypePreset was asking for (Adventurer+Female, the Gatherer's real default),
+-- resolution failed and the engine silently substituted a hardcoded absolute-fallback body
+-- (Adventurer Male) instead of picking the one remaining entry. This generalizes, not
+-- contradicts, the already-confirmed ArchetypePreset reassertion wall (see this file's own
+-- "same-night follow-up #4"/#6 in WINDROSE_MODDING_NOTES.md SS2e) -- narrowing BodyTypeParams
+-- can't route around that wall, since the wall is upstream of it. **Don't re-chase this lever for
+-- forcing a body archetype without a genuinely new theory.** The already-proven, actually-working
+-- mechanism for a chosen body (already shipped, already live-confirmed) is the simpler post-build
+-- Spawner.TestSetBaseBodyMesh swap on actor.Mesh (leader component) -- reachable today via
+-- `lbtestbody <paramsPath> <bodyMeshPath>` with e.g. Config.CUSTOM_BODY_MESHES's African female
+-- path -- no custom asset authoring needed at all. Kept as documented reference, not deleted, same
+-- treatment this file gives every other confirmed-dead lever (ColorParams, SetBody, etc.).
+function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, classPath, say)
+    say = say or function(m) print("[LivingBase] [test-bodytypes] " .. tostring(m) .. "\n") end
+    local function ensureFullPath(p)
+        if not p then return nil end
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    bodyTypesPath = ensureFullPath(bodyTypesPath)
+    classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
+    say(string.format("about to spawn %s with compositeLook.bodyTypes=%s (no archetype/mesh/morph override -- isolating this ONE lever)",
+        classPath, tostring(bodyTypesPath)))
+    local actor = Spawner.Spawn(classPath, "BodyTypesTest", nil, nil, nil, nil, false,
+        { bodyTypes = bodyTypesPath }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- check her body/archetype visually, and lbprobedump to confirm comp.BodyTypeParams shows the requested path.")
+    return true
+end
+
 -- Spawner.TestMorphShapeOnTargetClass(presetName, say) -- "lbtestmorphshape <presetName>"
 -- (2026-08-31). Built so RedFalcon can test any of the 18 confirmed-exhaustive MorphParams presets
 -- (Config.MORPH_PARAMS_PRESETS) against whatever mesh/mob type is currently nearest/locked, without

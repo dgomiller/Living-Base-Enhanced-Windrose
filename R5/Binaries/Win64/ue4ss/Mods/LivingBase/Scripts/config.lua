@@ -1570,6 +1570,21 @@ end
 -- sex auto-detection this needs that lbtestpose/lbtestarmor's simpler path-only testers never did.
 Config.CUSTOM_SKIN_TONES = { "Adventurer", "African", "Albion", "Fable", "Native", "Orient", "Scum", "Corrupted", "Corrupted (Wood)" }
 
+-- Config.CUSTOM_BODY_MESHES -- the 7 confirmed-exhaustive "Human/Regular" body-shape families
+-- (2026-08-31), each a genuinely distinct mesh (not just a different skin texture -- confirmed via
+-- lbtestbody's own live-tested SetSkeletalMeshAsset swap on actor.Mesh), Female+Male paths for
+-- each. Feeds "lbbodymesh help"'s printed roster -- see Spawner.TestReportBodyMesh's own comment.
+local HR = "/Game/Character/Skeletal_Meshes/Human/Regular/"
+Config.CUSTOM_BODY_MESHES = {
+  { name = "Adventurer", female = HR .. "Adventurer/Meshes/SK_Adventure_Female_01", male = HR .. "Adventurer/Meshes/SK_Adventurer_Male_01" },
+  { name = "African",    female = HR .. "African/Meshes/SK_African_Female_01",      male = HR .. "African/Meshes/SK_African_Male_01" },
+  { name = "Albion",     female = HR .. "Albion/Meshes/SK_Albion_Female_01",         male = HR .. "Albion/Meshes/SK_Albion_Male_01" },
+  { name = "Fable",      female = HR .. "Fable/Meshes/SK_Fable_Female_01",           male = HR .. "Fable/Meshes/SK_Fable_Male_01" },
+  { name = "Native",     female = HR .. "Native/Meshes/SK_Native_Female_01",         male = HR .. "Native/Meshes/SK_Native_Male_01" },
+  { name = "Orient",     female = HR .. "Orient/Meshes/SK_Orient_Female_01",         male = HR .. "Orient/Meshes/SK_Orient_Male_01" },
+  { name = "Scum",       female = HR .. "Scum/Meshes/SK_Scum_Female_01",             male = HR .. "Scum/Meshes/SK_Scum_Male_01" },
+}
+
 -- Config.MORPH_PARAMS_PRESETS -- the full, confirmed-exhaustive catalog of every
 -- R5CompositeMeshComponentMorphParams asset in the game (2026-08-31, found via a pakcontents.xlsx
 -- sweep for both "MorphParams" and the differently-spelled "MorphPrams" -- the Hero one uses the

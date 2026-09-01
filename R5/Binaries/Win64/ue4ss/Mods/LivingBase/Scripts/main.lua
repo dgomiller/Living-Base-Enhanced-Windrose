@@ -2771,19 +2771,22 @@ else
     log("lbtestthickness unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbbodymesh" (2026-08-28) -- reports the nearest actor's own body mesh (the
--- SkeletalMeshComponent named "Mesh"), e.g. to check whether a target is the raw Senkamati Witch
--- body or a human "Regular" body without wading through a full lbprobedump.
+-- Console command "lbbodymesh [help]" (2026-08-28, extended 2026-08-31) -- no args: reports the
+-- nearest actor's own body mesh (the SkeletalMeshComponent named "Mesh"), e.g. to check whether a
+-- target is the raw Senkamati Witch body or a human "Regular" body without wading through a full
+-- lbprobedump. "help"/"list": prints the known Config.CUSTOM_BODY_MESHES roster (the reference
+-- table lbtestbody's own <bodyMeshPath> argument needs) instead of probing a target.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbbodymesh", function(FullCommand, Parameters, Ar)
-            local ok, err = pcall(function() Spawner.TestReportBodyMesh() end)
+            local arg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestReportBodyMesh(arg) end)
             if not ok then print("[LivingBase] [lbbodymesh] FAILED: " .. tostring(err) .. "\n") end
             return true
         end)
     end)
-    log("Console command registered: lbbodymesh")
-    registerCmdInfo("lbbodymesh", "lbbodymesh", "Reports the nearest/locked actor's own body mesh (short name + full path).")
+    log("Console command registered: lbbodymesh [help]")
+    registerCmdInfo("lbbodymesh", "lbbodymesh [help]", "No args: reports the nearest/locked actor's own body mesh. 'help'/'list': prints the known 7-family/14-path body mesh roster for lbtestbody.")
 else
     log("lbbodymesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

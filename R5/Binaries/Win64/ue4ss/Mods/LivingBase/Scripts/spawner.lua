@@ -10327,7 +10327,21 @@ end
 -- including the one named "Mesh"), but it's buried in a much bigger dump. This just answers that
 -- one question directly: reads actor.Mesh's current skeletal mesh name/full path and prints/
 -- toasts it, nothing else. Same targeting as every other lbtest* tool (nearest-in-front/locked).
-function Spawner.TestReportBodyMesh()
+-- Spawner.TestReportBodyMesh(arg) -- "lbbodymesh [help]" -- no args: reads the nearest/locked
+-- target's current base body mesh (unchanged behavior). "help"/"list": prints the known
+-- Config.CUSTOM_BODY_MESHES roster (7 families x Female/Male = 14 paths) instead of probing a
+-- target -- RedFalcon's request, so the reference table lbtestbody needs is available in-game
+-- without having to come back to chat for it.
+function Spawner.TestReportBodyMesh(arg)
+    if arg and (arg:lower() == "help" or arg:lower() == "list") then
+        print("[LivingBase] [test-bodymesh] known body mesh families (lbtestbody <paramsPath> <bodyMeshPath>):\n")
+        for _, f in ipairs(Config.CUSTOM_BODY_MESHES) do
+            print(string.format("[LivingBase] [test-bodymesh]   %s\n", f.name))
+            print(string.format("[LivingBase] [test-bodymesh]     Female: %s\n", f.female))
+            print(string.format("[LivingBase] [test-bodymesh]     Male:   %s\n", f.male))
+        end
+        return true
+    end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then

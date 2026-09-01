@@ -9610,6 +9610,53 @@ function Spawner.TestSpawnCustomMorphParams(morphParamsPath, say, classPath)
     return true
 end
 
+-- Spawner.TestMorphShapeOnTargetClass(presetName, say) -- "lbtestmorphshape <presetName>"
+-- (2026-08-31). Built so RedFalcon can test any of the 18 confirmed-exhaustive MorphParams presets
+-- (Config.MORPH_PARAMS_PRESETS) against whatever mesh/mob type is currently nearest/locked, without
+-- typing full class or asset paths each time: reads the TARGET's own class, then respawns a fresh
+-- copy of that SAME class with the chosen preset applied via Spawner.TestSpawnCustomMorphParams.
+-- Aim at any placed mob/NPC/statue first (Num+ to lock it if it's hard to keep aimed at), then run
+-- this with a preset name -- a new copy of that exact class appears in front of you wearing the
+-- chosen shape preset, for a direct before/after comparison against the original still standing
+-- there. MorphParams has to be set PRE-BUILD (confirmed this session), so this always spawns a NEW
+-- actor -- there's no in-place "apply to what's targeted" version the way Skin Tones/Clothes/Hair
+-- work, unlike every other Custom-category lever.
+function Spawner.TestMorphShapeOnTargetClass(presetName, say)
+    say = say or function(m) print("[LivingBase] [test-morphshape] " .. tostring(m) .. "\n") end
+    if not presetName then
+        local names = {}
+        for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do names[#names + 1] = p.name end
+        say("usage: lbtestmorphshape <presetName> -- known: " .. table.concat(names, ", "))
+        return false
+    end
+    local matched = nil
+    for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do
+        if p.name:lower() == presetName:lower() then matched = p; break end
+    end
+    if not matched then
+        local names = {}
+        for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do names[#names + 1] = p.name end
+        say(string.format("unknown preset '%s' -- known: %s", presetName, table.concat(names, ", ")))
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local classPath = nil
+    pcall(function() classPath = actor:GetClass():GetPathName() end)
+    if not classPath then
+        say("could not read the target's own class path")
+        return false
+    end
+    say(string.format("target class = %s -- preset '%s' = %s", classPath, matched.name, matched.path))
+    return Spawner.TestSpawnCustomMorphParams(matched.path, say, classPath)
+end
+
 -- Spawner.TestReportPlayerClass(say) -- "lbplayerclass" (2026-08-31). PURE READ. The character
 -- creator screen must spawn/preview SOME actor that takes an arbitrary chosen archetype preset
 -- with ZERO randomization -- players expect exactly what they picked, unlike every NPC/mob class
@@ -12372,6 +12419,23 @@ function Spawner.ReleaseTargetLockIfDestroyed(actor)
     Spawner.lockedTarget = nil
     print("[LivingBase] Target lock released (target despawned): " .. tostring(label) .. ".\n")
     pcall(function() Spawner.Toast("Target lock released (target despawned).", 2.5) end)
+    return true
+end
+
+-- Spawner.ReleaseTargetLock(reason) -- unconditional release, whatever the lock currently is (unlike
+-- ReleaseTargetLockIfDestroyed above, which only fires for the specific-actor-was-destroyed case).
+-- 2026-08-31, RedFalcon's request: closing the SpawnMenu window should clear the lock too -- with
+-- the GUI closed there's no "Selected Target" display left showing what's locked, and every
+-- Custom-category lever (Poses/Skin Tones/Hair/Clothes) only works through that window, so a stale
+-- lock surviving a close just risks the NEXT keyboard-only despawn/cycle/live-edit press silently
+-- acting on an object the player can no longer see was targeted. No-op (returns false) if nothing is
+-- currently locked. `reason` is a short human string folded into the log/toast, e.g. "window closed".
+function Spawner.ReleaseTargetLock(reason)
+    if not Spawner.lockedTarget then return false end
+    local label = Spawner.lockedTarget.label
+    Spawner.lockedTarget = nil
+    print(string.format("[LivingBase] Target lock released (%s): %s.\n", tostring(reason or "?"), tostring(label)))
+    pcall(function() Spawner.Toast(string.format("Target lock released (%s).", tostring(reason or "?")), 2.5) end)
     return true
 end
 

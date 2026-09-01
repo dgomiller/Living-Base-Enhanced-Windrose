@@ -823,6 +823,14 @@ if ExecuteWithDelay then
                     pcall(Spawner.ApplyPlacementCameraOffset)
                 else
                     pcall(Spawner.RestorePlacementCameraOffset)
+                    -- Release the target lock on window close too (2026-08-31, RedFalcon's request)
+                    -- -- with the GUI gone there's no "Selected Target" display left showing what's
+                    -- locked, and every Custom-category lever (Poses/Skin Tones/Hair/Clothes) only
+                    -- works through this window, so a stale lock surviving a close just risks the
+                    -- NEXT keyboard-only despawn/cycle/live-edit press silently acting on something
+                    -- the player can no longer see was targeted. Spawner.ReleaseTargetLock is a
+                    -- no-op if nothing's currently locked.
+                    pcall(function() Spawner.ReleaseTargetLock("window closed") end)
                     -- Cancel an in-progress (unfinalized) placement on window close (2026-08-23,
                     -- RedFalcon's request) -- F5/F6 both go through windowGatedAction, so once the
                     -- window is closed the player has no way left to confirm OR cancel a placement
@@ -3130,6 +3138,34 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestmorphparams", "lbtestmorphparams <morphParamsPath> [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with a custom MorphParams (body-shape preset) override -- tests whether it sticks pre-build like DefaultParams, or reasserts like ArchetypePreset.")
 else
     log("lbtestmorphparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestmorphshape <presetName>" (2026-08-31) -- reads the nearest/locked
+-- target's own class and respawns a fresh copy of it with a named MorphParams preset
+-- (Config.MORPH_PARAMS_PRESETS, 18 confirmed-exhaustive entries) applied -- lets any mesh/mob type
+-- be tested against any preset by short name, no path-typing needed. See
+-- Spawner.TestMorphShapeOnTargetClass's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmorphshape", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestmorphshape] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local presetArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestMorphShapeOnTargetClass(presetArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmorphshape <presetName>")
+    registerCmdInfo("lbtestmorphshape", "lbtestmorphshape <presetName>", "Respawns the nearest/locked target's own class with a named MorphParams shape preset applied -- test any mesh/mob type against any of the 18 known presets by name.")
+else
+    log("lbtestmorphshape unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestbody <paramsPath> <bodyMeshPath>" (2026-08-31) -- spawns with the proven

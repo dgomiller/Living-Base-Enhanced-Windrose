@@ -1570,6 +1570,36 @@ end
 -- sex auto-detection this needs that lbtestpose/lbtestarmor's simpler path-only testers never did.
 Config.CUSTOM_SKIN_TONES = { "Adventurer", "African", "Albion", "Fable", "Native", "Orient", "Scum", "Corrupted", "Corrupted (Wood)" }
 
+-- Config.MORPH_PARAMS_PRESETS -- the full, confirmed-exhaustive catalog of every
+-- R5CompositeMeshComponentMorphParams asset in the game (2026-08-31, found via a pakcontents.xlsx
+-- sweep for both "MorphParams" and the differently-spelled "MorphPrams" -- the Hero one uses the
+-- typo'd spelling, everything else uses the correct one). Short name -> full asset path, keyed
+-- for `lbtestmorphshape <name>` -- confirmed live that this override sticks pre-build on the
+-- R5AnimatedCustomizableActor/statue family (8/8 repeated spawns matched exactly); NOT confirmed
+-- to visibly work on the AR5AICharacter/Handyman AI-pawn family (same "sticks, no render" signature
+-- as the closed BodyMorph investigation) -- test on statues/mobs first.
+local RBIZ = "/R5BusinessRules/Character/Customization/NPC/"
+Config.MORPH_PARAMS_PRESETS = {
+  { name = "Large",             path = RBIZ .. "Common/DA_NPC_Common_MorphParams_Large" },
+  { name = "Medium",            path = RBIZ .. "Common/DA_NPC_Common_MorphParams_Medium" },
+  { name = "Neutral",           path = RBIZ .. "Common/DA_NPC_Common_MorphParams_Neutral" },
+  { name = "Random",            path = RBIZ .. "Common/DA_NPC_Common_MorphParams_Random" },
+  { name = "Small",             path = RBIZ .. "Common/DA_NPC_Common_MorphParams_Small" },
+  { name = "Citizen_Townsman",  path = RBIZ .. "Citizens/Townsmen/DA_NPC_Citizen_Townsman_MorphParams" },
+  { name = "Citizen_Worker",    path = RBIZ .. "Citizens/Workers/DA_NPC_Citizen_Worker_MorphParams" },
+  { name = "Hero",              path = "/Game/Gameplay/Character/Player/Parameters/DA_Hero_MorphPrams" },
+  { name = "BlackSmith",        path = "/Game/UI/META/Dialogue/Actors/CompositeMeshes/DA_BlackSmith_MorphParams" },
+  { name = "Blackbeard_Sailor", path = "/Game/Gameplay/Character/AI/Mob/Blackbeard/Regular_Sailor/CompositeMesh/DA_Mob_BlackBeard_Regular_Sailor_MorphParams" },
+  { name = "Drowned_Armored",   path = "/Game/Gameplay/Character/AI/Mob/Drowned/CompositeMesh/DA_Mob_Regular_Drowned_Armored_MorphParams" },
+  { name = "Drowned_Naked",     path = "/Game/Gameplay/Character/AI/Mob/Drowned/CompositeMesh/DA_Mob_Regular_Drowned_Naked_MorphParams" },
+  { name = "Drowned_Spitter",   path = "/Game/Gameplay/Character/AI/Mob/Drowned/DrownedSpitter/CompositeMesh/DA_Drowned_Spitter_MorphParams" },
+  { name = "Senkamati_Hunter",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/CompositeMesh/DA_Mob_Senkamati_Regular_Hunter_MorphParams" },
+  { name = "Senkamati_Caster",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/CompositeMesh/DA_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_MorphParams" },
+  { name = "Senkamati_Healer",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Healer/CompositeMesh/DA_Mob_SenkamatiCorrupted_Regular_Shaman_Healer_MorphParams" },
+  { name = "Senkamati_Thrall",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/CompositeMesh/DA_Mob_Senkamati_Regular_Thrall_MorphParams" },
+  { name = "Senkamati_Warrior", path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/CompositeMesh/DA_Mob_Senkamati_Regular_Warrior_MorphParams" },
+}
+
 -- Config.FEMALE_HAIR_STYLES — "hair style": a MESH swap, not a tint. One entry per
 -- hairstyle FAMILY (the game's own folder grouping under Hair/Female/), each pointing at
 -- that family's "_Default_Female" variant (no suspended-under-hat/headband version --

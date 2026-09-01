@@ -299,37 +299,6 @@ piece/body combination will.
 natively partway through the `SkeletalMesh`-class query, despite working cleanly for a plain
 `DataAsset` query moments earlier — see SS3r below, a genuine, separate lesson.
 
-**2026-09-01, a cleaner alternative to the mesh swap above was tried and CLOSED, negative — the
-mesh swap remains the one working mechanism.** The mesh-swap above works, but it's a post-build
-patch; the natural next question was whether the body archetype could instead be forced
-DETERMINISTICALLY from construction onward, with no post-hoc patching, by constraining
-`comp.BodyTypeParams` (a plain, ordinary DataAsset — a flat `TArray` of per-body-type entries,
-confirmed via a live JSON export of the real `DA_NPC_BodyTypesParams_Common`: 14 entries, 7
-families × Male/Female) down to a single entry, authored offline via the `LivingBaseExtended`
-SDK-stub Editor project (see §19c). Theory: since `ArchetypePreset` is the already-confirmed-dead
-reassertion wall, maybe the archetype's own selection could be starved of any OTHER option to pick
-by narrowing the pool it picks from, rather than fighting the wall directly.
-
-Tested live on the Gatherer with a custom `BodyTypeParams` containing exactly one entry (African
-Female). Result, per `lbprobedump`: `comp.BodyTypeParams` itself genuinely stuck (unlike
-`ArchetypePreset`, confirmed via readback — not reasserted), and `GetAvailableBodyTypes()` honestly
-reflects the narrowed pool (both an unfiltered and a Female-scoped query report exactly the one
-African entry; a Male-scoped query reports zero). But `GetBodyType()` resolved to
-`Customization.Morph.BodyType.Adventurer` anyway — the Gatherer's own native family, completely
-unrelated to the custom list — and the actual rendered body was `SK_Adventurer_Male_01` (wrong
-family AND wrong sex; `IsBodySexChangeAvailable` also flipped to `false`).
-
-**Conclusion**: `comp.ArchetypePreset` (left untouched in this test) is what actually DECIDES which
-family+sex gets requested; `BodyTypeParams` is only the POOL that request gets resolved against, not
-the selector itself. Since the narrowed pool no longer contained an entry matching what
-`ArchetypePreset` was asking for (Adventurer+Female, the Gatherer's real default), resolution failed
-and the engine silently substituted a hardcoded absolute-fallback body instead of picking the one
-remaining (wrong-family) entry. This generalizes the existing `ArchetypePreset` wall rather than
-finding a way around it — narrowing `BodyTypeParams` can't route around that wall, since the wall is
-upstream of it. **Don't re-chase this lever for forcing a body archetype without a genuinely new
-theory.** The post-build mesh-swap technique above remains the one proven, working mechanism for a
-chosen body archetype, and needs no custom asset authoring at all.
-
 **Same-night follow-up on COLOR specifically, once RedFalcon reasonably asked "if body mesh can now
 be swapped post-build, why not re-evaluate color too" — genuinely re-tested, and the original
 conclusion holds, now for a much better-understood reason.** Body mesh worked by bypassing the
@@ -536,6 +505,163 @@ Net: mesh alone (post-build) and shape alone (via a plain, no-mesh-forcing spawn
 reliable, independently, on the statue class family — but the two cannot currently be combined to
 get an explicit, deterministic mesh+shape combination on demand. Don't re-attempt the pre-build
 combination without a genuinely new theory for why touching the mesh triggers a full defaults reset.
+
+**2026-09-01, a first attempt at forcing body-type SELECTION through native construction (rather
+than a post-hoc mesh swap) FAILED — but the corrected version, a few hours later the same night,
+WORKED, and generalizes well.** Recorded here as it actually happened, since the failure is what
+led to the real technique.
+
+**First attempt, wrong theory, confirmed dead**: constrain `comp.BodyTypeParams` (a plain, ordinary
+DataAsset — a flat `TArray` of per-body-type entries, confirmed via a live JSON export of the real
+`DA_NPC_BodyTypesParams_Common`: 14 entries, 7 families × Male/Female) down to a single NEW-family
+entry, authored offline via a real SDK-stub Editor project (see §19c), hoping the archetype's own
+selection could be starved of any other option to pick. Tested on the Gatherer with a
+`BodyTypeParams` containing exactly one entry (African Female): the custom list itself DID stick
+(unlike `ArchetypePreset`, confirmed via readback — not reasserted), and `GetAvailableBodyTypes()`
+honestly reflected the narrowed pool. But `GetBodyType()` resolved to
+`Customization.Morph.BodyType.Adventurer` anyway — the Gatherer's own native family, completely
+unrelated to the custom list — and the rendered body fell back to a hardcoded generic
+(`SK_Adventurer_Male_01`, wrong family AND wrong sex). **Root cause**: `comp.ArchetypePreset` is
+what actually DECIDES which family+sex key gets REQUESTED; `BodyTypeParams` is only the POOL that
+request gets resolved against, not the selector. A pool missing an entry for the key that's actually
+requested doesn't get a substitute picked from it — it fails and the engine falls back to a
+hardcoded default.
+
+**The corrected technique, confirmed live and working, repeatedly, across four genuinely different
+NPC class families**: don't add a NEW-family entry — instead build an entry that KEEPS the tag the
+class already requests (so the lookup key still matches, and the entry is actually consulted) but
+retargets that entry's own `BodyMesh` field to a DIFFERENT family's real mesh. This hijacks what
+"the class's own native key" resolves to, for one custom asset only, without ever touching the real
+shared `BodyTypeParams` asset the rest of the game still uses unmodified.
+
+Build recipe (via the SDK-stub Editor project, §19c):
+1. Expand the stub `R5CompositeMeshComponentBodyTypeParams` class to its real fields (matched to the
+   SDK header dump exactly): `BodyType` (`FGameplayTag`), `BodyTypeSex` (`ER5BLCharacterSex`),
+   `BodyMesh` (`TSoftObjectPtr<USkeletalMesh>`), `AnimClass`, `SkinMaterials`, `BodyTypeMorphPrefix`,
+   `BodyTypeText`.
+2. Author a fresh instance via headless Python: set `BodyTypeSex` (Python-settable directly), leave
+   `BodyType` at default (see step 4), and set `BodyMesh` to a **transient placeholder**
+   (`unreal.SkeletalMesh()`) — headless Python cannot marshal a soft-object reference to an
+   external/unmounted asset path directly (confirmed via repeated failure: a plain string, a
+   `SoftObjectPath`, and a loaded wrong-type object were all rejected with a type-conversion error;
+   only an actual object of the correct class is accepted, and a transient one works fine and
+   serializes as a clean, later-editable `SoftObjectPropertyData` field once cooked).
+3. Cook. Confirm the cooked asset is a plain versioned `NormalExport` (`IsUnversioned: false`) with
+   `BodyMesh` showing as an editable `PackageName`/`AssetName` pair pointing at
+   `/Engine/Transient`/`SkeletalMesh_N` — this is what makes step 5 possible.
+4. **The one unavoidable manual step**: `BodyType` (a `FGameplayTag`) cannot be constructed from a
+   string via any headless-Python API found (`GameplayTagLibrary` has no `request_gameplay_tag`;
+   `TagName` is read-only; `make_literal_gameplay_tag` itself needs an already-valid tag as input —
+   all confirmed by direct testing, not assumed). Register the tag name in the project's own
+   `Config/DefaultGameplayTags.ini`, then set it once via the Editor's own property-picker widget on
+   the entry asset (open the PROJECT'S SOURCE asset under `Content/Mods/...`, not the cooked output).
+5. Re-cook (this bakes the tag in but reverts `BodyMesh` back to the placeholder, since cooking
+   re-derives from the source asset — order matters: tag first, then the mesh retarget last).
+6. Retarget `BodyMesh` on the freshly-cooked `.uasset` via UAssetGUI's Export Data grid — a plain
+   two-field text edit (`PackageName`/`AssetName`), no JSON round-trip needed (`fromjson` remains
+   broken, confirmed again this session — do the edit interactively in the GUI).
+7. Package (`retoc to-zen`, root mount point `../../../`) and install as a sidecar pak.
+8. Wrap the entry in a `R5CompositeMeshBodyTypeListParams` (`BodyTypeData = [entry]`) — this is what
+   `Spawner.SetCompositeParams`'s `bodyTypesPath` argument actually points at.
+
+**Scaling this is cheap once one tagged template exists for a given source key**: the `BodyType`
+tag survives `unreal.EditorAssetLibrary.duplicate_asset()` wholesale — so producing a SECOND
+destination mesh under an ALREADY-tagged source needs zero further manual tag-picking, just
+duplicate → set a fresh placeholder `BodyMesh` → cook → one more UAssetGUI retarget. Confirmed live:
+duplicated one Adventurer-tagged template into five destinations (Albion/Fable/Native/Orient/Scum
+meshes) in one Python batch run, tag intact on every one, verified via readback.
+
+**Confirmed live, working, across four genuinely different NPC source classes** (each needing its
+own one-time tagged template, since the native key varies per class, not fixed game-wide):
+- `Adventurer` — `BP_NPC_Handyman_Gatherer_C`, `BP_NPC_Handyman_Herbalist_C`, and
+  `BP_NPC_Citizen_Walker_C` (a male, sex-changed) all resolve `GetBodyType()=Adventurer` natively,
+  despite each having its OWN separate `ArchetypePreset` asset — the resolved KEY is what matters,
+  not which preset asset produced it.
+- `Albion` — `BP_NPC_Employee_AlchemyStation_RosalindaMercer_C` (a completely different NPC
+  family, `BP_NPC_Employee_C`, not `BP_NPC_Handyman_C` — confirming the technique isn't
+  Handyman-specific).
+- `Scum` — three native-MALE laborer NPCs (`BP_NPC_Handyman_Woodman_C`/`_Miner_C`/`_Farmer_C`) all
+  resolve `GetBodyType()=Scum`. Needed one extra fix: since every custom entry authored this session
+  is `BodyTypeSex=Female`, a natively-male class's own `ArchetypePreset` requests
+  `Scum+Male` — force `compositeLook.sex=2` (Female) in the SAME pre-build spawn call. Confirmed
+  live this DOES stick correctly when combined with the `BodyTypeParams` override in one spawn
+  (result matched a separately-confirmed post-build `SetCharacterSex` conversion of the same class
+  exactly) — a genuine, worthwhile exception to this file's own general "the archetype's own sex
+  usually wins" caution elsewhere; that caution still applies to setting sex ALONE, this is
+  specifically about setting it ALONGSIDE a matching `BodyTypeParams` override.
+- `Senkamati` — the raw NATIVE MOB skeleton (`BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C`,
+  a Corrupted mob class, NOT a "Human/Regular" NPC at all) resolves `GetBodyType()=Senkamati`,
+  backed by her OWN dedicated `DA_Mob_Senkamati_Regular_Shaman_BodyTypesParams` pool (not the
+  shared `DA_NPC_BodyTypesParams_Common` every "Regular" class used) — confirmed the SAME technique
+  applies regardless, successfully retargeting her own unique native mesh
+  (`SK_Senkamati_Witch_01_Female`) to a standard human one. One real oddity noted but not fully
+  explained: her raw `ArchetypePreset` property reads a non-null pointer in a generic property dump
+  but reads as `(invalid/none)` via the dedicated archetype-validity probe — suggesting mob classes
+  may not carry a genuine `R5CharacterCustomizationPresetArchetype` the same way human NPCs do —
+  yet the retarget worked identically regardless, so this didn't end up mattering in practice.
+
+**Shape (`BodyMorph`) is NOT a tunable parameter on this class family, but it IS a free lever via
+source-class choice — a distinction worth being precise about.** `MorphParams` (the asset reference)
+sticks correctly when set pre-build (unlike `ArchetypePreset`), but a decisive test proved it's never
+actually CONSUMED into a real shape on the `AR5AICharacter` walking-NPC family: two different NPC
+classes (Gatherer, Herbalist) were confirmed to reference the IDENTICAL `MorphParams` asset
+(`DA_Hero_MorphPrams`) yet produced completely DIFFERENT `BodyMorph` results — proof the runtime
+reference plays no role at all; `BodyMorph` is baked into each Blueprint's own construction as a
+fixed per-class default, independent of both the mesh currently equipped and whatever `MorphParams`
+is nominally referenced.
+
+That means shape can't be dialed in as a parameter — but it DOES persist reliably across a
+`BodyTypeParams` mesh retarget (confirmed on every one of the four source classes above: each one's
+`BodyMorph` after being retargeted to the African mesh matched its own pre-retargeted baseline
+exactly, byte for byte). So "which shape a Barbie gets" reduces entirely to "which source class you
+spawn from" — a free, wide, but fixed-not-tunable pool. **Sex-changing a native-male NPC
+(`SetCharacterSex`/`comp:SwapBodySex`, already established elsewhere in this file) carries that
+male class's own native `BodyMorph` over completely unchanged** — confirmed across four male
+classes (Woodman/Miner/Farmer/Citizen Walker), three of which produced genuinely distinct values —
+meaning ANY male walking NPC in the game is a usable shape source too, not just the handful of
+naturally-female ones. Across 7 classes checked this session, 5 distinct shape values were found (2
+classes shared the same fallback default). One structural note: every `Adventurer`/`Albion`/`Scum`
+-keyed class showed `BodyMorph.X = 0` with all the variation living in Y/Z; the `Senkamati`-keyed
+class was the only one with a non-zero X (`0.5, 0, 0`) — consistent with her having a genuinely
+separate morph blend space tied to her own dedicated `BodyTypeParams` pool, not the shared human one.
+
+**A real clarification of the earlier Senkamati-armor fit-compatibility finding (see §11's original
+allowlist work), discovered as a side effect of this retarget technique.** The original finding was:
+Senkamati-family armor clips badly on most human archetypes, fits cleanly only on a short allowlist
+(Adventure/Albion/her own native body). Retargeting the raw native Senkamati Caster's OWN `BodyMesh`
+to the African mesh (a family NOT on that allowlist) was expected to make her own armor clip —
+tested live, and it did NOT clip; it fit exactly as well as before. **Why**: the retarget only
+swaps which mesh RENDERS as the base body — it never touches the underlying Skeleton. Composite
+pieces (armor, clothes) deform via the shared skeleton through leader-pose, not by binding to the
+base mesh's own specific vertex geometry. Since her skeleton never changed (still her own native
+Senkamati rig), armor rigged against that skeleton keeps fitting regardless of which mesh currently
+paints the visible skin layer. This reframes the ORIGINAL compatibility problem correctly: it was
+never really about "which mesh is assigned" at all — it's about DIFFERENT NPC CLASSES having
+genuinely different underlying skeletons/proportions, even when they happen to share an
+ethnicity-family NAME. Swapping which mesh renders on the SAME actor/skeleton was never actually at
+risk of breaking that fit, and testing confirmed it doesn't. (The separate, unrelated pelvis-gap
+issue — a mesh-authoring gap in the Legs piece assuming the wearer's OWN skin shows through
+underneath — is NOT affected by any of this and remains open exactly as originally documented; it's
+a texture/geometry issue, not a skeleton-fit one.)
+
+**Practical design conclusion**: a fully custom "Barbie" NPC on this class family reduces to three
+completely independent, freely stackable choices — (1) source class (fixes shape, sex-change
+included), (2) `BodyTypeParams` retarget (mesh/ethnicity, skip entirely if the source's own native
+mesh is already wanted), (3) outfit (`compositeLook.params`, already proven independent of both).
+None of these three are live-editable on an already-spawned actor — every one is construction-time
+only — so a future "change this NPC's body type" feature needs to snapshot all three (plus any
+separate post-build CPD-color/hair/skin overrides already applied) and do a destroy-and-respawn
+with the new choice, replaying everything else — the same pattern this file's own restore-on-reload
+system already uses elsewhere, not a new design problem.
+
+**One separately real, NOT investigated finding worth a pointer**: probing a real Employee NPC
+(Rosalinda Mercer) to see what drives her workbench-using behavior found her `AIControllerClass`
+and `AIPawnParams` are LITERALLY IDENTICAL to a generic Handyman NPC's — so her distinct behavior
+is NOT a class-level behavior-tree difference reachable via the already-established
+`AIControllerClass`/`AIPawnParams`-swap technique. It's most likely a separate RUNTIME ASSIGNMENT
+(a reference to whichever building/workstation she's actually hired to) set by the game's own
+hiring/placement system — genuinely unexplored this session, a real candidate for "give a custom
+NPC a craft-station job" as a future, separate investigation, not solved here.
 
 ---
 

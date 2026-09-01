@@ -3171,11 +3171,12 @@ else
     log("lbtestmorphshape unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbtestbodytypes <bodyTypesPath> [classPath]" (2026-09-01) -- tests whether
--- constraining comp.BodyTypeParams to a single custom entry (built offline via the
--- LivingBaseExtended SDK-stub Editor project) can force a deterministic body archetype from
--- construction onward, without ever touching the confirmed-dead ArchetypePreset route or doing a
--- post-build mesh swap. See Spawner.TestSpawnCustomBodyTypes's own header comment.
+-- Console command "lbtestbodytypes <bodyTypesPath> [morphParamsPath] [classPath]" (2026-09-01) --
+-- CONFIRMED LIVE, WORKING: spawns with comp.BodyTypeParams retargeted to a custom
+-- family-tag-matches-but-mesh-differs asset (built offline via the LivingBaseExtended SDK-stub
+-- Editor project) -- forces a chosen body mesh from genuine construction onward, no post-build
+-- patch needed. The optional morphParamsPath lets a MorphParams shape override be tested together
+-- with it in the same spawn. See Spawner.TestSpawnCustomBodyTypes's own header comment.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestbodytypes", function(FullCommand, Parameters, Ar)
@@ -3187,15 +3188,21 @@ if RegisterConsoleCommandHandler then
                     end
                 end)
             end
+            -- "-" is a deliberate skip sentinel for morphArg -- an empty "" positional argument
+            -- isn't reliable here (this console's own argument splitter may drop it entirely,
+            -- silently shifting classArg into the morphArg slot instead -- confirmed live 2026-09-01,
+            -- caused an unwanted default-class spawn). Always use "-" to leave morphParams untouched.
             local bodyTypesArg = Parameters and Parameters[1]
-            local classArg = Parameters and Parameters[2]
-            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyTypes(bodyTypesArg, classArg, say) end)
+            local morphArg = Parameters and Parameters[2]
+            if morphArg == "-" or morphArg == "" then morphArg = nil end
+            local classArg = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyTypes(bodyTypesArg, morphArg, classArg, say) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestbodytypes <bodyTypesPath> [classPath]")
-    registerCmdInfo("lbtestbodytypes", "lbtestbodytypes <bodyTypesPath> [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with comp.BodyTypeParams constrained to a single custom entry -- tests whether narrowing this list forces a deterministic body archetype.")
+    log("Console command registered: lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath]")
+    registerCmdInfo("lbtestbodytypes", "lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with comp.BodyTypeParams retargeted to a chosen body mesh, optionally with a MorphParams shape override in the same spawn. Use '-' for morphParamsPath to skip it and specify classPath instead.")
 else
     log("lbtestbodytypes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

@@ -10968,6 +10968,12 @@ function Spawner.TestSpawnCustomBody(paramsPath, bodyMeshPath, say)
     end
     say("Spawn call returned an actor -- now swapping base body mesh to " .. tostring(bodyMeshPath))
     local ok = Spawner.TestSetBaseBodyMesh(actor, bodyMeshPath, say)
+    -- 2026-08-31, RedFalcon's request: freeze AI by default (StopLogic, the same proven mechanism
+    -- lbtestbodystill/lbfreeze already use) -- a walking test spawn made it hard to judge visual
+    -- changes (color/shape/etc.) mid-stride all session. Have the actor reference directly here
+    -- already, so this doesn't need findNearestSpawnInFront's own re-pick the way lbfreeze does.
+    local okFreeze = Spawner.SetAILogic(actor, false)
+    say(string.format("SetAILogic(false) = %s -- she should be standing still now (lbfreeze off to let her walk again).", tostring(okFreeze)))
     say("lbprobedump it now -- check the CharacterMesh0 mesh name in the probe-mesh lines.")
     return ok
 end

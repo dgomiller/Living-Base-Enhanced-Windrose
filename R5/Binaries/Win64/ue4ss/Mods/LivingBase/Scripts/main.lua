@@ -3173,7 +3173,9 @@ end
 
 -- Console command "lbtestbody <paramsPath> <bodyMeshPath>" (2026-08-31) -- spawns with the proven
 -- custom outfit, then swaps the base body mesh post-build (sidesteps the confirmed-blocked
--- ArchetypePreset route entirely). See Spawner.TestSpawnCustomBody's own header comment.
+-- ArchetypePreset route entirely). Freezes AI by default now (same SetAILogic(false) mechanism as
+-- lbfreeze) -- use "lbfreeze off" afterward if you want her walking again. See
+-- Spawner.TestSpawnCustomBody's own header comment.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestbody", function(FullCommand, Parameters, Ar)
@@ -3193,7 +3195,7 @@ if RegisterConsoleCommandHandler then
         end)
     end)
     log("Console command registered: lbtestbody <paramsPath> <bodyMeshPath>")
-    registerCmdInfo("lbtestbody", "lbtestbody <paramsPath> <bodyMeshPath>", "Spawns with a custom outfit then swaps the base body mesh post-build -- tests a selected body mesh independent of the blocked ArchetypePreset route.")
+    registerCmdInfo("lbtestbody", "lbtestbody <paramsPath> <bodyMeshPath>", "Spawns with a custom outfit then swaps the base body mesh post-build (frozen/no-AI by default -- 'lbfreeze off' to let her walk) -- tests a selected body mesh independent of the blocked ArchetypePreset route.")
 else
     log("lbtestbody unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

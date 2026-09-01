@@ -372,6 +372,10 @@ lbreload (no args)      Reloads LivingBase's Lua from disk WITHOUT restarting th
                         Doesn't affect content-pak changes or the GUI's own compiled DLL
                         (both need a full relaunch); tracked spawns recover
                         automatically afterward.
+lbunlockclothes         Toggles the Custom > Clothes fit-safety net on/off (see the Custom
+ (no args)              category section above) -- off by default. Prints a one-time
+                        caveat when turned on: an unlocked piece/body combination hasn't
+                        been visually reviewed and may clip.
 
 When to use which: if you want the mod's actual recipe (correct faction, posture, gear,
 etc.) use lblook. If you want to spawn something completely untouched -- including things
@@ -401,6 +405,41 @@ rolls a random skin tone -- this re-rolls on every placement and every reload, o
 rather than being locked in permanently. Reloading correctly restores which look/character
 each placed NPC was standing in for (and upgrades anyone placed before 3.0.0 to her real
 outfit automatically).
+
+Custom category (GUI only -- Poses, Skin Tones, Hair, Clothes)
+----------------------------------------------------------------------
+A fourth GUI branch, "Custom," works differently from every other spawn-tree category: its
+entries don't place a new actor at all -- they modify whatever's currently target-locked
+(Numpad +), in place. Select an entry and press Spawn (Replace also works identically here,
+since there's nothing to destroy-and-recreate).
+
+- Poses (221 entries) -- plays a specific real animation on the targeted actor (an idle
+  stance, a sitting pose, a work-bench activity, a combat animation, etc.), organized by
+  category/subcategory. Works on any actor this mod places -- walking crew/NPCs, posed
+  statues, even the raw native mob skeletons. A small number of combat/ability-themed
+  poses carry real gameplay damage baked into their own animation notifies regardless of
+  who's playing them -- test those from a safe distance, not right next to yourself.
+- Skin Tones (9 entries) -- swaps the targeted actor's skin material to one of the game's
+  7 ethnicity families, plus two "Corrupted" (Senkamati) variants. Sex-detected
+  automatically.
+- Hair (109 entries) -- swaps the targeted actor's hairstyle, organized by style then by
+  headwear-compatible variant (Default / Hat / Headband / Bandana) and, for styles with
+  multiple distinct cuts, by number. Sex-detected automatically.
+- Clothes (304 entries) -- swaps one clothing/armor slot at a time (Torso, Legs, Headgear,
+  etc.), organized by family then slot then piece name, spanning the ordinary armor
+  catalog plus the tribal Senkamati sets. A built-in fit-safety net applies automatically:
+  a piece known not to fit a given body will substitute plain underwear instead of
+  clipping, and several male-cut families are held back from female targets unless
+  unlocked (see below) -- both cases say clearly on-screen when a substitution happened.
+  "Clothes > Remove" (16 entries: one per slot, plus "All") removes a piece instead of
+  swapping it -- Torso/Legs on an unlocked-off target become underwear rather than true
+  nudity; every other slot just hides outright.
+- The clothing fit restrictions above are OFF by default; the "lbunlockclothes" console
+  command toggles them, printing a one-time caveat that an unlocked combination hasn't
+  been visually reviewed and may clip.
+
+None of this needs a numpad key or a roster to cycle through -- browse and click, same as
+every other GUI category.
 
 Undo (Num 0, or the GUI's Undo button)
 ----------------------------------------------------------------------

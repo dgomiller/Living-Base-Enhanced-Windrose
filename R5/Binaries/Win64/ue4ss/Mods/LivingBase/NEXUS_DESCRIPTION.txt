@@ -78,6 +78,8 @@
 
 [b]Real on-screen toast feedback[/b] — despawn, undo, cycle, and spawn actions confirm on-screen, not just in the log, by reusing the game's own native notification widget. World load shows staged progress too: waiting for you to move, restoring your base, and a final summary once it's done. Deliberately quiet where a toast would just be spam — live-edit nudges and "nothing there" misses stay log-only.
 
+[b]A "Custom" GUI category for editing what's already placed[/b] — instead of spawning something new, these entries modify whatever's currently target-locked, in place: Poses (221 entries — idle stances, sitting poses, work-bench activity, and more, on any actor this mod places), Skin Tones (all 7 ethnicity families plus 2 corrupted variants, sex-detected automatically), Hair (109 entries across every style, headwear-compatible variant, and cut), and Clothes (304 entries spanning the full armor catalog plus the tribal Senkamati sets, swappable one slot at a time, with a built-in fit-safety net that substitutes underwear instead of clipping for known-incompatible body/piece combinations, plus a dedicated Remove branch for every slot).
+
 [b]No more duplicate spawns on load[/b] — every mod key and the GUI's buttons are locked from the moment a world load starts until your base finishes restoring, so nothing you place manually in that window gets saved and then restored a second time.
 
 [b]Decorations off the F-row (; and ')[/b] — decoration placement never touches F1-F6, for compatibility with other mods that use F-Keys. ' cycles which decoration category is active (with an on-screen message telling you which one), and ; places from whichever category that is.

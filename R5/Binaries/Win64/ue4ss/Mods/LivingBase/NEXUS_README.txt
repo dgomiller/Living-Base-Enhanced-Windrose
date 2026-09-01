@@ -136,6 +136,8 @@ lbspawn list / lbspawn list <category> / lbspawn list all — Same idea, for Liv
 
 lbreload — Reloads LivingBase's Lua from disk without restarting the game or reloading the world — picks up script edits immediately. Doesn't affect content-pak changes or the GUI's own compiled DLL (both need a full relaunch); tracked spawns recover automatically afterward.
 
+lbunlockclothes — Toggles the Custom > Clothes fit-safety net on/off (see the Custom category section above) — off by default. Prints a one-time caveat when turned on: an unlocked piece/body combination hasn't been visually reviewed and may clip.
+
 When to use which: if you want the mod's actual recipe (correct faction, posture, gear, etc.) use lblook. If you want to spawn something completely untouched — including things this mod doesn't otherwise place — use lbspawn. You'll see an occasional "Error: A custom console command handle must return true or false" line after running any of these — that's harmless UE4SS noise, not a real failure.[/color]
 
 [color=#D4D4D8][b]Cycle (] / [)[/b]
@@ -143,6 +145,17 @@ Swaps the statue OR decoration in front of you for the next (or previous) entry 
 
 [color=#D4D4D8][b]Walking Women (Num . / decimal, or the GUI's "Walking Women" category)[/b]
 A real, walking female NPC, spawnable as one of four looks instead of only being available as a frozen statue: Letty, Marita Suares, and the Buccaneers Merchant each wear their own real, distinct outfit — not a shared generic look with pieces patched onto it. A fourth, plain "Woman" entry rounds out the roster with an outfit, hat presence, and hair that all vary naturally on their own for general crowd variety. Every placement also rolls a random skin tone — this re-rolls on every placement and every reload, on purpose. Reloading correctly restores which look/character each placed NPC was standing in for (and upgrades anyone placed before v3.0.0 to her real outfit automatically).[/color]
+
+[color=#D4D4D8][b]Custom category (GUI only — Poses, Skin Tones, Hair, Clothes)[/b]
+A fourth GUI branch, "Custom," works differently from every other spawn-tree category: its entries don't place a new actor at all — they modify whatever's currently target-locked (Numpad +), in place. Select an entry and press Spawn (Replace also works identically here, since there's nothing to destroy-and-recreate).
+
+• [b]Poses[/b] (221 entries) — plays a specific real animation on the targeted actor (an idle stance, a sitting pose, a work-bench activity, a combat animation, etc.), organized by category/subcategory. Works on any actor this mod places — walking crew/NPCs, posed statues, even the raw native mob skeletons. A small number of combat/ability-themed poses carry real gameplay damage baked into their own animation notifies regardless of who's playing them — test those from a safe distance.
+• [b]Skin Tones[/b] (9 entries) — swaps the targeted actor's skin material to one of the game's 7 ethnicity families, plus two "Corrupted" (Senkamati) variants. Sex-detected automatically.
+• [b]Hair[/b] (109 entries) — swaps the targeted actor's hairstyle, organized by style then by headwear-compatible variant (Default / Hat / Headband / Bandana) and, for styles with multiple distinct cuts, by number. Sex-detected automatically.
+• [b]Clothes[/b] (304 entries) — swaps one clothing/armor slot at a time (Torso, Legs, Headgear, etc.), organized by family then slot then piece name, spanning the ordinary armor catalog plus the tribal Senkamati sets. A built-in fit-safety net applies automatically: a piece known not to fit a given body substitutes plain underwear instead of clipping, and several male-cut families are held back from female targets unless unlocked — both cases say clearly on-screen when a substitution happened. "Clothes > Remove" (16 entries: one per slot, plus "All") removes a piece instead of swapping it — Torso/Legs on an unlocked-off target become underwear rather than true nudity; every other slot just hides outright.
+• The clothing fit restrictions above are OFF by default; the "lbunlockclothes" console command toggles them, printing a one-time caveat that an unlocked combination hasn't been visually reviewed and may clip.
+
+None of this needs a numpad key or a roster to cycle through — browse and click, same as every other GUI category.[/color]
 
 [color=#D4D4D8][b]Undo (Num 0, or the GUI's Undo button)[/b]
 Restores whatever was most recently despawned — a single Num 9 despawn, an entire Delete clean-house wipe (restored as one batch, in one press), or a ]/[ cycle (removes the new pick and brings back the old one). This respawns a fresh copy of the same class at the exact same position/rotation, using data cross-checked against persist.txt — for actors with a recorded composite look (e.g. a re-skinned crew member), that appearance is restored too, not just a default look. Steps back through your last 20 despawn actions if pressed repeatedly. Names what it restored on-screen (up to 5 by name, "+N more" beyond that).[/color]

@@ -3171,6 +3171,36 @@ else
     log("lbtestmorphshape unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbteststatuebody <bodyMeshPath> <presetName> [classPath]" (2026-09-01) -- the
+-- statue equivalent of lbtestbody: explicitly forces BOTH the body-mesh family AND the MorphParams
+-- shape preset on a statue-family class (defaults to the real Standing Woman class, which normally
+-- rerolls her own body archetype on every spawn -- this forces it instead, for a clean mesh-by-mesh/
+-- morph-by-morph comparison). See Spawner.TestSpawnStatueBodyMorph's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbteststatuebody", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbteststatuebody] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local meshArg = Parameters and Parameters[1]
+            local presetArg = Parameters and Parameters[2]
+            local classArg = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestSpawnStatueBodyMorph(meshArg, presetArg, classArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbteststatuebody <bodyMeshPath> <presetName> [classPath]")
+    registerCmdInfo("lbteststatuebody", "lbteststatuebody <bodyMeshPath> <presetName> [classPath]", "Forces BOTH the body-mesh family and a MorphParams shape preset on a statue class (default: Standing Woman) -- no randomization, for clean mesh/morph comparisons.")
+else
+    log("lbteststatuebody unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbtestbody <paramsPath> <bodyMeshPath>" (2026-08-31) -- spawns with the proven
 -- custom outfit, then swaps the base body mesh post-build (sidesteps the confirmed-blocked
 -- ArchetypePreset route entirely). Freezes AI by default now (same SetAILogic(false) mechanism as

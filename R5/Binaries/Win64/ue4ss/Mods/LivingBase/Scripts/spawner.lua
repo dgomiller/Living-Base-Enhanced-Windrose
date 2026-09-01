@@ -9657,6 +9657,59 @@ function Spawner.TestMorphShapeOnTargetClass(presetName, say)
     return Spawner.TestSpawnCustomMorphParams(matched.path, say, classPath)
 end
 
+-- Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, say) -- "lbteststatuebody
+-- <bodyMeshPath> <presetName> [classPath]" (2026-09-01). RedFalcon's request: the statue equivalent
+-- of lbtestbody -- explicitly choose BOTH the body-mesh family AND the MorphParams shape preset on
+-- a statue-family (R5AnimatedCustomizableActor) class, with NEITHER left to chance. Two separate
+-- confirmed mechanisms combined: MorphParams sticks pre-build on this class family (Config.
+-- MORPH_PARAMS_PRESETS, confirmed live -- see Spawner.TestMorphShapeOnTargetClass's own comment);
+-- body-mesh archetype does NOT (same reassertion wall as every other class family, confirmed
+-- specifically for statues back in the original Senkamati Statue investigation) -- so the mesh
+-- itself is forced the SAME way lbtestbody already does it for the Handyman family: a direct
+-- post-build SetSkeletalMeshAsset swap on actor.Mesh (Spawner.TestSetBaseBodyMesh), which operates
+-- on the render component after construction and never touches the archetype-reassertion pipeline
+-- at all -- generic to any actor class, not Handyman-specific. RedFalcon's own stated reason for
+-- needing this: the real Standing Woman class rerolls her body archetype on every spawn, making a
+-- clean mesh-by-mesh / morph-by-morph comparison impossible without forcing both explicitly.
+-- Defaults classPath to BP_AnimatedActor_BotC_Female_Standing_01_C (the class RedFalcon named) if
+-- omitted -- pass a different one (any statue, or any class at all) as the 3rd argument.
+function Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, say)
+    say = say or function(m) print("[LivingBase] [test-statuebody] " .. tostring(m) .. "\n") end
+    if not (bodyMeshPath and presetName) then
+        local names = {}
+        for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do names[#names + 1] = p.name end
+        say("usage: lbteststatuebody <bodyMeshPath> <presetName> [classPath]")
+        say("known presets: " .. table.concat(names, ", "))
+        return false
+    end
+    local matched = nil
+    for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do
+        if p.name:lower() == presetName:lower() then matched = p; break end
+    end
+    if not matched then
+        local names = {}
+        for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do names[#names + 1] = p.name end
+        say(string.format("unknown preset '%s' -- known: %s", presetName, table.concat(names, ", ")))
+        return false
+    end
+    classPath = classPath or "/Game/Gameplay/Character/AI/NPC/FactionActors/BrethrenOfTheCoast/AnimatedActor/BP_AnimatedActor_BotC_Female_Standing_01.BP_AnimatedActor_BotC_Female_Standing_01_C"
+    say(string.format("about to spawn %s with morph preset '%s' (%s), then force body mesh to %s",
+        classPath, matched.name, matched.path, bodyMeshPath))
+    local actor = Spawner.Spawn(classPath, "StatueBodyMorphTest", nil, nil, nil, nil, false,
+        { morphParams = matched.path }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say("Spawn call returned an actor -- now forcing base body mesh to " .. tostring(bodyMeshPath))
+    local ok = Spawner.TestSetBaseBodyMesh(actor, bodyMeshPath, say)
+    -- Freeze AI too, same lbtestbody-now-default convention -- harmless no-op if this class has no
+    -- AIController to stop in the first place (most statue classes don't).
+    local okFreeze = Spawner.SetAILogic(actor, false)
+    say(string.format("SetAILogic(false) = %s. lbprobedump it now to confirm both the mesh and MorphParams stuck.", tostring(okFreeze)))
+    return ok
+end
+
 -- Spawner.TestReportPlayerClass(say) -- "lbplayerclass" (2026-08-31). PURE READ. The character
 -- creator screen must spawn/preview SOME actor that takes an arbitrary chosen archetype preset
 -- with ZERO randomization -- players expect exactly what they picked, unlike every NPC/mob class

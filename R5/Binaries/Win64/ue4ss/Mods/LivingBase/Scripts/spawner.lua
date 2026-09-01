@@ -9659,22 +9659,42 @@ end
 
 -- Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, say) -- "lbteststatuebody
 -- <bodyMeshPath> <presetName> [classPath]" (2026-09-01). RedFalcon's request: the statue equivalent
--- of lbtestbody -- explicitly choose BOTH the body-mesh family AND the MorphParams shape preset on
--- a statue-family (R5AnimatedCustomizableActor) class, with NEITHER left to chance. Two separate
--- confirmed mechanisms combined: MorphParams sticks pre-build on this class family (Config.
--- MORPH_PARAMS_PRESETS, confirmed live -- see Spawner.TestMorphShapeOnTargetClass's own comment);
--- body-mesh archetype does NOT (same reassertion wall as every other class family, confirmed
--- specifically for statues back in the original Senkamati Statue investigation) -- so the mesh
--- itself is forced the SAME way lbtestbody already does it for the Handyman family: a direct
--- post-build SetSkeletalMeshAsset swap on actor.Mesh (Spawner.TestSetBaseBodyMesh), which operates
--- on the render component after construction and never touches the archetype-reassertion pipeline
--- at all -- generic to any actor class, not Handyman-specific. RedFalcon's own stated reason for
--- needing this: the real Standing Woman class rerolls her body archetype on every spawn, making a
--- clean mesh-by-mesh / morph-by-morph comparison impossible without forcing both explicitly.
--- Defaults classPath to BP_AnimatedActor_BotC_Female_Standing_01_C (the class RedFalcon named) if
--- omitted -- pass a different one (any statue, or any class at all) as the 3rd argument.
+-- of lbtestbody -- force the body-mesh family explicitly on a statue-family
+-- (R5AnimatedCustomizableActor) class, since the real Standing Woman/Merchant classes reroll their
+-- own body archetype on every spawn.
+--
+-- REVERTED to the POST-build mesh swap after a live back-and-forth confirmed the pre-build version
+-- was WORSE, not better -- full story, so this isn't re-tried blind later:
+--   1. POST-build swap (this version): mesh reliably sticks (always the requested family) --
+--      confirmed repeatedly. The MORPH shape does NOT visibly change with it -- always reads as the
+--      new mesh's own plain default proportions, regardless of preset. Likely cause: shape is
+--      computed once, natively, during construction, against whatever mesh existed AT THAT MOMENT;
+--      swapping the mesh afterward replaces it with a fresh, undeformed instance that never
+--      re-runs that computation.
+--   2. PRE-build swap (tried next, hoping construction would read OUR mesh from the start): made
+--      things WORSE, not better -- confirmed via lbprobedump on 3 separate fresh spawns that BOTH
+--      the mesh AND MorphParams silently reverted to fixed values (always "Large" for MorphParams,
+--      always some random archetype for the mesh) regardless of what was requested -- i.e. touching
+--      actor.Mesh pre-build appears to trigger (or coincide with) a full native "rebuild from class
+--      defaults" that discards BOTH overrides together, not just the mesh. A separate "success"
+--      seen on the Merchant class earlier turned out to be a false positive -- the preset used
+--      (Citizen_Worker) was already her own native default, so it couldn't have distinguished a
+--      real override from no override at all.
+-- Net conclusion: explicitly choosing BOTH mesh AND morph shape together, on the same actor, is NOT
+-- currently achievable by any tested technique -- don't re-attempt the pre-build combination without
+-- a genuinely new theory. This command reverts to being useful for mesh alone (matching lbtestbody's
+-- own scope) -- MorphParams is still requested/set (harmless, and occasionally may still show
+-- correctly on lbprobedump depending on class), but don't trust the resulting SHAPE to reflect it.
+-- Defaults classPath to BP_AnimatedActor_BotC_Female_Standing_01_C if omitted -- pass a different
+-- one (any statue, or any class at all) as the 3rd argument.
 function Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, say)
     say = say or function(m) print("[LivingBase] [test-statuebody] " .. tostring(m) .. "\n") end
+    -- resolveAsset needs the FULL path including the trailing ".AssetName" suffix -- lbtestbody's
+    -- own ensureFullPath step already does this for its bodyMeshPath; mirrored here.
+    if bodyMeshPath and not bodyMeshPath:match("%.[%w_]+$") then
+        local last = bodyMeshPath:match("([^/]+)$")
+        if last then bodyMeshPath = bodyMeshPath .. "." .. last end
+    end
     if not (bodyMeshPath and presetName) then
         local names = {}
         for _, p in ipairs(Config.MORPH_PARAMS_PRESETS) do names[#names + 1] = p.name end
@@ -9693,7 +9713,7 @@ function Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, s
         return false
     end
     classPath = classPath or "/Game/Gameplay/Character/AI/NPC/FactionActors/BrethrenOfTheCoast/AnimatedActor/BP_AnimatedActor_BotC_Female_Standing_01.BP_AnimatedActor_BotC_Female_Standing_01_C"
-    say(string.format("about to spawn %s with morph preset '%s' (%s), then force body mesh to %s",
+    say(string.format("about to spawn %s with morph preset '%s' (%s), then force body mesh to %s post-build",
         classPath, matched.name, matched.path, bodyMeshPath))
     local actor = Spawner.Spawn(classPath, "StatueBodyMorphTest", nil, nil, nil, nil, false,
         { morphParams = matched.path }, nil, false)
@@ -9706,7 +9726,7 @@ function Spawner.TestSpawnStatueBodyMorph(bodyMeshPath, presetName, classPath, s
     -- Freeze AI too, same lbtestbody-now-default convention -- harmless no-op if this class has no
     -- AIController to stop in the first place (most statue classes don't).
     local okFreeze = Spawner.SetAILogic(actor, false)
-    say(string.format("SetAILogic(false) = %s. lbprobedump it now to confirm both the mesh and MorphParams stuck.", tostring(okFreeze)))
+    say(string.format("SetAILogic(false) = %s. Mesh should reliably match now; don't expect the shape to reflect the preset (see this function's own header comment).", tostring(okFreeze)))
     return ok
 end
 

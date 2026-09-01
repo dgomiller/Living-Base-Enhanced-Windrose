@@ -481,6 +481,31 @@ same rebuild-trigger sequence already proven for outfit changes — never actual
 `MorphParams` specifically, only pre-build was), or accepting body-shape variety on statue-type actors
 for now while pursuing outfit/color/hair/eyes variety on the walking-pawn family as already proven.
 
+**UPDATE, same overall investigation, one class further tested: explicit body-MESH family and
+explicit MorphParams-shape, TOGETHER on the same statue-family actor, are NOT achievable by any
+technique tried, in either order.** Two combinations tested live:
+- **Mesh forced POST-build** (after `Spawn()` returns): the mesh reliably sticks (confirmed
+  repeatedly — always the requested family), but the shape does not visibly change at all — it
+  always reads as the new mesh's own plain default proportions, regardless of which preset was
+  requested. Consistent with the same "computed once during construction, a later mesh swap
+  replaces it with a fresh undeformed instance" theory as the original finding above.
+- **Mesh forced PRE-build** (in the same deferred-spawn window as the `MorphParams` override, hoping
+  native construction would read the chosen mesh from the start): made things WORSE — confirmed via
+  `lbprobedump` on 3 separate fresh spawns that BOTH the mesh reference AND the `MorphParams`
+  reference silently reverted to fixed values (a hardcoded default MorphParams asset, and a random
+  archetype for the mesh) regardless of what was explicitly requested. Touching the base mesh
+  pre-build appears to trigger (or coincide with) a full native "rebuild from class defaults" that
+  discards both overrides together, not just the mesh. A separate apparent "success" on a different
+  class earlier in this same test round turned out to be a false positive — the preset used was
+  already that class's own native default, so it couldn't have distinguished a real override from
+  no override at all; always cross-check a preset choice against the class's actual native default
+  before trusting a "no visible difference" OR a "matched!" result either way.
+
+Net: mesh alone (post-build) and shape alone (via a plain, no-mesh-forcing spawn) both remain
+reliable, independently, on the statue class family — but the two cannot currently be combined to
+get an explicit, deterministic mesh+shape combination on demand. Don't re-attempt the pre-build
+combination without a genuinely new theory for why touching the mesh triggers a full defaults reset.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

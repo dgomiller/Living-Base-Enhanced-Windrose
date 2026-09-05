@@ -5,6 +5,103 @@ Companion to `CLAUDE.md` (which is older and partly stale — trust THIS file wh
 
 ---
 
+## Table of contents
+
+- [1. Spawning an actor that actually works](#1-spawning-an-actor-that-actually-works)
+- [2. The composite (appearance) system — what sticks and what doesn't](#2-the-composite-appearance-system-what-sticks-and-what-doesnt)
+  - [2a. Post-build: a genuine ENGINE FUNCTION can work where a raw property write can't (2026-08-15)](#2a-post-build-a-genuine-engine-function-can-work-where-a-raw-property-write-cant-2026-08-15)
+  - [2b. Related tricks that fell out of the same investigation](#2b-related-tricks-that-fell-out-of-the-same-investigation)
+  - [2c. A SECOND struct shape exists — and it's the one that finally unlocked writable per-piece customization (2026-08-19)](#2c-a-second-struct-shape-exists-and-its-the-one-that-finally-unlocked-writable-per-piece-customization-2026-08-19)
+  - [2d. `BuildedCompositeMeshes` — a second, always-populated mesh-attachment layer (2026-08-19)](#2d-buildedcompositemeshes-a-second-always-populated-mesh-attachment-layer-2026-08-19)
+- [2e. Anatomy of a full NPC, confirmed via a comprehensive live probe (2026-08-31)](#2e-anatomy-of-a-full-npc-confirmed-via-a-comprehensive-live-probe-2026-08-31)
+- [3. THE CRASH TRAPS (each cost hours)](#3-the-crash-traps-each-cost-hours)
+  - [3a. Stale UObject pointers — the big one](#3a-stale-uobject-pointers-the-big-one)
+  - [3b. Log BEFORE the dangerous call, never after](#3b-log-before-the-dangerous-call-never-after)
+  - [3c. Component surgery during world load](#3c-component-surgery-during-world-load)
+  - [3d. Spawning into a not-yet-live world](#3d-spawning-into-a-not-yet-live-world)
+  - [3e. Two composite builds in one frame](#3e-two-composite-builds-in-one-frame)
+  - [3f. `StaticFindObject("/Script/R5.<Component>")` — NOT universally broken](#3f-staticfindobjectscriptr5component-not-universally-broken)
+  - [3g. `RegisterKeyBind` is only safe during the initial mod-load pass](#3g-registerkeybind-is-only-safe-during-the-initial-mod-load-pass)
+  - [3h. A function existing in the object dump doesn't mean it's safe to call (2026-08-15)](#3h-a-function-existing-in-the-object-dump-doesnt-mean-its-safe-to-call-2026-08-15)
+  - [3i. `SetActorLocation`/`SetActorRotation` on a Static-mobility component silently no-ops visually (2026-08-16)](#3i-setactorlocationsetactorrotation-on-a-static-mobility-component-silently-no-ops-visually-2026-08-16)
+  - [3j. A function "safe" at keyboard-driven call rates isn't necessarily safe at UI-driven rates (2026-08-16)](#3j-a-function-safe-at-keyboard-driven-call-rates-isnt-necessarily-safe-at-ui-driven-rates-2026-08-16)
+  - [3k. A function defined BEFORE a `local function` it calls silently binds to a global instead (2026-08-18)](#3k-a-function-defined-before-a-local-function-it-calls-silently-binds-to-a-global-instead-2026-08-18)
+  - [3l. INVOKING an unfamiliar UFunction is real crash risk, even when it looks simple (2026-08-21)](#3l-invoking-an-unfamiliar-ufunction-is-real-crash-risk-even-when-it-looks-simple-2026-08-21)
+  - [3m. A UFunction's OWN Lua return value can be meaningless — check pcall's success, not the function's return (2026-08-21)](#3m-a-ufunctions-own-lua-return-value-can-be-meaningless-check-pcalls-success-not-the-functions-return-2026-08-21)
+  - [3n. `LineTraceSingle`'s channel argument is a DIFFERENT enum than `SetCollisionResponseToChannel`'s (2026-08-21)](#3n-linetracesingles-channel-argument-is-a-different-enum-than-setcollisionresponsetochannels-2026-08-21)
+  - [3o. Comparing two independently-fetched actor/object handles with `==` is unreliable, even for the identical underlying object (recurring)](#3o-comparing-two-independently-fetched-actorobject-handles-with-is-unreliable-even-for-the-identical-underlying-object-recurring)
+  - [3p. A property write can succeed with zero pcall error yet have no lasting (or any) visible effect, if a native settings/params system re-asserts it (2026-08-22)](#3p-a-property-write-can-succeed-with-zero-pcall-error-yet-have-no-lasting-or-any-visible-effect-if-a-native-settingsparams-system-re-asserts-it-2026-08-22)
+  - [3q. How UE4SS actually counts arguments for a raw UFunction call with a return value (2026-08-21)](#3q-how-ue4ss-actually-counts-arguments-for-a-raw-ufunction-call-with-a-return-value-2026-08-21)
+  - [3r. A generic `ForEachProperty` walk over `FAssetData` is safe for one asset class and a real crash for another (2026-08-31)](#3r-a-generic-foreachproperty-walk-over-fassetdata-is-safe-for-one-asset-class-and-a-real-crash-for-another-2026-08-31)
+- [4. Restore-on-load design (why it looks the way it does)](#4-restore-on-load-design-why-it-looks-the-way-it-does)
+- [5. Peace / faction mechanics](#5-peace-faction-mechanics)
+- [5b. Movement: THIS GAME DOES NOT USE THE UE NAVMESH](#5b-movement-this-game-does-not-use-the-ue-navmesh)
+- [6. Workflow that works](#6-workflow-that-works)
+- [7. Useful class paths](#7-useful-class-paths)
+- [7b. Reacting to things the GAME spawns](#7b-reacting-to-things-the-game-spawns)
+- [8. Drowned / night-raid scouting (2026-07-09, not yet built)](#8-drowned-night-raid-scouting-2026-07-09-not-yet-built)
+- [9. Cross-skeleton re-skinning: what actually determines the result (2026-08-10)](#9-cross-skeleton-re-skinning-what-actually-determines-the-result-2026-08-10)
+  - [9c. Mechanically discovering EVERY asset of a kind: a folder-shape assumption is never provably exhaustive (2026-08-17/18)](#9c-mechanically-discovering-every-asset-of-a-kind-a-folder-shape-assumption-is-never-provably-exhaustive-2026-08-1718)
+- [10. The per-world identifier (2026-08-13)](#10-the-per-world-identifier-2026-08-13)
+- [11. Content-replacer paks (asset overrides): what's possible from Lua and what isn't (2026-08-13)](#11-content-replacer-paks-asset-overrides-whats-possible-from-lua-and-what-isnt-2026-08-13)
+- [12. Compiled C++ UE4SS mods (not Lua): rendering an interactive overlay safely (2026-08-16)](#12-compiled-c-ue4ss-mods-not-lua-rendering-an-interactive-overlay-safely-2026-08-16)
+  - [12a. A relative path resolves against the GAME's working directory, in C++ too](#12a-a-relative-path-resolves-against-the-games-working-directory-in-c-too)
+  - [12b. Hooking a DXGI/D3D vtable function: `x64Detour`, never a raw vtable swap](#12b-hooking-a-dxgid3d-vtable-function-x64detour-never-a-raw-vtable-swap)
+  - [12c. Capture the REAL command queue by hooking swapchain creation, not by guessing](#12c-capture-the-real-command-queue-by-hooking-swapchain-creation-not-by-guessing)
+  - [12d. This game's DLSS-G (NVIDIA Streamline) frame generation breaks a naive swapchain-Present](#12d-this-games-dlss-g-nvidia-streamline-frame-generation-breaks-a-naive-swapchain-present)
+  - [12e. A standalone window on its own thread is a safe, working alternative to hooking Present](#12e-a-standalone-window-on-its-own-thread-is-a-safe-working-alternative-to-hooking-present)
+  - [12g. `GImGui` is a single global — two ImGui contexts/threads in one DLL is not safe by default](#12g-gimgui-is-a-single-global-two-imgui-contextsthreads-in-one-dll-is-not-safe-by-default)
+  - [12h. Minidump analysis without a full debugger install: extract `cdb.exe` from the WinDbg Store package](#12h-minidump-analysis-without-a-full-debugger-install-extract-cdbexe-from-the-windbg-store-package)
+  - [12i. A mutex around one race can hide a second, independent race behind it](#12i-a-mutex-around-one-race-can-hide-a-second-independent-race-behind-it)
+  - [12j. `RegisterKeyBind` only fires while the GAME window has OS focus — stealing focus programmatically can break a "press again to undo" key](#12j-registerkeybind-only-fires-while-the-game-window-has-os-focus-stealing-focus-programmatically-can-break-a-press-again-to-undo-key)
+  - [12k. Not every `UGameViewportClient` property is reachable from Lua reflection, even when it visibly exists on the class](#12k-not-every-ugameviewportclient-property-is-reachable-from-lua-reflection-even-when-it-visibly-exists-on-the-class)
+  - [12l. Toolchain / project shape for a compiled UE4SS C++ mod](#12l-toolchain-project-shape-for-a-compiled-ue4ss-c-mod)
+  - [12m. A toggle reachable from BOTH the game and a companion C++ window needs ONE owner, not two (2026-08-18)](#12m-a-toggle-reachable-from-both-the-game-and-a-companion-c-window-needs-one-owner-not-two-2026-08-18)
+  - [12n. Constructing real UMG widgets natively from C++ — the same primitives a Lua UMG binding uses, just called directly (2026-08-22)](#12n-constructing-real-umg-widgets-natively-from-c-the-same-primitives-a-lua-umg-binding-uses-just-called-directly-2026-08-22)
+  - [12o. A property's "official" C++ accessor can resolve through a WRONG vtable offset for a specific game build, and crash uncatchably — prefer a raw memory write when the layout is simple and known (2026-08-22)](#12o-a-propertys-official-c-accessor-can-resolve-through-a-wrong-vtable-offset-for-a-specific-game-build-and-crash-uncatchably-prefer-a-raw-memory-write-when-the-layout-is-simple-and-known-2026-08-22)
+  - [12p. Binding a native multicast delegate (e.g. UMG's `OnClicked`) from C++, avoiding the same vtable risk as §12o (2026-08-22)](#12p-binding-a-native-multicast-delegate-eg-umgs-onclicked-from-c-avoiding-the-same-vtable-risk-as-12o-2026-08-22)
+  - [12q. An inherited UFUNCTION can intermittently fail to resolve on an otherwise-valid, freshly-constructed object, for reasons not fully root-caused — build self-healing verification, not just an existence/liveness check (2026-08-23)](#12q-an-inherited-ufunction-can-intermittently-fail-to-resolve-on-an-otherwise-valid-freshly-constructed-object-for-reasons-not-fully-root-caused-build-self-healing-verification-not-just-an-existenceliveness-check-2026-08-23)
+  - [12r. Before claiming a native keybind, audit EVERY installed mod's key configuration, not just your own mod's (2026-08-22)](#12r-before-claiming-a-native-keybind-audit-every-installed-mods-key-configuration-not-just-your-own-mods-2026-08-22)
+  - [12s. A native post-hook scoped to one instance can still fire from unrelated causes — the mechanism isn't the risk, the CHOICE of bound function is (2026-08-23)](#12s-a-native-post-hook-scoped-to-one-instance-can-still-fire-from-unrelated-causes-the-mechanism-isnt-the-risk-the-choice-of-bound-function-is-2026-08-23)
+  - [12t. `GetAsyncKeyState` can be completely blind to mouse buttons in a specific game process while keyboard keys work perfectly through the identical call — and a framework's OWN input pipeline can silently share that same blind spot (2026-08-23)](#12t-getasynckeystate-can-be-completely-blind-to-mouse-buttons-in-a-specific-game-process-while-keyboard-keys-work-perfectly-through-the-identical-call-and-a-frameworks-own-input-pipeline-can-silently-share-that-same-blind-spot-2026-08-23)
+  - [12u: Never mutate or rebuild a widget tree synchronously from inside a native UFUNCTION hook's callback — it can hang the game, not crash it (2026-08-23)](#12u-never-mutate-or-rebuild-a-widget-tree-synchronously-from-inside-a-native-ufunction-hooks-callback-it-can-hang-the-game-not-crash-it-2026-08-23)
+  - [12v: A panel's own "clear all children" UFUNCTION can silently do nothing live, even though it resolves and returns cleanly — track what you added and remove it explicitly instead (2026-08-23)](#12v-a-panels-own-clear-all-children-ufunction-can-silently-do-nothing-live-even-though-it-resolves-and-returns-cleanly-track-what-you-added-and-remove-it-explicitly-instead-2026-08-23)
+  - [12w: Combining a broad-but-reliable native signal with a cheap, independent, per-instance filter beats hunting for a "perfectly exclusive" one (2026-08-23)](#12w-combining-a-broad-but-reliable-native-signal-with-a-cheap-independent-per-instance-filter-beats-hunting-for-a-perfectly-exclusive-one-2026-08-23)
+  - [12x: A C++ mod's `on_update()` call rate can silently decay from ~180/sec to ~1/sec over the first ~90 seconds of every session, for a cause not yet root-caused — and Lua's `ExecuteWithDelay` timing is NOT a reliable proxy for whether it's affected (2026-08-23)](#12x-a-c-mods-on_update-call-rate-can-silently-decay-from-180sec-to-1sec-over-the-first-90-seconds-of-every-session-for-a-cause-not-yet-root-caused-and-luas-executewithdelay-timing-is-not-a-reliable-proxy-for-whether-its-affected-2026-08-23)
+  - [12y: A generated integration manifest is only as complete as its OWN translation table — adding a new value to the primary consumer doesn't automatically reach a SECONDARY one (2026-08-24)](#12y-a-generated-integration-manifest-is-only-as-complete-as-its-own-translation-table-adding-a-new-value-to-the-primary-consumer-doesnt-automatically-reach-a-secondary-one-2026-08-24)
+- [13. Placing an actor relative to a moving ship (2026-08-25)](#13-placing-an-actor-relative-to-a-moving-ship-2026-08-25)
+- [14. Playing a specific canned animation on a live Character](#14-playing-a-specific-canned-animation-on-a-live-character)
+- [15. `ExecuteWithDelay`'s callback does not run on the game thread — and nesting it inside `ExecuteInGameThread` is its own separate, differently-broken thing](#15-executewithdelays-callback-does-not-run-on-the-game-thread-and-nesting-it-inside-executeingamethread-is-its-own-separate-differently-broken-thing)
+- [16. Comparing two independently-obtained component references with `==` is unreliable in this UE4SS build — compare `GetFName():ToString()` instead](#16-comparing-two-independently-obtained-component-references-with-is-unreliable-in-this-ue4ss-build-compare-getfnametostring-instead)
+- [17. Windrose Mod Settings CAN probably render a real slider ("scalar") and dropdown ("discrete") widget — a single unconfirmed exploratory test, not a proven, ready-to-use recipe (2026-08-29)](#17-windrose-mod-settings-can-probably-render-a-real-slider-scalar-and-dropdown-discrete-widget-a-single-unconfirmed-exploratory-test-not-a-proven-ready-to-use-recipe-2026-08-29)
+- [18. Line-trace-based targeting: object-type queries aren't a strict superset of channel-based ones, and a "does this component exist" check needs `:IsValid()`, not `~= nil`](#18-line-trace-based-targeting-object-type-queries-arent-a-strict-superset-of-channel-based-ones-and-a-does-this-component-exist-check-needs-isvalid-not-nil)
+- [19. Constructing a composite outfit from scratch: the real 3-level asset structure, what's safe to build via Lua, and what crashes (2026-08-29)](#19-constructing-a-composite-outfit-from-scratch-the-real-3-level-asset-structure-whats-safe-to-build-via-lua-and-what-crashes-2026-08-29)
+  - [19a. The real structure, confirmed via direct asset-JSON exports (not a live probe this time)](#19a-the-real-structure-confirmed-via-direct-asset-json-exports-not-a-live-probe-this-time)
+  - [19b. What's actually constructible from Lua — confirmed piece by piece, live](#19b-whats-actually-constructible-from-lua-confirmed-piece-by-piece-live)
+  - [19c-2. The actual working recipe, found once the runtime approach was abandoned: edit a REAL asset offline, don't construct one at runtime](#19c-2-the-actual-working-recipe-found-once-the-runtime-approach-was-abandoned-edit-a-real-asset-offline-dont-construct-one-at-runtime)
+  - [19c-3. New asset paths are not discoverable; overriding an existing path works cleanly](#19c-3-new-asset-paths-are-not-discoverable-overriding-an-existing-path-works-cleanly)
+  - [19c-4. A real third-party counter-example investigated exhaustively — same conclusion holds; the wall is the TOOLING, not the engine](#19c-4-a-real-third-party-counter-example-investigated-exhaustively-same-conclusion-holds-the-wall-is-the-tooling-not-the-engine)
+  - [19d. A related, already-proven primitive worth remembering here](#19d-a-related-already-proven-primitive-worth-remembering-here)
+  - [19e. Evaluated and rejected: Nexus Mods' own "Nexus Mods Author Tools" Editor plugin](#19e-evaluated-and-rejected-nexus-mods-own-nexus-mods-author-tools-editor-plugin)
+  - [19f. SkinMaterials (the "Size" dimension) -- build started 2026-09-02](#19f-skinmaterials-the-size-dimension----build-started-2026-09-02)
+  - [19g. The manual UAssetGUI retarget step is no longer manual (2026-09-02)](#19g-the-manual-uassetgui-retarget-step-is-no-longer-manual-2026-09-02)
+  - [19h. SkinMaterials rolled out to all 30 remaining male-source templates (2026-09-02)](#19h-skinmaterials-rolled-out-to-all-30-remaining-male-source-templates-2026-09-02)
+  - [19i. Full female rollout + a genuinely new architecture: sourceless "prepping for the future" entries (2026-09-02)](#19i-full-female-rollout-a-genuinely-new-architecture-sourceless-prepping-for-the-future-entries-2026-09-02)
+  - [19j. A genuinely new alternative to reskinning: swap the AI brain instead, keep the real body (2026-09-02)](#19j-a-genuinely-new-alternative-to-reskinning-swap-the-ai-brain-instead-keep-the-real-body-2026-09-02)
+  - [19k. RedFalcon's own reframe wins: swap the WALKER's body, not the mob's brain (2026-09-02)](#19k-redfalcons-own-reframe-wins-swap-the-walkers-body-not-the-mobs-brain-2026-09-02)
+  - [19l. Checking whether the vanilla human mesh truly lacks Senkamati's pelvis geometry -- two more offline dead ends, and the one path that actually works (2026-09-02)](#19l-checking-whether-the-vanilla-human-mesh-truly-lacks-senkamatis-pelvis-geometry----two-more-offline-dead-ends-and-the-one-path-that-actually-works-2026-09-02)
+  - [19m. "Barbies" -- the native-statue investigation dead-ends into the final answer, and the finalized unique-proportions roster (2026-09-02)](#19m-barbies----the-native-statue-investigation-dead-ends-into-the-final-answer-and-the-finalized-unique-proportions-roster-2026-09-02)
+  - [19n. "Every slot filled" -- built, broke on sex-variance, fixed, confirmed live (2026-09-02)](#19n-every-slot-filled----built-broke-on-sex-variance-fixed-confirmed-live-2026-09-02)
+  - [19o. Facial hair (Eyebrows/Mustache/Beard/Whiskers/Hairs) -- four real bugs stacked on top of each other, all found and fixed (2026-09-03)](#19o-facial-hair-eyebrowsmustachebeardwhiskershairs----four-real-bugs-stacked-on-top-of-each-other-all-found-and-fixed-2026-09-03)
+  - [19p. Default to underwear with every slot still built, real belt Attachments (pouches/knife), and a genuine engine-crash found and guarded (2026-09-04)](#19p-default-to-underwear-with-every-slot-still-built-real-belt-attachments-pouchesknife-and-a-genuine-engine-crash-found-and-guarded-2026-09-04)
+  - [19q. A full structural catalog of every real per-slot item in the game, built once, browsable forever (2026-09-04)](#19q-a-full-structural-catalog-of-every-real-per-slot-item-in-the-game-built-once-browsable-forever-2026-09-04)
+  - [19r. Real baked alignment for hand-attached items, a hidden-but-still-solid collision bug, `lblook` vs `lbtestlook` finally disentangled, and a fill-every-socket test command (2026-09-04)](#19r-real-baked-alignment-for-hand-attached-items-a-hidden-but-still-solid-collision-bug-lblook-vs-lbtestlook-finally-disentangled-and-a-fill-every-socket-test-command-2026-09-04)
+  - [19s. Belt is standalone; Sling/Strap are not -- a real dependency rule found by watching native NPCs (2026-09-07)](#19s-belt-is-standalone-slingstrap-are-not----a-real-dependency-rule-found-by-watching-native-npcs-2026-09-07)
+  - [19t. `fillall`/`aps`/`lbsockets` grow sub-filters and a player-targeting mode; two more curated sockets; the real Belt/Sling/Strap linkage rule finished; and a random belt-layout roller (2026-09-05/07)](#19t-fillallapslbsockets-grow-sub-filters-and-a-player-targeting-mode-two-more-curated-sockets-the-real-beltslingstrap-linkage-rule-finished-and-a-random-belt-layout-roller-2026-09-0507)
+  - [19u. `lbtestsocketitems` -- a full item/weapon randomizer driven entirely by a hand-authored spreadsheet (2026-09-07)](#19u-lbtestsocketitems----a-full-itemweapon-randomizer-driven-entirely-by-a-hand-authored-spreadsheet-2026-09-07)
+
+---
+
 ## 1. Spawning an actor that actually works
 
 ```
@@ -31,6 +128,198 @@ FinishSpawningActor(actor, transform, ScaleMethod=1)
 
 Proven 2026-07-09: with `ArchetypeAfrican` pinned pre-build, 7 Warrior spawns rolled **5 different
 ethnicities**. Same wall `CLAUDE.md` records for `BP_NPC_Citizen_Walker`. **Do not retry.**
+
+**A related but DIFFERENT failure found 2026-09-01, initially misdiagnosed as this same wall, then
+CONFIRMED as this same wall after all via direct repeated observation — corrected twice in one day.**
+`BP_NPC_Citizen_Walker_C` was assumed to be a stable native-male Adventurer-family source (his
+`GetBodyType()=Adventurer` had been confirmed via a probe, see §2e's own "Real class hierarchy" entry)
+— but that probe was taken AFTER sex-changing him to Female, never in his native male state. Building
+an `AdventurerMaleAsAfrican` template and testing it on him repeatedly never produced an African body.
+A single genuine, untouched `lbprobedump` of his native state (predating any of this session's
+BodyTypeParams work) read `GetBodyType() = Customization.Morph.BodyType.Native` — first taken as proof
+he's simply Native family, not Adventurer, full stop (a wrong-tag problem, not a randomization
+problem). That was too hasty: a single probe is one data point, and the exact same "looks stable from
+one read" mistake had already produced a wrong conclusion twice before in this project (the statue
+roster, and this class's own earlier "Adventurer" mislabel). Real confirmation came from repeated live
+observation instead — spawning him fresh multiple times shows genuinely **different skin tones/
+ethnicity families across spawns**, the same directly-observable tell already established for the
+randomizing Standing/Sitting statue roster. **Conclusion: `BP_NPC_Citizen_Walker_C` re-rolls his
+archetype family on `BeginPlay` regardless of native sex, the same reassertion wall as the Warrior —
+he is not usable as a fixed BodyTypeParams source under ANY tag (Adventurer, Native, or otherwise),
+not just the wrong one.** Do not build a template around him in any family. Isolated via the identical
+male-retarget mechanism tested on Woodman (Scum family) instead — a source confirmed rock-stable
+across 25 earlier female-tagged tests plus this new male one — which worked cleanly, confirming the
+mechanism itself was never the problem, only the choice of source class. **Net: there is currently no
+confirmed native-male Adventurer-family source, and Citizen Walker is not a candidate for one under any
+tag** — Scum-male (Woodman/Miner/Farmer) remains the one confirmed-stable native-male source. A future
+Adventurer-male source, if one exists, needs to be a DIFFERENT native-male NPC class, found by the same
+repeated-spawn/skin-tone-variation check that closed this one out — a single probe is not sufficient
+evidence of stability, only repeated observation across several fresh spawns is.
+
+**Second same-day data point, forming a real pattern.** `BP_NPC_Citizen_Worker_C` (a different class,
+same "Citizen" NPC family as Citizen Walker — he also blocks `IsBodySexChangeAvailable`, which is
+unrelated to this and just meant the earlier sex-change-based `BodyMorph` comparison technique couldn't
+be used on him) read `GetBodyType()=African` on one probe, then — checked properly this time, via
+repeated fresh `lbspawn`s rather than trusting the single read — confirmed to ALSO re-roll his
+archetype family across spawns, same as Citizen Walker. **Both known members of the "Citizen" NPC
+family randomize on `BeginPlay`; neither is a usable BodyTypeParams source.** Treat any other
+`BP_NPC_Citizen_*` class as suspect for the same reason until proven otherwise by the same repeated-
+spawn check — don't spend time probing another one without doing that check first. By contrast, every
+Handyman-family class tested (Gatherer/Herbalist/Woodman/Miner/Farmer/Hunter) and the one Employee-family
+class tested (Rosalinda Mercer) have all held up as stable across dozens of repeated tests — those two
+NPC FAMILIES (professions), not "Citizen," are where a future male source candidate is more likely to be
+found.
+
+**The real, generalized rule (2026-09-01, confirmed with 3 more data points the same day): stability
+tracks "generic procedural family member" vs. "unique named individual," not the specific
+Handyman/Employee/Citizen family label itself.** Four more native-male NPCs were checked the same
+way — repeated fresh `lbspawn`s, watching for skin-tone/appearance variation, not a single probe:
+`BP_NPC_Employee_WeaponStation_JasperCrowe_C` (Adventurer family, `SK_Adventurer_Male_01`),
+`BP_NPC_Employee_CookingStation_BlackAxel_C` (Albion family, `SK_Albion_Male_01`),
+`BP_NPC_MortarMan_C` (Native family, `SK_Native_Male_01`), and `BP_NPC_Ksant_C` (his own unique
+`Customization.Morph.BodyType.Ksante` tag, `IsBodyTypeChangeAvailable=false`). All four are genuinely
+UNIQUE, individually-named NPCs (not a generic "one of many workers" class the way Citizen Walker/
+Worker are) — and all four hold rock-stable with zero appearance variation across repeated spawns,
+same as Rosalinda/Letty/Marita before them. **The actual predictor is whether the class represents ONE
+specific named character (stable) or a generic interchangeable "one of several" role (randomizes) —
+Handyman/Employee/Citizen are just which folder happens to hold each kind, not the cause.** `Ksant`
+specifically is confirmed unusable as a BodyTypeParams source regardless of stability
+(`IsBodyTypeChangeAvailable=false` — no pool lookup exists to hijack), independent of this rule.
+
+**`BodyMorph` (shape) comparison across all sources known so far, 2026-09-01** — the free lever this
+project already established (§2e below): a source is only useful for real VARIETY if its `BodyMorph`
+value is actually distinct from what's already covered, on top of being a stable, retargetable source.
+| Source | Family | BodyMorph (X,Y,Z) | Distinct? |
+|---|---|---|---|
+| Gatherer / Rosalinda / Miner | Adventurer(F)/Albion(F)/Scum(M) | (0, 0, 1) | shared baseline |
+| Herbalist | Adventurer (F) | (0, 0.618, 0.222) | yes |
+| Woodman | Scum (M) | (0, 0.232, 0.226) | yes |
+| Farmer | Scum (M) | (0, 0.311, 0.288) | yes |
+| Senkamati Caster | Senkamati (F) | (0.5, 0, 0) | yes |
+| Hunter | African (M) | (0, 0, 1) | **redundant** — matches Gatherer/Rosalinda/Miner exactly |
+| Ksant | own/locked | (0, 0, 1) | redundant, and unusable as a source regardless |
+| Jasper Crowe | Adventurer (M) | (0, 0.246, 0.250) | yes — close to Woodman's but distinct |
+| Black Axel | Albion (M) | (0, 0.580, 0.309) | yes — close to Herbalist's Y but distinct on Z |
+| MortarMan | Native (M) | (0, 1.0, 0.0) | yes — the most distinct new value found |
+Citizen Walker's own (0, 0.919, 0.040), while a real reading, is moot — he's disqualified as a source
+entirely regardless of shape. **Net: Jasper (Adventurer-male) and Black Axel (Albion-male) are the two
+most valuable new confirmed-stable sources** — they close the exact family gaps this session's own
+male-source search was chasing AND add genuine shape variety. MortarMan adds a wholly new shape value
+if a Native-family male source is wanted. Hunter, while a legitimate stable African-family source, adds
+no new shape — lower priority unless family coverage alone (not shape variety) is the goal.
+
+**CONFIRMED LIVE, 2026-09-01: HunterAsOrient, JasperAsAfrican, AxelAsAfrican, and MortarAsAfrican all
+work.** Built via the same offline SDK-stub Editor pipeline as every prior template (§2e/§19c below),
+but for the first time this session, driven end-to-end headlessly via `UnrealEditor-Cmd.exe -run=
+pythonscript`/`-run=cook` directly from the command line rather than the interactive Editor GUI for
+the authoring/cook steps — only the two genuinely GUI-only steps (the `GameplayTag` property-picker,
+confirmed yet again this session that headless Python cannot construct one from a string under any
+call shape tried, including the plain `unreal.GameplayTag(value=...)` struct constructor; and the
+`BodyMesh` retarget via UAssetGUI) still needed manual work. Jasper and Axel needed ZERO manual tag
+work at all — duplicated from `AdventurerMaleAsAfrican`/`AlbionAsAfrican` (already correctly tagged),
+same scaling insight already established. `Customization.Morph.BodyType.African` and `.Native` are
+now both registered tags, alongside the original Adventurer/Albion/Scum/Senkamati four. **Full
+confirmed native-male source roster now**: Scum (Woodman/Miner/Farmer), Adventurer (Jasper Crowe),
+Albion (Black Axel), Native (MortarMan), African (Hunter, shape-redundant but family-complete).
+**Real environment gotcha hit along the way, worth remembering for any future headless Editor work
+on this project**: a C++ project living under an OneDrive-synced folder can intermittently fail
+`UnrealBuildTool -Clean`/rebuild with "Unable to delete" errors on `Intermediate/Build` subfolders —
+OneDrive transiently locks files it's scanning/syncing. Closing OneDrive (or just retrying the delete
+a few times) resolves it; it is NOT a real build/permission problem. Separately, a PARTIAL module
+rebuild (only one of `LivingBaseExtended`/`R5`/`R5BusinessRules` recompiled without the other two)
+leaves mismatched internal build IDs across the three DLLs, which the Editor reports as "modules
+missing or built with a different engine version" — the fix is a genuine clean rebuild of ALL modules
+together (delete `Binaries/Win64` + the per-module `Intermediate/Build/Win64/x64/*` folders, then
+rebuild), not a partial one. A first rebuild attempt on this project also hit `error C3859: Failed to
+create virtual memory for PCH` / Windows error 1455 ("paging file too small") during UBA's parallel
+PCH generation for the `R5` module — resolved by rebuilding with `-NoUBA` (disables the parallel
+local executor, trading build speed for lower peak commit-charge), not by changing any actual
+project/engine setting.
+
+**Full male BodyTypeParams coverage CONFIRMED LIVE, 2026-09-01, same day** — the male-source
+investigation is closed out. Batched all 5 confirmed-stable sources (Jasper=Adventurer, Axel=Albion,
+Mortar=Native, Hunter=African, ScumMale=Scum via Woodman) to each other's remaining destination
+families via one generalized batch script (`build_bodytype_male_batch_all_sources.py`, same pattern as
+the female rollout's `build_bodytype_batch_all_sources.py`) — 25 new entries, all duplicated from an
+already-tagged template so NONE needed manual GameplayTag work, only the `BodyMesh` retarget. All 30
+combinations (5 sources × 6 destinations each, including the one each source already had) confirmed
+working end-to-end after a full restart. **Two real process mistakes made and corrected along the
+way, worth remembering**: (1) a mismatched pair caught by verification (`ScumMaleAsAdventurer` showed
+a leftover `SK_Albion_Male_01` string alongside the correct `SK_Adventurer_Male_01` — never
+root-caused for certain, but consistent with a UAssetGUI cross-tab mix-up when multiple files are open
+at once; fixed by resetting that ONE source asset's `BodyMesh` back to a fresh placeholder and having
+it redone in isolation) — worth opening files one at a time rather than many UAssetGUI tabs together
+when doing a large batch. (2) **A costly one**: re-cooking (`-run=cook -CookAll`) to pick up that one
+fix wiped out ALL 25 mesh retargets back to placeholder, not just the one being fixed — cooking always
+regenerates every cooked file fresh from the SOURCE asset in `Content/`, which UAssetGUI never
+touches (it only ever edits the COOKED copy under `Saved/Cooked/`), so any post-editing re-cook
+discards every retarget done so far, whether broken or correct. **Standing rule for any future
+batch**: cook exactly ONCE, before any UAssetGUI editing begins on that batch; if a single entry needs
+fixing after that, fix its cooked file directly (or reset+redo just that one file's own retarget) —
+never re-cook the whole batch to fix one entry.
+**Scripted verification, not manual inspection, is what caught both real mistakes** — a small
+string-scan check (does the cooked `.uasset` contain the expected destination mesh string, and NOT
+any other family's mesh string) run over every entry in the batch before packaging, both times,
+caught issues invisible to a visual spot-check. Worth doing this same check on any future N-entry
+batch before packaging/installing, not just trusting "I did all of them."
+
+**Senkamati male source built and CONFIRMED PARTIALLY WORKING, 2026-09-01 (same day) — found the
+real blocker for a full fix, next step identified but NOT YET BUILT.** Live-probed all three raw male
+Senkamati mob classes (`BP_Mob_SenkamatiCorrupted_Regular_Hunter_C`/`_Regular_Warrior_C`/`_Thrall_C`)
+the right way this time (repeated fresh spawns, not one probe) — all three resolve the IDENTICAL key
+(`GetBodyType()=Senkamati`, native mesh `SK_SenkamatiCorrupted_Male_Medium`, native sex Male) despite
+each showing `IsBodyTypeChangeAvailable=false`. **That flag is confirmed NOT a real blocker for this
+family** — the already-proven-working female Caster shows the identical `false` value, so it doesn't
+predict non-usability the way it plausibly does for a fully hardcoded named character (Ksant). Built
+`SenkaMaleAsAfrican` (one entry, duplicated from the female `SenkamatiAsAfrican` template with sex
+flipped to Male — zero new tag work) — since all three classes share one key, ONE entry covers all
+three as a source, and each still gives a genuinely different `BodyMorph` shape (baked per-class):
+Thrall=(0.70,0.15,0.15) and Hunter=(0,0,0) are both new/distinct values; Warrior=(0,1.0,0) duplicates
+MortarMan's.
+
+**Live test result: the MESH retargeted correctly (confirmed `SK_African_Male_01`), but the SKIN
+MATERIAL did not — it stayed `MI_Senkamati_Feather_Male_Medium`.** Root cause, confirmed via
+`lbtestskin`'s own failure plus a live repeated-spawn check RedFalcon ran on request: `SkinMaterials`
+(a `TMap<GameplayTag, MaterialInstance>` field on `R5CompositeMeshComponentBodyTypeParams`, left
+completely empty on every template built this whole session including this one) is a SEPARATE
+dimension from `BodyMesh`, and the SIZE portion of a skin material (Small/Medium/Large) genuinely
+RANDOMIZES per spawn independent of family — confirmed directly: three fresh native Warrior spawns
+read `MI_Senkamati_Feather_Male_Large`/`_Medium`/`_Small` in that order. This is not new/
+Senkamati-specific — every class in the game has this same unpinned randomization; it was simply
+invisible on the human-family templates because whatever default fallback rendered close enough,
+and glaringly obvious here because the fallback is Senkamati-branded content on an African mesh.
+`lbtestskin` separately fails on this class for an UNRELATED reason: its swap-matching logic expects
+a 4-token `MI_<Family>_<Sex>_<Size>` material name, but this asset's real name has an extra token
+(`MI_Senkamati_Feather_Male_Medium`, 5 tokens) — a different, narrower bug in that tool, not evidence
+about SkinMaterials itself.
+
+**Real `SkinMaterials` structure confirmed by extracting a genuine game asset offline** (`retoc
+to-legacy` + a string-scan of the result — UAssetGUI's own CLI, `tojson`/`fromjson`, remains
+confirmed-broken as it has been all session; reading this required the `.usmap` mappings file,
+`Other/R5-5.6.1-0+UE5-e09d3821.usmap`, already present in this project from earlier work).
+`DA_NPC_BodyTypes_AfricanMaleParams` (a real, shipped per-family asset, one of 16 found by string-
+scanning `DA_NPC_BodyTypesParams_Common` itself for its own `BodyTypeData` array contents) shows
+exactly 3 `SkinMaterials` entries, keyed by GameplayTags ALREADY REGISTERED in this project's own
+`DefaultGameplayTags.ini` from early in the session (`Customization.Morph.SkinType.Small/Medium/
+Large`, tags 9-11, unused until now):
+```
+SkinMaterials = {
+  Customization.Morph.SkinType.Small  -> MI_African_Male_Small
+  Customization.Morph.SkinType.Medium -> MI_African_Male_Medium
+  Customization.Morph.SkinType.Large  -> MI_African_Male_Large
+}
+```
+**This is the exact mechanism the still-unstarted "Size" dimension of the male/female "Barbies" work
+needs** — fixing the Senkamati mismatch and delivering real Small/Medium/Large size control are the
+SAME fix, not two separate tasks.
+
+**Next step, planned but NOT YET ATTEMPTED**: populate all 3 `SkinMaterials` entries on ONE template
+(same one-time-manual-step-then-duplicate-forever pattern already proven for `BodyType`) — headless
+Python still can't construct a fresh `GameplayTag` (see below), so adding even one TMap entry with a
+real key needs the Editor's own property-picker, this time three times instead of once; each entry's
+VALUE (a `MaterialInstance` soft reference) will need the same transient-placeholder-then-UAssetGUI-
+retarget trick already used for `BodyMesh`, applied 3x per entry instead of once. Real added
+per-entry cost going forward, but a proven, well-understood structure — not a new unknown.
 
 **Generalized 2026-08-31: this is not a mob/crew-specific quirk — confirmed on a non-mob base too.**
 `Config.SENKA_FEMALE_BASE_CLASS` (the Handyman Gatherer, this mod's own proven walking-women base)
@@ -435,6 +724,22 @@ are TWO independent, both-safe levers for eyes: the CPD15 palette shift on the c
 5-variant material swap (a completely different iris style, not just a different shade of the current
 one) — genuinely different axes, not redundant with each other.
 
+**A real discrepancy in this project's own history, resolved 2026-09-02**: the code comment right
+above `Spawner.TestSetEyeColor` in spawner.lua flatly says "Eyes are NOT CPD-driven -- confirmed by
+`lbtestbasecpd(15, ...)` doing nothing," given as the reason the discrete-swap approach was built at
+all -- directly contradicting the paragraph above (which says a proper sweep found real color
+shifts). The code comment was never updated after the later, correcting discovery in the same
+session. RedFalcon settled it empirically: BOTH are real and both are meant to be used together --
+`lbtesteye`'s 5 discrete variants render as VIVID, almost-glowing colors (a distinct iris style, not
+a natural shade), while `lbtestbasecpd 15 <value>` applies as a subtler, more natural-looking shift
+ON TOP OF the plain default `MI_Eye` material. The planned permanent design is a combo: the 5
+discrete variants for dramatic/stylized colors, CPD15 (on the default material) for natural color
+variety -- not an either/or choice between them. Still TODO: an actual 0-23 sweep on CPD15 to build
+a real reference (what each index actually looks like on eyes specifically, don't assume it matches
+the cloth/hair palettes' own indices -- confirmed THIS SAME SESSION that hair's own palette is a
+completely different, smaller 9-color atlas from cloth's 24-color one despite sharing the identical
+CPD-write mechanism, so eyes' own mapping cannot be assumed without directly testing it too).
+
 **CONFIRMED LIVE, same night: body-SHAPE variety (bust/waist/hip-style proportions within one shared
 body mesh) is also achievable, on at least one whole class family, using entirely existing content —
 no custom asset authoring needed.** This was previously investigated in a closed session and
@@ -568,15 +873,31 @@ Build recipe (via the SDK-stub Editor project, §19c):
 tag survives `unreal.EditorAssetLibrary.duplicate_asset()` wholesale — so producing a SECOND
 destination mesh under an ALREADY-tagged source needs zero further manual tag-picking, just
 duplicate → set a fresh placeholder `BodyMesh` → cook → one more UAssetGUI retarget. Confirmed live:
-duplicated one Adventurer-tagged template into five destinations (Albion/Fable/Native/Orient/Scum
-meshes) in one Python batch run, tag intact on every one, verified via readback.
+duplicated each of the four tagged source templates into every remaining destination mesh in a
+couple of Python batch runs, tag intact and verified on every one before the manual retarget pass.
+
+**Full coverage confirmed live, 2026-09-01, closing this out for real**: all 25 non-native
+(source, destination) combinations across the four source families below were built, verified via
+readback before packaging, installed, and individually spawn-tested in-game via `lbtestbodytypes`
+— every single one confirmed rendering the correct destination mesh on the correct source class.
+Not a sample — the full cross-product: `Adventurer`×{African/Albion/Fable/Native/Orient/Scum},
+`Albion`×{African/Adventurer/Fable/Native/Orient/Scum},
+`Scum`×{African/Adventurer/Albion/Fable/Native/Orient} (sex-forced, per the Woodman finding above),
+`Senkamati`×{African/Adventurer/Albion/Fable/Native/Orient/Scum}.
 
 **Confirmed live, working, across four genuinely different NPC source classes** (each needing its
 own one-time tagged template, since the native key varies per class, not fixed game-wide):
-- `Adventurer` — `BP_NPC_Handyman_Gatherer_C`, `BP_NPC_Handyman_Herbalist_C`, and
-  `BP_NPC_Citizen_Walker_C` (a male, sex-changed) all resolve `GetBodyType()=Adventurer` natively,
-  despite each having its OWN separate `ArchetypePreset` asset — the resolved KEY is what matters,
-  not which preset asset produced it.
+- `Adventurer` — `BP_NPC_Handyman_Gatherer_C` and `BP_NPC_Handyman_Herbalist_C` resolve
+  `GetBodyType()=Adventurer` natively, despite each having its OWN separate `ArchetypePreset`
+  asset — the resolved KEY is what matters, not which preset asset produced it.
+  **CORRECTION (2026-09-02): this bullet previously also listed `BP_NPC_Citizen_Walker_C` (sex-
+  changed) as a third confirmed-working Adventurer source — that was wrong, and contradicted this
+  same file's own earlier, correct finding (§ "the statue roster" / "wrong-tag problem" section)
+  that he re-rolls his archetype family on `BeginPlay` regardless of native sex and is NOT usable
+  as a fixed `BodyTypeParams` source under any tag. RedFalcon confirmed live he's ineligible.
+  He WAS legitimately included in the separate, narrower `BodyMorph`-carries-over-a-sex-change
+  check just below (reading a native property once doesn't care about randomization) — that
+  finding stands; only his inclusion in THIS "confirmed working fixed source" list was the error.**
 - `Albion` — `BP_NPC_Employee_AlchemyStation_RosalindaMercer_C` (a completely different NPC
   family, `BP_NPC_Employee_C`, not `BP_NPC_Handyman_C` — confirming the technique isn't
   Handyman-specific).
@@ -2616,3 +2937,1230 @@ this is now individually confirmed, not theorized.
 is therefore NOT new/unproven engine surface the way this section's other findings are — it was
 already a working, shipped technique before this investigation started; worth checking this file
 before treating a call as untested just because it's new to the specific feature being built.
+
+### 19e. Evaluated and rejected: Nexus Mods' own "Nexus Mods Author Tools" Editor plugin
+
+Tried as a possible replacement for the `retoc`+`UAssetGUI`+`repak` final-packaging leg of §19c's
+pipeline (`github.com/Nexus-Mods/NexusModsAuthorToolsUE`, official Nexus Mods plugin, UE 4.26→5.8).
+Installed clean into this SDK-stub project (Editor module, only depends on the already-enabled
+`EditorScriptingUtilities` — no engine/source changes needed) and read its actual packaging source
+rather than trusting the README.
+
+**What it does under the hood, confirmed from source**: cooks via the exact same
+`UnrealEditor-Cmd.exe -run=Cook -Map=<pkgs> -cooksinglepackage` invocation this project's own headless
+pipeline already uses, then packages via plain unmodified `UnrealPak.exe -CreateGlobalContainer=...`
+(IoStore) or `-Create=...` (legacy) — the real Epic tool, not a third-party converter. Replicated its
+exact `-CreateGlobalContainer`/`-PackageStoreManifest`/`-ScriptObjects` command line by hand against an
+already-cooked test package (bypassing the plugin's UI entirely) and it produced a structurally normal
+`.pak`/`.utoc`/`.ucas` triple, comparable in size/shape to a known-good `retoc`-built one — so a vanilla
+stock-UnrealPak IoStore build is NOT inherently incompatible with this game's container format, which
+was the one real open question worth checking here.
+
+One theoretical concern turned out to be a non-issue: the plugin bakes the SDK-stub project's own name
+(`LivingBaseExtended`, not the real game's `R5`) into the disk-mount-path string it hands UnrealPak.
+Checked an already-shipped, confirmed-working pak from this project's own pipeline and it has the exact
+same string baked in the same way (`/Game/Mods/LivingBaseExtended/...`) — IoStore addresses packages by
+their `/Game/...` path via the packagestore manifest, not by that disk-side mount string, so the project
+name never needing to match `R5` isn't a real requirement.
+
+**Why it was rejected anyway**: the plugin's packaging service exposes zero `UFUNCTION`/`UCLASS`
+surface — it's Slate-UI-only, with no Python or commandlet hook into it at all. Adopting it would mean
+opening the full Editor and manually clicking through "Add Mod → select content → Package" dialogs for
+every template, in place of the current pipeline's fast, scriptable `retoc`/`repak` CLI calls (the only
+manual step already in that pipeline, the UAssetGUI soft-reference retarget, is a far lighter app to
+keep reopening than the whole Editor). It would trade a scriptable step for a GUI-only one without
+actually removing any manual work — a worse deal, not a better one. Uninstalled; not adopted. (Its
+Nexus-upload and deploy/launch automation were not evaluated — the packaging-step question was the only
+one that mattered for this project's pipeline, and it settled the question on its own.)
+
+### 19f. SkinMaterials (the "Size" dimension) -- build started 2026-09-02
+
+Picking back up the deferred `SkinMaterials` work (SS2's addendum): a `DA_Custom_SkinTypeKeys_Master`
+utility asset was built under `/Game/Mods/LivingBaseExtended/` -- never cooked or shipped, its only
+job is holding one correctly-tagged `SkinMaterials` entry per size so every future template can copy
+the real `GameplayTag` key objects out of it via script instead of paying the manual property-picker
+cost again. The one manual step (registering+picking `Customization.Morph.SkinType.Small/Medium/
+Large` on this one asset) is done and verified. First real target: `DA_Custom_BodyType_HunterAsOrient`,
+retargeting to the real `MI_Orient_Male_Small/Medium/Large` materials (confirmed to exist via
+`pakcontents.xlsx`) -- this required resetting and redoing its `BodyMesh` retarget too, since adding
+a new field means a fresh cook, which wipes the previous cooked retarget per SS5's rule (expected,
+not a mistake).
+
+**A real bug found and fixed along the way**: `unreal.EditorAssetLibrary.save_loaded_asset()` on an
+asset LOADED from disk (as opposed to one just `create_asset()`'d in the same script) reported
+success while silently NOT writing anything -- confirmed via the file's own mtime and raw bytes never
+changing across two separate repro attempts. Root cause: the default `only_if_is_dirty=True` behavior
+skips the write because editing via `set_editor_property` doesn't reliably mark an already-clean,
+already-on-disk package dirty. Fix: pass `only_if_is_dirty=False` to force the write regardless. This
+never surfaced in any earlier from-scratch template build (a freshly created asset is already dirty
+from creation, so its first save always writes) -- it only bites a script that loads and edits an
+EXISTING asset in place, which the "copy tag keys from a donor asset" trick above makes newly common
+going forward. Written up in `Windrose_Unreal_SDK_Notes.txt` SS2 too.
+
+**Also confirmed empirically**: the actual runtime selector that decides which of `SkinMaterials`'
+Small/Medium/Large keys gets requested for a given spawn is NOT exposed anywhere reflection can see
+it -- checked the full property list on both the pool-entry class and every "Skin"/"Size"-named class
+in the SDK-stub headers (nothing), and checked a live `lbprobedump` of a native Warrior across 3
+repeated spawns (Large/Medium/Small in sequence, per the original finding) for any GameplayTag that
+might be the selector (only `Customization.UID.Armor.*`/`Customization.UID.Hairs` appear -- nothing
+resembling a skin-size key). Practical conclusion: this is very likely intentional per-spawn visual
+variety on the native side, not a bug to suppress -- the goal isn't to force a specific size, just to
+make sure whichever size gets requested resolves to the CORRECT destination family's own material
+instead of an empty/mismatched one. Populating all 3 keys with the destination's own real variants
+achieves that regardless of which one the native selector picks.
+
+**Status: CONFIRMED LIVE (2026-09-02).** `DA_Custom_SkinTypeKeys_Master` built and verified;
+`DA_Custom_BodyType_HunterAsOrient` fully carried through -- source updated, re-cooked, all 4
+soft-references retargeted via UAssetGUI (BodyMesh -> `SK_Orient_Male_01`,
+SkinMaterials[Small/Medium/Large] -> the 3 real `MI_Orient_Male_*` materials), re-verified via a
+fresh `tojson` export (all 4 correct, zero stray `/Engine/Transient` object references left),
+packaged (`retoc to-zen` for utoc/ucas + `repak pack` on an empty dir for the header-only companion
+pak, per SS9's own established rule to not use retoc's own bundled pak), reinstalled to the live
+`~mods` folder, and tested in-game via `lbtestbodytypes .../DA_Custom_BodyTypeList_HunterAsOrient -
+.../BP_NPC_Handyman_Hunter.BP_NPC_Handyman_Hunter_C -` + `lbprobedump`: real `probedump_*.txt`
+output shows `CharacterMesh0` resolving to `SK_Orient_Male_01` with skin material
+`MI_Orient_Male_Medium` -- both mesh AND skin now correctly matched to the same destination
+family, confirming the whole mechanism end-to-end (only one spawn observed so far, landed on
+Medium; Small/Large hold real materials too and there's no reason to expect them to behave
+differently, but neither has been directly observed yet).
+
+This is the proof-of-concept for the whole SkinMaterials mechanism, now proven, not just theorized.
+Rolling it out to the rest of the male-source templates (Jasper/Axel/Mortar-as-African,
+SenkaMaleAsAfrican, the 25-entry batch) is a mechanical repeat of this same recipe: for each, find
+its destination family's 3 real Small/Medium/Large skin materials (via `pakcontents.xlsx`), run the
+same "copy the master's 3 tag keys, assign 3 fresh placeholders" script (see
+`add_skinmaterials_hunterasorient.py` as the template), re-cook, redo ITS OWN BodyMesh retarget
+alongside the 3 new SkinMaterials ones (unavoidable per SS5 -- adding a new field means a fresh
+cook, which wipes whatever was already retargeted on that cooked file), repackage, reinstall.
+
+**Live retest note**: 3 repeat spawns of the same `DA_Custom_BodyTypeList_HunterAsOrient` override
+all came back `MI_Orient_Male_Medium` -- no variation, unlike the earlier native-Warrior test (which
+cycled Large/Medium/Small over 3 spawns). Likely this specific class (a Handyman-family NPC, not a
+Senkamati mob) just doesn't naturally vary size -- consistent with this project's broader finding
+that per-spawn variance is a property of the SPECIFIC class, not something universal. Not
+investigated further since RedFalcon's actual ask was more useful: real user-facing size CONTROL.
+
+### 19g. The manual UAssetGUI retarget step is no longer manual (2026-09-02)
+
+Investigated after RedFalcon asked about `pip install UAssetAPI` -- that exact package doesn't
+exist on PyPI (confirmed: 404, and no plausible name variant exists either), but the real thing it
+was pointing at does: `UAssetAPI` is the actual open-source .NET library UAssetGUI itself is built
+on (NuGet, not pip), and it's directly usable from plain Python via `pythonnet` (`pip install
+pythonnet`) hosting a real .NET CLR inside the same process -- no Unreal Editor involved at all.
+
+**Confirmed working, thoroughly**: downloaded the library's own NuGet package directly (a `.nupkg`
+is just a zip file, fetched via the plain NuGet v3 flat-container URL, no `dotnet` SDK/restore
+needed -- only the .NET 8 RUNTIME, already present system-wide) along with its 2 dependencies
+(Newtonsoft.Json, ZstdSharp.Port), reflected the real API surface directly (`Type.GetMethods()`/
+`GetFields()`) rather than trusting a webpage's possibly-approximate usage example, and built a
+real Python module wrapping it. Verified three ways: (1) a plain read-then-write round trip with
+no edits at all is BYTE-FOR-BYTE IDENTICAL to the original, both via the library's own
+`VerifyBinaryEquality()` and an independent raw `cmp` diff; (2) a real single-field soft-reference
+retarget (the exact operation this whole project's pipeline needed UAssetGUI's GUI for) reloads
+correctly from disk in a fresh load; (3) independently cross-checked by UAssetGUI's own `tojson`
+export -- a completely separate codepath agreeing the write landed correctly. Tested on both a
+plain scalar soft-reference (`BodyMesh`) and a `TMap<GameplayTag, TSoftObjectPtr<...>>` entry's
+value (`SkinMaterials`, selected by its already-set GameplayTag key's name) -- both work.
+
+**One real C# gotcha hit and worked around**: `FSoftObjectPath`/`FTopLevelAssetPath` are STRUCTS
+(value types), so reading a property's `.Value` and mutating nested fields on it edits a COPY --
+silently a no-op. The fix: construct a whole new struct value and assign it back to the property's
+`.Value` in one shot, never mutate through a chained property-getter.
+
+**What this changes for the whole pipeline going forward**: the retarget step in this whole
+project's SDK-stub recipe (WINDROSE SDK notes SS4/SS7/SS8) is no longer a manual, GUI-only,
+one-asset-at-a-time chore -- it's now a plain, scriptable, batchable Python call
+(`Tools/UAssetAPI/uassetapi_helper.py`, `retarget_soft_object_property()` /
+`retarget_map_soft_object_value()`), runnable as part of the same kind of batch script this
+project already uses for everything else. This does NOT remove the one remaining genuinely
+unavoidable manual step (the GameplayTag property-picker, since neither this nor headless Editor
+Python can construct a fresh tag from a string) -- but it removes the OTHER manual step that
+used to follow every cook. The rest of the SkinMaterials rollout (Jasper/Axel/Mortar-as-African,
+SenkaMaleAsAfrican, the 25-entry batch) can now be done as one script per template with zero
+GUI interaction at all, instead of the multi-step Editor-handoff dance HunterAsOrient needed.
+
+**`lbtestskinsize <Small|Medium|Large>` (2026-09-02) -- the scalable answer to "choose a size when
+spawning."** Rejected the obvious-but-unscalable option (3 size-locked DataAsset variants per
+template, tripling retarget work forever) in favor of a pure runtime fix needing zero new assets:
+every human skin material observed so far (Senkamati/Orient/African, native or custom-retargeted)
+shares the exact same `<Family>_<Sex>_<Size>` naming convention, always ending in
+`_Small`/`_Medium`/`_Large`. The new command finds whichever material slot on the target's `Mesh`
+is CURRENTLY a sized skin material (by name pattern, not a hardcoded slot index), derives that
+family's own sibling path by swapping just the trailing size word, and `SetMaterial`s it in -- the
+exact same safe swap mechanism `lbtesteye` already uses for eye color. Works on ANY already-spawned
+actor's family automatically, custom-overridden or fully native, with no per-template engineering
+ever needed again -- the family is read live from whatever material is already applied, not
+pre-declared. **Confirmed live 2026-09-02, after one real fix.** First attempt failed:
+`mat:GetPathName()` (used to derive the material's own folder for building the sibling path)
+returned nil -- unlike `GetFullName()`, `GetPathName()` on a plain asset reference isn't a
+proven-safe call anywhere else in this codebase (`GetFullName()` is used hundreds of times for
+exactly this kind of path-string need). Fixed by switching to `GetFullName()` (format "ClassName
+/Package/Path.AssetName") and stripping the leading class-name token. Deployed via `lbreload`
+while the game was already running (confirmed working: no restart needed for a pure-Lua change).
+Retested: `lbtestskinsize Small` on an already-spawned HunterAsOrient actor logged
+`SetMaterial(2, MI_Orient_Male_Small) = true (was MI_Orient_Male_Medium)`, and a fresh
+`lbprobedump` confirmed the applied material really is `MI_Orient_Male_Small` -- swapped in place,
+no respawn needed, exactly as designed.
+
+**Important scope clarification (2026-09-02, RedFalcon's own question)**: `SkinMaterials` is
+TEXTURE-ONLY -- confirmed, not assumed. It changes which material/skin gets applied; it cannot and
+does not change the actual mesh geometry. Every probe across every family (native or
+custom-retargeted) shows the mesh name itself staying fixed regardless of which size material is
+applied. Real body SHAPE/size (an actual bigger/smaller frame) is very likely a completely
+separate, untouched system -- the composite mesh component exposes real functions for it
+(`GetCurrentMorphControllers`, `SetMorphControllerValue`, `SetMorphToType`,
+`GetAvailableBodyDecorData`), plus a per-actor `BodyMorph` vector property seen in earlier probes
+(`X=0.0 Y=0.0 Z=1.0`). Investigating that system was explicitly deferred by RedFalcon's own choice
+("stick with the texture-only fix for now") -- worth revisiting later if real mesh-level size
+control becomes a priority, but don't assume `SkinMaterials`/`lbtestskinsize` do this; they don't.
+
+### 19h. SkinMaterials rolled out to all 30 remaining male-source templates (2026-09-02)
+
+The full male-source roster (Jasper/Axel/Mortar/Hunter/ScumMale as sources, 7 destination families:
+Adventurer/African/Albion/Fable/Native/Orient/Scum) now all have a real, correct SkinMaterials map
+-- the exact same recipe proven on HunterAsOrient, batched across all 30 remaining entries in one
+pass using the new UAssetAPI helper (SS19g) instead of 30 rounds of manual UAssetGUI clicking:
+
+1. One combined Python/Editor script reset BodyMesh + populated SkinMaterials (3 fresh
+   placeholders, real tag keys copied from `DA_Custom_SkinTypeKeys_Master`) on all 30 entries,
+   using `only_if_is_dirty=False` throughout (SS19g's dirty-flag fix).
+2. One combined cook (`-Map=<60 packages>+...`) -- **a real gotcha hit here**: a BARE `-run=Cook`
+   with no `-Map=` argument at all does NOT cook `/Game/Mods/...` content the way the project's
+   own per-asset cooks always had (which always passed explicit `-Map=`) -- it only picked up
+   ~280-528 generic Engine-default packages and silently produced ZERO of our target files, no
+   error at all. Caught immediately by checking the cooked output directory was empty before
+   proceeding to the next step -- always verify a cook's OWN OUTPUT FILES exist on disk, not just
+   that the commandlet exited with "Success".
+3. One combined Python (plain, pythonnet-hosted) script ran all 120 retargets (30 x [1 BodyMesh +
+   3 SkinMaterials]) via `uassetapi_helper.py` -- no GUI step anywhere in this pass. Each call
+   self-verified via its own reload-and-check; 3 additional entries independently spot-checked via
+   UAssetGUI's own `tojson` agreed.
+4. Packaged into the SAME 3 existing pak bundle names already live (`BodyTypeMaleSources2`,
+   `SenkaMaleAsAfrican`, `BodyTypeMaleBatch25`) -- retoc to-zen + repak pack (empty dir) for the
+   header-only companion pak, per SS9's rule. All 3 `.ucas` string-scanned clean before install
+   (correct Small/Medium/Large counts per group, zero stray `/Engine/Transient` placeholder refs).
+5. Install hit the expected file-lock wall: `.pak` overwrote fine but `.utoc`/`.ucas` were
+   `Device or resource busy` while Windrose was still running (memory-mapped IoStore containers).
+   Waited for the user to close the game, then finished the copy -- consistent with SS9's "needs a
+   full restart" rule, just discovered from the write side this time rather than the load side.
+
+**Confirmed live**: RedFalcon tested a couple of these post-install and confirmed the mesh+material
+mismatch is fixed, same result as HunterAsOrient's own confirmation.
+
+### 19i. Full female rollout + a genuinely new architecture: sourceless "prepping for the future" entries (2026-09-02)
+
+Two follow-on phases, same session:
+
+**Phase 1 -- the rest of the existing roster (27 entries)**: all 25 pre-existing female entries
+(Adventurer/Albion/Scum/Senkamati as sources, 6-7 destinations each) plus 2 missed male ones
+(`AdventurerMaleAsAfrican`, and `ScumMaleAsAfrican` which had been content-fixed in the male batch
+above but never actually repackaged into its real live pak, `BodyTypeMaleSources` -- not
+`MaleSources2`). Same recipe, same tooling, packaged back into the exact 7 fragmented existing pak
+bundles this history had produced (`BodyTypeAdventurerAsAfrican`, `BodyTypeAdventurerCrossRest`,
+`BodyTypeAlbionAsAfrican`, `BodyTypeCrossSources`, `BodyTypeMaleSources`, `BodyTypeScumAsAfrican`,
+`BodyTypeSenkamatiAsAfrican`) rather than consolidating -- identified via string-scanning each
+existing pak's own `.ucas` for which `DA_Custom_BodyType_*` names it actually contains, to avoid
+shipping the SAME asset in two different paks at once (a real load-order risk, not just tidiness).
+One real naming irregularity caught by checking rather than assuming: Adventurer's own FEMALE mesh
+is `SK_Adventure_Female_01` (no trailing "r") while its MATERIALS use `MI_Adventurer_Female_*` (with
+the "r") -- a genuine inconsistency in the game's own shipped asset names, not a typo on our side.
+
+**Phase 2 -- a real scope change, RedFalcon's own framing: "we don't have walkers in those families,
+that's the point... we are prepping for the future."** Audited the full family x source matrix
+programmatically (not by eye) and found: only 5 of 7 families have a confirmed native MALE walker
+(missing Fable, Orient), and only 4 of 7 have a confirmed native FEMALE walker (missing African,
+Native, Orient, Fable) -- plus SenkaMale (the Senkamati mob source) only ever got 1 of its own 6
+possible destinations built. The ask: build the MISSING SOURCE identities anyway, even with no real
+NPC alive today that requests them, so the day Windrose adds (or we discover) a genuine Orient- or
+Fable-native walker, retargeting to it costs nothing further.
+
+This works because the technique never actually required a live NPC to test against -- only a real,
+committed `GameplayTag` object matching what SOME class would someday request. Registered `Fable`
+and `Orient` as new BodyType tags in `Config/DefaultGameplayTags.ini` (Adventurer/Albion/Scum/
+Senkamati/African/Native already existed from earlier work), built 2 tiny seed assets, and did the
+ONE unavoidable manual step (the Editor's own property-picker, same limitation as ever) to pick
+each tag onto its seed -- 2 total picks for the whole phase. Every other entry's tag came from
+copying an already-real tag object off an existing asset via script (African from any HunterAsX
+entry, Native from any MortarAsX entry, Senkamati from SenkaMaleAsAfrican) -- zero further manual
+picking. Also checked whether any OTHER families exist in the pak beyond the known 7
+(`pakcontents.xlsx` scan of `Human/Regular/*/Meshes/`): found `Drowned`, `Drowned_Spitter`, and
+`Ghost`, all genuinely unusable for this technique -- Drowned has its own dedicated Animation
+Blueprint (implying a distinct skeleton, incompatible with the shared-rig mesh-swap trick),
+Drowned_Spitter and Ghost are single-mesh one-off variants with no Small/Medium/Large split at all.
+Nothing to add there; the 7 known families really are the complete set today.
+
+Built 42 new entries in one pass: Fable (12: both sexes x 6 destinations), Orient (12: both sexes x
+6 destinations), African-as-female-source (6), Native-as-female-source (6), and SenkaMale's 6
+missing destinations. Naming: since both a male AND female version of the SAME family-as-source
+needed to coexist for Fable/Orient (unlike every prior source, which only ever had one confirmed
+sex), used explicit `FableMaleAsX`/`FableAsX` (female unqualified, matching the existing
+`AdventurerMaleAsAfrican` vs `AdventurerAsAfrican` precedent) rather than inventing a new scheme.
+All 42 cooked in one explicit `-Map=` pass (84 packages), all 168 retargets done via
+`uassetapi_helper.py` with zero GUI steps, independently spot-checked via UAssetGUI on 3 samples,
+packaged into a single new bundle (`BodyTypeFutureFamilies-Windows`) since this is genuinely new
+content with no existing pak to overwrite.
+
+**Net result of this whole family-coverage push**: every one of the 7 known human families
+(Adventurer/African/Albion/Fable/Native/Orient/Scum) now has a real, tag-correct, SkinMaterials-
+correct source identity for BOTH sexes, each covering all 6 other destinations as a target -- the
+full N x N cross-family matrix RedFalcon asked for, minus only the fact that Fable/Orient/African-
+female/Native-female sources have no live NPC to actually SPAWN as yet (their own entries exist and
+are correct; nothing in the game currently requests their key, so nothing visibly changes until a
+real walker for one of them is found or added). **Confirmed live**: tested `SenkaMaleAsFable` (brand new) on the Warrior mob class via
+`lbtestbodytypes` + `lbremoveclothes all` + `lbprobedump` -- real dump shows
+`BodyTypeParams=DA_Custom_BodyTypeList_SenkaMaleAsFable`, mesh=`SK_Fable_Male_01`,
+skin=`MI_Fable_Male_Small`, both correctly matched. `SenkaMaleAsAfrican` (earlier batch)
+re-confirmed alongside it. The Fable/Orient/African-female/Native-female SOURCE entries still
+have no live NPC to spawn as (nothing requests their key yet, as expected/intended), but the
+underlying mechanism -- new tag, correct mesh, correct SkinMaterials, all built without touching
+a single existing template -- is proven live via SenkaMale's own newly-added destinations.
+
+### 19j. A genuinely new alternative to reskinning: swap the AI brain instead, keep the real body (2026-09-02)
+
+RedFalcon's own idea, tried as an alternative to the whole SkinMaterials/BodyTypeParams reskin
+approach: instead of making a Senkamati LOOK human, give a native Senkamati MOB pawn the Gatherer/
+Handyman AI brain instead of its own hostile Mob AI, keeping its real mesh/skeleton entirely
+untouched. Motivated by an earlier finding that ordinary human poses already apply fine to
+Senkamati bodies.
+
+**The mechanism already existed** -- `Spawner.Spawn`'s own `aiControllerClassPath` parameter (used
+once before to give Hunter the Warrior's own native mob AIController) -- so this needed a new test
+command, not new engine surface: `lbtestai <ClassPath> <AIControllerClassPath> [friendly: 1/0]`
+(`Spawner.TestSpawnWithAIOverride`).
+
+**A real, directly relevant prior result surfaced BEFORE testing, not after**: `Config.
+HANDYMAN_FOR_CREW`'s own comment already documented a 2026-07-07 finding that giving the Handyman
+brain to re-skinned "crew" (a Handyman-lineage human-body class wearing Senkamati's own armor) did
+NOT crash, but also did not wander -- the pawn just stood still, "their pawn lacks the worker data
+it needs." Flagged this to RedFalcon as a likely-relevant precedent (different starting point --
+raw native Mob class here, not a Handyman-lineage crew class -- so not guaranteed to recur, but a
+real risk worth knowing going in) before running the first test.
+
+**Real result, and it's a THIRD outcome, not either of the two anticipated ones**: the pawn came
+out aggressive on the first test -- traced to a tooling mistake, not a real finding: the test
+command's own first cut hardcoded `makeFriendly=false` in the underlying `Spawn()` call, an
+entirely separate, already-proven faction-copying mechanism ("copy a live crew's faction onto the
+spawn") unrelated to which AIController class is possessing the pawn. Fixed to default
+`friendly=true` so the AI-brain question isn't confounded with an unrelated hostility setting.
+
+**With that fixed, the real result**: the pawn is peaceful and DOES move/navigate (confirmed via
+`AIControllerClass`/`Controller` both correctly showing the Handyman controller in a live
+`lbprobedump`) -- genuinely different from the crew test's "just stands still" outcome, so a raw
+Mob pawn accepting the Handyman brain's actual navigation decisions is a real, new, positive
+finding. But it SLIDES rather than walks, stuck in its native idle pose the whole time. Root cause
+confirmed via the same probe dump, not guessed: `AnimClass` is still
+`ABP_SenkamatiCorrupted_Regular_Warrior_C` (the Warrior's own native Animation Blueprint, entirely
+untouched by the controller swap -- pose/animation is a separate axis from which brain is deciding
+where to go), and every speed-related property that AnimBP's locomotion state machine plausibly
+reads is sitting at a stale `0.0` despite real physical movement:
+`__CustomProperty_Speed_...`, `Want Forward Speed`, `Want Right Speed`, `GroundSpeed` all read 0.0
+live. Strongly suggests the Warrior's OWN native Mob AIController was writing to these custom
+properties directly every tick to drive its Blueprint locomotion state machine (rather than the
+AnimBP reading `CharacterMovementComponent`'s own Velocity directly) -- the Handyman controller,
+a completely different Blueprint hierarchy, has no idea these properties exist and never touches
+them, so the AnimBP keeps reading "not moving" forever regardless of actual movement.
+
+**Status**: genuinely promising partial result -- hostility is fully solved (existing
+`makeFriendly` mechanism), navigation/wandering works (new finding, better than the crew
+precedent), only the animation-sync layer remains broken, and its root cause is now understood
+precisely, not mysterious. Not yet fixed -- next step, if pursued, would be finding what actually
+writes to those Speed properties (worth checking whether `R5AICharacter`/`Character` base classes
+expose a generic "sync locomotion properties from velocity" function that could be ticked manually
+via Lua after possession, rather than needing to replicate the Mob AIController's own internal
+logic) before attempting a fix. Deferred at RedFalcon's own pace -- pick back up whenever.
+
+### 19k. RedFalcon's own reframe wins: swap the WALKER's body, not the mob's brain (2026-09-02)
+
+Following straight on from 19j's real AnimBP wall, RedFalcon proposed the inverse: instead of
+forcing the Senkamati MOB class to behave like a walker, take an already-perfect walker (correct
+AI, correct self-computing locomotion) and retarget ITS `BodyMesh` to Senkamati's own real mesh
+instead of any of the 7 established families. Zero new engine surface -- the exact same
+`BodyTypeParams` mechanism used all session, Senkamati as a DESTINATION for the first time instead
+of a SOURCE.
+
+**Confirmed this is literally the same foundation the existing "Crew Reskin" system already stands
+on** -- `Config.SENKA_FEMALE_BASE_CLASS = BP_NPC_Handyman_Gatherer_C`, and its own comment says so
+outright: *"This is the Warrior's own trick (re-skin a human-skeleton pawn instead of using the
+mob's own skeleton) applied to a female base."* The difference from Crew Reskin: that system puts
+Senkamati's real ARMOR PIECES onto Gatherer's normal human body; this puts Senkamati's own actual
+BODY MESH (`SK_Senkamati_Witch_01_Female` -- her own skin, no human clothes) directly onto
+Gatherer instead, via `DA_Custom_BodyType_AdventurerAsSenkamati` (built the exact same way as
+every other entry this session: BodyType tag copied from an existing Adventurer-tagged donor,
+zero manual picking; SkinMaterials handles a real irregularity confirmed via `pakcontents.xlsx`
+first -- Senkamati's own materials aren't organized like the 7 established families at all, female
+has only ONE size, `MI_Senkamati_Female_Medium`, no Small/Large -- used that same material for all
+3 SkinMaterials keys rather than inventing sizes that don't exist).
+
+**CONFIRMED LIVE: it just works, no animation issues at all** -- since nothing about Gatherer's
+own AI or AnimBP is touched, only her BodyMesh/SkinMaterials, exactly like every other successful
+retarget this whole session. Real native proportions are available too: the actual Senkamati
+Caster/Witch's own `BodyMorph` is already documented (`(0.5, 0, 0)`, this file's own SS on
+per-instance body-shape variety) -- applies via the already-proven `lbtestbodymorph 0.5 0 0`.
+
+**A real, expected limitation surfaced**: Gatherer's own composite-outfit slot roster doesn't
+match the Witch's -- a native Mob class and a human NPC class run on different composite-outfit
+systems entirely (mobs use one shared preset, human NPCs use another), so Gatherer's own outfit
+was never built with slots for whatever Senkamati-specific extras (feathers, tribal decorations)
+the Witch naturally has. `lbtestaddslot <slot> <meshPath>` already exists for building a missing
+slot from scratch (`AddComponentByClass` + `SetLeaderPoseComponent`) but is marked
+RISKY/EXPERIMENTAL in its own registration -- a real option, not yet a proven-safe one.
+
+**A genuinely new, reusable probe capability came out of chasing her real color scheme**:
+`dumpNamedStruct` (the "list this struct's own fields" recipe already used all over this file) was
+flat, one level only -- a field that's itself a resolvable named struct (like
+`BuildedCompositeMeshes[i].ColorData`) printed only as its TYPE string, never drilled into. Made it
+properly recursive (depth-capped at 3, pure safety margin, nothing observed needs it) -- this now
+helps every future probe in this file, not just this one case. Drilling one level into `ColorData`
+found its real field name for the first time: `ColorIndexesMap`, a `TMap` -- a different, more
+detailed shape than `FR5BLCharacterColorData.Value` (a DIFFERENT struct entirely, used by
+`SelectedColors`/`ArchetypePreset.ColorData` elsewhere in this file), not the same thing as
+previously assumed.
+
+**A real, clean dead end, worth recording precisely so it isn't re-attempted blind**: reading that
+`TMap`'s own entries from Lua failed three independent ways, no crash any time, ruling each out for
+certain rather than guessing: (1) `pairs(fv)` -- "bad argument #1 to 'for iterator' (table
+expected, got TMap)", this Map wrapper doesn't implement `__pairs`; (2) `getmetatable(fv)` --
+returned `nil`, the metatable is locked down, no Lua-side introspection possible; (3) `fv:get()`
+(the same unwrap idiom `dumpBuildedCompositeMeshes` already uses for `TArray` elements) -- no such
+method. This UE4SS build's `Map` userdata exposes NONE of the standard reflection paths this file
+already relies on for other types (`TArray` has `GetArrayNum()`/`Get(i)`; a named struct has
+`ForEachProperty` via its resolved type) -- reading a `TMap`'s entries from Lua is, as of this
+finding, not possible with anything tried so far. The more promising remaining path, not yet
+tried: find and decode whatever static preset DataAsset actually stores Senkamati's default color
+indices OFFLINE via `retoc`+`UAssetGUI` (the same technique that already decoded the CPD comment
+map and both color palettes this session) rather than fighting a live runtime read -- her colors
+are almost certainly baked into a preset asset, not randomized at runtime.
+
+### 19l. Checking whether the vanilla human mesh truly lacks Senkamati's pelvis geometry -- two more offline dead ends, and the one path that actually works (2026-09-02)
+
+Directly following 19k: RedFalcon's reminder that "senkamati has the pelvis area, the vanilla
+gatherer doesn't" raised the real question -- is that geometry genuinely absent from the vanilla
+human mesh (`SK_Adventure_Female_01`, Gatherer's own), or does it exist but sit hidden/unused?
+With `LivingBaseExtended`'s Unreal Editor now up and running, tried inspecting both meshes
+directly. Extracted `SK_Adventure_Female_01` and `SK_Senkamati_Witch_01_Female` (+ their `.uexp`
+bulk data) from the real game paks via `retoc to-legacy`, same as always.
+
+**Dead end 1 -- the Editor flatly refuses to load them at all.** Copied both into the SDK-stub
+project's `Content/` and ran a headless `-run=pythonscript` inspection. Every Editor build (this
+one included) hard-refuses to `LoadPackage` an unversioned cooked package -- `LogLinker: Warning:
+... is unversioned and we cannot safely load unversioned files in the editor` -- this is a
+hardcoded `FPlatformProperties::RequiresCookedData()` gate in engine code, not an ini/config
+option; no amount of project settings changes it. Only an actual cooked/packaged (non-Editor)
+executable can load these files, which the real Windrose game already is.
+
+**Dead end 2 -- re-serializing to versioned form via UAssetAPI doesn't survive the round trip.**
+Reused this session's own `UAssetAPI`-via-pythonnet infrastructure, this time loading the real
+`.usmap` (`R5-5.6.1-0+UE5-e09d3821.usmap`, already sitting in `Other/` and the game's own
+`ue4ss/` folder from earlier palette-decoding work) so the unversioned property blob actually
+decodes correctly instead of misreading raw bytes as garbage. This worked -- `LODInfo`,
+`PhysicsAsset`, `Skeleton`, `bHasVertexColors` etc. all decoded to sane, readable values. But
+**the `Materials` property itself never appears at all** on either mesh's `SkeletalMesh` export --
+consistent with this whole session's established architecture (material assignment happens at
+runtime via `BodyTypeParams.SkinMaterials`, not baked as a static property on the base mesh).
+Tried clearing the `PKG_UnversionedProperties` bit on `PackageFlags` and re-`Write()`ing to force
+a versioned (fully-tagged) output the Editor could load -- this throws
+`InvalidOperationException: Attempt to add name "None" to name map during serialization time`,
+because most property names were never in the original unversioned file's name table (they were
+resolved purely via the `.usmap` schema at read time, not stored as literal strings) and
+UAssetAPI won't grow the name table mid-`Write()`. Fixable in principle (pre-register every
+property name via `AddNameReference` before writing) but not worth doing, because of a deeper
+problem: **the actual section/geometry data that would answer the real question --
+`FSkeletalMeshLODModel`/render-data, which is where a "missing pelvis section" would actually
+show up -- is custom-serialized bulk data, not a reflected `UProperty` at all.** Structurally
+invisible to UAssetAPI/UAssetGUI regardless of versioned/unversioned status, for the exact same
+underlying reason `CurveLinearColor` couldn't be read earlier this session (SS19k) -- a
+`Serialize()` override bypasses the property-reflection system both tools are built on.
+
+**The path that actually works: ask the live, already-cooked game process, not the Editor.**
+The real Windrose executable *is* a cooked build, so it loads these packages just fine, and
+UE4SS's Lua reflection already exposes the component's own real UFUNCTIONs
+(`GetNumMaterials()`/`GetMaterial(i)`) regardless of the property-serialization wall above --
+this is the exact same proven pattern `Spawner.TestSetSkinSize` already uses. Built
+`Spawner.TestDumpMeshSlots(say)` / console command `lbtestmeshslots` (no args): dumps the
+nearest/locked actor's live `Mesh:GetNumMaterials()` count plus each slot's material name. A
+genuinely missing pelvis *section* (not just a hidden material on an existing one) will show up
+as a real, smaller slot count on the vanilla mesh vs. Senkamati's own -- run it once on a stock
+human walker and once on a Senkamati-bodied actor (e.g. `DA_Custom_BodyType_AdventurerAsSenkamati`
+from 19k) and compare. Not yet run live as of this writing -- that comparison is the next step.
+
+### 19m. "Barbies" -- the native-statue investigation dead-ends into the final answer, and the finalized unique-proportions roster (2026-09-02)
+
+Following 19l's decisive negative result (statue `BodyType` resolution is unreachable offline no
+matter which asset in the chain gets edited -- confirmed via the ACTUAL live test, not just theory:
+retargeting `BP_AnimatedActor_BotC_Female_Standing_01`'s hardcoded mesh import survived a restart
+and still showed a different family every spawn; adding a brand-new mesh override to the "static
+look" `BP_AnimatedActor_BotC_Merchant_01` did the same -- `GetBodyType()` stayed `African` regardless,
+and a full probedump confirmed the real per-slot outfit data (`DefaultParams`/`CustomizationData`)
+has nothing to do with body/`BodyType` at all, only Armor/Facial/Hair pieces), RedFalcon's call:
+statues are done, walker-as-statue substitute is the only path forward for that goal.
+
+Also worth recording precisely so nobody re-trusts it: this same investigation found the game's
+FULL `BodyType` tag vocabulary via a live probe -- 9 entries, not the 7 human families this whole
+session has worked with: `Adventurer, African, Albion, Fable, GalenSkelton, Ksante, Native, Orient,
+Scum`. `GalenSkelton`/`Ksante` are real named-character body types (`BP_NPC_GalenSkelton`,
+`BP_NPC_Ksant`), not generic ethnicities -- two more potential one-off mesh-swap destinations like
+Senkamati, not yet explored.
+
+**A real correction to 19h/19i's own "four source classes" claim**: that section's first bullet
+listed `BP_NPC_Citizen_Walker_C` (sex-changed) as a third confirmed-working `Adventurer` source --
+RedFalcon confirmed live he's actually ineligible (re-rolls his archetype family on `BeginPlay`,
+matching this file's own earlier, correct finding elsewhere) -- fixed in place at 19h/19i, don't
+trust that stale line if seen anywhere else (e.g. an old build script comment).
+
+**The real "Barbies" work, now underway**: full custom NPC bodies (chosen proportions + chosen
+mesh/ethnicity + full clothing customization), building on the already-proven three-independent-
+levers design (source class = shape, `BodyTypeParams` retarget = mesh/ethnicity, outfit = independent
+third lever). The remaining unknown was "how many genuinely UNIQUE proportions actually exist among
+the peaceful/fixed (non-randomizing) walker roster" -- answered by a fresh, corrected live sweep,
+10 classes checked (`lbtestbodymorph` before/after `lbtestswapbodysex`, confirmed shape survives a
+sex-change in BOTH directions now, not just male->female as 19h/19i established): `BP_NPC_Citizen_
+Worker_C` is ALSO a confirmed randomizer (joins `Citizen_Walker`, excluded) -- 10 real candidates
+remained, yielding exactly **7 unique `BodyMorph` values, not 10** (4 of the 10 share the identical
+fallback default `(0.0, 0.0, 1.0)`):
+
+| BodyMorph | Native source(s) | Sex-change needed? |
+|---|---|---|
+| (0.0, 0.0, 1.0) | `Gatherer` (F) **and** `Hunter` (M) | No -- both sexes already covered natively |
+| (0.0, 0.618, 0.222) | `Herbalist` (F) | Yes, for Male |
+| (0.0, 0.311, 0.288) | `Farmer` (M) | Yes, for Female |
+| (0.0, 0.232, 0.226) | `Woodman` (M) | Yes, for Female |
+| (0.0, 0.580, 0.309) | `BlackAxel` (M, `BP_NPC_Employee_CookingStation_BlackAxel_C`) | Yes, for Female |
+| (0.0, 1.0, 0.0) | `MortarMan` (M) | Yes, for Female |
+| (0.0, 0.246, 0.250) | `JasperCrowe` (M, `BP_NPC_Employee_WeaponStation_JasperCrowe_C`) | Yes, for Female |
+
+(`Miner` and `RosalindaMercer` also matched the shared `(0,0,1)` fallback -- dropped as redundant,
+already covered by Gatherer/Hunter.) **Final roster: 7 unique proportions x 2 sexes = 14 total
+Barbie body variants, from 8 source spawns and 6 sex-change operations** (down from the naive
+10-classes-times-2 approach) -- picking the "no sex-change needed" pair for the shared fallback was
+RedFalcon's own optimization once the duplicate cluster was visible.
+
+**A real tooling bug found and fixed along the way**: `Spawner.TestBodyMorph`/`TestSwapBodySex` both
+printed `e.label` as the actor's "name" -- but for anything spawned via `lbspawnnoai`, `e.label` is
+literally the fixed string `"SpawnNoAI"` (the tag argument that spawn call always passes), identical
+across every class -- useless once you're running the same 3-command sequence back-to-back across
+many different classes and trying to match log lines to classes afterward. Fixed both to resolve the
+actor's own real class short-name via `GetClass():GetFullName()` (same idiom `RetrackOrphans`
+already used elsewhere in this file) and prefer that over `e.label`.
+
+Not yet started: the actual `BodyTypeParams` construction for all 7 x 2 = 14 variants -- see 19n
+for the separate "every clothing/item slot available" work, which turned out to be its own real
+investigation.
+
+### 19n. "Every slot filled" -- built, broke on sex-variance, fixed, confirmed live (2026-09-02)
+
+The player's own `DA_Hero_CompositeMeshComponentParams` turned out to be a dead end for this --
+it only covers Underwear/Belt/Hairs/Facial (7 categories), NOT Torso/Legs/Waist/Headgear/Cape/etc,
+because the player's actual armor comes from the live inventory/equipment system, not a fixed
+customization list. Real per-slot Armor pieces live one level inside whatever single
+`R5CompositeMeshGroup` a `DefaultParams` asset's own "Armor" category references (e.g. Merchant_01's
+`..._Equipment_CompositeMeshGroup`) -- each individual piece (an `R5CompositeMeshParams` asset,
+e.g. `DA_Armor_Regular_Character_Frog_01_CompositeMeshData`) is self-describing via its own
+`MeshBodyPart` enum field (confirmed via direct UAssetAPI inspection), so array order/position
+doesn't matter, only which pieces get referenced.
+
+Built `DA_Custom_CompositeMeshGroup_FullSlots`, a new synthetic `R5CompositeMeshGroup` bundling one
+real piece per body-part slot, and `DA_Custom_BarbieDefaultParams_FullSlots` (a new
+`R5CompositeMeshComponentBaseParams`) referencing it under `Customization.UID.Armor`. Two new,
+permanent, reusable techniques came out of this:
+- **GameplayTag construction with zero manual GUI picking**: `tag = unreal.GameplayTag();
+  tag.import_text("Customization.UID.Armor")` works directly from a plain string, confirmed live --
+  a real improvement over every prior BodyType tag build this session, which needed a one-time
+  manual property-picker pick for a genuinely new tag. Only requires the tag already registered in
+  this project's own `DefaultGameplayTags.ini`.
+- **Import-table array-element retargeting**: extending the single-hard-reference retarget
+  technique from 19l/19m to an ARRAY of hard references (`CompositeMeshesParams`) -- same
+  leaf-import + outer-package-import rename, just looped per array index. `R5CompositeMeshGroup`'s
+  own array entries needed real placeholder sub-DataAssets (not lightweight engine types like
+  `SkeletalMesh()`/`MaterialInstanceConstant()`), since `R5CompositeMeshParams` is itself a full
+  DataAsset class with no Python-exposed lightweight constructor.
+
+**Real wall hit and fixed**: `Sash` has ZERO assets anywhere in the entire game's content --
+confirmed via a full pakcontents scan, not a search gap. Genuinely unused/vestigial slot; skipped.
+**CORRECTION (2026-09-04): this was wrong, not a search gap that got closed later -- a genuine
+false negative in the original method.** A full structural scan of all 486 real
+`CompositeMeshData` pieces (19q, via UAssetAPI, not a filename/path search) found 5 real,
+dual-sex, richly-attached `Sash` body-part entries. The reason the original pakcontents scan missed
+them: `MeshBodyPart` is classified per SUB-ENTRY inside a piece's own `CompositeMeshesData` array,
+completely independent of the piece's own file/asset NAME -- all 5 real Sash entries live inside
+pieces literally named `..._Belt_01/02/03...` (e.g. `DA_Armor_Regular_Sailor_Belt_03_
+CompositeMeshData`), so a search for the literal word "Sash" in asset paths/names was always going
+to come back empty, regardless of how thorough it was. **General lesson: a body-part's real
+CONTENT can only be found by reading the actual `MeshBodyPart` enum values inside each piece's own
+data, never by searching for the body-part's name in asset paths/filenames** -- the two are
+frequently unrelated.
+
+**Real dead end from the "duplicate + rename a real extracted asset" shortcut**: tried reusing
+Merchant_01's own real `DefaultParams` asset by duplicating+renaming the extracted file and
+retargeting just its Armor reference via UAssetAPI. Resolved as a silent `params=MISS` in-game --
+confirmed the reason via `spawner.lua`'s own `resolveAsset`/`resolveViaAssetRegistry` comments: the
+`/Game/Mods/...` AssetRegistry-based resolution (the ONLY thing that finds a genuinely new package)
+only works for packages actually COOKED BY THIS PROJECT under that exact path -- a raw file
+copy+rename never generates that registry metadata, no matter how internally correct its content
+is. Fixed by building the DataAsset properly from scratch via Editor Python instead (struct type
+`R5CompositeMeshComponentRandomizedSection`, confirmed via direct `.usmap` schema query rather than
+guessing -- Python-exposed fields `group_category_id`/`allow_customization`/
+`composite_mesh_groups_by_body_sex`; the sex map's VALUE type is `R5CompositeMeshGroupForBodySex`
+wrapping its own `composite_meshes_params` array, not a bare array -- also discovered from a
+Python error message rather than guessed).
+
+**Real wall hit and fixed**: first full 17-piece attempt (Merchant_01's Combatant/Musketeer armor +
+GalenSkelton's own Cape/facial pieces) only built 6/17 on a live FEMALE test spawn (Gatherer) --
+confirmed root cause via direct `SexVariations` map inspection on each piece: most of those sources
+are MALE-ONLY content (no Female entry in their own `SexVariations` map at all), so the composite
+build silently drops them for a female actor, no error, no log line. Re-sourced every piece from
+confirmed dual-sex sets instead: `Set_Vanilla` (Torso/Legs/Feet/Headgear/Waist/Belt -- Belt's own
+piece bundles Frog+Sling internally, confirmed dual-sex), `Armor/Default` (Strap), `Jeweler`
+(Cape_02 -- RedFalcon's own tip, "jeweler has a lot of shared parts", confirmed correct),
+`BlackBeard_Sailor_Mask_03` (the one dual-sex Mask variant out of 4 checked), and the shared
+"Hero" pool's own sex-neutral Hairs_Afro_01 (no Male/Female suffix at all -- genuinely unisex,
+unlike GalenSkelton's own single-sex Hairs asset).
+
+**Genuinely deferred, not solved**: Eyebrows/Mustache/Beard/Whiskers. Mustache/Beard/Whiskers
+confirmed to be genuinely MALE-ONLY concepts in this game's content (a full pakcontents scan found
+zero female-equivalent assets for any of them -- makes real-world sense). Eyebrows genuinely has
+real `_Male`/`_Female` asset pairs. Tried building a proper 3-key (Any/Male/Female) sex-keyed
+`CompositeMeshGroupsByBodySex` map to handle this correctly -- the data structure itself verified
+byte-for-byte correct via UAssetAPI reload (`{[Any]=FullSlots(10), [Male]=MaleExtra(4),
+[Female]=FemaleExtra(1)}`, all real, all resolvable) -- but it built ZERO pieces live, a regression
+from the 6/17 the flat single-key version got, including the Female-only single-entry case. Root
+cause NOT YET FOUND -- reverted to the single-"Any"-key structure (now pointing at the corrected
+10-piece dual-sex-only group) as the working baseline, confirmed live: **10/10 pieces built**
+(`BuildedCompositeMeshes entries total = 10`) on the female Gatherer test. The facial-hair sex
+split remains open for a future session with a fresh angle -- don't re-attempt the exact same
+3-key Python construction blind; something about having multiple sex keys present simultaneously on
+one section broke ALL of them, not just the sex-specific ones, which the single-Female-key-alone
+failure rules out as "wrong key resolved" and points toward something structural in how multiple
+map entries interact with the native composite-build code, or in how Python constructs multiple
+struct instances sharing GameplayTag identity across map entries.
+
+**Also confirmed along the way**: cooking ANY package that depends on an already-UAssetAPI-
+retargeted package can silently re-cook that dependency FRESH FROM SOURCE, discarding the retarget
+-- this bit twice in this session alone. The safe order is: cook everything once, retarget with
+UAssetAPI, then package/install immediately with NO further cook step touching any retargeted
+package (even indirectly, as a dependency) -- if another cook is unavoidable, always re-verify (or
+just re-run the retarget script) on the freshly cooked output before packaging, never assume a
+prior retarget survived.
+
+**Waist mystery SOLVED (2026-09-03) -- RedFalcon's own theory, confirmed live: Torso and Waist are
+mutually exclusive.** Three different real, dual-sex-confirmed Waist sources (Vanilla, Jeweler,
+and `DA_Armor_Regular_Hero_Starter_Waist_02_CompositeMeshData` -- the last one independently
+confirmed rendering correctly on a real, live, native `BP_NPC_Handyman_Farmer_C`) all silently
+failed to build -- 11 `BuildedCompositeMeshes` entries instead of 12 -- every single time, on BOTH
+a female (Gatherer) and male (Hunter) skeleton, ruling out per-asset validity and sex/skeleton as
+causes. RedFalcon noticed the actual pattern from older probe archives: every native NPC he'd ever
+successfully swapped a Waist piece on had NO Torso piece equipped at all. Built an isolated
+single-entry test group (`DA_Custom_CompositeMeshGroup_WaistOnly`, containing ONLY the
+Farmer-confirmed Waist piece, no Torso) -- confirmed live: Waist renders correctly the moment
+Torso is absent. This is a genuine, real engine/design-level exclusivity rule in this composite
+system -- not a bug in any of the tooling built this session, and not something to keep re-testing
+with new Waist assets. **Practical implication for the "every slot filled" Barbie outfit: Torso
+and Waist can never both be part of the same default loadout -- pick one as the baseline default,
+leave the other as a real, working alternative reachable via the Clothes swap UI (which already
+correctly lets you choose between them, just never display both at once).**
+
+**Reinforcing an already-established rule this session briefly drifted from**: `Windrose_Unreal_
+SDK_Notes.txt` SS9 already correctly states a new pak install needs a FULL GAME RESTART to take
+effect -- mid-session, chasing the Waist mystery, a fresh brand-new-filename pak (`WaistOnly-
+Windows`) reported `params=MISS` on its first live test, and the wrong fix was suggested (retry
+the same command again without restarting, based on an unrelated earlier session's apparent
+same-session success). RedFalcon restarted instead -- that's what actually fixed it. **Don't
+re-suggest a same-session retry for a MISS on a brand-new pak again -- restart is the real, only
+confirmed fix**, matching what was already written down.
+
+**Final confirmation, cleanest possible case**: built a second isolated group with ONLY Torso +
+Waist together (2 entries, nothing else) -- confirmed live: still only 1 of the 2 builds, not 2.
+The mutual exclusion is real, clean, and unambiguous -- fully closed, no further re-testing needed
+on this specific question.
+
+### 19o. Facial hair (Eyebrows/Mustache/Beard/Whiskers/Hairs) -- four real bugs stacked on top of each other, all found and fixed (2026-09-03)
+
+RedFalcon wanted facial hair addable to the Barbie outfit (kept sex-linked -- an earlier idea to
+unlock cross-sex facial hair via a synthetic `SexVariations` entry was explicitly dropped: "never
+mind then, just keep it sex linked"). Getting it working took peeling back four independent,
+stacked failures, each fully real and each confirmed live before moving to the next:
+
+**Bug 1 -- two `R5CompositeMeshGroup` references in one `composite_meshes_params` list silently
+drops the second group, always.** First attempt built the outfit as its own group (`FullSlots`)
+and the facial pieces as a second group (`MaleExtra`/`FemaleExtra`), then referenced BOTH under one
+sex key's list (`[FullSlots, MaleExtra]`) -- exactly how `FullSlots_Sailor`'s own outfit had
+earlier been split across an isolated 2-entry test with no problems, so multiple groups in one list
+looked safe. It isn't: the second group in the list never builds, regardless of the first group's
+own entry count (ruled out an ">10 entries" theory first by trimming the first group back to
+exactly 10 and re-testing -- still broken). **Fix**: merge every piece -- outfit AND facial --
+directly into ONE group's own array. One group, one list, just more entries in it.
+
+**Bug 2 -- re-cooking a group whose entries were previously retargeted via UAssetAPI resets EVERY
+entry back to a blank placeholder, not just the newly-added ones.** The retarget-with-UAssetAPI
+technique only ever edits the raw import table of the already-cooked `.uasset` sitting in
+`Saved/Cooked/` -- it never feeds back into the SOURCE `.uasset` under `Content/Mods/...`, which
+the Editor keeps as empty placeholder pieces forever. So growing `FullSlots` from 10 to 15 entries
+(to bake in 5 facial pieces) required a fresh cook to bake in the new array size -- and that cook
+re-derived the WHOLE array from the untouched source, discarding the previous retarget of the
+original 10 outfit entries too. Result: a pak that built literally nothing ("everyone is totally
+naked and hairless") even though the facial slice had, by itself, verified correctly retargeted.
+A blank placeholder piece at index 0 appears to abort the entire group's build, turning a partial
+loss into a total one. **Fix, now a standing rule**: after ANY cook of a group that has ever been
+UAssetAPI-retargeted, always re-retarget its FULL array (index 0..N-1), never just the slice that
+changed -- exactly the pattern `retarget_all_facial_round.py` already used earlier in the session
+for unrelated reasons; the mistake here was deviating from it for a "surely still fine" slice-only
+shortcut.
+
+**Bug 3 -- the real-game facial asset paths used as retarget targets were `R5CompositeMeshGroup`
+CONTAINERS, not the `R5CompositeMeshParams` LEAF type this array slot expects.** Even with bugs 1
+and 2 fixed, facial hair still built nothing. Built a new live-only diagnostic command,
+`lbcheckclass <path>` (`Spawner.TestCheckAssetClass` in `spawner.lua`, resolves a path exactly the
+way the composite pipeline does and prints `GetClass():GetFName()`), because the SDK-stub Editor
+project cannot load these paths at all (same unversioned-cooked-package wall as 19l -- they're real
+game content, never extracted into this project). Confirmed live: every one of
+`DA_Hero_CompositeMesh_Group_Eyebrows_01_Male`, `_Facial_Hungover_{M,B,W}`, and
+`_Hairs_Afro_01` is class `R5CompositeMeshGroup`, each wrapping exactly ONE real
+`R5CompositeMeshParams` leaf piece one folder level down (`CompositeMeshGroup/` sibling to
+`CompositeMeshData/`, e.g. `.../Eyebrows/CompositeMeshData/DA_CompositeMeshData_Hero_Eyebrows_01_
+Male`). The raw import-table FName-renaming retarget technique never checks the target's actual
+class, so it "succeeds" and reload-verifies fine while pointing at completely the wrong object
+type -- the load silently fails to resolve as a piece at runtime instead of erroring anywhere
+visible. **Fix**: always resolve one level deeper to the leaf `CompositeMeshData`-named asset
+before treating any real-game facial/hair path as a retarget target. Confirmed leaf names don't
+follow the group's own naming 1:1 -- e.g. `_Facial_Hungover_M` (mustache) leafs to
+`DA_CompositeMeshData_Hero_Mustaches_Hungover`, `_B` to `..._Beard_Hungover`, `_W` to
+`..._Whiskers_Hungover` -- so check each one live via `lbcheckclass` rather than guessing the
+pattern from one confirmed example.
+
+**Bug 4 -- not a bug: Mask (a real, mutually-exclusive slot) was still in the outfit list, and it
+excludes facial hair the same way Torso excludes Waist (19n).** With bugs 1-3 fixed, Eyebrows and
+Hairs built correctly but Mustache/Beard/Whiskers still didn't, on every test, consistently. Mask's
+only real content is `DA_Armor_Regular_BlackBeard_Sailor_Mask_03` -- a narrow, one-off
+BlackBeard-pirate-specific scarf mesh that visually covers the lower face -- and RedFalcon
+correctly guessed the parallel to the Torso/Waist finding before a planned isolation test even
+finished building. Rather than spend more effort confirming and working around a second
+mutual-exclusion rule for a single niche asset, the call was to just drop Mask from the outfit
+entirely ("only the blackbeard pirate has a scarf. i feel like we dont need to build to that
+exception"). **Fix**: removed Mask from `FullSlots`, `FullSlots_Sailor`, and `FullSlots_Female`.
+Confirmed live immediately after: all three combined DefaultParams now build every single intended
+piece --
+
+- `DA_Custom_BarbieDefaultParams_Regular_Male`: 15/15 (full outfit minus Mask + Eyebrows +
+  Mustache + Beard + Whiskers + Hairs)
+- `DA_Custom_BarbieDefaultParams_Regular_Female`: 12/12 (full outfit minus Mask + Eyebrows +
+  Hairs -- correctly scoped, no male-only content anywhere near it)
+- `DA_Custom_BarbieDefaultParams_Sailor_Male`: 15/15 (shirtless outfit including a real,
+  independently-rendering Waist -- no Torso to conflict with it -- + all 5 facial pieces)
+
+**Structural outcome, worth keeping as the standing pattern**: rather than one shared group
+referenced by both sexes, each sex now has its OWN fully self-contained, fully-merged group
+(`FullSlots` for male, `FullSlots_Female` for female, `FullSlots_Sailor` for the male-only
+shirtless variant) -- outfit pieces reused by reference across groups where content is genuinely
+sex-neutral (e.g. Hairs), sex-specific leaf pieces (Eyebrows_Male vs. Eyebrows_Female) built as
+separate placeholders per group. This sidesteps bug 1 entirely (each DefaultParams references
+exactly one group, never two) and keeps male-only content (Mustache/Beard/Whiskers) physically
+absent from anything the female variant could ever load, rather than relying on a `SexVariations`
+map lookup to gracefully no-op on a missing sex key (which the original 6-of-17-pieces failure
+earlier this session showed does NOT gracefully no-op).
+
+### 19p. Default to underwear with every slot still built, real belt Attachments (pouches/knife), and a genuine engine-crash found and guarded (2026-09-04)
+
+RedFalcon's next ask: spawn a Barbie fully dressed (every slot built, so it stays swappable via
+`lbtestclothes`/the Clothes GUI), but default the VISIBLE look to underwear with everything else
+hidden -- not by leaving pieces out of the build, by hiding them after the fact.
+
+**The exact mechanism already existed, just needed extracting and a timing fix.** `Spawner.
+TestRemoveClothingPiece` ("Custom > Clothes > Remove", 19n-era) already hides via `SetVisibility
+(false)` rather than clearing the mesh (so a slot stays re-dressable), and already applies a
+modesty-guard underwear substitution for Torso/Legs (female) and Legs (male) when `Config.
+CLOTHES_UNLOCK_ALL` is off (default) -- everything else, including a male's own Torso, gets a true
+hide (shirtless), matching the already-established Sailor precedent. Extracted its core into
+`Spawner.RemoveClothingOnActor(actor, slotArg, name)` so it can run on an actor the code already
+holds a reference to, not just the nearest-in-front console-test target.
+
+**Real timing bug, not a logic bug: the composite build does not finish synchronously inside
+`Spawner.Spawn`'s own call.** Calling the hide-step immediately after spawn found 0 built pieces
+every time (nothing to hide yet). Fixed with a short, capped, self-rescheduling poll (same
+self-rescheduling idiom as this file's own toast ticker, but per-actor and ONE-SHOT instead of a
+permanent shared ticker) -- checks `comp.BuildedCompositeMeshes` every 300ms, up to 12 attempts
+(~3.6s, matching this file's own established "~12x per spawn" convention for post-build settling
+elsewhere), then calls `RemoveClothingOnActor(actor, "all", name)` the moment it's actually
+populated. `lbtestlook` now defaults to this behavior; pass `underwear=0` as its 5th console arg to
+see the full dressed look instead.
+
+**Belt pouches/knife -- confirmed real content exists, confirmed dual-sex, swapped in.**
+RedFalcon's own question: do belt pouches need to pre-exist at build time the same way clothing
+slots do, or can they be added live? Answer, confirmed by direct asset inspection (`retoc to-legacy`
++ the UAssetAPI/pythonnet reader, same technique as every other real-asset investigation this
+session): a piece's `Attachments` array (socket-attached extras, baked `Rotation`/`Translation`/
+`Scale3D` per entry, `AttachmentMesh` a soft path to a real `StaticMesh`) lives INSIDE the piece's
+own `CompositeMeshesData` entry and is consumed at build time, same rule as `BaseMesh`/`ColorData`
+-- build-time only, same as everything else in this pipeline. Scanned the real game's own shared
+`/Regular/Belts/CompositeMeshData/` pool (30 belt pieces) for one matching RedFalcon's own
+description from a live `lbsockets` scan ("two belt pouches and a knife") and found an exact match:
+`DA_Armor_Regular_BlackBeard_Grenadier_Belt_01_CompositeMeshData` -- a single piece bundling 4
+body-part sub-entries (Sling/Strap/Frog/Belt, same bundling shape our own Belt slot already had),
+whose own "Belt" sub-entry carries exactly `SM_Belt_Misc_Knife_01` + `SM_Belt_Misc_Pouch_02` +
+`SM_Belt_Misc_Pouch_01`, and -- checked explicitly before using it -- every one of its 4 sub-entries
+has real Male AND Female `BaseMesh` values, safe to use on both the Male and Female Barbie variants
+without the sex-mismatch silent-drop bug. Retargeted our existing Belt array entry (single-entry
+retarget, same technique as always, no new group/piece construction) across all three groups.
+
+**Confirmed live: attachments become real, independently-hideable components, not baked into one
+fused mesh.** Built a throwaway diagnostic (`lbtestpouch`) that lists every `StaticMeshComponent` on
+an actor (name/mesh/socket) and hides the first one whose mesh name contains "Pouch" -- confirmed
+live: exactly one pouch disappeared, the other pouch and the knife stayed visible. This resolves the
+open question from the original `Attachments` discovery (whether attachments are separate
+components or fused into the parent piece) in favor of "separate, independently controllable."
+
+**Real, now-fixed gap: the hide-all mechanism only ever swept `SkeletalMeshComponent`s.**
+`Spawner.RemoveClothingOnActor`'s original sweep never touched `StaticMeshComponent`s at all, so
+hiding the Belt slot hid only the belt's own skeletal mesh -- the knife/pouches, a completely
+separate component class, stayed floating with nothing visibly holding them. Fixed by extending the
+sweep to run over BOTH component classes (the exact same dual-sweep idiom `socketOccupants` already
+used, for an unrelated reason, one screen up in this same file) -- zero new matching logic needed,
+because the real attachment mesh names (`SM_Belt_Misc_Knife_01`, `SM_Belt_Misc_Pouch_01/02`) all
+happen to contain "Belt", so the existing substring-based `clothingSlotOf` resolver already
+classifies them as slot "Belt" for free. The modesty-guard underwear-substitution branch is
+naturally never reached for these (guarded only ever fires for Torso/Legs, both skeletal-mesh-only
+slots), so no special-casing was needed there either.
+
+**A second, real bug in that same fix, caught by a live before/after `lbsockets` comparison, not
+assumed fixed on the first attempt.** The dual-sweep's own per-component mesh-name resolver tried
+`.SkeletalMesh` THEN `.StaticMesh` as a fallback, both inside ONE shared `pcall`. Accessing
+`.SkeletalMesh` on an actual `StaticMeshComponent` throws (the property genuinely doesn't exist on
+that class) -- which aborted the WHOLE pcall'd block before it ever reached the `.StaticMesh`
+fallback lines below it. Confirmed live: every `StaticMeshComponent` (every knife/pouch/etc.)
+silently resolved to an empty mesh name and never matched `clothingSlotOf` at all -- `lbremoveclothes
+all` correctly hid every SKELETAL sub-piece (Sling/Strap/Frog/Belt itself) but left every single
+attachment fully visible, with the socket-occupancy list identical before and after (expected --
+hiding via `SetVisibility` never detaches a component from its socket, so `lbsockets`' own occupied
+list can't distinguish hidden-but-attached from visible-but-attached; it only proves something is
+STILL attached, not whether it's showing). RedFalcon caught this by running `lbsockets` before AND
+after `lbremoveclothes all` and diffing the two dumps by eye -- a real, reusable verification
+pattern for this exact class of "did the hide actually work" question, since neither `lbprobedump`
+(now denylisted for `Attachments`, see above) nor the occupancy list alone can answer it; only a
+before/after comparison of the SAME live view can. **Fix: split into two independent pcalls, one
+per accessor family**, exactly matching `socketOccupants`' own already-correct pattern (which is
+why `lbsockets` itself never had this bug -- its per-accessor-attempt pcalls were already isolated
+from each other from the start). **General lesson, worth remembering for any future "try accessor A,
+fall back to accessor B" pattern across two structurally different component/object classes**: a
+property access that doesn't exist on a class isn't guaranteed to just return nil -- it can throw --
+so bundling a multi-accessor fallback chain into ONE pcall risks the first failure silently
+swallowing every later fallback attempt in the same block, not just itself.
+
+**Known, deliberately not-yet-fixed asymmetry**: re-dressing the Belt afterward via `lbtestclothes`/
+the Clothes GUI restores the belt's OWN mesh and visibility, but does not currently know to also
+restore any sibling `StaticMeshComponent` attachments that were hidden alongside it -- `Spawner.
+TestApplyClothingPiece` only ever restores visibility on the ONE component it's re-dressing. Fixing
+the swap-BACK side symmetrically (finding and re-showing sibling attachments tied to the slot being
+re-dressed) is real, scoped follow-on work, not done as of this writing.
+
+**A genuine, reproducible engine crash found and guarded, not a Lua bug.** The very first live
+`lbprobedump` against an actor wearing the new Grenadier belt crashed the whole game, twice,
+reproducibly, mid-dump -- the log simply stops with no error, immediately after printing the
+built-piece entry's `SexVariations` line and before its `Attachments` line, for the specific
+built-piece entry that (unlike every other one) actually has non-empty `Attachments` content for
+the first time this whole session. Root cause: `dumpNamedStruct`/`dumpUnknownStruct` (the two
+generic, `ForEachProperty`-driven struct dumpers this whole probe system is built on) both do a
+plain `val[pname]` bracket-index read of EVERY declared property, unconditionally, including
+`Attachments` -- and reading THIS property, with genuinely non-empty content, apparently triggers a
+hard native crash, not a catchable Lua error (a `pcall` around a Lua-level read protects nothing
+against an actual engine-side crash -- established elsewhere in this file for other "invoking
+unfamiliar engine surface" risks, and this is the same category: every piece ever probed before now
+happened to have an EMPTY `Attachments` array, so this exact read path had genuinely never been
+exercised with real data). **Fix: denylist the property NAME "Attachments" in both generic
+dumpers** -- skip reading it outright and print a static "skipped, confirmed crash risk" placeholder
+instead, rather than trying to read-then-catch it. This is a permanent, standing exclusion, not a
+one-off workaround -- any future struct with a genuinely populated `Attachments` field will hit the
+exact same crash through the exact same generic code path, since the dumpers are fully generic and
+have no per-struct-type awareness. **Practical implication for anyone extending these two dump
+functions**: a property name being safe to read on every struct tried SO FAR is not evidence it's
+safe on a struct with genuinely different (non-empty, richly-typed) content -- this crash is the
+concrete proof, not a hypothetical.
+
+### 19q. A full structural catalog of every real per-slot item in the game, built once, browsable forever (2026-09-04)
+
+RedFalcon's ask: rather than discover pieces for a slot (Belt, Strap, Sling, etc.) one at a time by
+guessing a plausible family name and inspecting it, get a complete list of every real item that can
+occupy each body-part slot, across the WHOLE game's content, in one pass.
+
+**Fully mechanical, using tooling already built this session -- no new technique needed, just
+applied at scale.** `pakcontents.xlsx` (a full asset-path listing from an earlier session) found 486
+real `..._CompositeMeshData` piece assets under the usable "Regular Customization" pool (excluded a
+further ~16 Boss-specific ones under a completely different, likely differently-skeletoned system).
+Extracted all 486 in one `retoc to-legacy` pass (filtering broadly on `Customization/Regular`, then
+narrowing locally to the `CompositeMeshData`-suffixed files), then ran one batch Python/UAssetAPI
+script (the same usmap-loaded reader used for every real-asset inspection this session) over all of
+them: for each piece, walk its own `CompositeMeshesData` array, and for each sub-entry record
+`MeshBodyPart`, which sexes have a real `BaseMesh` (dual-sex or single-sex), and every `Attachments`
+entry (socket name + attachment mesh, shortened to just the leaf asset name for readability). Zero
+load/parse errors across all 486 pieces. Yielded 560 total body-part entries (some pieces bundle
+multiple body parts internally, same shape as the Grenadier belt discovered in 19p; most bundle
+exactly one).
+
+**Real counts, worth having on record** (total entries / entries with real baked `Attachments`):
+Legs 68/0, Torso 66/0, Headgear 65/0, Feets 63/0, Hands 57/0, Frog 37/0, Hairs 36/0, Sling 34/28,
+Belt 30/29, Beard 16/0, Mustache 16/0, Whiskers 16/0, Waist 15/0, Strap 11/10, Cape 11/0, Eyebrows
+11/0, Sash 5/5, Mask 3/0. **Belt, Sling, Strap, and Sash are where nearly every real piece carries
+baked extras** (knives/pouches/bags/grenades/etc, same family this whole investigation started
+with) -- every other slot's own `Attachments` array is empty across the entire game's content, not
+just the handful this session happened to check by hand.
+
+**A real correction to an earlier, wrongly-confident finding, caught only because this scan reads
+structure instead of names.** 19n claimed `Sash` has zero assets anywhere in the game, "confirmed
+via a full pakcontents scan, not a search gap." That confirmation was itself wrong -- a genuine
+false negative, not a stale-but-once-true fact. This scan found 5 real, dual-sex, richly-attached
+Sash entries, all living as an internal sub-entry inside pieces literally named `..._Belt_01/02/
+03...` -- `MeshBodyPart` is classified per sub-entry, entirely independent of the piece's own
+file/asset name, so a path/filename search for the word "Sash" was mathematically guaranteed to
+come back empty regardless of how thorough it was. **General lesson, worth applying retroactively
+to any other "X has zero assets" claim resting on a name-based search rather than a structural
+one**: a body-part's real content can only be found by reading the actual `MeshBodyPart` enum
+values baked inside each piece's own data -- never by searching for the body part's name in asset
+paths, since the two are frequently and silently unrelated.
+
+**Deliverable**: `Other/Barbie_Slot_Item_Catalog.xlsx` -- a Summary sheet (per-body-part counts),
+an "All Items" sheet (all 560 rows, sorted by body part then by attachment-richness, filterable),
+and one dedicated sheet each for Belt/Strap/Sling/Frog/Sash/Cape (the accessory-bearing slots) for
+quick browsing without wading through the full 560-row list. Regenerating this after any future
+content patch is the same mechanical 3-step pipeline (retoc extract -> UAssetAPI batch scan ->
+openpyxl workbook build) -- no manual re-discovery needed ever again for this class of question.
+
+**A live per-actor version of this same query (`lbtesttool aps`, `Spawner.
+TestListAttachmentPoints`) went through two real, confirmed-live bugs before settling on its final
+shape -- both stemming from the same underlying cause.** First cut filtered by a requested body
+part, matching each currently-equipped `StaticMeshComponent`'s mesh name against `clothingSlotOf`
+(the same substring resolver every clothing-slot command in this file uses). Two real problems
+surfaced, both live-confirmed by RedFalcon comparing this command's output against a raw `lbsockets`
+dump on the same actor, not assumed:
+1. **Every `SM_Belt_Misc_*` mesh (19q's scan: 234 of 254 total attachment instances) contains
+   "Belt"**, regardless of which structural sub-entry (Belt/Sling/Strap/Sash) it actually belongs to
+   in the piece's own authored data -- so `clothingSlotOf` resolved ALL of them to "Belt" no matter
+   which body part was actually requested. Confirmed on the Grenadier belt: `aps belt` reported 9
+   attachment points, when the piece's own real per-sub-entry breakdown is Sling=2 + Strap=4 +
+   Frog=0 + Belt=3 (RedFalcon: "i think its ignoring the type"). Root cause is structural, not
+   fixable by a better string match: a live `StaticMeshComponent` genuinely does not retain which
+   structural sub-entry it was built from (that classification only ever existed in the offline
+   authored piece data), and even socket NAME isn't a reliable substitute -- this exact piece reuses
+   `soc_Strap01F`, a Strap-sounding name, for its own Belt sub-entry.
+2. **`SM_Drop_*` mesh names (19q's scan: the remaining 20 of 254 instances -- decorative,
+   non-skeletal weapon-replica props like `SM_Drop_MusketT02_01`) contain none of `clothingSlotOf`'s
+   clothing-family tokens at all**, so they matched NO body part and were silently excluded from the
+   list entirely -- not miscategorized like the `SM_Belt_Misc_*` family, genuinely invisible.
+   Confirmed on the Bucc Merchant Woman: her real `soc_Sling04B <- SM_Drop_MusketT02_01` showed up
+   in a raw `lbsockets` dump but never in `aps belt`'s own output (RedFalcon: "the sling slot with
+   the musket doesnt come up").
+
+**Fixed by abandoning the body-part filter entirely, per RedFalcon's own call once bug 1's
+structural cause was clear** ("since it displays all sockets, just make it lbtesttool aps, no need
+to say belt") **and matching on the two real mesh-name prefixes directly instead of routing through
+`clothingSlotOf` at all** (fixing bug 2 in the same pass, since the new match condition catches both
+families by construction: `meshName:find("^SM_Belt_Misc_")` or `meshName:find("^SM_Drop_")` -- the
+19q scan already established these are the ONLY two prefixes any real Attachment entry anywhere in
+the game ever uses, zero exceptions). **Final command: `lbtesttool aps`, no argument, unfiltered.**
+This is a strict improvement, not a loss of information -- the body-part filter never actually
+distinguished anything real to begin with (bug 1), and dropping it fixed a genuine exclusion bug
+(bug 2) for free.
+
+**The same `SM_Drop_*` exclusion existed in `Spawner.RemoveClothingOnActor` (`lbremoveclothes`) too,
+independently caught and fixed the same way** (RedFalcon: "i think sm_drop also needs to be added
+to removeall") -- its own `StaticMeshComponent` sweep also only ever recognized `clothingSlotOf`
+matches, so a decorative weapon-replica prop would survive `lbremoveclothes all` untouched while
+every `SM_Belt_Misc_*` attachment correctly hid. Fixed by treating an unmatched `SM_Drop_*` mesh the
+same as the already-caught `SM_Belt_Misc_*` family: falls back to slot "Belt" when `clothingSlotOf`
+returns nothing, consistent with how both families already collapse into that one bucket for hide
+purposes regardless of which structural sub-entry they actually came from.
+
+### 19r. Real baked alignment for hand-attached items, a hidden-but-still-solid collision bug, `lblook` vs `lbtestlook` finally disentangled, and a fill-every-socket test command (2026-09-04)
+
+**Alignment: `lbtesttool`-attached items initially used identity transform (no rotation/offset/scale),
+which looked visibly wrong on anything but the simplest props** (RedFalcon: "it does have issues with
+alignment of the items"). Fix reused the exact same 19q scan output rather than inventing a new
+extraction pass: every real piece's `Attachments` array already bakes a real `Transform`
+(Rotation/Translation/Scale3D) per `(socket, attachment mesh)` pair, so a second batch pass over the
+same 486-piece legacy extract pulled every one of those pairs into `Config.
+KNOWN_ATTACHMENT_TRANSFORMS`, keyed `"<socket>|<meshShortName>"` (112 of 254 total instances
+resolved cleanly; the rest hit an unresolved edge-case struct shape and were skipped rather than
+guessed at). `attachMeshAtSocket` (the shared core both `lbtesttool` and the new `fillall`, below, use)
+looks up this table first and only falls back to identity when no real entry exists for that exact
+pair. The engine's own rotation is a raw quaternion, but every other relative-rotation call in this
+file uses `K2_SetRelativeRotation` with a Pitch/Yaw/Roll Rotator -- so a small from-scratch
+`quatToRotator(x,y,z,w)` (the standard `FQuat::Rotator()` formula, with a Lua-version-safe
+`atan2` shim since not every Lua build exposes `math.atan2`) converts once at attach time. Confirmed
+live on the musket and the `beltSlot_01_lSocket` pistol pairing.
+
+**Hidden items were still solid.** `SetVisibility`/`SetHiddenInGame` only ever touch rendering, never
+collision -- a long hidden prop (a musket, a sling weapon) could still physically block movement or
+raycasts (RedFalcon: "I have found that long items can still block things even when hidden"). Fixed
+by pairing every hide with `SetCollisionResponseToAllChannels(0)` ("Ignore" all channels) and every
+restore with `SetCollisionResponseToAllChannels(2)` ("Block" all) -- the same proven-safe API this
+file already used elsewhere (the ghost-highlight ray-trace fix). Applied everywhere clothing gets
+hidden or restored: `RemoveClothingOnActor`'s hide branch, `RemoveAllSocketAttachments`, and both
+restore paths in `TestApplyClothingPiece`.
+
+**A real, extended debugging detour that turned out to be two unrelated systems sharing one name.**
+RedFalcon reported male Barbies randomizing hair/skin/belts on every spawn. Initial theory --
+`bAllowCustomization` (real property `bAllowCustomization`, Python-exposed as `allow_customization`)
+enabling a per-spawn reroll -- was flipped to `False` on all three `DA_Custom_BarbieDefaultParams_*`
+assets and verified to stick via UAssetAPI, but the randomization persisted. Direct proof the theory
+was wrong: Hunter's own real native `DA_NPC_Handyman_Hunter_CompositeMeshData` also ships
+`bAllowCustomization=True`, on a section with exactly one group referenced for its sex -- and Hunter
+obviously never randomizes in the base game. A single-choice picker cannot visibly reroll regardless
+of the flag, so the flag was never the actual switch (the `False` change was kept anyway as
+harmless and consistent with this file's own established rule that a fixed/authored character's
+composite params should be non-customizable while a real player-facing picker stays customizable).
+**The real cause, found only after re-reading `testbed.lua` in full**: `lblook <name>`
+(`Testbed.SpawnBarbieByName`, a real command dating to 2026-08-13, unrelated to this session's own
+`DA_Custom_BarbieDefaultParams_*` work) spawns its `Male_Barbie`/`Male_Barbie_Sailor` entries via
+`Config.TOWNSFOLK_WALKER_CLASS`/`Config.CREW_CLASS` with `compositeLook = nil` -- no override
+supplied at all -- then strips `SK_Armor_*` meshes to reveal skin/hair underneath. It deliberately
+embraces whatever random native look that class rolls, by design, because it exists to test gear
+against a different skeleton/proportion family than Hunter's. RedFalcon had been testing with
+`lblook`, not `lbtestlook` (the real, purpose-built command for this session's actual outfit system) --
+two commands that happen to share the word "Barbie" but are otherwise completely unrelated spawn
+mechanisms. **Resolution**: `lblook` is left exactly as-is (it's doing its own, different job
+correctly); `lbtestlook` is the one and only command for the real curated outfit. Worth remembering
+permanently: never assume a report about one implies a bug in the other just because both mention
+"Barbie."
+
+**A new test command: fill every real attachment socket with one item at once**, so a single mesh's
+fit can be eyeballed everywhere it might plausibly go without running `lbtesttool` once per socket by
+hand (RedFalcon: "a command that lets me give it a slot item, and it puts that item in every slot so i
+can see what works where"). `lbtesttool fillall <meshPath>` resolves the mesh once, then calls the
+same `attachMeshAtSocket` helper once per socket in a fixed whitelist, skipping any socket the actor's
+own skeleton doesn't actually have (`DoesSocketExist`). The whitelist itself, `Config.
+KNOWN_ATTACHMENT_SOCKETS`, was originally derived mechanically from `KNOWN_ATTACHMENT_TRANSFORMS`'s
+own keys, then replaced entirely with RedFalcon's own hand-curated 33-socket list after live testing
+(each entry carries a plain-text location comment -- e.g. `soc_beltB` "Belt, Middle", `soc_Sling02F`
+"Middle Left Front" -- to keep the raw names legible) plus the native weapon-equip sockets
+(`Axe1h_backsocket`, `Axe2h_backsocket`, `Crossbow2h_backsocket`, `GSword_backsocket`,
+`Halberd_backsocket`, `Musket_backsocket`, `swordSlot_lSocket`, `rapierSlot_lSocket`).
+
+**The native weapon-equip sockets have no real baked transform and structurally never will, via this
+system.** Checked directly: none of the 486 real pieces' `Attachments` arrays ever reference any
+`_backsocket`/`swordSlot`/`rapierSlot` name -- those sockets are driven entirely by the game's native
+weapon-equip logic, a completely separate system from the composite-outfit `Attachments` array this
+whole investigation is built on. `lbtesttool`/`fillall` can still attach a mesh there (any socket that
+exists on the skeleton accepts an attachment), but always at identity transform, and making an item
+there actually behave like a wielded weapon is a distinct, unstarted future project, not something
+this system can grow into by adding more transform data. One real pairing was confirmed useful as-is
+without further work: `beltSlot_01_lSocket` + `SM_Drop_PistolT01_03`.
+
+**Follow-up, closed out (2026-09-04/05): a handful of the curated 33 sockets still had no known real
+transform** (`soc_Sling03B`, `soc_Strap01B/02B/03B/04B`, `soc_beltSlingF`, `soc_LanternLight` --
+`soc_Sling02B` was already covered, keyed to `SM_Belt_Misc_BonesBelt_01_FR`). Rather than hand-tune
+these in-engine, re-ran the raw scan across all 486 pieces looking only at `SocketName` values
+(ignoring whether the transform itself parsed), to settle whether any real piece uses these sockets
+at all. **Zero hits, for every one of the 7.** This isn't an extraction gap -- these sockets exist on
+the skeleton (`DoesSocketExist` finds them) but no shipped item in the entire game ever places
+anything there, so there is no real transform anywhere to extract. Decision: leave them at identity
+transform; not worth hand-tuning for now.
+
+### 19s. Belt is standalone; Sling/Strap are not -- a real dependency rule found by watching native NPCs (2026-09-07)
+
+RedFalcon, from live observation across many native characters: "Belt does NOT always need a strap
+and a sling when added, but it does appear that sling and strap never appear without a belt." The
+"Custom > Clothes" GUI let all three be picked fully independently, which could put a Sling or Strap
+on a character with no Belt at all -- something no real NPC in the game ever actually looks like.
+
+**Fixed in `Spawner.TestApplyClothingPiece` itself** (so it applies through every entry point that
+calls it -- the GUI, `lbtestclothes`, everything), right after the requested piece resolves and
+before any of the existing fit-mechanism gates: if the requested slot is Sling or Strap, find the
+actor's current Belt-slot component the same way the function already finds its own swap target
+(`clothingSlotOf` on the component's current mesh name). If a Belt component exists but is hidden
+(from a prior Custom > Clothes > Remove), restore its visibility/collision as-is -- deliberately
+NOT swapping its mesh, so whichever Belt was already equipped before it got hidden comes back
+unchanged rather than being silently replaced. If no Belt component exists at all (shouldn't happen
+given 19n's "every slot filled" build, but handled rather than assumed away), apply a plain default
+(`Belt`/`Belt`/`Set 1`) first. Either way, the originally-requested Sling/Strap piece still applies
+normally right after. Belt itself gets no such check -- confirmed live as the one slot of the three
+allowed to stand alone.
+
+### 19t. `fillall`/`aps`/`lbsockets` grow sub-filters and a player-targeting mode; two more curated sockets; the real Belt/Sling/Strap linkage rule finished; and a random belt-layout roller (2026-09-05/07)
+
+A batch of smaller, related tool upgrades, all still on the socket/attachment-placement tools from
+19r/19s, in the order they landed:
+
+**`lbtesttool fillall` gained real category sub-filters.** RedFalcon: "can you adjust fillall to have
+sub options. so 'lbtesttool fillall soc \<mesh\>' or 'lbtesttool fillall belt \<mesh\>' and fillall
+all \<mesh\> does what it does today." `Config.KNOWN_ATTACHMENT_SOCKETS` was restructured from a flat
+`{ "socket", -- comment }` array into `{ socket=, location=, category= }` rows (`belt`/`sling`/
+`strap`/`weapon`, matching RedFalcon's own refined "Type" column from a follow-up screenshot).
+`Spawner.TestFillAllSockets(filterArg, meshPathArg, say)` now filters on `filterArg`: `all` (default,
+unchanged), `soc` (belt+sling+strap combined -- i.e. every real attachment-point socket, the OPPOSITE
+of the native weapon-equip group), or one specific category. `lbtesttool fillall` (no filter word)
+still means "all," so the old bare form keeps working.
+
+**A new `lbtesttool list \<meshPath\> socket1,socket2,...` command**, for validating a specific
+handful of named sockets instead of a whole category sweep (RedFalcon: "a command that lets me give
+it a slot item, and it puts that item in every slot so i can see what works where" -- clarifying an
+existing ask into something new: "make it do lbtesttool list... where each option is a different
+socket"). Unlike `fillall`, it isn't filtered against the curated whitelist at all (so it also works
+for probing a socket that isn't on it), and unlike `fillall` it reports each named socket
+individually if it doesn't exist on the target's skeleton, rather than just tallying a count --
+built specifically for precise validation. `resolveMeshAndActorForFill(meshPathArg, say)` was
+extracted out of `TestFillAllSockets`'s own preamble so both commands share the exact same mesh/
+actor-resolution code instead of a second near-identical copy.
+
+**Two more curated sockets added**: `beltSlot_01_lSocket`/`beltSlot_01_rSocket` (category `belt`) --
+already had one real known-good transform on record (`beltSlot_01_lSocket|SM_Drop_PistolT01_03`).
+Checking whether these were genuinely new sockets or just missed the first curation pass: confirmed
+via a full raw-socket scan across all 486 real pieces that the OTHER 7 sockets still lacking a known
+real transform (`soc_Sling03B`, `soc_Strap01B/02B/03B/04B`, `soc_beltSlingF`, `soc_LanternLight`)
+have **zero** real usage anywhere in the game's own content -- not an extraction gap, genuinely no
+shipped item ever places anything there. Decision: leave those 7 at identity transform.
+
+**A live way to inspect the PLAYER's own sockets, not just a spawned test actor.** RedFalcon: "how do
+i check the socket placement on a character. It has a pistol on its belt but it doesnt match any
+existing sockets... on the player i mean." Every socket tool up to this point (`aps`, `fillall`,
+`list`, `lbsockets`) only ever resolved its target through `findNearestSpawnInFront`, which walks
+`Spawner.spawned` -- the mod's OWN tracked list of actors it spawned. The player's live pawn was
+never in that list, so none of these tools could ever target it. New `getPlayerPawnAsActor()`
+(same `UEHelpers.GetPlayerController().Pawn` read already proven safe in `lbplayerclass`) plus a
+`useSelf` parameter threaded through `Spawner.TestListAttachmentPoints`/`Spawner.TestDumpSockets`:
+`lbtesttool aps player` and `lbsockets player` (`self` also works as an alias) now target the
+player's own pawn. Also re-confirmed live that `lbsockets` already reports OCCUPANCY, not just the
+raw socket-name list (`socketOccupants`, from 19-something's own "what item is IN the socket" fix) --
+so `lbsockets player` alone answers "which real socket is this equipped item on" directly, no need
+to cross-reference against `aps` separately.
+
+**The Belt/Sling/Strap dependency rule, finished properly.** 19s built the one-way "Sling/Strap
+require Belt" check inside `Spawner.TestApplyClothingPiece`, but a MUCH older feature (2026-08-28,
+"choosing a belt replaces all 3 since they have to be linked") was still forcing the same-numbered
+Frog/Sling/Strap onto the character every time ANY Belt piece applied -- through the GUI AND through
+what became `lbtestbeltroll` below. RedFalcon: "i also want to remove that from the clothing spawning
+in the window menu. Belt should only spawn a belt, but sling and strap should always ensure theres a
+belt. I'm guessing they should also check if there is already the opposite strap and sling and match
+the type if its there." **Removed the old Belt-\>Frog/Sling/Strap auto-link entirely** (from
+everywhere, including the GUI -- there is no reverse cascade any more). Extended the Sling/Strap
+dependency block with a NEW rule: when applying a Sling and a Strap is already visible (or vice
+versa), look up which "Set N" the existing one actually is (matching its current mesh name against
+`Config.CUSTOM_CLOTHES`), and if a same-named row exists for the slot being applied, use THAT instead
+of whatever was originally requested -- so an independently-picked Sling/Strap pair still reads as
+one matching family when both end up present, without Belt forcing either of them. `findCurrentSlotComponent(actor, slotName)` was extracted as a shared helper (comp/curName/visible for
+whichever component currently resolves to a given canonical slot) so this new opposite-matching
+logic and the existing Belt-visibility check share one implementation instead of two near-identical
+copies.
+
+**`lbtestbeltroll` -- a random Belt/Sling/Strap layout roller, "for some fun."** RedFalcon: "I want
+to make a command that generates a random belt layout. So 70% of the time, add a belt. then, of
+there's a belt, 50% of the time added a strap, and 50% of the time added a sling. They are not
+exclusive so both can sometimes appear" (percentages later reduced to 30% each, and made to clear
+Belt/Sling/Strap first every call, matching the "clean slate" idiom already established for random
+generation). `Spawner.TestRandomBeltLayout(say)`: clears all three slots, rolls Belt at 70%, and only
+if that piece ACTUALLY applied does it go on to roll Strap and Sling independently at 30% each.
+**Three real bugs found and fixed while dialing this in, each instructive on its own:**
+1. **A `pcall`-vs-return-value crossed wire.** RedFalcon: "I think we got a crossed wire here. Only
+   roll for strap and sling if a belt was rolled." The Strap/Sling loop was gated on the 70% dice
+   roll HAPPENING at all, not on the Belt piece having actually gone on -- `pcall`'s own `ok=true`
+   only means no Lua error was thrown, and `TestApplyClothingPiece` reports every real failure (no
+   path resolved, mesh didn't resolve, no component in that slot) as a normal `return false`, not an
+   error. Fixed by capturing and checking the ACTUAL return value, hard-stopping before the Strap/
+   Sling loop if Belt didn't really apply.
+2. **Every `math.random()` call in this entire mod was running unseeded.** Confirmed by RedFalcon
+   testing: "i have not had a single roll without both a strap and a sling appearing... should be 9%
+   but its 100%," then, after re-testing, "ok, i just got one only sling" -- proving the independence
+   logic itself was correct, just fed a bad RNG. A search of both Lua files found zero
+   `math.randomseed` calls anywhere, ever -- meaning Lua's default un-seeded sequence (fully
+   deterministic, identical every module load/`lbreload`/game launch) had been silently driving
+   EVERY random pick this mod has ever made, this feature included. Fixed with one seed call at
+   module load (`os.time()` + `os.clock()`'s sub-second fraction, `collectgarbage("count")` as a
+   last-resort fallback if neither `os` function is available in this sandboxed Lua build).
+3. **The real, dominant cause, found last: the old Belt auto-link (see above) was firing on every
+   single Belt roll**, force-applying Sling+Strap regardless of `lbtestbeltroll`'s own independent
+   rolls -- this, not the RNG seed, is why "both" showed up essentially every time Belt landed.
+   Removing the auto-link (see above) fixed this at the source; the earlier `skipBeltLinkage`
+   opt-out parameter added as a stopgap was deleted again once the auto-link itself was removed
+   entirely, since no caller needed the flag any more.
+Final, confirmed-working shape: `lbtestbeltroll` clears Belt/Sling/Strap, rolls Belt at 70% (nothing
+else rolls if it misses or fails to apply), then rolls Strap and Sling independently at 30% each --
+genuinely all four outcomes (neither/either/both) possible, and now automatically type-matched by
+the Sling<->Strap rule above whenever both land.
+
+### 19u. `lbtestsocketitems` -- a full item/weapon randomizer driven entirely by a hand-authored spreadsheet (2026-09-07)
+
+RedFalcon designed a genuinely bigger randomizer from scratch in a 5-tab spreadsheet
+(`Other/SocketItems.xlsx`: Sockets, Item Ratios, Rarity Ratios, Items, Weapons) and asked to "dial in
+the logic" together before any code was written -- the design was talked through and confirmed BEFORE
+implementation started, not built first and corrected after.
+
+**The data, mechanically converted, never hand-transcribed** (same standing rule as every other
+generated table in this file): a Python/openpyxl script reads all 5 sheets and emits `Config.
+SOCKETITEMS_SOCKETS` (35 rows: socket, plain-text location, `socType` soc/weapon, `beltpiece`
+belt/sling/strap dependency, `locationTag` Front/Back/Side/Sheath/Hip), `Config.SOCKETITEMS_RATIOS`
+(10 rows: which (Location,Type) combinations exist and their max Count, plus a `mandatory` flag),
+`Config.SOCKETITEMS_RARITY_WEIGHTS` (Common=30/Uncommon=10/Rare=5), and `Config.SOCKETITEMS_ITEMS`/
+`Config.SOCKETITEMS_WEAPONS` (47 and 111 rows). Two real data-quality issues, both handled at
+generation time rather than by hand-editing the spreadsheet: one Item row's `Limit` cell was the
+string `"1_L"` instead of a number (parsed defensively, kept as 1); several `Available Socket` cells
+had stray blank entries from double-commas (dropped when splitting). Regenerate the same script
+after any future spreadsheet edit -- same pattern as `KNOWN_ATTACHMENT_TRANSFORMS`/`CUSTOM_CLOTHES`.
+
+**A real naming inconsistency caught before it became a bug**: the Weapons sheet's own `Location`
+column calls the belt-holster sockets "Pistol," while the Sockets and Item Ratios sheets both call
+that same location "Hip." Rather than reconcile the label text, eligibility for every item/weapon row
+is decided purely by matching its `Available Socket` list against real socket names (which ARE
+authoritative and consistent) -- the sheets' own free-text location/type columns are read for
+convenience only, never trusted as the source of truth for grouping.
+
+**RedFalcon's own rule set, confirmed in chat, then implemented literally:**
+1. SocType "soc" (general belt accessories) and "weapon" (weapon-equip sockets) get separate rules.
+2. Only sockets whose `beltpiece` is CURRENTLY VISIBLE are ever considered -- including for weapon
+   sockets: every `*_backsocket` depends on Sling being visible, `swordSlot_lSocket`/
+   `rapierSlot_lSocket`/`beltSlot_01_*Socket` depend on Belt. A weapon location's whole 60% roll is
+   skipped outright if its required piece isn't visible, not just filtered afterward.
+3. `soc_Strap_r` is the one MANDATORY exception (Item Ratios' own "Always When Strap is Visible"
+   note) -- always filled whenever Strap is visible, not a 0..Count roll like every other group.
+4. Tag synergy: once an item or weapon carrying a given tag is placed, anything else sharing that
+   tag gets a 2x selection-weight bonus for the rest of the SAME generation pass, to encourage a
+   themed look. Soc items are rolled entirely before weapons, sharing one growing tag set, so a
+   themed accessory pick can influence which weapon gets favored afterward too (RedFalcon's own
+   design choice was left open on ordering; soc-then-weapon was picked as the more natural default
+   and flagged as easy to flip if it reads wrong).
+5/6. Each weapon LOCATION (Back/Sheath/Hip) gets exactly ONE independent 60% roll, and a hit picks
+   exactly one weapon for that whole location -- this alone is what makes "only one weapon per
+   location" true by construction, not a separate rule that needed enforcing on top.
+7/8. Rarity's Chance column is used as a RELATIVE WEIGHT for a weighted-random pick among the
+   eligible pool for a given socket/location (not an independent per-item percentage) -- standard
+   cumulative-weight roulette selection.
+
+**Implementation shape** (`Spawner.TestGenerateSocketItems`, `lbtestsocketitems`): clears every
+existing socket attachment first via the ALREADY-fixed `Spawner.RemoveAllSocketAttachments` (19r's
+own true-destroy fix -- RedFalcon: "like the belts we want to clear all sockets at the start of each
+call"), so repeated rolls never accumulate leftovers the way the original hide-only version once did.
+Builds two lookup tables once from `Config.SOCKETITEMS_SOCKETS`: real sockets grouped by
+`(locationTag, beltpiece)` for soc items, and by `locationTag` alone for weapons -- a socket whose
+`beltpiece` lists MORE than one piece (`soc_Strap01F` is `"strap,belt"`, a real socket some Belt
+pieces reuse for their own bundled strap sub-entry, per 19q) lands in BOTH groups; a shared
+`filledSockets` set stops the two groups from ever double-booking it if both happen to roll it in the
+same pass. Soc items run first (random count 0..Count per visible-piece group, random subset of that
+group's real sockets, weighted item pick per chosen socket, respecting each item's own `Limit`
+across the WHOLE run), then weapons (per-location 60% roll, weighted weapon pick, placed on
+whichever of that weapon's own sockets belongs to the location that just rolled). Reuses
+`attachMeshAtSocket` (the same shared per-socket attach+real-transform-lookup core `fillall`/`list`
+already use) for every placement, so alignment/identity-fallback behavior is identical to every
+other attachment tool in this file -- no new placement mechanism was needed for this feature.
+**One accepted, rare edge case, not worked around**: a single weapon row (`SM_Drop_ClubArtifact_01`)
+lists sockets in BOTH the Sheath and Back groups -- it's eligible for either location's independent
+roll, and could in principle win both in the same generation pass (a club sheathed at the hip AND a
+second one slung on the back). Weapons has no `Limit` column at all (unlike Items), and rule 6 only
+requires one weapon PER LOCATION, not one per weapon type across the whole body, so this is treated
+as acceptable rather than a bug worth special-casing for one row out of 111.
+
+**Real crash found on first live use, fixed same day**: `resolveAsset` threw
+`GetPackageNameFromLongName: Name wasn't long` on every single item/weapon. Cause: SocketItems.xlsx's
+own "Asset" column is a bare `/Game/...` PACKAGE path with no `.AssetName` suffix -- every OTHER
+caller of `resolveAsset` in this file (console-typed mesh paths via `lbtesttool`/`fillall`/`list`)
+already normalizes a bare path to `Package.AssetName` before resolving (`resolveMeshAndActorForFill`'s
+own fix), but the new `resolveMeshInfo` helper inside `TestGenerateSocketItems` skipped that step
+entirely. Fixed by applying the exact same normalization there too.
+
+**First tuning pass, after live testing (2026-09-07): a per-side TOTAL cap, on top of each
+individual (Location, Type) group's own Count.** RedFalcon: "I'd like to create limits on items
+based just on the side. So total of 5 soc items on the front and 8 soc items on the back total."
+Front's own 3 groups (Belt=3/Sling=3/Strap=3) could otherwise sum to 9, well past what looks right on
+one side of a body. New `Config.SOCKETITEMS_SIDE_CAPS = { Front = 5, Back = 8 }` is checked as a
+shared ceiling across all soc groups on the same Location -- each group's own random roll is clamped
+to whatever room remains under the cap, and a running total is updated as items actually land (not
+just rolled). "Side" (`soc_Strap_r`) is deliberately excluded -- it's its own separate Location, and
+mandatory rather than rolled, so a Front/Back cap was never going to touch it anyway. **A related,
+proactive fix bundled with this**: group processing order is now shuffled per generation instead of
+always walking `Config.SOCKETITEMS_RATIOS` in its fixed Belt/Sling/Strap table order -- otherwise
+Belt (always listed first) would always claim a capped side's remaining room first, and Strap would
+always be the one squeezed out on every single roll. Shuffling means any of the three can end up
+favored, not always the same one.

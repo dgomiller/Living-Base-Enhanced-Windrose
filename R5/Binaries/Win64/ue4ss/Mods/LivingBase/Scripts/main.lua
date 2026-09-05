@@ -554,11 +554,20 @@ local SPAWN_MENU_HANDLERS = {
         return false
     end,
     -- Custom > Clothes > Remove (2026-08-28) -- Config.CLOTHES_REMOVE rows carry just `slot`
-    -- ("Torso", "Legs", ..., or "All"); Spawner.TestRemoveClothingPiece hides rather than swaps.
+    -- ("Torso", "Legs", ..., "All", or "All Sockets"); Spawner.TestRemoveClothingPiece hides
+    -- rather than swaps. "All Sockets" (2026-09-04) is a special case, NOT routed through
+    -- TestRemoveClothingPiece -- it hides by SOCKET NAME (backsocket/soc_/ik_/hand_ fragments)
+    -- instead of by canonical clothing slot, see Spawner.RemoveAllSocketAttachments' own comment.
     CLOTHES_REMOVE = function(index)
         local row = Config.CLOTHES_REMOVE and Config.CLOTHES_REMOVE[index]
         if not row then return false, "index " .. tostring(index) .. " out of range" end
-        local ok, err = pcall(function() Spawner.TestRemoveClothingPiece(row.slot) end)
+        local ok, err = pcall(function()
+            if row.slot == "All Sockets" then
+                Spawner.RemoveAllSocketAttachments()
+            else
+                Spawner.TestRemoveClothingPiece(row.slot)
+            end
+        end)
         if not ok then return false, tostring(err) end
         return false
     end,
@@ -1633,6 +1642,90 @@ else
     log("lbspawn unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbspawnnoai <ClassPath>" (2026-09-01) -- same as lbspawn, but freezes AI
+-- (StopLogic) in the SAME Lua call immediately after spawning, before returning -- no separate
+-- lbfreeze command needed, so there's no human-reaction-time window for a hostile mob to notice/
+-- aggro between the two. See Spawner.TestSpawnNoAI's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbspawnnoai", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbspawnnoai] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local classArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSpawnNoAI(classArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbspawnnoai <ClassPath>")
+    registerCmdInfo("lbspawnnoai", "lbspawnnoai <ClassPath>", "Same as lbspawn but freezes AI (StopLogic) immediately in the same call, before returning -- use this instead of lbspawn for anything hostile, so there's no gap for it to notice/aggro before you can lbfreeze it separately.")
+else
+    log("lbspawnnoai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestai <ClassPath> <AIControllerClassPath>" (2026-09-02) -- spawns a class
+-- with its AI controller overridden to a DIFFERENT class entirely (e.g. give a native Senkamati
+-- mob the Gatherer/Handyman wandering brain instead of its own hostile Mob AI), as an alternative
+-- to reskinning its body. See Spawner.TestSpawnWithAIOverride's own header comment for the real
+-- prior result this is testing against (Handyman-on-crew stood still, didn't crash).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestai", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestai] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local classArg = Parameters and Parameters[1]
+            local aiArg = Parameters and Parameters[2]
+            local friendlyArg = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestSpawnWithAIOverride(classArg, aiArg, friendlyArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestai <ClassPath> <AIControllerClassPath> [friendly: 1/0]")
+    registerCmdInfo("lbtestai", "lbtestai <ClassPath> <AIControllerClassPath> [friendly: 1/0, default 1]", "Spawns ClassPath with its AI controller overridden to AIControllerClassPath instead of its own default -- e.g. give a native Senkamati mob the Gatherer/Handyman wandering brain. Defaults to friendly=1 (copies a live crew's faction) so aggression doesn't confound the AI-brain test -- pass 0 to test hostile+overridden together on purpose. Watch for 'stands still, doesn't crash' -- that's the same known failure mode the Handyman-on-crew test hit (pawn lacks worker data the brain needs), not a new bug.")
+else
+    log("lbtestai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestmove" (2026-09-02) -- PURE READ follow-up to lbtestai's "slides instead
+-- of walks" finding. Compares actor:GetVelocity() (real physics velocity) against the
+-- AnimInstance's own cached Velocity/PreviousVelocity fields, to tell whether the AnimBP's
+-- Speed=0.0 reading is wrong given real movement, or correct given the pawn's own real (also
+-- zero) velocity. See Spawner.TestProbeMovement's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmove", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestmove] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestProbeMovement(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmove")
+    registerCmdInfo("lbtestmove", "lbtestmove", "PURE READ: compares the nearest/locked actor's real actor:GetVelocity() against its AnimInstance's own cached Velocity/PreviousVelocity fields -- tells whether an AnimBP Speed=0 reading is wrong given real movement, or correct given genuinely-zero real velocity (position-set movement, not physics-integrated).")
+else
+    log("lbtestmove unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 ------------------------------------------------------------
 -- SPIKE (2026-08-19, RedFalcon's build-ghost-preview feasibility check): "lbtickspike
 -- [intervalMs] [ticks]" -- throwaway diagnostic, NOT part of the real feature. Every
@@ -1788,8 +1881,8 @@ end
 -- SAME thing you'd get by pressing that key enough times, not a separate path that could quietly
 -- drift from what the real keys do. Full coverage pass 2026-08-13: every named recipe LivingBase
 -- can produce is now reachable through lblook, not just crew/senka/women/livestock. One exception:
--- SpawnBarbieByName ("Female_Barbie") is lblook-ONLY, deliberately -- no numpad key/rotation of
--- its own, see its own comment in testbed.lua.
+-- SpawnBarbieByName ("Female_Barbie"/"Male_Barbie"/"Male_Barbie_Sailor") is lblook-ONLY,
+-- deliberately -- no numpad key/rotation of its own, see its own comment in testbed.lua.
 -- Tried in LBLOOK_CATEGORIES' own order (first match wins) -- see each Testbed function's own
 -- comment for its exact matching rules (case-insensitive throughout; Senkamati also accepts an
 -- optional leading "SENKA_" to match the in-toast label verbatim).
@@ -1852,7 +1945,7 @@ local LBLOOK_CATEGORIES = {
     -- separate lblook-only entry needed (a short-lived one existed for a few minutes this same day,
     -- removed once this proper roster integration made it redundant -- see testbed.lua's own note).
     { key = "women", label = "Walking Women (Numpad .)", entries = Testbed.FEMALE_RESKIN_TARGETS or {} },
-    { key = "barbie", label = "Barbie (lblook only)", entries = { "Female_Barbie" } },
+    { key = "barbie", label = "Barbie (lblook only)", entries = { "Female_Barbie", "Male_Barbie", "Male_Barbie_Sailor" } },
     -- standingcrewtest/standingcrewposetest lblook entries REMOVED (2026-08-15) -- both were
     -- scaffolding for the now-CLOSED pose-porting investigation; the frozen crew/mob-body idle
     -- rows added to Num7 (Config.SENKAMATI_LOOKS, item 66) cover the same "see a frozen look for
@@ -2667,6 +2760,76 @@ end
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtesttool", function(FullCommand, Parameters, Ar)
+            -- "lbtesttool aps" (2026-09-04, simplified same day per RedFalcon: "since it displays
+            -- all sockets, just make it lbtesttool aps, no need to say belt" -- see
+            -- Spawner.TestListAttachmentPoints' own header comment for why a body-part argument
+            -- never actually filtered anything real): a LIVE, unfiltered list of every real
+            -- attachment (knife/pouch/musket-prop/etc.) currently equipped on the selected/locked
+            -- actor.
+            if Parameters and Parameters[1] and Parameters[1]:lower() == "aps" then
+                local function say(msg)
+                    print("[LivingBase] [lbtesttool] " .. msg .. "\n")
+                    pcall(function()
+                        if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                            Ar:Log(msg)
+                        end
+                    end)
+                end
+                -- "lbtesttool aps player" / "lbtesttool aps self" (2026-09-06, RedFalcon: "how do i
+                -- check the socket placement on a character... on the player i mean") -- targets the
+                -- player's own live pawn instead of the nearest/locked spawned test actor.
+                local p2 = Parameters[2]
+                local useSelf = p2 and (p2:lower() == "player" or p2:lower() == "self")
+                local ok, err = pcall(function() Spawner.TestListAttachmentPoints(say, useSelf) end)
+                if not ok then say("FAILED: " .. tostring(err)) end
+                return true
+            end
+            -- "lbtesttool fillall [soc|belt|sling|strap|weapon|all] <meshPath>" (2026-09-04,
+            -- RedFalcon: "i asked for a command that lets me give it a slot item, and it puts that
+            -- item in every slot so i can see what works where"; sub-filters added 2026-09-05 per
+            -- RedFalcon: "can you adjust fillall to have sub options") -- see
+            -- Spawner.TestFillAllSockets' own header comment. Parameters[2] is a filter keyword
+            -- only if it's actually one of the known ones; otherwise (backward-compat with the
+            -- original argless form) it's treated as the mesh path and the filter defaults to
+            -- "all", same as before this option existed.
+            if Parameters and Parameters[1] and Parameters[1]:lower() == "fillall" then
+                local function say(msg)
+                    print("[LivingBase] [lbtesttool] " .. msg .. "\n")
+                    pcall(function()
+                        if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                            Ar:Log(msg)
+                        end
+                    end)
+                end
+                local FILL_FILTERS = { all = true, soc = true, belt = true, sling = true, strap = true, weapon = true }
+                local filterArg, meshArg = "all", Parameters[2]
+                if Parameters[2] and FILL_FILTERS[Parameters[2]:lower()] then
+                    filterArg = Parameters[2]:lower()
+                    meshArg = Parameters[3]
+                end
+                local ok, err = pcall(function() Spawner.TestFillAllSockets(filterArg, meshArg, say) end)
+                if not ok then say("FAILED: " .. tostring(err)) end
+                return true
+            end
+            -- "lbtesttool list <meshPath> socket1,socket2,..." (2026-09-06, RedFalcon: "make it do
+            -- lbtesttool list <meshpath> option1,option2 where each option is a different socket...
+            -- This will allow me to validate what i'm checking easier") -- see
+            -- Spawner.TestFillListedSockets' own header comment.
+            if Parameters and Parameters[1] and Parameters[1]:lower() == "list" then
+                local function say(msg)
+                    print("[LivingBase] [lbtesttool] " .. msg .. "\n")
+                    pcall(function()
+                        if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                            Ar:Log(msg)
+                        end
+                    end)
+                end
+                local meshArg = Parameters[2]
+                local socketsArg = Parameters[3]
+                local ok, err = pcall(function() Spawner.TestFillListedSockets(meshArg, socketsArg, say) end)
+                if not ok then say("FAILED: " .. tostring(err)) end
+                return true
+            end
             local meshArg = Parameters and Parameters[1]
             local socketArg = Parameters and Parameters[2]
             local ok, err = pcall(function() Spawner.TestAttachToolToNearest(meshArg, socketArg) end)
@@ -2674,8 +2837,8 @@ if RegisterConsoleCommandHandler then
             return true
         end)
     end)
-    log("Console command registered: lbtesttool <meshPath> [socket]")
-    registerCmdInfo("lbtesttool", "lbtesttool <meshPath> [socket]", "Attaches a skeletal or static mesh prop (e.g. a craft-station tool) to the nearest actor's hand socket.")
+    log("Console command registered: lbtesttool <meshPath> [socket] | lbtesttool aps [player] | lbtesttool fillall [soc|belt|sling|strap|weapon|all] <meshPath> | lbtesttool list <meshPath> socket1,socket2,...")
+    registerCmdInfo("lbtesttool", "lbtesttool <meshPath> [socket]  |  lbtesttool aps [player]  |  lbtesttool fillall [soc|belt|sling|strap|weapon|all] <meshPath>  |  lbtesttool list <meshPath> socket1,socket2,...", "Attaches a skeletal or static mesh prop (e.g. a craft-station tool) to the nearest actor's hand socket. 'aps' (attachment points) LIVE-lists every real attachment currently equipped on the selected/locked actor -- add 'player' (or 'self') to target your OWN pawn instead, e.g. to find which socket a real equipped item (a belt pistol, etc.) is actually attached to. 'fillall <meshPath>' attaches that ONE mesh at every real known attachment socket at once (add 'soc'/'belt'/'sling'/'strap'/'weapon' before the mesh path to only fill that sub-family; omit it, or say 'all', to fill everything like before). 'list <meshPath> socket1,socket2,...' attaches that ONE mesh at exactly the comma-separated sockets you name (no spaces around the commas), reporting any name that doesn't exist on the actor's skeleton -- for validating a specific handful of sockets instead of a whole sweep.")
 else
     log("lbtesttool unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -2696,15 +2859,101 @@ if RegisterConsoleCommandHandler then
                     end
                 end)
             end
-            local ok, err = pcall(function() Spawner.TestDumpSockets(say) end)
+            -- "lbsockets player" / "lbsockets self" (2026-09-06, RedFalcon: "how do i check the
+            -- socket placement on a character... on the player i mean") -- targets the player's own
+            -- live pawn instead of the nearest/locked spawned test actor.
+            local p1 = Parameters and Parameters[1]
+            local useSelf = p1 and (p1:lower() == "player" or p1:lower() == "self")
+            local ok, err = pcall(function() Spawner.TestDumpSockets(say, useSelf) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbsockets")
-    registerCmdInfo("lbsockets", "lbsockets", "Dumps every socket name on the nearest/locked actor's Mesh (full skeleton attach-point list) to the console and ue4ss.log.")
+    log("Console command registered: lbsockets | lbsockets player")
+    registerCmdInfo("lbsockets", "lbsockets  |  lbsockets player", "Dumps every socket name on the nearest/locked actor's Mesh (full skeleton attach-point list) to the console and ue4ss.log. 'player' (or 'self') targets your OWN pawn instead -- the only way to inspect the player's own skeleton, since the player is never a spawned test actor.")
 else
     log("lbsockets unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestpouch" (2026-09-04) -- see Spawner.TestHideOnePouch's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestpouch", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestpouch] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestHideOnePouch(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestpouch")
+    registerCmdInfo("lbtestpouch", "lbtestpouch", "Lists every StaticMeshComponent on the nearest/locked actor and hides the first one whose mesh name contains 'Pouch' -- tests whether a belt's baked Attachments (pouches/knife) are independently hideable, one at a time.")
+else
+    log("lbtestpouch unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbpopulateaps <meshPath> [socketNameFragment]" (2026-09-03) -- see
+-- Spawner.TestPopulateAllSockets's own header comment. Attaches one copy of the given mesh to
+-- EVERY socket on the nearest/locked actor (or only ones whose name CONTAINS socketNameFragment
+-- anywhere -- not prefix-only, e.g. "soc_", "ik_", or "_backsocket" (a real third socket family,
+-- RedFalcon found "Axe1h_backsocket"/"Musket_backsocket"/etc. via lbsockets -- the distinguishing
+-- part is a SUFFIX there, which a prefix-only match could never catch) -- if given), so which
+-- sockets actually suit a given item can be judged visually all at once instead of testing
+-- candidates one at a time via lbtesttool.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbpopulateaps", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbpopulateaps] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local meshArg = Parameters and Parameters[1]
+            local matchArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestPopulateAllSockets(meshArg, matchArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbpopulateaps <meshPath> [socketNameFragment]")
+    registerCmdInfo("lbpopulateaps", "lbpopulateaps <meshPath> [socketNameFragment]", "Attaches one copy of the given mesh to every socket on the nearest/locked actor (or only ones whose name contains socketNameFragment anywhere -- prefix, suffix, or mid-string, e.g. 'soc_', 'ik_', or '_backsocket' -- if given) -- see which sockets actually suit an item all at once instead of testing one at a time.")
+else
+    log("lbpopulateaps unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestpiece <bodyPart> <meshPath>" (2026-09-04) -- see
+-- Spawner.TestPreviewPiece's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestpiece", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestpiece] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local meshArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestPreviewPiece(bodyPartArg, meshArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestpiece <bodyPart> <meshPath>")
+    registerCmdInfo("lbtestpiece", "lbtestpiece <bodyPart> <meshPath>", "Swaps the nearest/locked actor's already-built slot (matched by BodyPart, e.g. Belt/Sling/Strap/Torso) to a real mesh path from Other/Barbie_Slot_Item_Catalog.xlsx -- pick the BaseMesh_Male or BaseMesh_Female column matching the target's sex. Base mesh only, does not reproduce a piece's own baked Attachments (pouches/knife).")
+else
+    log("lbtestpiece unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestarmor <slot/mesh name match> [meshPath]" (2026-08-27) -- swaps a
@@ -2955,6 +3204,57 @@ else
     log("lbtestclothes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestbeltroll" (2026-09-07, RedFalcon: "I want to make a command that
+-- generates a random belt layout. So 70% of the time, add a belt. then, of there's a belt, 50% of
+-- the time added a strap, and 50% of the time added a sling. They are not exclusive so both can
+-- sometimes appear" + "and clear any previous belts before applying") -- see
+-- Spawner.TestRandomBeltLayout's own comment for the full roll logic.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbeltroll", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbeltroll] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestRandomBeltLayout(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbeltroll")
+    registerCmdInfo("lbtestbeltroll", "lbtestbeltroll", "Rolls a random Belt/Sling/Strap layout on the nearest actor: 70% chance of a Belt; only if that Belt actually applies, independent 30% chances each for Strap and Sling (both, either, or neither can join it -- never without the Belt). Clears all three first, so every roll starts clean.")
+else
+    log("lbtestbeltroll unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestsocketitems" (2026-09-07, RedFalcon's own SocketItems.xlsx design) -- see
+-- Spawner.TestGenerateSocketItems' own header comment for the full rule set.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestsocketitems", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestsocketitems] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestGenerateSocketItems(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestsocketitems")
+    registerCmdInfo("lbtestsocketitems", "lbtestsocketitems", "Rolls a complete random belt-accessory + weapon layout on the nearest actor from Config.SOCKETITEMS_* (RedFalcon's SocketItems.xlsx): clears every existing socket item first, then fills eligible sockets per visible Belt/Sling/Strap piece (weighted by rarity, with tag synergy), plus one 60% weapon roll per location (Back/Sheath/Hip).")
+else
+    log("lbtestsocketitems unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbremoveclothes <slot|all>" (2026-08-28) -- hides a clothing piece by slot (or
 -- everything) on the nearest actor. See Spawner.TestRemoveClothingPiece's own comment for why this
 -- HIDES rather than clears the mesh, and see Config.CLOTHING_REMOVABLE_SLOTS for the slot list.
@@ -2971,6 +3271,30 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbremoveclothes", "lbremoveclothes <slot|all>", "Hides a clothing/armor piece in the given slot (or every recognized slot, with 'all') on the nearest actor -- see Config.CLOTHING_REMOVABLE_SLOTS.")
 else
     log("lbremoveclothes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbremoveallsockets" (2026-09-04) -- hides everything attached via a socket
+-- whose name contains "_backsocket"/"soc_"/"ik_"/"hand_" on the nearest actor. Distinct from
+-- lbremoveclothes -- see Spawner.RemoveAllSocketAttachments' own comment for why a separate
+-- mechanism was needed (socket-attached props don't carry a clothing-slot token in their mesh
+-- name). Same say() dual-output convention as lbsockets, so the result shows up in the actual
+-- in-game console window, not just ue4ss.log.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbremoveallsockets", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [remove-sockets] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.RemoveAllSocketAttachments(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbremoveallsockets")
+    registerCmdInfo("lbremoveallsockets", "lbremoveallsockets", "Hides everything attached via a backsocket/soc_/ik_/hand_ socket on the nearest actor (weapons/tools/stowed props) -- also available as Custom > Clothes > Remove > All Sockets.")
+else
+    log("lbremoveallsockets unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestaddslot <slot> <meshPath>" (2026-08-28) -- standalone test for building a
@@ -3103,13 +3427,19 @@ if RegisterConsoleCommandHandler then
             end
             local paramsArg = Parameters and Parameters[1]
             local archetypeArg = Parameters and Parameters[2]
-            local ok, err = pcall(function() Spawner.TestSpawnCustomLook(paramsArg, archetypeArg, say) end)
+            local classArg = Parameters and Parameters[3]
+            -- underwearArg (2026-09-04): defaults to "start in underwear, everything else hidden
+            -- but still built/available" -- pass 0 to see the full look undisturbed instead (the
+            -- old default behavior), e.g. for a plain visual check of the whole outfit.
+            local underwearArg = Parameters and Parameters[4]
+            local startInUnderwear = (underwearArg ~= "0")
+            local ok, err = pcall(function() Spawner.TestSpawnCustomLook(paramsArg, archetypeArg, say, classArg, startInUnderwear) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestlook <paramsPath> <archetypePath>")
-    registerCmdInfo("lbtestlook", "lbtestlook <paramsPath> <archetypePath>", "Spawns Config.SENKA_FEMALE_BASE_CLASS with BOTH a custom outfit and a custom archetype override -- tests whether this base class respects an archetype override the way mob/crew classes never do.")
+    log("Console command registered: lbtestlook <paramsPath> <archetypePath> [classPath] [underwear:0/1]")
+    registerCmdInfo("lbtestlook", "lbtestlook <paramsPath> <archetypePath> [classPath] [underwear:0/1]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or classPath, if given) with a custom outfit and archetype override. Defaults to hiding everything but underwear once the build finishes (slots stay available via lbtestclothes/the Clothes GUI) -- pass underwear=0 to see the full look instead.")
 else
     log("lbtestlook unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -3192,17 +3522,22 @@ if RegisterConsoleCommandHandler then
             -- isn't reliable here (this console's own argument splitter may drop it entirely,
             -- silently shifting classArg into the morphArg slot instead -- confirmed live 2026-09-01,
             -- caused an unwanted default-class spawn). Always use "-" to leave morphParams untouched.
+            -- sexArg is likewise "-"/omitted = native (don't force), or "M"/"F" to force a mismatch
+            -- test -- see Spawner.TestSpawnCustomBodyTypes's own header comment for why this is no
+            -- longer hardcoded to Female (that was a real bug, fixed 2026-09-01).
             local bodyTypesArg = Parameters and Parameters[1]
             local morphArg = Parameters and Parameters[2]
             if morphArg == "-" or morphArg == "" then morphArg = nil end
             local classArg = Parameters and Parameters[3]
-            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyTypes(bodyTypesArg, morphArg, classArg, say) end)
+            if classArg == "-" or classArg == "" then classArg = nil end
+            local sexArg = Parameters and Parameters[4]
+            local ok, err = pcall(function() Spawner.TestSpawnCustomBodyTypes(bodyTypesArg, morphArg, classArg, sexArg, say) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath]")
-    registerCmdInfo("lbtestbodytypes", "lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with comp.BodyTypeParams retargeted to a chosen body mesh, optionally with a MorphParams shape override in the same spawn. Use '-' for morphParamsPath to skip it and specify classPath instead.")
+    log("Console command registered: lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath|-] [sex: M/F|-]")
+    registerCmdInfo("lbtestbodytypes", "lbtestbodytypes <bodyTypesPath> [morphParamsPath|-] [classPath|-] [sex: M/F|-]", "Spawns Config.SENKA_FEMALE_BASE_CLASS (or an optional given class) with comp.BodyTypeParams retargeted to a chosen body mesh, optionally with a MorphParams shape override. sex defaults to native (not forced) -- only pass M/F to deliberately test a sex MISMATCH against the bodyTypesPath entry's own BodyTypeSex. Use '-' to skip morphParamsPath/classPath.")
 else
     log("lbtestbodytypes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -3618,6 +3953,85 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtesteye", "lbtesteye <Blue|Brown|Evil|Green|Grey|Default>", "Swaps the eye material slot on actor.Mesh to a pre-made eye-color variant (or back to the plain native default) -- eyes aren't CPD-driven, unlike cloth/hair/eyebrows.")
 else
     log("lbtesteye unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestskinsize <Small|Medium|Large>" (2026-09-02) -- forces the size variant of
+-- the nearest/locked actor's own skin material, derived live from whatever family it currently has
+-- applied (works on any family, native or custom-retargeted, no per-family setup needed). See
+-- Spawner.TestSetSkinSize's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestskinsize", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestskinsize] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local sizeArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSetSkinSize(sizeArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestskinsize <sizeName>")
+    registerCmdInfo("lbtestskinsize", "lbtestskinsize <Small|Medium|Large>", "Forces the nearest/locked actor's skin material to a different size variant of its OWN current family, derived from whatever material is already applied -- no per-family setup needed, works on any family.")
+else
+    log("lbtestskinsize unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestmeshslots" (2026-09-02) -- no args. Dumps the nearest/locked actor's
+-- Mesh:GetNumMaterials()/GetMaterial(i) slot list -- real, live section data, to check whether a
+-- vanilla human body mesh genuinely lacks geometry sections Senkamati has (e.g. pelvis area), or
+-- just has them hidden. See Spawner.TestDumpMeshSlots's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmeshslots", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestmeshslots] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestDumpMeshSlots(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmeshslots")
+    registerCmdInfo("lbtestmeshslots", "lbtestmeshslots", "Dumps the nearest/locked actor's live mesh material-slot list (count + names) -- compare a vanilla human vs. a Senkamati-bodied actor to see if sections are truly missing or just hidden.")
+else
+    log("lbtestmeshslots unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbcheckclass <path>" (2026-09-03) -- resolves an asset path the same way the
+-- composite-mesh pipeline does and prints its real class. See Spawner.TestCheckAssetClass's own
+-- header comment for why.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcheckclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbcheckclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local path = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestCheckAssetClass(path, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcheckclass")
+    registerCmdInfo("lbcheckclass", "lbcheckclass <path>", "Resolves an asset path the same way the composite-mesh pipeline does and prints its real class (checks for R5CompositeMeshGroup vs R5CompositeMeshParams type mismatches).")
+else
+    log("lbcheckclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbprobecolors" (2026-08-31) -- PURE READ, no spawn/write. Reads the nearest/

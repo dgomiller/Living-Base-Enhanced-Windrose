@@ -20,6 +20,28 @@ local MOD_NAME = "[LivingBase:Spawner]"
 -- redeployed one, which would mean several of tonight's spawner.lua fixes were never actually live.
 print("[LivingBase:Spawner] MODULE LOAD MARKER v2026-08-19-2235\n")
 
+-- Seed math.random ONCE at module load (2026-09-07, RedFalcon: "i have not had a single roll
+-- without both a strap and a sling appearing... should be 9% but its 100%" then "seems the ratio is
+-- off"). Nothing in this whole mod ever called math.randomseed before this -- confirmed via a full
+-- search of both Lua files -- so every math.random() call (this file's own jitter/pick-a-random-
+-- mesh uses included) was running on Lua's un-seeded DEFAULT sequence the entire time, which is
+-- fully deterministic and IDENTICAL every time this module loads (every game launch, every
+-- lbreload): same first draw, same second draw, same N-th draw, every single time. That's the real
+-- cause of the skewed ratio -- not a probability-math bug in TestRandomBeltLayout itself, which
+-- checks out correctly against genuinely random input. os.time() is only 1-second resolution (two
+-- rolls inside the same second would still collide), so it's combined with os.clock()'s sub-second
+-- fraction for real per-session entropy; both wrapped in pcall in case either is unavailable in this
+-- sandboxed Lua build, falling back to collectgarbage("count") (current KB in use -- always
+-- available in vanilla Lua, naturally varies run to run) if so.
+do
+    local t, c = 0, 0
+    pcall(function() t = os.time() end)
+    pcall(function() c = os.clock() end)
+    local seed = t + math.floor((c or 0) * 1000000)
+    if seed == 0 then pcall(function() seed = math.floor(collectgarbage("count") * 1000) end) end
+    math.randomseed(seed)
+end
+
 local function log(msg)
     if Config.VERBOSE then print(string.format("%s %s\n", MOD_NAME, tostring(msg))) end
 end
@@ -993,6 +1015,86 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         end
     end
     return actor
+end
+
+-- Spawner.TestSpawnNoAI(classPath, say) -- "lbspawnnoai <ClassPath>" (2026-09-01). RedFalcon's own
+-- safety ask: `lbspawn` (the plain raw-classpath spawner) does NOT freeze AI -- fine for the
+-- peaceful walkers/townsfolk this session has been probing, but a real risk for a genuinely
+-- hostile mob (e.g. the raw Senkamati Hunter/Warrior/Thrall classes) spawned right in front of the
+-- player. Typing `lbspawn` then `lbfreeze` as two separate console commands leaves a real
+-- human-reaction-time window between them for the AI to notice/aggro. This combines both into ONE
+-- Lua call -- `Spawner.Spawn` then `Spawner.SetAILogic(actor, false)` immediately after, same
+-- synchronous call stack, no yield in between -- closing that window entirely (the AIController's
+-- own first decision tick happens on a LATER engine tick, after this whole function has already
+-- returned and frozen it). Same freeze mechanism (`StopLogic()`) already trusted everywhere else in
+-- this file for combat mobs (senkaMobFix, the Num7 roster's "idle" rows, etc.) -- not a new risk,
+-- just applied earlier and unconditionally rather than via a second manual command.
+-- Spawner.TestSpawnWithAIOverride(classPath, aiControllerClassPath, say) -- "lbtestai <classPath>
+-- <aiControllerClassPath>" (2026-09-02). RedFalcon's own idea: try giving a native Senkamati mob
+-- class the Gatherer/Handyman AI brain (wander + idle-sit) instead of its own hostile Mob AI, as
+-- an ALTERNATIVE to reskinning its body -- keep the Senkamati's own mesh/skeleton entirely, only
+-- swap which brain drives it. Already-proven mechanism: Spawner.Spawn's own aiControllerClassPath
+-- argument (used previously to give Hunter the Warrior's own native mob AIController -- see
+-- Config.HANDYMAN_FOR_CREW's own comment for the precedent this is testing against).
+--
+-- REAL PRIOR RESULT WORTH KNOWING BEFORE TRUSTING THIS: giving the Handyman AI to re-skinned
+-- "crew" (a Handyman-lineage human-body class wearing Senkamati's own armor) did NOT crash, but
+-- also did NOT wander -- the pawn just stood still, because "their pawn lacks the worker data it
+-- needs" (Config.HANDYMAN_FOR_CREW's own comment, 2026-07-07 finding). This is a DIFFERENT
+-- starting point (a raw native Mob-family pawn, not a Handyman-lineage crew class), so it is not
+-- guaranteed to fail the same way -- but a raw Mob pawn is if anything FURTHER from Handyman
+-- lineage than crew was, so the same "stands still, doesn't crash" outcome is a real possibility,
+-- not a wild guess. Test and see; if it just stands there, that's this exact failure mode
+-- recurring, not a new bug.
+function Spawner.TestSpawnWithAIOverride(classPath, aiControllerClassPath, friendlyArg, say)
+    say = say or function(m) print("[LivingBase] [test-ai] " .. tostring(m) .. "\n") end
+    if not classPath or classPath == "" or not aiControllerClassPath or aiControllerClassPath == "" then
+        say("Usage: lbtestai <ClassPath> <AIControllerClassPath> [friendly: 1/0, default 1]")
+        return false
+    end
+    -- Default to friendly=true: aggression is a SEPARATE faction/team mechanism (Spawn's own
+    -- makeFriendly param, "copy a live crew's faction onto the spawn"), unrelated to which AI
+    -- controller class is possessing the pawn. Leaving this false (this function's own first-cut
+    -- mistake, 2026-09-02) confounds "does the AI override itself give wandering behavior" with
+    -- "is it still hostile" -- two independent questions. Default true here so the command tests
+    -- the AI-brain question cleanly; pass 0 explicitly only if you want to test hostile+overridden
+    -- together on purpose.
+    local friendly = true
+    if friendlyArg == "0" or friendlyArg == false then friendly = false end
+    local actor = Spawner.Spawn(classPath, "AIOverrideTest", nil, nil, aiControllerClassPath, nil, friendly, nil, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    local controllerClass = "?"
+    pcall(function() controllerClass = actor:GetController():GetClass():GetFullName() end)
+    say(string.format("Spawned %s with AI controller override (friendly=%s) -- actual controller class: %s",
+        tostring(classPath), tostring(friendly), controllerClass))
+    say("Watch it for a bit: real wandering = the override works; standing still with a valid " ..
+        "controller = the same 'lacks the worker data it needs' failure mode as the crew/Handyman test. " ..
+        "Note the pose/stance is a SEPARATE axis entirely (the class's own native Animation Blueprint, " ..
+        "untouched by this) -- don't read a Senkamati-looking stance as the AI test failing.")
+    return true
+end
+
+function Spawner.TestSpawnNoAI(classPath, say)
+    say = say or function(m) print("[LivingBase] [test-spawnnoai] " .. tostring(m) .. "\n") end
+    if not classPath or classPath == "" then
+        say("Usage: lbspawnnoai <ClassPath>")
+        return false
+    end
+    local actor = Spawner.Spawn(classPath, "SpawnNoAI", nil, nil, nil, nil, false, nil, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    local frozeOk = false
+    pcall(function() frozeOk = Spawner.SetAILogic(actor, false) end)
+    say(string.format("Spawned %s -- AI frozen: %s", tostring(classPath), tostring(frozeOk)))
+    if not frozeOk then
+        say("WARNING: freeze did not report success (no valid AIController found?) -- treat as still active until confirmed otherwise.")
+    end
+    return true
 end
 
 --------------------------------------------------------------------
@@ -4607,11 +4709,20 @@ local function dumpUnknownStruct(val, tag)
     local okName, name = pcall(function() return val:GetFName():ToString() end)
     if okName and name then print("[LivingBase] [probe-struct]   type name=" .. name .. "\n") end
     local propCount = 0
+    -- Same hard-crash guard as dumpNamedStruct's own (2026-09-04) -- this walk shares the exact
+    -- same val[pname]-read shape and this function is just as generic, so the same "Attachments"
+    -- denylist applies here defensively too, even though nothing has crashed THROUGH this specific
+    -- function yet.
+    local PROBE_SKIP_PROPS = { Attachments = true }
     local okWalk, errWalk = pcall(function()
         val:ForEachProperty(function(prop)
             propCount = propCount + 1
             local pname = "?"
             pcall(function() pname = prop:GetFName():ToString() end)
+            if PROBE_SKIP_PROPS[pname] then
+                print(string.format("[LivingBase] [probe-struct]   %s = <skipped -- confirmed crash risk reading this property live>\n", pname))
+                return
+            end
             local valStr = "<unreadable>"
             local okv, fv = pcall(function() return val[pname] end)
             if okv then
@@ -4636,18 +4747,47 @@ end
 -- DEFINITION, :ForEachProperty over THAT to enumerate declared field names, then read each field
 -- back by bracket-indexing the actual VALUE (val[fieldName]) -- never dot-access past the wrapper,
 -- confirmed elsewhere in this file to be what actually crashed once, not the struct read itself.
-local function dumpNamedStruct(val, structPath, tag)
+-- dumpNamedStruct(val, structPath, tag, depth) -- RECURSIVE as of 2026-09-02, was one level flat
+-- before. RedFalcon asked for Senkamati's real color scheme and lbprobedump's own
+-- dumpBuildedCompositeMeshes output stopped at "built[N].ColorData = ScriptStruct
+-- /Script/R5.CompositeMeshColorData" -- the exact same "GetFullName only reports the TYPE, never
+-- the per-instance field values" trap this function's own header comment already names for
+-- AnimationData/BodyMorph, just one level deeper than where it was first fixed (this function's
+-- own TOP-level call site already knew to route a resolvable-struct-typed VALUE through
+-- dumpNamedStruct -- it just never applied that same check to a resolvable-struct-typed FIELD
+-- found while walking one). Depth-capped at 3 (plenty for anything in this game's own composite/
+-- color data shapes, seen so far never more than 2 deep) purely as a safety margin against a
+-- theoretical self-referential struct looping forever -- not because anything observed needs it.
+local function dumpNamedStruct(val, structPath, tag, depth)
+    depth = depth or 0
     local structDef = StaticFindObject(structPath)
     if not (structDef and structDef:IsValid()) then
         print("[LivingBase] [probe-struct] " .. tag .. ": StaticFindObject(" .. structPath .. ") failed.\n")
         return
     end
+    -- HARD CRASH GUARD (2026-09-04): confirmed live -- once the Grenadier belt swap gave a real
+    -- piece a genuinely NON-EMPTY R5CompositeMeshData.Attachments array for the first time ever
+    -- (every piece probed before that always had one, but always empty), a plain `val["Attachments"]`
+    -- property read through this exact loop crashed the whole game, twice, reproducibly -- a real
+    -- native crash, not a caught Lua error (pcall never even gets the chance; the log just stops
+    -- mid-dump). Skip reading this ONE property name outright rather than trying to read-then-
+    -- pcall it (a pcall never protects against a hard engine-side crash, only a Lua-level one --
+    -- established elsewhere in this file for exactly this class of risk). Denylisted by NAME, not
+    -- by struct type, since dumpNamedStruct is fully generic and gets called on every kind of
+    -- struct this file has ever probed -- cheap enough to just always skip, and "Attachments" isn't
+    -- a name any OTHER struct in this codebase's own probes has ever needed to read.
+    local PROBE_SKIP_PROPS = { Attachments = true }
     pcall(function()
         structDef:ForEachProperty(function(prop)
             local pname = "?"
             pcall(function() pname = prop:GetFName():ToString() end)
+            if PROBE_SKIP_PROPS[pname] then
+                print(string.format("[LivingBase] [probe-struct]   %s.%s = <skipped -- confirmed crash risk reading this property live, see dumpNamedStruct's own comment>\n", tag, pname))
+                return
+            end
             local valStr = "<unreadable>"
             local okv, fv = pcall(function() return val[pname] end)
+            local nestedPath = nil
             if okv then
                 if fv == nil then
                     valStr = "nil"
@@ -4655,15 +4795,59 @@ local function dumpNamedStruct(val, structPath, tag)
                     local okFull, full = pcall(function() return fv:GetFullName() end)
                     if okFull and full then
                         valStr = full
+                        nestedPath = depth < 3 and full:match("^ScriptStruct%s+(%S+)") or nil
                     else
                         local okStr, s = pcall(function() return fv:ToString() end)
                         valStr = (okStr and s) and s or tostring(fv)
+                        -- GENUINELY UNTESTED ENGINE SURFACE (2026-09-02): no prior TMap iteration
+                        -- exists anywhere in this file. GetFullName() failing (landing us in this
+                        -- branch) plus a "TMap: <hex>" string is how a Map-typed field looks --
+                        -- try Lua's own pairs() on it, guarded, since UE4SS's Map wrapper MAY
+                        -- support the __pairs metamethod the same way it supports plain []-index
+                        -- (already proven elsewhere in this file, e.g. SkinMaterials-style reads).
+                        -- If this pcall fails, valStr above (the plain "TMap: <hex>" string) is
+                        -- still printed -- this is purely additive, never a regression risk.
+                        if valStr:match("^TMap:") then
+                            -- pairs() confirmed FAILING 2026-09-02 ("table expected, got TMap") --
+                            -- this Map wrapper doesn't implement Lua's __pairs metamethod. Instead
+                            -- of guessing another single call, list what's actually callable on it
+                            -- via getmetatable (the same kind of introspection dumpCompositeFunctions
+                            -- already does for reflected UObjects, just via Lua's own metatable
+                            -- instead of UE's ForEachFunction -- this wrapper is plain Lua userdata,
+                            -- not a reflected UObject, so ForEachFunction doesn't apply to it).
+                            -- getmetatable() confirmed nil 2026-09-02 -- locked down, no Lua-side
+                            -- introspection possible. Last try: the SAME ":get()" unwrap idiom
+                            -- dumpBuildedCompositeMeshes' own TArray-element handling already uses
+                            -- ("if el ~= nil and type(el) == 'userdata' and el.get then el =
+                            -- el:get() end") -- if Map wraps its real payload the same way TArray
+                            -- elements sometimes do, unwrapping it first might expose something
+                            -- iterable/indexable that the raw wrapper doesn't.
+                            local okGet, unwrapped = pcall(function()
+                                if fv.get then return fv:get() end
+                                return nil
+                            end)
+                            if okGet and unwrapped ~= nil then
+                                local uType = type(unwrapped)
+                                local uStr = tostring(unwrapped)
+                                pcall(function()
+                                    if uType == "userdata" then uStr = unwrapped:GetFullName() or uStr end
+                                end)
+                                print(string.format("[LivingBase] [probe-struct]     %s.%s :get() -> type=%s value=%s\n",
+                                    tag, pname, uType, uStr))
+                            else
+                                print(string.format("[LivingBase] [probe-struct]     %s.%s: no .get method, or it returned nil\n",
+                                    tag, pname))
+                            end
+                        end
                     end
                 else
                     valStr = tostring(fv)
                 end
             end
             print(string.format("[LivingBase] [probe-struct]   %s.%s = %s\n", tag, pname, valStr))
+            if nestedPath then
+                dumpNamedStruct(fv, nestedPath, tag .. "." .. pname, depth + 1)
+            end
         end)
     end)
 end
@@ -7026,6 +7210,25 @@ end
 -- cone/range pick, even while a lock is active. Every existing caller passes nothing (nil =
 -- false), so this is purely additive -- the lock still transparently wins for despawn/cycle/
 -- live-edit exactly as before.
+-- getPlayerPawnAsActor() -- (2026-09-06, RedFalcon: "how do i check the socket placement on a
+-- character. It has a pistol on its belt but it doesnt match any existing sockets... on the player
+-- i mean"). Every socket-inspection tool up to now (lbsockets, lbtesttool aps/fillall/list) only
+-- ever resolves its target through findNearestSpawnInFront, which walks Spawner.spawned -- the
+-- mod's own tracked list of actors IT spawned. The player's own live pawn is never in that list, so
+-- none of those tools could ever target it. Same UEHelpers.GetPlayerController().Pawn read already
+-- proven safe in Spawner.TestReportPlayerClass (lbplayerclass).
+local function getPlayerPawnAsActor()
+    local pawn = nil
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            local p = pc.Pawn
+            if p and p:IsValid() then pawn = p end
+        end
+    end)
+    return pawn
+end
+
 local function findNearestSpawnInFront(maxDist, ignoreLock)
     if #Spawner.spawned == 0 then pcall(Spawner.RetrackOrphans) end   -- Ctrl+R recovery
     local MIN_STABLE_DIST = 40.0
@@ -7625,6 +7828,105 @@ end
 -- else has already loaded it" would look like from the outside. A second look a few hundred ms
 -- later, after the load has had time to actually land, is the same shape of fix already proven
 -- for composite-settle timing elsewhere in this file, just applied to a cold asset load instead.
+-- quatToRotator(x, y, z, w) -- (2026-09-04) converts a raw quaternion (the shape
+-- Config.KNOWN_ATTACHMENT_TRANSFORMS stores rotation as, since that's how UAssetAPI reads a real
+-- Attachment entry's own Transform.Rotation) into the {Pitch, Yaw, Roll} Rotator shape
+-- K2_SetRelativeRotation actually expects -- every OTHER relative-rotation set in this file already
+-- uses K2_SetRelativeRotation with a Rotator, never a raw quat (there is no proven-safe quat-typed
+-- relative-rotation setter anywhere in this codebase), so this converts rather than introducing a
+-- new, unproven call shape. Standard FQuat->FRotator formula (matches UE's own FQuat::Rotator()).
+-- atan2(y, x) -- (2026-09-04) Lua version-safe two-argument arctangent. Lua 5.4's math.atan
+-- accepts a second argument directly; Lua 5.1/LuaJIT expose it as the separate math.atan2 instead
+-- -- no prior use of either anywhere in this codebase to confirm which this UE4SS build actually
+-- runs, so try both rather than guessing.
+local function atan2(y, x)
+    if math.atan2 then return math.atan2(y, x) end
+    return math.atan(y, x)
+end
+
+local function quatToRotator(x, y, z, w)
+    local singularityTest = z * x - w * y
+    local yawY = 2 * (w * z + x * y)
+    local yawX = 1 - 2 * (y * y + z * z)
+    local RAD2DEG = 180.0 / math.pi
+    local pitch, yaw, roll
+    if singularityTest < -0.4999995 then
+        pitch = -90.0
+        yaw = atan2(yawY, yawX) * RAD2DEG
+        roll = -yaw - 2 * atan2(x, w) * RAD2DEG
+    elseif singularityTest > 0.4999995 then
+        pitch = 90.0
+        yaw = atan2(yawY, yawX) * RAD2DEG
+        roll = yaw - 2 * atan2(x, w) * RAD2DEG
+    else
+        pitch = math.asin(2 * singularityTest) * RAD2DEG
+        yaw = atan2(yawY, yawX) * RAD2DEG
+        roll = atan2(-2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * RAD2DEG
+    end
+    return { Pitch = pitch, Yaw = yaw, Roll = roll }
+end
+
+-- attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socket, say) -- the
+-- shared core of proceedWithTool (2026-09-04, extracted so Spawner.TestFillAllSockets can reuse it
+-- per-socket instead of duplicating the whole create+set-mesh+attach+real-transform dance). Creates
+-- a FRESH component per call -- deliberate, not an optimization miss: a single component can only
+-- ever occupy one socket at a time, so filling every socket at once genuinely needs one component
+-- each, same as if `lbtesttool` were run once per socket by hand.
+local function attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socket, say)
+    say = say or function(m) print("[LivingBase] [test-tool] " .. tostring(m) .. "\n") end
+    local comp = nil
+    pcall(function()
+        comp = actor:AddComponentByClass(compCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (comp and comp:IsValid()) then
+        say("AddComponentByClass failed on " .. name .. " for socket " .. socket .. ".")
+        return false
+    end
+
+    if isStatic then
+        pcall(function() comp:SetStaticMesh(mesh) end)
+    else
+        local okMesh = pcall(function() comp:SetSkeletalMeshAsset(mesh) end)
+        if not okMesh then pcall(function() comp:SetSkeletalMesh(mesh, false) end) end
+    end
+
+    local attached = pcall(function()
+        comp:K2_AttachToComponent(body, FName(socket), 2, 2, 2, false)
+    end)
+
+    -- Real-transform lookup (2026-09-04, RedFalcon: "it does have issues with alignment of the
+    -- items") -- Config.KNOWN_ATTACHMENT_TRANSFORMS holds the REAL baked Rotation/Translation/
+    -- Scale3D offset for every (socket, mesh) pair seen anywhere in the real game's own
+    -- Attachments data (19q's catalog scan). K2_AttachToComponent above used KeepRelative rules,
+    -- so the component's relative transform (identity, set at AddComponentByClass time) is still
+    -- sitting there post-attach -- overwrite it now with the real offset if this exact combo is a
+    -- known real one, matching how the composite build itself would have placed it. A combo not in
+    -- the table (a genuinely new mesh+socket pairing never used anywhere in the real game) has no
+    -- reference to copy and keeps the identity placement, same as before this table existed.
+    local meshShort = meshPath:match("([^/%.]+)%.[%w_]+$") or meshPath:match("([^/]+)$")
+    local xformKey = socket .. "|" .. tostring(meshShort)
+    local realXform = Config.KNOWN_ATTACHMENT_TRANSFORMS and Config.KNOWN_ATTACHMENT_TRANSFORMS[xformKey]
+    local placedReal = false
+    if attached and realXform then
+        placedReal = pcall(function()
+            comp:K2_SetRelativeLocation({ X = realXform.tx, Y = realXform.ty, Z = realXform.tz }, false, {}, false)
+            comp:K2_SetRelativeRotation(quatToRotator(realXform.rx, realXform.ry, realXform.rz, realXform.rw), false, {}, false)
+            comp:SetRelativeScale3D({ X = realXform.sx, Y = realXform.sy, Z = realXform.sz })
+        end)
+    end
+    pcall(function() comp:SetVisibility(true, false) end)
+
+    say(string.format(
+        "target=%s | mesh=%s | socket=%s | attach call=%s | real transform=%s",
+        name, meshPath, socket, tostring(attached),
+        realXform and (placedReal and "applied" or "known but FAILED to apply") or "none known -- identity placement"))
+    return attached
+end
+
 local function proceedWithTool(actor, name, meshPath, socketArg, mesh)
     -- Mesh-type auto-detect (2026-08-25, RedFalcon's own off-hand request): resolveAsset succeeds
     -- identically for a UStaticMesh or a USkeletalMesh -- they only diverge at which COMPONENT
@@ -7643,31 +7945,10 @@ local function proceedWithTool(actor, name, meshPath, socketArg, mesh)
         return false
     end
 
-    local comp = nil
-    pcall(function()
-        comp = actor:AddComponentByClass(compCls, true, {
-            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
-            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
-            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
-        }, false)
-    end)
-    if not (comp and comp:IsValid()) then
-        print("[LivingBase] [test-tool] AddComponentByClass failed on " .. name .. ".\n")
-        return false
-    end
-
-    if isStatic then
-        pcall(function() comp:SetStaticMesh(mesh) end)
-    else
-        local okMesh = pcall(function() comp:SetSkeletalMeshAsset(mesh) end)
-        if not okMesh then pcall(function() comp:SetSkeletalMesh(mesh, false) end) end
-    end
-
     local body = nil
     pcall(function() body = actor.Mesh end)
     if not (body and body:IsValid()) then
         print("[LivingBase] [test-tool] " .. name .. " has no Mesh to attach to.\n")
-        pcall(function() comp:K2_DestroyComponent(actor) end)
         return false
     end
 
@@ -7705,19 +7986,152 @@ local function proceedWithTool(actor, name, meshPath, socketArg, mesh)
                 if s then print("[LivingBase] [test-tool]    " .. tostring(s:ToString()) .. "\n") end
             end
         end)
-        pcall(function() comp:K2_DestroyComponent(actor) end)
         return false
     end
 
-    local attached = pcall(function()
-        comp:K2_AttachToComponent(body, FName(socket), 2, 2, 2, false)
-    end)
-    pcall(function() comp:SetVisibility(true, false) end)
+    return attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socket)
+end
 
-    print(string.format(
-        "[LivingBase] [test-tool] target=%s | mesh=%s | socket=%s | attach call=%s\n",
-        name, meshPath, socket, tostring(attached)))
-    return attached
+-- resolveMeshAndActorForFill(meshPathArg, say) -- shared preamble extracted from
+-- Spawner.TestFillAllSockets (2026-09-06, so Spawner.TestFillListedSockets can reuse the exact same
+-- mesh-resolve + nearest/locked-actor-resolve dance instead of duplicating it). Returns actor, name,
+-- meshPath, mesh, isStatic, compCls, body on success; nil (and has already called say() with the
+-- reason) on failure.
+local function resolveMeshAndActorForFill(meshPathArg, say)
+    local meshPath = meshPathArg
+    if not meshPath:match("%.[%w_]+$") then
+        local last = meshPath:match("([^/]+)$")
+        if last then meshPath = meshPath .. "." .. last end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh = resolveAsset(meshPath)
+    if not (mesh and mesh:IsValid()) then
+        say("mesh unresolved: " .. meshPath)
+        return nil
+    end
+    local meshClassName = "?"
+    pcall(function() meshClassName = mesh:GetClass():GetFName():ToString() end)
+    local isStatic = meshClassName:find("StaticMesh") ~= nil
+    local compCls = StaticFindObject(isStatic and "/Script/Engine.StaticMeshComponent" or "/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then
+        say((isStatic and "StaticMeshComponent" or "SkeletalMeshComponent") .. " class did not resolve.")
+        return nil
+    end
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh to attach to.")
+        return nil
+    end
+    return actor, name, meshPath, mesh, isStatic, compCls, body
+end
+
+-- Spawner.TestFillAllSockets(filterArg, meshPathArg, say) -- "lbtesttool fillall [soc|belt|sling|
+-- strap|weapon|all] <meshPath>" (2026-09-04, RedFalcon: "i asked for a command that lets me give
+-- it a slot item, and it puts that item in every slot so i can see what works where"; sub-filters
+-- added 2026-09-05 per RedFalcon: "can you adjust fillall to have sub options"). Resolves the mesh
+-- ONCE, then calls attachMeshAtSocket once per socket in Config.KNOWN_ATTACHMENT_SOCKETS
+-- (RedFalcon's own curated whitelist, picked by hand after testing) that (a) matches filterArg's
+-- category and (b) actually exists on this actor's skeleton, each getting its own fresh component
+-- (a component can only ever occupy one socket, so filling N sockets genuinely needs N components
+-- -- same as running lbtesttool by hand N times). filterArg: "all" (default, every known socket,
+-- same as the original no-filter behavior) | "soc" (every real attachment-point socket -- belt +
+-- sling + strap, i.e. everything EXCEPT the native weapon-equip sockets) | "belt" | "sling" |
+-- "strap" (just that one sub-family) | "weapon" (the native weapon-equip sockets only --
+-- _backsocket/swordSlot/rapierSlot; these have no real baked transform, see 19r). Applies the same
+-- real-baked-transform lookup (Config.KNOWN_ATTACHMENT_TRANSFORMS) per socket as a normal
+-- lbtesttool call, so a socket this exact mesh is already known to sit at correctly renders exactly
+-- right; every other socket gets identity placement, same caveat as lbtesttool's own single-socket
+-- form.
+function Spawner.TestFillAllSockets(filterArg, meshPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-tool] " .. tostring(m) .. "\n") end
+    filterArg = (filterArg or "all"):lower()
+    local VALID_FILTERS = { all = true, soc = true, belt = true, sling = true, strap = true, weapon = true }
+    if not VALID_FILTERS[filterArg] then
+        say("unknown fillall filter '" .. filterArg .. "' -- expected one of: all, soc, belt, sling, strap, weapon")
+        return false
+    end
+    if not meshPathArg or meshPathArg == "" then
+        say("usage: lbtesttool fillall [soc|belt|sling|strap|weapon|all] <mesh /Game/... path>")
+        return false
+    end
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(meshPathArg, say)
+    if not actor then return false end
+
+    local sockets = Config.KNOWN_ATTACHMENT_SOCKETS or {}
+    local placed, skipped, filteredOut = 0, 0, 0
+    for _, entry in ipairs(sockets) do
+        local matches = (filterArg == "all")
+            or (filterArg == entry.category)
+            or (filterArg == "soc" and entry.category ~= "weapon")
+        if not matches then
+            filteredOut = filteredOut + 1
+        else
+            local socket = entry.socket
+            local ok, exists = pcall(function() return body:DoesSocketExist(FName(socket)) end)
+            if ok and exists == true then
+                if attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socket, say) then
+                    placed = placed + 1
+                end
+            else
+                skipped = skipped + 1
+            end
+        end
+    end
+    say(string.format("done (filter=%s) -- placed at %d socket(s), %d known socket(s) don't exist on %s's skeleton, %d excluded by filter.", filterArg, placed, skipped, name, filteredOut))
+    return placed > 0
+end
+
+-- Spawner.TestFillListedSockets(meshPathArg, socketsCsv, say) -- "lbtesttool list <meshPath>
+-- socket1,socket2,..." (2026-09-06, RedFalcon: "make it do lbtesttool list <meshpath>
+-- option1,option2 where each option is a different socket... This will allow me to validate what
+-- i'm checking easier"). Same one-mesh/many-sockets shape as TestFillAllSockets, but the socket
+-- list is EXACTLY what's typed -- not filtered against Config.KNOWN_ATTACHMENT_SOCKETS at all, so
+-- this also works for probing a socket that isn't on the curated whitelist. Unlike fillall, a named
+-- socket that doesn't exist on this actor's skeleton is reported individually (not just tallied),
+-- since the whole point here is precise per-socket validation rather than a broad sweep.
+function Spawner.TestFillListedSockets(meshPathArg, socketsCsv, say)
+    say = say or function(m) print("[LivingBase] [test-tool] " .. tostring(m) .. "\n") end
+    if not meshPathArg or meshPathArg == "" or not socketsCsv or socketsCsv == "" then
+        say("usage: lbtesttool list <mesh /Game/... path> socket1,socket2,...")
+        return false
+    end
+    local sockets = {}
+    for raw in socketsCsv:gmatch("[^,]+") do
+        local s = raw:match("^%s*(.-)%s*$")
+        if s ~= "" then sockets[#sockets + 1] = s end
+    end
+    if #sockets == 0 then
+        say("no socket names parsed out of '" .. socketsCsv .. "' -- expected a comma-separated list, e.g. soc_beltB,soc_Sling01F")
+        return false
+    end
+
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(meshPathArg, say)
+    if not actor then return false end
+
+    local placed, missing = 0, 0
+    for _, socket in ipairs(sockets) do
+        local ok, exists = pcall(function() return body:DoesSocketExist(FName(socket)) end)
+        if ok and exists == true then
+            if attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socket, say) then
+                placed = placed + 1
+            end
+        else
+            missing = missing + 1
+            say("socket '" .. socket .. "' does not exist on " .. name .. "'s skeleton -- skipped.")
+        end
+    end
+    say(string.format("done -- placed at %d of %d listed socket(s) on %s, %d not found on its skeleton.", placed, #sockets, name, missing))
+    return placed > 0
 end
 
 -- Spawner.RefLog(tag, msg) -- one shared, ever-growing reference log for exploratory scan/probe
@@ -7831,18 +8245,28 @@ end
 -- command handler passes in that both print()s (ue4ss.log) AND Ar:Log()s (the actual in-game
 -- console window) each line, since RedFalcon wants this list visible without alt-tabbing to the
 -- log file. Falls back to a plain print-only local if called without one (e.g. from Lua directly).
-function Spawner.TestDumpSockets(say)
+function Spawner.TestDumpSockets(say, useSelf)
     say = say or function(msg) print("[LivingBase] [test-sockets] " .. msg .. "\n") end
-    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
-    if not bestI then
-        say(string.format(
-            "nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.",
-            maxDist))
-        return false
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
+    else
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format(
+                "nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.",
+                maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
     end
-    local actor = e.actor
-    local name = tostring(e.label or "actor")
 
     local body = nil
     pcall(function() body = actor.Mesh end)
@@ -7936,6 +8360,360 @@ function Spawner.TestDumpSockets(say)
     return true
 end
 
+-- Spawner.TestHideOnePouch(say) -- "lbtestpouch" (2026-09-04, RedFalcon: "can we make a script to
+-- hide one of the pouches spawning with our barbie to test?"). Answers the genuinely open question
+-- from the belt-Attachments investigation: once a piece's own baked Attachments build (the knife +
+-- 2 pouches on DA_Armor_Regular_BlackBeard_Grenadier_Belt_01's own Belt sub-entry), does each one
+-- become its own independently-hideable component (like socketOccupants' own sweep already
+-- suggests -- it walks StaticMeshComponents same as SkeletalMeshComponents, meaning attachments ARE
+-- real components, not baked into one fused mesh), or is SetVisibility on one of them a no-op /
+-- does it drag the others down with it? PURE READ+HIDE, no rebuild, no mesh-clear -- exactly the
+-- same SetVisibility(false)+SetHiddenInGame(true) idiom Spawner.RemoveClothingOnActor already uses,
+-- so if this DOES work it's immediately reusable there. Hides the FIRST StaticMeshComponent whose
+-- own mesh name contains "Pouch" (case-insensitive) and leaves everything else (the other pouch,
+-- the knife) untouched -- reports every StaticMeshComponent found (name + socket) either way, so a
+-- "found nothing" result is distinguishable from "found it, hide had no visible effect."
+function Spawner.TestHideOnePouch(say)
+    say = say or function(m) print("[LivingBase] [test-pouch] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local cls = StaticFindObject("/Script/Engine.StaticMeshComponent")
+    if not (cls and cls:IsValid()) then
+        say("StaticMeshComponent class did not resolve.")
+        return false
+    end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+    say(string.format("target=%s -- %d StaticMeshComponent(s) found on this actor:", name, n))
+
+    local hidComp, hidMesh = nil, nil
+    for i = 1, n do
+        local c = nil
+        pcall(function() c = comps[i] end)
+        if c == nil then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local compName, meshName, sock = "?", "(no mesh)", ""
+            pcall(function() compName = c:GetFName():ToString() end)
+            pcall(function()
+                local sm = c.StaticMesh
+                if not (sm and sm:IsValid()) and c.GetStaticMesh then sm = c:GetStaticMesh() end
+                if sm and sm:IsValid() then meshName = sm:GetFName():ToString() end
+            end)
+            pcall(function()
+                local fn = c:GetAttachSocketName()
+                if fn then sock = fn:ToString() end
+            end)
+            say(string.format("  comp=%s mesh=%s socket=%s", compName, meshName, sock))
+            if not hidComp and meshName:lower():find("pouch") then
+                hidComp, hidMesh = c, meshName
+            end
+        end
+    end
+
+    if not hidComp then
+        say("no StaticMeshComponent with 'Pouch' in its mesh name found -- nothing to hide. (Did the Grenadier belt retarget actually ship/reload?)")
+        return false
+    end
+
+    local okHide = pcall(function()
+        hidComp:SetVisibility(false, false)
+        hidComp:SetHiddenInGame(true, false)
+    end)
+    say(string.format("hid mesh=%s -> SetVisibility/SetHiddenInGame call ok=%s. Check visually: only ONE pouch should be gone, the other pouch and the knife should still show.", hidMesh, tostring(okHide)))
+    pcall(function() Spawner.Toast("Hid one pouch (" .. hidMesh .. ") on " .. name, 2.5) end)
+    return true
+end
+
+-- Spawner.RemoveAllSocketAttachments(say) -- "Custom > Clothes > Remove > All Sockets" /
+-- "lbremoveallsockets" (2026-09-04, RedFalcon: "add 'remove all sockets' to the remove list with
+-- the new patterns we found for backsocket, soc, ik and hand_"). Distinct from
+-- Spawner.RemoveClothingOnActor(actor, "all", ...) -- that one only ever sweeps components whose
+-- CURRENT MESH NAME resolves to a canonical clothing slot via clothingSlotOf (Torso/Legs/Belt/
+-- etc.); a weapon/tool/stow prop attached at a genuine socket (a shield on ik_weapon_lSocket, a
+-- craft-station tool on a hand_ socket, anything stowed on a *_backsocket) never carries a
+-- clothing-slot token in its own mesh name at all, so it was never reachable from that sweep.
+-- This instead matches by SOCKET NAME (GetAttachSocketName(), same read socketOccupants already
+-- established as safe) against the four confirmed socket-name families discovered this session:
+-- "_backsocket" (Axe1h_backsocket/Musket_backsocket/etc, the substring-match fix lbpopulateaps'
+-- own matchArg already proved out), "soc_" (soc_Lantern/soc_beltB/etc, the original belt/pouch
+-- socket family), "ik_" (ik_weapon_lSocket/_rSocket, the hand-IK attach points), "hand_"
+-- (hand_l/hand_r, the raw bone-fallback sockets). Same plain-substring, case-insensitive match
+-- lbpopulateaps uses -- deliberately not anchored to a prefix, since "_backsocket" is a SUFFIX.
+-- Sweeps both SkeletalMeshComponent and StaticMeshComponent (a socket-attached prop can be either,
+-- item 74) and TRULY DESTROYS a match (K2_DestroyComponent(actor), the same proven-safe API used
+-- elsewhere in this file to remove a socket-attached shield -- "don't leave a floating shield").
+-- Originally only HID a match (SetVisibility(false)+SetHiddenInGame(true)), matching
+-- Spawner.RemoveClothingOnActor's own re-matchable/re-dressable reasoning -- but that reasoning
+-- never actually applied here: this function's own header already noted "no restore path exists
+-- for socket-removed attachments... this is effectively permanent... a one-way action, not a
+-- toggle," AND every socket this function targets is also where `lbtesttool`/`fillall`/`list`
+-- attach a FRESH component per call (never reused, never re-matched) -- so hiding them left a
+-- permanently-growing pile of dead, invisible components on the actor with zero upside. Switched to
+-- a true destroy (2026-09-06) per RedFalcon: "i think you set remove sockets to hide instead of
+-- truly removing. This causes issue as i test items as i think too many get associated and it
+-- crashes."
+-- "swordslot"/"rapierslot"/"weaponbelt"/"beltslot" added (2026-09-04, RedFalcon: "we need to add
+-- swordSlot_lSocket... this is another weapon socket, like the _backsockets, except on the hip",
+-- then "also: weaponBelt_05/07/12/13, rapierSlot_lSocket, beltSlot_01_rSocket") -- none of these
+-- matched any existing fragment, so they all slipped through "remove all sockets" untouched
+-- despite being the same class of reserved native weapon-equip/hip-mount socket as
+-- Axe1h_backsocket/GSword_backsocket/etc. "weaponbelt" and "beltslot" each cover their own whole
+-- numbered family (weaponBelt_05/07/12/13; beltSlot_01_lSocket/_rSocket) with one fragment, same
+-- pattern "_backsocket" already uses for Axe1h/GSword/Halberd/Musket.
+local SOCKET_REMOVE_FRAGMENTS = { "_backsocket", "soc_", "ik_", "hand_", "swordslot", "rapierslot", "weaponbelt", "beltslot" }
+function Spawner.RemoveAllSocketAttachments(say)
+    say = say or function(m) print("[LivingBase] [remove-sockets] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local hidden = 0
+    local function sweep(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock ~= "" then
+                    local sockLower = sock:lower()
+                    local matched = false
+                    for _, frag in ipairs(SOCKET_REMOVE_FRAGMENTS) do
+                        if sockLower:find(frag, 1, true) then matched = true; break end
+                    end
+                    if matched then
+                        local compName, meshName = "?", "(no mesh)"
+                        pcall(function() compName = c:GetFName():ToString() end)
+                        pcall(function()
+                            local sk = nil
+                            pcall(function() sk = c.SkeletalMesh end)
+                            if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then pcall(function() sk = c:GetSkeletalMeshAsset() end) end
+                            if not (sk and sk:IsValid()) then pcall(function() sk = c.StaticMesh end) end
+                            if not (sk and sk:IsValid()) and c.GetStaticMesh then pcall(function() sk = c:GetStaticMesh() end) end
+                            if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+                        end)
+                        -- True destroy, not hide (2026-09-06, see header comment above) -- also
+                        -- fixes the collision concern from 2026-09-04 ("long items can still block
+                        -- things even when hidden") as a side effect: a destroyed component has no
+                        -- collision left to disable in the first place.
+                        local okDestroy, destroyErr = pcall(function() c:K2_DestroyComponent(actor) end)
+                        hidden = hidden + 1
+                        say(string.format("%s socket=%s comp=%s mesh=%s", okDestroy and "removed" or "FAILED to remove", sock, compName, meshName))
+                        Spawner.RefLog("removesockets", string.format("target=%s %s socket=%s comp=%s mesh=%s%s", name, okDestroy and "removed" or "FAILED", sock, compName, meshName, okDestroy and "" or (" err=" .. tostring(destroyErr))))
+                    end
+                end
+            end
+        end
+    end
+    sweep("/Script/Engine.SkeletalMeshComponent")
+    sweep("/Script/Engine.StaticMeshComponent")
+
+    if hidden == 0 then
+        say(name .. " has nothing attached via a backsocket/soc_/ik_/hand_ socket to remove.")
+        pcall(function() Spawner.Toast(name .. " has no socket attachments to remove", 2.5) end)
+        return false
+    end
+    say(string.format("removed %d socket attachment(s) on %s.", hidden, name))
+    pcall(function() Spawner.Toast(string.format("Removed %d socket attachment(s) on %s", hidden, name), 2.5) end)
+    return true
+end
+
+-- Spawner.TestPopulateAllSockets(meshPathArg, matchArg, say) -- "lbpopulateaps" (2026-09-03,
+-- RedFalcon: "if i provide an item path, it populates every AP, then i can see what works where").
+-- Attaches ONE copy of the given mesh to EVERY socket found on the nearest/locked actor's Mesh
+-- (or only the ones matching matchArg, e.g. "soc_", if given) -- a one-shot visual survey
+-- of an entire skeleton's attachment layout for a specific item, instead of guessing/trying
+-- sockets one at a time via lbtesttool. Reuses every mechanism already proven safe elsewhere in
+-- this file: the mesh-type auto-detect + AddComponentByClass + SetSkeletalMeshAsset/SetStaticMesh
+-- + K2_AttachToComponent(KeepRelative) sequence from proceedWithTool, and the same two-calling-
+-- convention GetAllSocketNames() dance Spawner.TestDumpSockets already established (out-param
+-- first, plain-return-value fallback, real pcall error surfaced instead of swallowed into an
+-- indistinguishable "0 sockets"). Nothing here calls a UFUNCTION that hasn't already been proven
+-- safe under repetition (AddComponentByClass/K2_AttachToComponent are already called once per
+-- lbtesttool invocation with no documented rapid-repeat issue, unlike full actor spawning, which
+-- is why this runs the whole loop synchronously rather than staggering each socket).
+local function enumerateAllSockets(body)
+    local list = {}
+    local names = {}
+    local ok1, err1 = pcall(function() body:GetAllSocketNames(names) end)
+    local n = 0
+    pcall(function() n = names:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #names end) end
+    local callOk, callErr = true, nil
+    if n == 0 then
+        local ok2, ret = pcall(function() return body:GetAllSocketNames() end)
+        if ok2 and ret then
+            names = ret
+            pcall(function() n = names:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #names end) end
+        elseif not ok1 then
+            callOk, callErr = false, tostring(err1)
+        elseif not ok2 then
+            callOk, callErr = false, tostring(ret)
+        end
+    end
+    for i = 1, n do
+        local s = nil
+        pcall(function() s = names[i] end)
+        if s == nil then pcall(function() s = names:Get(i) end) end
+        pcall(function() if s ~= nil and type(s) == "userdata" and s.get then s = s:get() end end)
+        local sStr = nil
+        pcall(function() sStr = s:ToString() end)
+        if not sStr then pcall(function() sStr = tostring(s) end) end
+        if sStr then list[#list + 1] = sStr end
+    end
+    table.sort(list)
+    return list, callOk, callErr
+end
+
+function Spawner.TestPopulateAllSockets(meshPathArg, matchArg, say)
+    say = say or function(msg) print("[LivingBase] [test-populate] " .. msg .. "\n") end
+    if not meshPathArg or meshPathArg == "" then
+        say("usage: lbpopulateaps <mesh /Game/... path> [socket name fragment filter, anywhere in the name]")
+        return false
+    end
+    local meshPath = meshPathArg
+    if not meshPath:match("%.[%w_]+$") then
+        local last = meshPath:match("([^/]+)$")
+        if last then meshPath = meshPath .. "." .. last end
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local mesh = resolveAsset(meshPath)
+    if not (mesh and mesh:IsValid()) then
+        say("mesh did not resolve: " .. meshPath .. " -- if this is the first time anything's referenced it this session, try again once (cold-asset race, see resolveAsset's own notes).")
+        return false
+    end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    local sockets, callOk, callErr = enumerateAllSockets(body)
+    if not callOk then
+        say("GetAllSocketNames FAILED: " .. tostring(callErr))
+        return false
+    end
+    -- SUBSTRING match, not prefix-only (2026-09-03, RedFalcon: found a real THIRD socket family,
+    -- "*_backsocket" -- e.g. "Axe1h_backsocket", "Musket_backsocket" -- where the distinguishing
+    -- fragment is a SUFFIX, not a prefix like "soc_"/"ik_"/"hand_" are. A plain prefix check
+    -- (s:sub(1,#f)==f) can never match a suffix fragment at all -- switched to a plain substring
+    -- find so one filter arg works for prefix-, suffix-, or mid-string fragments uniformly,
+    -- instead of needing separate prefix/suffix modes or a hardcoded list of named groups.
+    if matchArg and matchArg ~= "" then
+        local filtered = {}
+        for _, s in ipairs(sockets) do
+            if s:find(matchArg, 1, true) then filtered[#filtered + 1] = s end
+        end
+        sockets = filtered
+    end
+    if #sockets == 0 then
+        say("0 sockets matched" .. (matchArg and (" fragment '" .. matchArg .. "'") or "") .. " on " .. name .. ".")
+        return false
+    end
+
+    local meshClassName = "?"
+    pcall(function() meshClassName = mesh:GetClass():GetFName():ToString() end)
+    local isStatic = meshClassName:find("StaticMesh") ~= nil
+    local compCls = StaticFindObject(isStatic and "/Script/Engine.StaticMeshComponent" or "/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then
+        say((isStatic and "StaticMeshComponent" or "SkeletalMeshComponent") .. " class did not resolve.")
+        return false
+    end
+
+    local meshShort = meshPath:match("([^/%.]+)%.[%w_]+$") or meshPath:match("([^/]+)$")
+    say(string.format("target=%s | mesh=%s | populating %d socket(s)%s:", name, meshPath, #sockets,
+        matchArg and (" matching '" .. matchArg .. "'") or ""))
+    Spawner.RefLog("populateaps", string.format("target=%s mesh=%s sockets=%d filter=%s",
+        name, meshPath, #sockets, tostring(matchArg)))
+
+    local okCount = 0
+    for _, socket in ipairs(sockets) do
+        local comp = nil
+        pcall(function()
+            comp = actor:AddComponentByClass(compCls, true, {
+                Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+                Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+                Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+            }, false)
+        end)
+        local lineOk = false
+        if comp and comp:IsValid() then
+            if isStatic then
+                pcall(function() comp:SetStaticMesh(mesh) end)
+            else
+                local okMesh = pcall(function() comp:SetSkeletalMeshAsset(mesh) end)
+                if not okMesh then pcall(function() comp:SetSkeletalMesh(mesh, false) end) end
+            end
+            local attached = pcall(function()
+                comp:K2_AttachToComponent(body, FName(socket), 2, 2, 2, false)
+            end)
+            local xformKey = socket .. "|" .. tostring(meshShort)
+            local realXform = Config.KNOWN_ATTACHMENT_TRANSFORMS and Config.KNOWN_ATTACHMENT_TRANSFORMS[xformKey]
+            if attached and realXform then
+                pcall(function()
+                    comp:K2_SetRelativeLocation({ X = realXform.tx, Y = realXform.ty, Z = realXform.tz }, false, {}, false)
+                    comp:K2_SetRelativeRotation(quatToRotator(realXform.rx, realXform.ry, realXform.rz, realXform.rw), false, {}, false)
+                    comp:SetRelativeScale3D({ X = realXform.sx, Y = realXform.sy, Z = realXform.sz })
+                end)
+            end
+            pcall(function() comp:SetVisibility(true, false) end)
+            lineOk = attached
+        end
+        if lineOk then okCount = okCount + 1 end
+        local line = string.format("   %-30s attach=%s", socket, tostring(lineOk))
+        say(line)
+        Spawner.RefLog("populateaps", line)
+    end
+
+    say(string.format("done -- %d/%d socket(s) attached successfully. Walk around the target to see which ones actually look right for this item; despawn/undo the target (or DEL) to clear all of them at once when done.", okCount, #sockets))
+    pcall(function() Spawner.Toast(string.format("Populated %d/%d sockets on %s -- see console/log", okCount, #sockets, name), 3.0) end)
+    return true
+end
+
 function Spawner.TestAttachToolToNearest(meshPathArg, socketArg)
     if not meshPathArg or meshPathArg == "" then
         print("[LivingBase] [test-tool] usage: lbtesttool <mesh /Game/... path> [socket name]\n")
@@ -8006,9 +8784,14 @@ local function armorProceedWithMesh(matched, meshPath, mesh, actor, smcCls)
         if not okMesh then pcall(function() m.comp:SetSkeletalMesh(mesh, false) end) end
         -- Restore visibility in case this slot was previously hidden by lbremoveclothes/
         -- Custom > Clothes > Remove (2026-08-28) -- same fix as TestApplyClothingPiece's own.
+        -- Restore collision too (2026-09-04) -- RemoveClothingOnActor's own hide branch now
+        -- disables collision alongside visibility (RedFalcon: "long items can still block things
+        -- even when hidden"), so re-dressing has to undo BOTH, not just visibility, or a
+        -- re-equipped piece would render but stay non-solid.
         if okMesh then
             pcall(function() m.comp:SetVisibility(true, false) end)
             pcall(function() m.comp:SetHiddenInGame(false, false) end)
+            pcall(function() m.comp:SetCollisionResponseToAllChannels(2) end)
         end
         -- Cloth-sim rebind after a runtime swap -- see Spawner.TestApplyClothingPiece's own
         -- comment (2026-08-28) for the full history: RecreateClothingActor() and a direct
@@ -8486,6 +9269,42 @@ local function clothingSlotOf(meshName)
     return nil
 end
 
+-- findCurrentSlotComponent(actor, slotName) -- (2026-09-07) shared scan extracted out of
+-- Spawner.TestApplyClothingPiece's own Belt-dependency check, so the Sling<->Strap type-matching
+-- rule (see that function's own comment) can reuse the exact same "find the ONE SkeletalMeshComponent
+-- currently resolving to slotName via clothingSlotOf" logic instead of a third near-identical copy.
+-- Returns comp (nil if none found), its current bare mesh name, and whether it's currently visible.
+local function findCurrentSlotComponent(actor, slotName)
+    local comp, curName, visible = nil, "", false
+    pcall(function()
+        local smcCls2 = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+        if smcCls2 and smcCls2:IsValid() then
+            local comps = actor:K2_GetComponentsByClass(smcCls2)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            for i = 1, n do
+                local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() and not comp then
+                    local cn = ""
+                    pcall(function()
+                        local sk = c.SkeletalMesh
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                        if sk and sk:IsValid() then cn = sk:GetFName():ToString() end
+                    end)
+                    if clothingSlotOf(cn) == slotName then
+                        comp = c
+                        curName = cn
+                        pcall(function() visible = c:IsVisible() end)
+                    end
+                end
+            end
+        end
+    end)
+    return comp, curName, visible
+end
+
 -- getFemaleBodyGroup(actor, bodyMeshName) -- (2026-08-28) classifies a female actor into "Group1"
 -- (Gatherer/"Body 1"/Marita) or "Group2" (Herbalist/"Body 2"/Letty/native BotC Adventure or Albion
 -- statues) for the women's-torso-resize rules in Spawner.TestApplyClothingPiece. By CLASS name
@@ -8508,6 +9327,119 @@ local function getFemaleBodyGroup(actor, bodyMeshName)
         end
     end
     return nil
+end
+
+-- Spawner.TestListAttachmentPoints(bodyPartArg, say) -- "lbtesttool aps <bodyPart>" (2026-09-04,
+-- RedFalcon's real clarification of the first cut of this feature: "i meant to show what the names
+-- are of whats available. so i select an npc, run lbtesttool aps belt and it tells me the name of
+-- the 2 attachment points it has" -- a LIVE, per-actor query of what's actually equipped, not a
+-- static reference list of every name possible anywhere in the game). Sweeps StaticMeshComponents
+-- on the SELECTED actor (same safe, single-accessor-family sweep Spawner.TestHideOnePouch already
+-- uses -- StaticMesh/GetStaticMesh only, no SkeletalMesh accessor mixed in, so this can't hit the
+-- pcall-abort bug fixed in Spawner.RemoveClothingOnActor), matches each one's current mesh name
+-- against the requested body part via clothingSlotOf (the exact same resolver every other
+-- clothing-slot command in this file already uses), and prints just the ones that match: socket
+-- name + mesh name. This is the real, live answer to "what attachment points does THIS piece
+-- actually have" -- Config.KNOWN_ATTACHMENT_SOCKETS_BY_BODYPART (the earlier, static-reference
+-- version of this feature) stays as a genuinely different, complementary answer to a genuinely
+-- different question ("what socket names are used ANYWHERE in the whole game's catalog for this
+-- body part", useful when nothing matching is currently equipped to query live) -- shown as a
+-- fallback note when the live sweep finds nothing.
+-- MOVED HERE (2026-09-04) from right before Spawner.TestAttachToolToNearest -- it originally sat
+-- ABOVE clothingSlotOf's own `local function` declaration, which crashed with "attempt to call a
+-- nil value (global 'clothingSlotOf')" the very first time it ran: a Lua local isn't visible to
+-- code appearing earlier in the file, no matter how far below it lives once the file finishes
+-- loading -- exactly the mistake this file's own established rule already warns about (verify a
+-- called local helper's declaration is ABOVE the call site before adding a new caller).
+-- useSelf (2026-09-06, RedFalcon: "how do i check the socket placement on a character... on the
+-- player i mean") -- when true, targets the player's OWN live pawn (getPlayerPawnAsActor) instead
+-- of the nearest/locked spawned actor, since the player pawn is never in Spawner.spawned and so was
+-- never reachable any other way.
+function Spawner.TestListAttachmentPoints(say, useSelf)
+    say = say or function(m) print("[LivingBase] [test-tool] " .. tostring(m) .. "\n") end
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
+    else
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+
+    local cls = StaticFindObject("/Script/Engine.StaticMeshComponent")
+    if not (cls and cls:IsValid()) then
+        say("StaticMeshComponent class did not resolve.")
+        return false
+    end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+
+    local matches = {}
+    for i = 1, n do
+        local c = nil
+        pcall(function() c = comps[i] end)
+        if c == nil then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local meshName, sock = "", ""
+            pcall(function()
+                local sm = c.StaticMesh
+                if not (sm and sm:IsValid()) and c.GetStaticMesh then sm = c:GetStaticMesh() end
+                if sm and sm:IsValid() then meshName = sm:GetFName():ToString() end
+            end)
+            pcall(function()
+                local fn = c:GetAttachSocketName()
+                if fn then sock = fn:ToString() end
+            end)
+            -- Match on the two real mesh-name prefixes DIRECTLY (2026-09-04, fixed same day as the
+            -- body-part-filter drop below) instead of routing through clothingSlotOf -- the 19q
+            -- catalog scan confirmed these are the ONLY two mesh-name families any real Attachment
+            -- entry anywhere in the game ever uses (234 SM_Belt_Misc_* + 20 SM_Drop_* out of 254
+            -- total instances, zero exceptions). clothingSlotOf only recognizes clothing-family
+            -- tokens (Torso/Legs/Belt/etc.) as substrings -- SM_Drop_MusketT02_01 and its siblings
+            -- (decorative weapon-replica props) contain none of those, so they silently never
+            -- matched ANY body part before this fix and were dropped from the list entirely (not
+            -- just miscategorized, actually invisible) -- confirmed live: RedFalcon compared this
+            -- command's own output against a raw lbsockets dump on the same actor and noticed
+            -- "the sling slot with the musket doesnt come up".
+            if meshName ~= "" and (meshName:find("^SM_Belt_Misc_") or meshName:find("^SM_Drop_")) then
+                matches[#matches + 1] = { socket = sock, mesh = meshName }
+            end
+        end
+    end
+
+    -- No body-part filter (2026-09-04, RedFalcon: "since it displays all sockets, just make it
+    -- lbtesttool aps, no need to say belt") -- dropped after confirming live that Belt/Sling/Strap/
+    -- Sash all collapse to the same combined list anyway (every real attachment mesh anywhere in
+    -- the game shares one of just two prefixes, neither of which structurally distinguishes those
+    -- four slots from each other -- see WINDROSE_MODDING_NOTES.md 19q's own standing note on this).
+    -- Listing everything unconditionally is simply the accurate behavior, not a simplification that
+    -- loses information the filtered version ever actually had.
+    if #matches == 0 then
+        say(string.format("%s has no real attachment points currently equipped.", name))
+        return false
+    end
+
+    say(string.format("%s -- %d attachment point(s) currently equipped:", name, #matches))
+    for _, m in ipairs(matches) do
+        say(string.format("   %s  <- %s", m.socket, m.mesh))
+    end
+    return true
 end
 
 -- Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride) -- "Custom > Clothes"
@@ -8576,6 +9508,69 @@ function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
     if not matched then
         print("[LivingBase] [test-clothes] unknown family/slot/name '" .. family .. "'/'" .. slot .. "'/'" .. pieceName .. "'.\n")
         return false
+    end
+
+    -- Sling/Strap rules (2026-09-07, RedFalcon, from live observation across many native NPCs:
+    -- "Belt does NOT always need a strap and a sling when added, but it does appear that sling and
+    -- strap never appear without a belt... Belt should be able to be added by itself, but sling and
+    -- strap both need a belt" -- and separately, once the old Belt->Frog/Sling/Strap auto-link was
+    -- removed entirely per "i also want to remove that from the clothing spawning in the window
+    -- menu. Belt should only spawn a belt": "sling and strap should always ensure theres a belt.
+    -- I'm guessing they should also check if there is already the opposite [Strap/Sling] and match
+    -- the type if its there"). Two independent rules, both checked here ahead of the fit-mechanism
+    -- gates below (those only ever apply to Torso/Legs, never Sling/Strap):
+    -- 1. Belt dependency: ensure a Belt is visible before this piece goes on -- restoring one that
+    --    exists but is hidden as-is (never overwriting whichever Belt was already there), or
+    --    applying a plain default if genuinely none exists at all (shouldn't normally happen given
+    --    "every slot filled", 19n, but handled rather than assumed away).
+    -- 2. Type matching: if the OPPOSITE of what's being applied (Strap when adding Sling, or vice
+    --    versa) is already there and visible, and its current mesh matches a real Config.
+    --    CUSTOM_CLOTHES row, re-target `matched` to the SAME-NAMED row in the slot actually being
+    --    applied (if one exists) instead of whatever was originally requested -- so a Sling/Strap
+    --    pair picked independently still reads as one matching "Set N" family when both end up
+    --    present, without Belt forcing either of them the way the old removed link did.
+    if matched.slot == "Sling" or matched.slot == "Strap" then
+        local beltComp, _, beltVisible = findCurrentSlotComponent(actor, "Belt")
+        if beltComp and not beltVisible then
+            -- Belt slot exists but was hidden (Custom > Clothes > Remove) -- restore it as-is,
+            -- don't overwrite whichever Belt piece was already equipped before it got hidden.
+            pcall(function()
+                beltComp:SetVisibility(true, false)
+                beltComp:SetHiddenInGame(false, false)
+                beltComp:SetCollisionResponseToAllChannels(2)
+            end)
+            print(string.format("[LivingBase] [test-clothes] %s: restoring Belt (was hidden) before adding %s -- native NPCs never show one without the other.\n", name, matched.slot))
+        elseif not beltComp then
+            print(string.format("[LivingBase] [test-clothes] %s: no Belt found at all -- applying a default Belt before adding %s.\n", name, matched.slot))
+            pcall(function() Spawner.TestApplyClothingPiece("Belt", "Belt", "Set 1") end)
+        end
+
+        local oppositeSlot = (matched.slot == "Sling") and "Strap" or "Sling"
+        local oppComp, oppCurName, oppVisible = findCurrentSlotComponent(actor, oppositeSlot)
+        if oppComp and oppVisible and oppCurName ~= "" then
+            local oppRowName = nil
+            for _, row in ipairs(Config.CUSTOM_CLOTHES or {}) do
+                if row.slot == oppositeSlot then
+                    for _, p in ipairs({ row.femalePath, row.malePath, row.unisexPath }) do
+                        if p and p:match("%.([%w_]+)$") == oppCurName then oppRowName = row.name; break end
+                    end
+                end
+                if oppRowName then break end
+            end
+            if oppRowName then
+                local sameTypeRow = nil
+                for _, row in ipairs(Config.CUSTOM_CLOTHES or {}) do
+                    if row.slot == matched.slot and row.name:lower() == oppRowName:lower() then
+                        sameTypeRow = row; break
+                    end
+                end
+                if sameTypeRow and sameTypeRow ~= matched then
+                    print(string.format("[LivingBase] [test-clothes] %s: matching %s to the %s already equipped (both '%s') instead of '%s'.\n",
+                        name, matched.slot, oppositeSlot, oppRowName, matched.name))
+                    matched = sameTypeRow
+                end
+            end
+        end
     end
 
     -- Women's-clothing fit rules (2026-08-28, RedFalcon's second pass after live-testing across
@@ -8749,9 +9744,12 @@ function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
     -- Restore visibility in case this slot was previously hidden by lbremoveclothes/Custom >
     -- Clothes > Remove (2026-08-28) -- a removed slot stays hidden until something is actually
     -- dressed onto it again; this is that "again."
+    -- Restore collision too (2026-09-04) -- see the sibling restore a few thousand lines up for
+    -- the full reasoning; a hide now also disables collision, so a re-dress has to undo both.
     if okMesh then
         pcall(function() targetComp:SetVisibility(true, false) end)
         pcall(function() targetComp:SetHiddenInGame(false, false) end)
+        pcall(function() targetComp:SetCollisionResponseToAllChannels(2) end)
     end
 
     -- Reset scale/position to identity HERE, right after the plain mesh swap, BEFORE the
@@ -8853,7 +9851,350 @@ function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
         (okCloth == "n/a") and "n/a" or (okCloth and "ok" or ("FAILED: " .. tostring(clothErr))),
         (okResize == "n/a") and "n/a" or (okResize and "ok" or ("FAILED: " .. tostring(resizeErr)))))
     pcall(function() Spawner.Toast("Clothes: " .. matched.family .. " " .. matched.slot .. " " .. matched.name .. " on " .. name, 2.5) end)
+
+    -- Belt/Frog/Sling/Strap auto-link -- REMOVED (2026-09-07, RedFalcon: "i also want to remove
+    -- that from the clothing spawning in the window menu. Belt should only spawn a belt"). This
+    -- used to force-apply the same-numbered Frog/Sling/Strap every time ANY Belt piece was picked
+    -- (built 2026-09-04, "choosing a belt replaces all 3 since they have to be linked"), but that
+    -- turned out to be backwards from how the real game actually works (19s: a Belt stands alone
+    -- fine; Sling/Strap are the ones that depend on Belt, not the other way around) -- see the
+    -- Sling/Strap block ABOVE (before the fit-mechanism gates) for the replacement rule: adding a
+    -- Sling or Strap now ensures a Belt is present AND tries to match whichever of the two (Sling/
+    -- Strap) is already there, instead of Belt forcing anything onto either of them.
     return true
+end
+
+-- Spawner.TestRandomBeltLayout(say) -- "lbtestbeltroll" (2026-09-07, RedFalcon: "I want to make a
+-- command that generates a random belt layout. So 70% of the time, add a belt. then, of there's a
+-- belt, 50% of the time added a strap, and 50% of the time added a sling. They are not exclusive so
+-- both can sometimes appear" + "and clear any previous belts before applying"). Clears Belt/Sling/
+-- Strap first (Spawner.TestRemoveClothingPiece, the same hide used by Custom > Clothes > Remove) so
+-- every roll starts from a clean slate -- a re-roll never leaves a stale Sling from a DIFFERENT
+-- family sitting next to a freshly-rolled Belt. Sling/Strap are only rolled at all when the Belt
+-- roll succeeds, matching 19s's own real-NPC rule (a Sling/Strap never appears without a Belt) --
+-- if Belt doesn't land, this stops there rather than relying on TestApplyClothingPiece's own
+-- auto-restore safety net to paper over a layout the real game would never produce.
+function Spawner.TestRandomBeltLayout(say)
+    say = say or function(m) print("[LivingBase] [belt-roll] " .. tostring(m) .. "\n") end
+
+    for _, slotName in ipairs({ "Belt", "Sling", "Strap" }) do
+        pcall(function() Spawner.TestRemoveClothingPiece(slotName) end)
+    end
+
+    local function rowsForSlot(slotName)
+        local rows = {}
+        for _, row in ipairs(Config.CUSTOM_CLOTHES or {}) do
+            if row.slot == slotName then rows[#rows + 1] = row end
+        end
+        return rows
+    end
+
+    if math.random() >= 0.70 then
+        say("rolled: no Belt (30% chance) -- Sling/Strap not rolled either, same as a real NPC.")
+        return true
+    end
+
+    local beltRows = rowsForSlot("Belt")
+    if #beltRows == 0 then
+        say("rolled Belt, but Config.CUSTOM_CLOTHES has no Belt rows to pick from.")
+        return false
+    end
+    local report = {}
+    local beltRow = beltRows[math.random(#beltRows)]
+    -- Capture the ACTUAL return value, not just whether pcall threw -- TestApplyClothingPiece
+    -- reports failure (no path resolved, mesh didn't resolve, no component in that slot, etc.) as a
+    -- normal `return false`, not a Lua error, so pcall's own ok=true tells you nothing about
+    -- whether the piece actually went on (2026-09-07 fix, RedFalcon: "I think we got a crossed
+    -- wire here. Only roll for strap and sling if a belt was rolled" -- this was A real crossed
+    -- wire: Strap/Sling were gated on the 70% RNG roll happening at all, not on the Belt piece
+    -- having actually applied successfully). The OTHER, bigger crossed wire, found the same day: a
+    -- pre-existing Belt auto-link used to force-apply the same-numbered Sling/Strap every time
+    -- ANY Belt applied -- REMOVED entirely now (see Spawner.TestApplyClothingPiece's own comment
+    -- where that block used to live), so no extra flag is needed here any more either.
+    local okBelt, beltResult = pcall(function() return Spawner.TestApplyClothingPiece(beltRow.family, beltRow.slot, beltRow.name) end)
+    local beltApplied = okBelt and beltResult == true
+    if beltApplied then
+        report[#report + 1] = string.format("Belt=%s/%s", beltRow.family, beltRow.name)
+    else
+        say("Belt apply FAILED: " .. tostring(okBelt and "TestApplyClothingPiece returned false" or beltResult))
+    end
+
+    if not beltApplied then
+        say("Belt didn't actually go on -- Sling/Strap not rolled either.")
+        return false
+    end
+
+    -- Sling/Strap chance reduced 50% -> 30% each (2026-09-07, same request).
+    for _, slotName in ipairs({ "Strap", "Sling" }) do
+        if math.random() < 0.30 then
+            local rows = rowsForSlot(slotName)
+            if #rows > 0 then
+                local row = rows[math.random(#rows)]
+                local ok, err = pcall(function() Spawner.TestApplyClothingPiece(row.family, row.slot, row.name) end)
+                if ok then
+                    report[#report + 1] = string.format("%s=%s/%s", slotName, row.family, row.name)
+                else
+                    say(slotName .. " apply FAILED: " .. tostring(err))
+                end
+            end
+        else
+            report[#report + 1] = slotName .. "=(not rolled)"
+        end
+    end
+
+    say("rolled layout -- " .. table.concat(report, ", "))
+    return true
+end
+
+-- Spawner.TestGenerateSocketItems(say) -- "lbtestsocketitems" (2026-09-07) -- RedFalcon's full
+-- SocketItems.xlsx design (Config.SOCKETITEMS_* -- see that data's own header comment in config.lua
+-- for the complete rule list and the data-quality fixups already applied). One call rolls a
+-- complete random belt-accessory + weapon layout for the nearest/locked actor:
+--   * Clears every existing socket attachment FIRST (RedFalcon: "like the belts we want to clear
+--     all sockets at the start of each call"), same true-destroy Spawner.RemoveAllSocketAttachments
+--     lbremoveallsockets already uses, so repeated rolls never accumulate leftovers.
+--   * soc items: per (Location, Type) group, roll a random count 0..Count (skipped entirely if
+--     that Type's beltpiece isn't currently visible), pick that many of the group's real sockets at
+--     random, and weighted-pick (rarity, doubled for a tag already used this roll) an eligible item
+--     per socket, respecting each item's own Limit across the whole run.
+--   * soc_Strap_r is the one MANDATORY exception (Item Ratios' own "Always When Strap is Visible"
+--     note) -- always filled whenever Strap is visible, not a 0..1 roll.
+--   * weapons: per location (Back/Sheath/Hip), skipped if that location's required beltpiece isn't
+--     visible, else one 60% roll; a hit weighted-picks one weapon and places it on one of that
+--     location's own sockets -- this alone is what makes "one weapon per location" true.
+--   * Tag synergy is one shared, growing set across BOTH passes (soc items rolled first, so a
+--     themed accessory pick can influence which weapon gets favored afterward too).
+function Spawner.TestGenerateSocketItems(say)
+    say = say or function(m) print("[LivingBase] [socket-items] " .. tostring(m) .. "\n") end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh to attach to.")
+        return false
+    end
+
+    pcall(function() Spawner.RemoveAllSocketAttachments(function() end) end)
+
+    local visiblePiece = {}
+    for _, piece in ipairs({ "Belt", "Sling", "Strap" }) do
+        local comp, _, vis = findCurrentSlotComponent(actor, piece)
+        visiblePiece[piece:lower()] = (comp ~= nil) and vis
+    end
+
+    local RARITY_WEIGHTS = Config.SOCKETITEMS_RARITY_WEIGHTS or {}
+    local usedTags = {}
+    local itemUsedCount = {}
+    local filledSockets = {}
+    local placed, skipped = 0, 0
+
+    local function resolveMeshInfo(assetPath)
+        -- SocketItems.xlsx's own "Asset" column is a bare /Game/... PACKAGE path with no
+        -- ".AssetName" suffix (unlike a console-typed meshPath, which resolveMeshAndActorForFill
+        -- already normalizes the same way) -- StaticFindObject needs "Package.AssetName" and
+        -- throws "GetPackageNameFromLongName: Name wasn't long" on a bare package path. Same fix
+        -- as resolveMeshAndActorForFill's own.
+        if not assetPath:match("%.[%w_]+$") then
+            local last = assetPath:match("([^/]+)$")
+            if last then assetPath = assetPath .. "." .. last end
+        end
+        local mesh = resolveAsset(assetPath)
+        if not (mesh and mesh:IsValid()) then return nil end
+        local clsName = "?"
+        pcall(function() clsName = mesh:GetClass():GetFName():ToString() end)
+        local isStatic = clsName:find("StaticMesh") ~= nil
+        local compCls = StaticFindObject(isStatic and "/Script/Engine.StaticMeshComponent" or "/Script/Engine.SkeletalMeshComponent")
+        if not (compCls and compCls:IsValid()) then return nil end
+        return mesh, isStatic, compCls
+    end
+
+    local function weightOf(rowRarity, rowTags)
+        local w = RARITY_WEIGHTS[rowRarity] or 1
+        for _, t in ipairs(rowTags or {}) do
+            if usedTags[t] then return w * 2 end
+        end
+        return w
+    end
+
+    local function weightedPick(pool)
+        if #pool == 0 then return nil end
+        local total = 0
+        for _, row in ipairs(pool) do total = total + row._weight end
+        if total <= 0 then return pool[math.random(#pool)] end
+        local r = math.random() * total
+        local acc = 0
+        for _, row in ipairs(pool) do
+            acc = acc + row._weight
+            if r <= acc then return row end
+        end
+        return pool[#pool]
+    end
+
+    local function markUsed(row)
+        for _, t in ipairs(row.tags or {}) do usedTags[t] = true end
+    end
+
+    local function shuffledCopy(list)
+        local copy = {}
+        for i, v in ipairs(list) do copy[i] = v end
+        for i = #copy, 2, -1 do
+            local j = math.random(i)
+            copy[i], copy[j] = copy[j], copy[i]
+        end
+        return copy
+    end
+
+    -- Real sockets per (locationTag, beltpiece) for SocType "soc", and per locationTag for SocType
+    -- "weapon", built once from Config.SOCKETITEMS_SOCKETS -- a socket whose beltpiece lists MORE
+    -- THAN ONE piece (e.g. soc_Strap01F -- "strap,belt", a real socket some Belt pieces reuse for
+    -- their own bundled strap sub-entry, per 19q) lands in BOTH groups; filledSockets below stops
+    -- the two groups from ever double-booking it if both happen to roll it.
+    local socSocketsByGroup = {}
+    local weaponSocketsByLocation = {}
+    local weaponRequiredPiece = {}
+    for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
+        if s.socType == "soc" then
+            for _, bp in ipairs(s.beltpiece or {}) do
+                local typeCap = bp:sub(1, 1):upper() .. bp:sub(2)
+                local key = s.locationTag .. "|" .. typeCap
+                socSocketsByGroup[key] = socSocketsByGroup[key] or {}
+                table.insert(socSocketsByGroup[key], s.socket)
+            end
+        elseif s.socType == "weapon" then
+            weaponSocketsByLocation[s.locationTag] = weaponSocketsByLocation[s.locationTag] or {}
+            table.insert(weaponSocketsByLocation[s.locationTag], s.socket)
+            weaponRequiredPiece[s.locationTag] = (s.beltpiece or {})[1]
+        end
+    end
+
+    -- 1) SOC ITEMS. Group processing order is shuffled (2026-09-07, alongside the side-cap addition
+    -- below) rather than always walking Config.SOCKETITEMS_RATIOS in its own fixed Belt/Sling/Strap
+    -- order -- otherwise Belt (always first in that table) would always get first claim on a
+    -- capped side's remaining room, and Strap would always be the one squeezed out. Shuffling means
+    -- any of the three can end up favored on a given roll.
+    local sideTotal = {}   -- location -> total soc items placed there so far this run
+    local socRatios = {}
+    for _, ratio in ipairs(Config.SOCKETITEMS_RATIOS or {}) do
+        if ratio.type ~= "Weapon" then socRatios[#socRatios + 1] = ratio end
+    end
+    for _, ratio in ipairs(shuffledCopy(socRatios)) do
+        local sockets = socSocketsByGroup[ratio.location .. "|" .. ratio.type] or {}
+        local piece = ratio.type:lower()
+        if visiblePiece[piece] and #sockets > 0 then
+            -- Side cap (2026-09-07, RedFalcon: "limits on items based just on the side... 5 soc
+            -- items on the front and 8 soc items on the back total") -- an overall ceiling on top
+            -- of this one group's own Count, shared across all soc groups on the same Location
+            -- (Config.SOCKETITEMS_SIDE_CAPS; "Side" -- soc_Strap_r -- isn't capped at all, it's
+            -- mandatory rather than rolled).
+            local cap = (Config.SOCKETITEMS_SIDE_CAPS or {})[ratio.location]
+            local capRemaining = cap and math.max(0, cap - (sideTotal[ratio.location] or 0)) or math.huge
+            local upperBound = math.min(ratio.count, #sockets, capRemaining)
+            local n = ratio.mandatory and math.min(#sockets, capRemaining) or math.random(0, math.max(0, upperBound))
+            local candidates = shuffledCopy(sockets)
+            local pickedCount = 0
+            for _, socket in ipairs(candidates) do
+                if pickedCount >= n then break end
+                if not filledSockets[socket] then
+                    local exists = false
+                    pcall(function() exists = body:DoesSocketExist(FName(socket)) end)
+                    if exists then
+                        local pool = {}
+                        for _, item in ipairs(Config.SOCKETITEMS_ITEMS or {}) do
+                            local fitsHere = false
+                            for _, s2 in ipairs(item.sockets) do if s2 == socket then fitsHere = true; break end end
+                            if fitsHere and (itemUsedCount[item.asset] or 0) < item.limit then
+                                item._weight = weightOf(item.rarity, item.tags)
+                                pool[#pool + 1] = item
+                            end
+                        end
+                        local chosen = weightedPick(pool)
+                        if chosen then
+                            local mesh, isStatic, compCls = resolveMeshInfo(chosen.asset)
+                            if mesh then
+                                if attachMeshAtSocket(actor, name, chosen.asset, mesh, isStatic, compCls, body, socket, say) then
+                                    placed = placed + 1
+                                    pickedCount = pickedCount + 1
+                                    filledSockets[socket] = true
+                                    itemUsedCount[chosen.asset] = (itemUsedCount[chosen.asset] or 0) + 1
+                                    markUsed(chosen)
+                                end
+                            else
+                                skipped = skipped + 1
+                            end
+                        end
+                    end
+                end
+            end
+            sideTotal[ratio.location] = (sideTotal[ratio.location] or 0) + pickedCount
+        end
+    end
+
+    -- 2) WEAPONS.
+    for _, ratio in ipairs(Config.SOCKETITEMS_RATIOS or {}) do
+        if ratio.type == "Weapon" then
+            local loc = ratio.location
+            local sockets = weaponSocketsByLocation[loc] or {}
+            local requiredPiece = weaponRequiredPiece[loc]
+            if requiredPiece and visiblePiece[requiredPiece] and #sockets > 0 then
+                if math.random() < 0.60 then
+                    local pool = {}
+                    for _, w in ipairs(Config.SOCKETITEMS_WEAPONS or {}) do
+                        local fitsHere = false
+                        for _, s2 in ipairs(w.sockets) do
+                            for _, s3 in ipairs(sockets) do
+                                if s2 == s3 then fitsHere = true; break end
+                            end
+                            if fitsHere then break end
+                        end
+                        if fitsHere then
+                            w._weight = weightOf(w.rarity, w.tags)
+                            pool[#pool + 1] = w
+                        end
+                    end
+                    local chosen = weightedPick(pool)
+                    if chosen then
+                        local validTargets = {}
+                        for _, s2 in ipairs(chosen.sockets) do
+                            for _, s3 in ipairs(sockets) do
+                                if s2 == s3 and not filledSockets[s2] then validTargets[#validTargets + 1] = s2 end
+                            end
+                        end
+                        if #validTargets > 0 then
+                            local targetSocket = validTargets[math.random(#validTargets)]
+                            local exists = false
+                            pcall(function() exists = body:DoesSocketExist(FName(targetSocket)) end)
+                            if exists then
+                                local mesh, isStatic, compCls = resolveMeshInfo(chosen.asset)
+                                if mesh then
+                                    if attachMeshAtSocket(actor, name, chosen.asset, mesh, isStatic, compCls, body, targetSocket, say) then
+                                        placed = placed + 1
+                                        filledSockets[targetSocket] = true
+                                        markUsed(chosen)
+                                        say(string.format("weapon: %s -> %s (%s)", chosen.shortName, targetSocket, loc))
+                                    end
+                                else
+                                    skipped = skipped + 1
+                                end
+                            end
+                        end
+                    end
+                else
+                    say(string.format("weapon roll missed for %s (60%% chance).", loc))
+                end
+            end
+        end
+    end
+
+    say(string.format("done -- placed %d item(s)/weapon(s) on %s, %d skipped (mesh unresolved).", placed, name, skipped))
+    return placed > 0
 end
 
 -- Spawner.TestRemoveClothingPiece(slotArg) -- "Custom > Clothes > Remove" (2026-08-28, RedFalcon:
@@ -8893,8 +10234,20 @@ function Spawner.TestRemoveClothingPiece(slotArg)
             maxDist))
         return false
     end
-    local actor = e.actor
-    local name = tostring(e.label or "actor")
+    return Spawner.RemoveClothingOnActor(e.actor, slotArg, e.label)
+end
+
+-- Spawner.RemoveClothingOnActor(actor, slotArg, name) -- the core of Spawner.TestRemoveClothingPiece
+-- (2026-09-04), extracted so it can be called directly on an ALREADY-RESOLVED actor (e.g. right
+-- after a fresh Barbie build, before the player ever targets it) instead of only via the
+-- nearest-in-front console-test resolution path. Behavior is identical to the console command --
+-- hides (SetVisibility(false)) rather than clears the mesh, so a slot stays re-dressable later via
+-- lbtestclothes/the Clothes GUI, and applies the same modesty-guard underwear substitution when
+-- Config.CLOTHES_UNLOCK_ALL is off. `name` is purely for log/toast text, defaults to "actor".
+function Spawner.RemoveClothingOnActor(actor, slotArg, name)
+    if not (actor and actor:IsValid()) then return false end
+    if not slotArg or slotArg == "" then return false end
+    name = tostring(name or "actor")
     local wantAll = slotArg:lower() == "all"
     local wantSlot = slotArg
     local unlocked = Config.CLOTHES_UNLOCK_ALL == true
@@ -8911,58 +10264,125 @@ function Spawner.TestRemoveClothingPiece(slotArg)
         end
     end
 
-    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
-    if not (cls and cls:IsValid()) then
-        print("[LivingBase] [test-remove-clothes] SkeletalMeshComponent class did not resolve.\n")
-        return false
-    end
-    local comps
-    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
-    local n = 0
-    if comps then
-        pcall(function() n = comps:GetArrayNum() end)
-        if n == 0 then pcall(function() n = #comps end) end
-    end
-
+    -- Sweeps BOTH SkeletalMeshComponent (Torso/Legs/Belt/etc. own pieces) AND
+    -- StaticMeshComponent (2026-09-04, RedFalcon: "i want every slot filled so it can be swapped,
+    -- but hidden" -- confirmed live via lbtestpouch that a piece's own baked Attachments, e.g. the
+    -- Grenadier belt's knife+2 pouches, become real independent StaticMeshComponents at build
+    -- time, matched by mesh name the exact same way as any skeletal piece: their real mesh names
+    -- (SM_Belt_Misc_Knife_01, SM_Belt_Misc_Pouch_01/02) all contain "Belt", so clothingSlotOf
+    -- already resolves them to slot "Belt" with zero new matching logic needed). Without this,
+    -- hiding the Belt slot only hid the belt's own skeletal mesh -- the knife/pouches, being a
+    -- SEPARATE component class entirely, stayed visible, floating with nothing holding them.
+    -- Same dual-sweep idiom socketOccupants already uses for an unrelated reason (see its own
+    -- comment above lbsockets).
     local hidden, replaced = 0, 0
-    for i = 1, n do
-        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
-        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
-        if c and c:IsValid() then
-            local curName = ""
-            pcall(function()
-                local sk = c.SkeletalMesh
-                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
-                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
-            end)
-            local slotHere = clothingSlotOf(curName)
-            if slotHere and (wantAll or slotHere:lower() == wantSlot:lower()) then
-                local guarded = (not unlocked) and (
-                    (slotHere == "Torso" and actorSex == "Female") or
-                    (slotHere == "Legs" and actorSex == "Female") or
-                    (slotHere == "Legs" and actorSex == "Male"))
-                local uwPath = nil
-                if guarded then
-                    if slotHere == "Torso" then uwPath = Config.SENKA_UNDERWEAR_TORSO_F
-                    else uwPath = (actorSex == "Male") and Config.SENKA_UNDERWEAR_LEGS_M or Config.SENKA_UNDERWEAR_LEGS_F end
+    local function sweepClass(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then
+            print("[LivingBase] [test-remove-clothes] " .. classPath .. " did not resolve.\n")
+            return
+        end
+        local comps
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                -- BUG FOUND AND FIXED (2026-09-04): this used to be ONE pcall trying
+                -- SkeletalMesh-then-StaticMesh in sequence. Accessing `.SkeletalMesh` on an actual
+                -- StaticMeshComponent (the pouches/knife) throws -- the property doesn't exist on
+                -- that class -- which aborted the WHOLE pcall'd block before it ever reached the
+                -- StaticMesh fallback lines below it. Confirmed live: every StaticMeshComponent
+                -- silently resolved to curName="" and never matched, so `lbremoveclothes all`
+                -- hid every skeletal sub-piece (Sling/Strap/Frog/Belt itself) but left every
+                -- attachment (Knife/Pouches/etc.) fully visible -- the exact bug RedFalcon caught
+                -- via a before/after lbsockets comparison. Fix: two SEPARATE pcalls, one per
+                -- accessor family, so a throw in one can never block the other (same fix
+                -- Spawner.TestHideOnePouch's own working StaticMesh-only read already didn't need,
+                -- since it never tried SkeletalMesh at all).
+                local curName = ""
+                pcall(function()
+                    local sk = c.SkeletalMesh
+                    if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                    if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+                end)
+                if curName == "" then
+                    pcall(function()
+                        local sm = c.StaticMesh
+                        if not (sm and sm:IsValid()) and c.GetStaticMesh then sm = c:GetStaticMesh() end
+                        if sm and sm:IsValid() then curName = sm:GetFName():ToString() end
+                    end)
                 end
-                local uwMesh = uwPath and resolveAsset(uwPath)
-                if guarded and uwMesh and uwMesh:IsValid() then
-                    local okUw = pcall(function() c:SetSkeletalMeshAsset(uwMesh) end)
-                    if not okUw then pcall(function() c:SetSkeletalMesh(uwMesh, false) end) end
-                    pcall(function() c:SetVisibility(true, false) end)
-                    pcall(function() c:SetHiddenInGame(false, false) end)
-                    replaced = replaced + 1
-                    print(string.format("[LivingBase] [test-remove-clothes] slot=%s -> underwear (was mesh=%s) on %s\n", slotHere, curName, name))
-                else
-                    pcall(function() c:SetVisibility(false, false) end)
-                    pcall(function() c:SetHiddenInGame(true, false) end)
-                    hidden = hidden + 1
-                    print(string.format("[LivingBase] [test-remove-clothes] hid slot=%s mesh=%s on %s\n", slotHere, curName, name))
+                local slotHere = clothingSlotOf(curName)
+                -- SM_Drop_* fallback (2026-09-04, RedFalcon: "i think sm_drop also needs to be
+                -- added to removeall") -- decorative weapon-replica props (muskets/pistols worn as
+                -- belt/sling decoration) share none of clothingSlotOf's clothing-family tokens in
+                -- their own name, so they silently never matched here either, the exact same
+                -- exclusion just fixed in Spawner.TestListAttachmentPoints ("lbtesttool aps"). The
+                -- 19q catalog scan confirmed SM_Belt_Misc_* and SM_Drop_* are the only two mesh-name
+                -- families any real Attachment entry anywhere in the game ever uses -- treat an
+                -- unmatched SM_Drop_* the same as the already-caught SM_Belt_Misc_* family (slot
+                -- "Belt"), consistent with how both families already collapse into one bucket here
+                -- regardless of which structural sub-entry (Belt/Sling/Strap/Sash) they actually
+                -- came from.
+                if not slotHere and curName:find("^SM_Drop_") then slotHere = "Belt" end
+                if slotHere and (wantAll or slotHere:lower() == wantSlot:lower()) then
+                    local guarded = (not unlocked) and (
+                        (slotHere == "Torso" and actorSex == "Female") or
+                        (slotHere == "Legs" and actorSex == "Female") or
+                        (slotHere == "Legs" and actorSex == "Male"))
+                    local uwPath = nil
+                    if guarded then
+                        if slotHere == "Torso" then uwPath = Config.SENKA_UNDERWEAR_TORSO_F
+                        else uwPath = (actorSex == "Male") and Config.SENKA_UNDERWEAR_LEGS_M or Config.SENKA_UNDERWEAR_LEGS_F end
+                    end
+                    -- guarded is only ever true for Torso/Legs, both real SkeletalMeshComponent
+                    -- slots -- a StaticMeshComponent attachment (Belt's own knife/pouches) can
+                    -- never land here, so no special-casing needed for the SetSkeletalMesh* calls
+                    -- below not existing on that component type.
+                    local uwMesh = uwPath and resolveAsset(uwPath)
+                    if guarded and uwMesh and uwMesh:IsValid() then
+                        local okUw = pcall(function() c:SetSkeletalMeshAsset(uwMesh) end)
+                        if not okUw then pcall(function() c:SetSkeletalMesh(uwMesh, false) end) end
+                        pcall(function() c:SetVisibility(true, false) end)
+                        pcall(function() c:SetHiddenInGame(false, false) end)
+                        -- Restore collision (2026-09-04, see the hide branch's own comment for why
+                        -- this needs restoring at all) -- "Block" on every channel, the same
+                        -- generic default a normally-equipped piece uses elsewhere in this file
+                        -- (see the raytrace-fix function a few thousand lines up for the real
+                        -- per-channel breakdown this mirrors in spirit, simplified to "block
+                        -- everything" here since a worn clothing piece has no reason to selectively
+                        -- ignore any one channel).
+                        pcall(function() c:SetCollisionResponseToAllChannels(2) end)
+                        replaced = replaced + 1
+                        print(string.format("[LivingBase] [test-remove-clothes] slot=%s -> underwear (was mesh=%s) on %s\n", slotHere, curName, name))
+                    else
+                        pcall(function() c:SetVisibility(false, false) end)
+                        pcall(function() c:SetHiddenInGame(true, false) end)
+                        -- Collision disable (2026-09-04, RedFalcon: "long items can still block
+                        -- things even when hidden") -- SetVisibility/SetHiddenInGame only control
+                        -- RENDERING, never collision -- a hidden-but-still-colliding long prop
+                        -- (a musket/halberd-shaped attachment, say) can keep blocking movement/
+                        -- raycasts even though nothing draws it. Same proven-safe
+                        -- SetCollisionResponseToAllChannels idiom already used elsewhere in this
+                        -- file (the ghost-highlight ray-trace-fix function) -- "Ignore" (0) on every
+                        -- channel, restored to "Block" (2) if this slot is ever re-dressed (see the
+                        -- guarded branch above and Spawner.TestApplyClothingPiece's own restore).
+                        pcall(function() c:SetCollisionResponseToAllChannels(0) end)
+                        hidden = hidden + 1
+                        print(string.format("[LivingBase] [test-remove-clothes] hid slot=%s mesh=%s on %s\n", slotHere, curName, name))
+                    end
                 end
             end
         end
     end
+    sweepClass("/Script/Engine.SkeletalMeshComponent")
+    sweepClass("/Script/Engine.StaticMeshComponent")
 
     local total = hidden + replaced
     if total == 0 then
@@ -9549,7 +10969,57 @@ end
 -- Player/Presets/), curated complete looks meant for the player character creator, not part of the
 -- mob-randomization pool at all. If this sticks, a genuinely custom body/skin archetype AND
 -- clothing together is solved with zero new asset authoring -- just two existing real asset paths.
-function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say)
+-- classPathOverride (2026-09-03, RedFalcon: "we gotta figure it out" re: Waist never building on
+-- ANY of 3 confirmed-valid dual-sex sources -- every attempt so far used this function's hardcoded
+-- Config.SENKA_FEMALE_BASE_CLASS (Gatherer, a FEMALE skeleton); the one confirmed-working native
+-- Waist example found (Farmer's own Restored piece) is on a MALE skeleton. Optional 4th arg lets a
+-- test pick a different base class -- e.g. Hunter, our own established male Adventurer-family
+-- Barbie base -- to isolate whether this is a female-skeleton-specific socket/attach gap rather
+-- than anything about the composite data itself.
+-- pollForBuildThenUndress(actor, name, attemptsLeft) -- (2026-09-04, RedFalcon: "make it so that
+-- the barbies are in their underwear with other stuff hidden after spawning with everything so
+-- the slots are still available"). The composite mesh build (comp.BuildedCompositeMeshes) doesn't
+-- finish synchronously within Spawner.Spawn's own call -- every prior manual test in this file
+-- relied on the real-world delay between typing lbtestlook and separately typing lbprobedump to
+-- give it time. Automating "hide everything but underwear right after spawn" can't rely on that,
+-- so this is a short, self-rescheduling, ONE-SHOT-per-spawn poll (same self-rescheduling idiom as
+-- the toast ticker above, but capped and per-actor rather than a permanent shared ticker): checks
+-- BuildedCompositeMeshes every 300ms, up to 12 attempts (~3.6s, matching this file's own
+-- established "~12x per spawn" convention for post-build settling elsewhere), and calls
+-- Spawner.RemoveClothingOnActor(actor, "all", name) the moment the build has actually populated.
+-- Uses the real EXISTING hide mechanism (SetVisibility(false), not a mesh-clear), so every hidden
+-- slot stays fully re-dressable afterward via lbtestclothes/the Clothes GUI -- the composite build
+-- itself is untouched, only visibility changes, matching RedFalcon's own "slots still available"
+-- requirement exactly. Gives up (prints once, no toast) if the build never populates in time,
+-- rather than polling forever.
+local function pollForBuildThenUndress(actor, name, attemptsLeft)
+    attemptsLeft = attemptsLeft or 12
+    if not (actor and actor:IsValid()) then return end
+    local built = 0
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            local list = comp.BuildedCompositeMeshes
+            if list then
+                pcall(function() built = list:GetArrayNum() end)
+                if built == 0 then pcall(function() built = #list end) end
+            end
+        end
+    end)
+    if built > 0 then
+        Spawner.RemoveClothingOnActor(actor, "all", name)
+        return
+    end
+    if attemptsLeft <= 1 then
+        print("[LivingBase] [barbie-undress] gave up waiting for composite build on " .. tostring(name) .. " (still 0 BuildedCompositeMeshes after ~3.6s).\n")
+        return
+    end
+    if ExecuteWithDelay then
+        ExecuteWithDelay(300, function() pollForBuildThenUndress(actor, name, attemptsLeft - 1) end)
+    end
+end
+
+function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say, classPathOverride, startInUnderwear)
     say = say or function(m) print("[LivingBase] [test-look] " .. tostring(m) .. "\n") end
     local function ensureFullPath(p)
         if not p then return nil end
@@ -9561,14 +11031,21 @@ function Spawner.TestSpawnCustomLook(paramsPath, archetypePath, say)
     end
     paramsPath = ensureFullPath(paramsPath)
     archetypePath = ensureFullPath(archetypePath)
-    say("about to spawn with compositeLook.params=" .. tostring(paramsPath) .. " archetype=" .. tostring(archetypePath))
-    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "CustomLookTest", nil, nil, nil, nil, false,
+    local classPath = classPathOverride or Config.SENKA_FEMALE_BASE_CLASS
+    if startInUnderwear == nil then startInUnderwear = true end
+    say("about to spawn " .. tostring(classPath) .. " with compositeLook.params=" .. tostring(paramsPath) .. " archetype=" .. tostring(archetypePath))
+    local actor = Spawner.Spawn(classPath, "CustomLookTest", nil, nil, nil, nil, false,
         { params = paramsPath, archetype = archetypePath }, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")
         return false
     end
-    say("Spawn call returned an actor -- lbprobedump it now. Check comp.ArchetypePreset: if it shows the requested archetype path (not the class's own default), the archetype override actually stuck on this base class.")
+    if startInUnderwear then
+        say("Spawn call returned an actor -- everything is still being BUILT (all slots stay available for lbtestclothes later), waiting for the composite build to finish, then hiding down to underwear.")
+        pollForBuildThenUndress(actor, "CustomLookTest")
+    else
+        say("Spawn call returned an actor -- lbprobedump it now. Check comp.ArchetypePreset: if it shows the requested archetype path (not the class's own default), the archetype override actually stuck on this base class.")
+    end
     return true
 end
 
@@ -9650,7 +11127,20 @@ end
 -- actually computes correctly against the retargeted mesh on this class family (AR5AICharacter,
 -- previously confirmed NOT to render a MorphParams override at all, unlike the statue family) --
 -- that's the real open question this combined call is for.
-function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classPath, say)
+--
+-- BUG FOUND AND FIXED 2026-09-01: this used to force sex=2 (Female) UNCONDITIONALLY, regardless of
+-- which BodyTypeSex the given bodyTypesPath entry was actually authored with. That was only ever
+-- correct for the Female-tagged entries tested on a natively-MALE source (Woodman/Miner/Farmer/
+-- Citizen Walker) -- once Male-tagged source templates (AdventurerMale/ScumMale) were built and
+-- tested on those SAME native-male classes, the forced Female request no longer matched anything in
+-- the Male-only custom list at all, reproducing the exact "no match -> hardcoded fallback body"
+-- failure this whole technique was built to avoid (misread live as "Citizen Walker isn't African,
+-- appears to randomize" -- it was never randomizing, it was silently falling back every time).
+-- Replaced with an explicit sexArg: nil/omitted means "don't force anything, use the class's own
+-- native sex" (the correct default now that most sources are tested on a class whose native sex
+-- already matches the entry) -- only pass an explicit override for a genuine sex MISMATCH test
+-- (e.g. a Female-tagged entry on a native-male class).
+function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classPath, sexArg, say)
     say = say or function(m) print("[LivingBase] [test-bodytypes] " .. tostring(m) .. "\n") end
     local function ensureFullPath(p)
         if not p then return nil end
@@ -9663,16 +11153,23 @@ function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classP
     bodyTypesPath = ensureFullPath(bodyTypesPath)
     morphParamsPath = ensureFullPath(morphParamsPath)
     classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
-    -- Force sex=Female (2) unconditionally -- every custom BodyTypeParams entry this session is
-    -- authored BodyTypeSex=Female, so on a natively-MALE source class (Woodman/Miner/Farmer/
-    -- Citizen Walker) the lookup key would otherwise be Male+<Family>, never matching our
-    -- Female-only entry, reproducing the same "no match -> hardcoded fallback body" failure as the
-    -- very first African attempt. A no-op on every already-native-female source tested so far
-    -- (Gatherer/Herbalist/Rosalinda/the Senkamati Caster).
-    say(string.format("about to spawn %s with compositeLook.bodyTypes=%s morphParams=%s sex=Female(forced)",
-        classPath, tostring(bodyTypesPath), tostring(morphParamsPath)))
+    local sex = nil
+    local sexLabel = "native (not forced)"
+    if type(sexArg) == "string" then
+        local s = sexArg:lower()
+        if s == "f" or s == "female" then
+            sex = 2
+            sexLabel = "Female (forced)"
+        elseif s == "m" or s == "male" then
+            sex = 1
+            sexLabel = "Male (forced)"
+        end
+        -- anything else (including "-" / "native") leaves sex nil -- native, not forced.
+    end
+    say(string.format("about to spawn %s with compositeLook.bodyTypes=%s morphParams=%s sex=%s",
+        classPath, tostring(bodyTypesPath), tostring(morphParamsPath), sexLabel))
     local actor = Spawner.Spawn(classPath, "BodyTypesTest", nil, nil, nil, nil, false,
-        { bodyTypes = bodyTypesPath, morphParams = morphParamsPath, sex = 2 }, nil, false)
+        { bodyTypes = bodyTypesPath, morphParams = morphParamsPath, sex = sex }, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")
         return false
@@ -10540,7 +12037,17 @@ function Spawner.TestBodyMorph(xArg, yArg, zArg)
         return false
     end
     local actor = e.actor
-    local name = tostring(e.label or "actor")
+    -- e.label is whatever TAG the spawn call itself passed (e.g. "SpawnNoAI" for every single
+    -- lbspawnnoai spawn, regardless of class) -- useless for telling apart a batch of same-tagged
+    -- spawns of DIFFERENT classes (RedFalcon, 2026-09-02, comparing BodyMorph across several
+    -- lbspawnnoai'd NPCs in a row). Resolve the actor's own real class short-name instead/as well,
+    -- same idiom RetrackOrphans already uses (GetClass():GetFullName(), strip to the short name).
+    local classShort = nil
+    pcall(function()
+        local full = actor:GetClass():GetFullName()
+        classShort = full:match("([%w_]+)%.[%w_]+$") or full:match("([%w_]+)$")
+    end)
+    local name = tostring(classShort or e.label or "actor")
 
     local mesh
     pcall(function() mesh = actor.Mesh end)
@@ -10802,7 +12309,13 @@ function Spawner.TestSwapBodySex(say)
         return
     end
     local actor = e.actor
-    local name = tostring(e.label or "actor")
+    -- same e.label-is-just-the-spawn-tag fix as Spawner.TestBodyMorph -- see its own comment.
+    local classShort = nil
+    pcall(function()
+        local full = actor:GetClass():GetFullName()
+        classShort = full:match("([%w_]+)%.[%w_]+$") or full:match("([%w_]+)$")
+    end)
+    local name = tostring(classShort or e.label or "actor")
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
     if not (comp and comp:IsValid()) then
@@ -11049,6 +12562,62 @@ function Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)
     pcall(function() target:SetVisibility(true, false) end)
     say(string.format("BodyPart=%s mesh swap %s (%s)", tostring(bodyPart), ok and "OK" or "FAILED", meshPath))
     return ok
+end
+
+-- ER5BLCompositeMeshBodyPartType_V0_8_0's own 18-value table (confirmed from UE4SS_ObjectDump.txt,
+-- re-verified multiple times this session -- no "TorsoCloth" value, see 19l's own header).
+local BODY_PART_ENUM_BY_NAME = {
+    None = 0, Eyebrows = 1, Beard = 2, Hairs = 3, Headgear = 4, Mask = 5, Cape = 6, Torso = 7,
+    Sash = 8, Belt = 9, Sling = 10, Strap = 11, Frog = 12, Legs = 13, Feets = 14, Waist = 15,
+    Hands = 16, Mustache = 17, Whiskers = 18,
+}
+
+-- Spawner.TestPreviewPiece(bodyPartArg, meshPathArg, say) -- "lbtestpiece" (2026-09-04, RedFalcon:
+-- "can you make a command that let's me test what these look like", re: Other/Barbie_Slot_Item_
+-- Catalog.xlsx's 560-row scan of every real per-slot mesh in the game). Nothing new needed under
+-- the hood -- Spawner.SetBodyPartMesh already does exactly this (find the actor's own currently-
+-- BUILT BuildedCompositeMeshes entry matching a given BodyPart enum, swap its mesh, rebind leader
+-- pose), it just had no console-facing wrapper and takes the enum as a bare NUMBER, not a name.
+-- This is a thin wrapper: resolves the actor via the usual nearest-in-front pick, maps a plain
+-- body-part NAME (as printed in the catalog's own MeshBodyPart column) to its enum number, and
+-- calls straight through. Pass the exact `BaseMesh_Male`/`BaseMesh_Female` path from whichever
+-- catalog row matches the target's own sex -- picking the wrong sex's mesh isn't validated here
+-- (SetBodyPartMesh doesn't know or care which sex a mesh was authored for, it just swaps
+-- whatever's given), so a visibly wrong-shaped result most likely means the wrong sex's column was
+-- copied. NOTE: this previews the BASE MESH only -- a piece's own baked `Attachments` (pouches/
+-- knife/etc, see 19p/19q) are NOT reproduced by this live swap, only by a real from-scratch
+-- composite build; this command answers "what does the garment/prop itself look like", not "what
+-- does the fully-accessorized piece look like".
+function Spawner.TestPreviewPiece(bodyPartArg, meshPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-piece] " .. tostring(m) .. "\n") end
+    if not bodyPartArg or bodyPartArg == "" or not meshPathArg or meshPathArg == "" then
+        say("usage: lbtestpiece <bodyPart> <meshPath> -- bodyPart one of: " ..
+            "Torso/Legs/Feets/Hands/Headgear/Waist/Belt/Strap/Sling/Frog/Sash/Cape/Mask/Hairs/" ..
+            "Eyebrows/Beard/Mustache/Whiskers -- meshPath = the BaseMesh_Male or BaseMesh_Female " ..
+            "column (matching your target's sex) from Other/Barbie_Slot_Item_Catalog.xlsx")
+        return false
+    end
+    local wantBP = BODY_PART_ENUM_BY_NAME[bodyPartArg]
+    if not wantBP then
+        for nm, num in pairs(BODY_PART_ENUM_BY_NAME) do
+            if nm:lower() == bodyPartArg:lower() then wantBP = num; break end
+        end
+    end
+    if not wantBP then
+        say("unknown body part '" .. bodyPartArg .. "' -- see usage (lbtestpiece with no args).")
+        return false
+    end
+    if not meshPathArg:match("%.[%w_]+$") then
+        local last = meshPathArg:match("([^/]+)$")
+        if last then meshPathArg = meshPathArg .. "." .. last end
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    return Spawner.SetBodyPartMesh(e.actor, wantBP, meshPathArg, say)
 end
 
 -- Spawner.TestSetBaseBodyMesh(actor, meshPath, say) -- swaps the actor's own BASE body mesh
@@ -11830,8 +13399,94 @@ function Spawner.TestSetBaseCPDFloat(idx, value, say)
     return okSet
 end
 
--- Spawner.TestSetEyeColor(colorName, say) -- "lbtesteye <colorName>" (2026-08-31). Eyes are NOT
--- CPD-driven -- confirmed by lbtestbasecpd(15, ...) doing nothing -- there's a small, discrete,
+-- Spawner.TestProbeMovement(say) -- "lbtestmove" (2026-09-02). PURE READ, follow-up to
+-- lbtestai's own "slides instead of walks" finding on a Handyman-brained Senkamati Warrior: the
+-- AnimInstance's own Speed/GroundSpeed/WantForwardSpeed variables all read 0.0 despite real
+-- position change. Reads BOTH the pawn's own actor:GetVelocity() (the proven-safe, real physics
+-- velocity per this project's own UE4SS best-practices doc) AND the AnimInstance's own cached
+-- Velocity/PreviousVelocity struct fields side by side, on the nearest/locked actor -- if
+-- actor:GetVelocity() is ALSO ~zero while the actor visibly moves, movement is happening via
+-- direct position-setting (this game's own custom movement/pathing, confirmed elsewhere to not be
+-- the standard UE navmesh) rather than real integrated velocity, which would mean the AnimBP's
+-- Speed calc is arguably CORRECT given its actual inputs -- the disconnect would be one level
+-- earlier, in how the Handyman AI's own MoveTo interacts with this pawn's CharacterMovementComponent
+-- (or lack thereof), not a simple "wrong AnimBP" problem.
+-- PLACEMENT NOTE (2026-09-02): originally added much earlier in this file, ABOVE
+-- findNearestSpawnInFront's own `local function` declaration -- since Lua locals aren't hoisted,
+-- that call would have resolved to a nil global and errored the instant this ran. Moved down here
+-- next to the other functions that already safely call the same helper. Recurring mistake in this
+-- project (see feedback_lua_forward_reference_check memory) -- always verify a called local
+-- helper's declaration is above the new function before trusting a first draft's placement.
+function Spawner.TestProbeMovement(say)
+    say = say or function(m) print("[LivingBase] [test-move] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+
+    local realVel = nil
+    local okReal, errReal = pcall(function() realVel = actor:GetVelocity() end)
+    if okReal and realVel then
+        local okX = pcall(function() return realVel.X + 0 end)
+        if okX then
+            say(string.format("actor:GetVelocity() = (%.2f, %.2f, %.2f) -- SIZE=%.2f",
+                realVel.X, realVel.Y, realVel.Z,
+                math.sqrt(realVel.X^2 + realVel.Y^2 + realVel.Z^2)))
+        else
+            say("actor:GetVelocity() returned an unreadable struct")
+        end
+    else
+        say("actor:GetVelocity() FAILED: " .. tostring(errReal))
+    end
+
+    local cmc = nil
+    pcall(function() cmc = actor.CharacterMovementComponent end)
+    if cmc and cmc:IsValid() then
+        local cmcClass = "?"
+        pcall(function() cmcClass = cmc:GetClass():GetFullName() end)
+        say("CharacterMovementComponent class: " .. cmcClass)
+    else
+        say("no CharacterMovementComponent on this actor")
+    end
+
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    local inst = nil
+    if mesh and mesh:IsValid() then pcall(function() inst = mesh:GetAnimInstance() end) end
+    if inst and inst:IsValid() then
+        for _, fieldName in ipairs({ "Velocity", "PreviousVelocity" }) do
+            local v = nil
+            pcall(function() v = inst[fieldName] end)
+            if v then
+                local okX = pcall(function() return v.X + 0 end)
+                if okX then
+                    say(string.format("AnimInstance.%s = (%.2f, %.2f, %.2f)", fieldName, v.X, v.Y, v.Z))
+                else
+                    say("AnimInstance." .. fieldName .. " unreadable")
+                end
+            end
+        end
+    else
+        say("no AnimInstance readable off actor.Mesh")
+    end
+
+    return true
+end
+
+-- Spawner.TestSetEyeColor(colorName, say) -- "lbtesteye <colorName>" (2026-08-31). CORRECTION
+-- (2026-09-02): this comment used to claim eyes aren't CPD-driven at all, based on an early
+-- lbtestbasecpd(15, ...) test that happened to land on an "unlucky value" (same trap cloth's Main
+-- channel hit at 23 before 20 worked) -- a later sweep the same night DID find real color shifts,
+-- and RedFalcon has since confirmed both mechanisms live: lbtestbasecpd 15 <value> DOES recolor
+-- eyes, applied on top of the plain default MI_Eye material, and looks like a natural/subtle shade
+-- shift -- genuinely different in character from this function's own discrete variants below,
+-- which render as vivid, almost-glowing colors. Both are real, both are meant to be used together
+-- (see WINDROSE_MODDING_NOTES.md's own SS on eyes for the full resolution), not either/or. This
+-- function itself remains exactly as originally built -- there's a small, discrete,
 -- pre-made set of eye-color material INSTANCES instead
 -- (/Game/Character/Shaders/InstanceMaterials/Eyes/Round/MI_EyeRound_<Color>_01: Blue/Brown/Evil/
 -- Green/Grey), the SAME "swap to an existing variant" mechanism already proven safe for skin tone
@@ -11914,6 +13569,210 @@ function Spawner.TestSetEyeColor(colorName, say)
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
     say("done -- check visually now, no reload needed.")
     return okSet
+end
+
+-- Spawner.TestSetSkinSize(sizeName, say) -- "lbtestskinsize <Small|Medium|Large>" (2026-09-02).
+-- The "choose a size when spawning" ask, solved WITHOUT any new DataAsset/re-cook/repackage work:
+-- every human skin material observed so far (Senkamati/Orient/African, native or custom-retargeted)
+-- follows the exact same "<Family>_<Sex>_<Size>" naming convention, always ending in
+-- _Small/_Medium/_Large -- confirmed across every family probed this whole project, not assumed.
+-- Rather than pre-building 3 size-locked DataAsset variants per template family (which would
+-- multiply retarget work 3x per template, forever), this finds whichever material slot on
+-- actor.Mesh is CURRENTLY a sized skin material (by name, not a hardcoded slot index -- slot 2 has
+-- been consistent so far but isn't assumed), derives that family's OWN sibling path by swapping
+-- just the trailing size word, and SetMaterial's it in -- same safe, proven swap mechanism as
+-- Spawner.TestSetEyeColor above. Works on ANY already-spawned actor regardless of family, including
+-- ones with no custom BodyTypeParams override at all, with zero per-family engineering needed ever
+-- again -- the family is derived live from whatever's already applied, not hardcoded here.
+local SKIN_SIZE_NAMES = { "Small", "Medium", "Large" }
+function Spawner.TestSetSkinSize(sizeName, say)
+    say = say or function(m) print("[LivingBase] [test-skinsize] " .. tostring(m) .. "\n") end
+    if not sizeName then
+        say("usage: lbtestskinsize <Small|Medium|Large>")
+        return false
+    end
+    local matched = nil
+    for _, n in ipairs(SKIN_SIZE_NAMES) do
+        if n:lower() == sizeName:lower() then matched = n; break end
+    end
+    if not matched then
+        say(string.format("unknown size '%s' -- known: %s", sizeName, table.concat(SKIN_SIZE_NAMES, ", ")))
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return false
+    end
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    local skinSlot, currentName, currentFull = nil, nil, nil
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = target:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm then
+                for _, sz in ipairs(SKIN_SIZE_NAMES) do
+                    if nm:lower():match("_" .. sz:lower() .. "$") then
+                        skinSlot = slot
+                        currentName = nm
+                        -- GetPathName() on a plain asset reference isn't a proven-safe call in
+                        -- this codebase (unlike GetFullName(), used hundreds of times elsewhere
+                        -- for exactly this) -- confirmed live 2026-09-02: it returned nil here.
+                        -- GetFullName() returns "ClassName /Package/Path.AssetName"; strip the
+                        -- leading class-name token to get just the path portion.
+                        local okFull, full = pcall(function() return mat:GetFullName() end)
+                        if okFull and full then
+                            currentFull = full:match("^%S+%s+(.+)$")
+                        end
+                        break
+                    end
+                end
+            end
+        end
+        if skinSlot then break end
+    end
+    if skinSlot == nil then
+        say(string.format("no material slot on actor.Mesh looked like a sized skin material (checked %d slots, looking for a name ending in Small/Medium/Large).", numMats))
+        return false
+    end
+    -- Derive the sibling path: same folder + family prefix, just the trailing size word swapped.
+    local newName = currentName:gsub("_%a+$", "_" .. matched)
+    local folder = currentFull and currentFull:match("^(.*/)[^/]+%.[^/]+$") or nil
+    if not folder then
+        say("could not derive the material's own folder from " .. tostring(currentFull))
+        return false
+    end
+    local path = folder .. newName .. "." .. newName
+    local newMat = resolveAsset(path)
+    if not (newMat and newMat:IsValid()) then
+        say("could not resolve " .. path .. " -- this family may not have a " .. matched .. " variant under this name.")
+        return false
+    end
+    local okSet, errSet = pcall(function() target:SetMaterial(skinSlot, newMat) end)
+    say(string.format("SetMaterial(%d, %s) = %s%s (was %s)", skinSlot, newName, tostring(okSet),
+        (not okSet) and (" err=" .. tostring(errSet)) or "", tostring(currentName)))
+    say("done -- check visually now, no reload needed.")
+    return okSet
+end
+
+-- Spawner.TestDumpMeshSlots(say) -- "lbtestmeshslots" (2026-09-02). RedFalcon's question: does the
+-- vanilla human body mesh (e.g. Gatherer's own SK_Adventure_Female_01) genuinely lack geometry for
+-- pieces Senkamati has (e.g. the pelvis/loincloth area), or does it exist but sit hidden/unused?
+-- Offline inspection via UAssetAPI hit a real wall: USkeletalMesh's actual section/geometry data
+-- (FSkeletalMeshLODModel/RenderData) is custom-serialized bulk data, not reflected UProperties --
+-- structurally invisible to property-level tools (same underlying reason CurveLinearColor couldn't
+-- be read earlier). And the Editor itself flatly refuses to load these unversioned cooked packages
+-- at all (RequiresCookedData() gate -- not a config option, hardcoded for any Editor build).
+-- The one place this data IS reachable: a LIVE, already-cooked-and-loaded actor in the actual game
+-- process, via the component's own real UFUNCTIONs (GetNumMaterials/GetMaterial), same proven
+-- pattern as TestSetSkinSize just above. A missing pelvis SECTION (not just a hidden/invisible
+-- material on an existing section) will show up as a genuinely smaller material-slot count on the
+-- vanilla mesh vs. Senkamati's own -- a real, verifiable measurement, not a guess.
+function Spawner.TestDumpMeshSlots(say)
+    say = say or function(m) print("[LivingBase] [mesh-slots] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return false
+    end
+
+    local meshAssetName = "?"
+    pcall(function()
+        local skm = mesh:GetSkeletalMeshAsset()
+        if skm and skm:IsValid() then meshAssetName = skm:GetFName():ToString() end
+    end)
+    say(string.format("actor=%s  mesh asset=%s", tostring(actor:GetFName():ToString()), meshAssetName))
+
+    local numMats = 0
+    pcall(function() numMats = mesh:GetNumMaterials() end)
+    say(string.format("GetNumMaterials() = %d", numMats))
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = mesh:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm, full = "?", nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            local okFull, f = pcall(function() return mat:GetFullName() end)
+            if okFull and f then full = f:match("^%S+%s+(.+)$") end
+            say(string.format("  slot[%d] = %s%s", slot, nm, full and ("  (" .. full .. ")") or ""))
+        else
+            say(string.format("  slot[%d] = <invalid/none>", slot))
+        end
+    end
+    say("compare this slot count/names against the same command run on a Senkamati-bodied actor.")
+    return true
+end
+
+-- Spawner.TestCheckAssetClass(path, say) -- "lbcheckclass <path>" (2026-09-03). PURE READ.
+-- Resolves an asset path the exact same way the composite-mesh build pipeline does
+-- (resolveAsset: StaticFindObject -> LoadAsset -> AssetRegistry fallback) and prints its real
+-- class. Built to check a theory: the facial "CompositeMeshGroup"-named real-game paths used as
+-- CompositeMeshesParams array-entry retarget targets (Eyebrows/Hungover/Hairs) might actually be
+-- R5CompositeMeshGroup objects (a GROUP, containing its OWN array of pieces), not the
+-- R5CompositeMeshParams leaf type that array slot expects -- which would explain silent total
+-- failure (no facial/hair render at all) even though the retarget + reload-verify both "succeeded"
+-- (raw import-table FName renaming never checks the target's actual class).
+function Spawner.TestCheckAssetClass(path, say)
+    say = say or function(m) print("[LivingBase] [check-class] " .. tostring(m) .. "\n") end
+    if not path or path == "" then say("usage: lbcheckclass <full asset path>"); return false end
+    -- StaticFindObject needs the trailing ".AssetName" -- accept a bare package path too (same
+    -- ensureFullPath idiom as Spawner.TestSpawnCustomLook) so console users don't have to repeat
+    -- the last path segment by hand.
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+    local obj = resolveAsset(path)
+    if not (obj and obj:IsValid()) then
+        say("FAILED to resolve: " .. path)
+        return false
+    end
+    local clsName = "?"
+    pcall(function() clsName = obj:GetClass():GetFName():ToString() end)
+    say(string.format("%s -> class=%s", path, clsName))
+    if clsName == "R5CompositeMeshGroup" then
+        local pieces = nil
+        pcall(function() pieces = obj.CompositeMeshesParams end)
+        if pieces then
+            local n = 0
+            pcall(function() n = pieces:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #pieces end) end
+            say(string.format("  is a GROUP containing %d piece(s):", n))
+            for i = 1, n do
+                local p = nil
+                pcall(function() p = pieces[i] end)
+                if p == nil then pcall(function() p = pieces:Get(i) end) end
+                pcall(function() if p ~= nil and type(p) == "userdata" and p.get then p = p:get() end end)
+                if p and p:IsValid() then
+                    local pn = "?"
+                    pcall(function() pn = p:GetFullName() end)
+                    say(string.format("    [%d] %s", i, pn))
+                end
+            end
+        end
+    end
+    return true
 end
 
 -- Spawner.TestProbeSelectedColors(say) -- "lbprobecolors" (2026-08-31). PURE READ, no spawn/write.

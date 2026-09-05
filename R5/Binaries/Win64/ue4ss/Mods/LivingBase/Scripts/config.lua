@@ -689,6 +689,17 @@ local HUNTER_MOB   = SC .. "Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hun
 local CASTER_MOB    = SC .. "Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C"
 local HEALER_MOB    = SC .. "Regular_Shaman_Healer/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Healer.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Healer_C"
 
+-- THRALL (2026-09-02, RedFalcon's request -- see the "Thrall dropped (too zombie to de-corrupt)"
+-- comment further down: that decision was ONLY ever about the native-mob de-corrupt path (his own
+-- skin material never got matched to a clean equivalent). The CREW re-skin path (his real armor on
+-- an ordinary human body, exactly like Warrior/Hunter's own crew rows) was never even attempted --
+-- confirmed his own bundled composite-params + morph-params assets exist at the expected path,
+-- same as the other three, via a direct pak-content check, not a guess. His native sex is
+-- confirmed Male (this session's own BodyTypeParams source-hunting work), so he reuses
+-- WARRIOR_CREW_BASE exactly like Warrior/Hunter do.
+local THRALL_PARAMS = SC .. "Regular_Thrall/CompositeMesh/DA_Mob_Senkamati_Regular_Thrall_CompositeMeshComponentParams.DA_Mob_Senkamati_Regular_Thrall_CompositeMeshComponentParams"
+local THRALL_MOB     = SC .. "Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C"
+
 -- COMPARISON ROSTER (2026-08-10) -- Num7 cycles through every look tried this session, in a
 -- fixed order, so they can be lined up side by side before picking favorites. Healer removed
 -- (2026-08-10, same day) -- she and Caster-F looked the same, not worth 5 extra rows. Three
@@ -725,6 +736,12 @@ Config.SENKAMATI_LOOKS = {
   { name = "Warrior", kind = "crew", helmet = false, idle = true, baseClass = WARRIOR_CREW_BASE, forceArchetype = true, params = WARRIOR_PARAMS },
   { name = "Warrior", kind = "mob",  helmet = true,  idle = true, mob = WARRIOR_MOB },
   { name = "Warrior", kind = "mob",  helmet = false, idle = true, mob = WARRIOR_MOB },
+  -- WARRIOR -- mob, MOBILE/wandering (2 rows) -- 2026-09-02, RedFalcon caught these missing:
+  -- Hunter/Caster-F both got the full 4-combo mob set (mobile x2 + idle x2) from the start, but
+  -- Warrior only ever got the idle pair above -- a plain gap in the original build, not a
+  -- deliberate omission (nothing in this file explains excluding just his mobile mob rows).
+  { name = "Warrior", kind = "mob",  helmet = true,  mob = WARRIOR_MOB },
+  { name = "Warrior", kind = "mob",  helmet = false, mob = WARRIOR_MOB },
 
   -- HUNTER -- original mob stance, then crew re-skin (4 rows)
   { name = "Hunter", kind = "mob",  helmet = true,  mob = HUNTER_MOB },
@@ -766,15 +783,32 @@ Config.SENKAMATI_LOOKS = {
   { name = "Caster-F", kind = "mob",  helmet = true,  idle = true, mob = CASTER_MOB },
   { name = "Caster-F", kind = "mob",  helmet = false, idle = true, mob = CASTER_MOB },
 
+  -- THRALL (2026-09-02) -- the fourth Senkamati combat role, never included in this roster at all
+  -- until now (see Config.DECORRUPT_THRALL/DECORRUPT_CREW_THRALL's own comments for the full
+  -- history of why). Same 8-row pattern as Hunter (mob mobile+idle x2, crew mobile+idle x2) plus
+  -- the 2 "corrupted" rows further down -- 10 rows total, matching Hunter exactly.
+  { name = "Thrall", kind = "mob",  helmet = true,  mob = THRALL_MOB },
+  { name = "Thrall", kind = "mob",  helmet = false, mob = THRALL_MOB },
+  { name = "Thrall", kind = "crew", helmet = true,  baseClass = WARRIOR_CREW_BASE, forceArchetype = true, params = THRALL_PARAMS },
+  { name = "Thrall", kind = "crew", helmet = false, baseClass = WARRIOR_CREW_BASE, forceArchetype = true, params = THRALL_PARAMS },
+  -- THRALL -- idle (frozen) crew + mob (4 rows)
+  { name = "Thrall", kind = "crew", helmet = true,  idle = true, baseClass = WARRIOR_CREW_BASE, forceArchetype = true, params = THRALL_PARAMS },
+  { name = "Thrall", kind = "crew", helmet = false, idle = true, baseClass = WARRIOR_CREW_BASE, forceArchetype = true, params = THRALL_PARAMS },
+  { name = "Thrall", kind = "mob",  helmet = true,  idle = true, mob = THRALL_MOB },
+  { name = "Thrall", kind = "mob",  helmet = false, idle = true, mob = THRALL_MOB },
+
   -- HEALER removed from the roster (2026-08-10) -- she and Caster-F looked the same, not worth
   -- the extra 5 comparison rows. Config.SENKA_FEMALE_BASE_CLASS/HEALER_PARAMS/HEALER_MOB are
   -- kept (harmless, still valid) in case she's wanted back later.
 
-  -- FINALLY -- remaining three "as original": untouched corrupted look, full armor, still safe
-  -- to stand next to (pacified+friendly, just not de-corrupted).
+  -- FINALLY -- remaining four "as original": untouched corrupted look, full armor, still safe
+  -- to stand next to (pacified+friendly, just not de-corrupted). Thrall's own pair added 2026-09-02
+  -- alongside the rest of his roster -- this row was always trivially buildable regardless of the
+  -- "too zombie to de-corrupt" call, since it skips de-corrupt entirely.
   { name = "Warrior",  kind = "corrupted", mob = WARRIOR_MOB },
   { name = "Hunter",   kind = "corrupted", mob = HUNTER_MOB },
   { name = "Caster-F", kind = "corrupted", mob = CASTER_MOB },
+  { name = "Thrall",   kind = "corrupted", mob = THRALL_MOB },
   -- ...and their idle (frozen) counterparts (2026-08-15, RedFalcon's follow-up) -- no code change
   -- needed, spawnSenkaEntry's mob/corrupted branch (testbed.lua) already covers `s.kind ==
   -- "corrupted"` under the same `if s.idle then freezeSenkaStatue(actor) end` check the mob rows
@@ -783,6 +817,7 @@ Config.SENKAMATI_LOOKS = {
   { name = "Warrior",  kind = "corrupted", idle = true, mob = WARRIOR_MOB },
   { name = "Hunter",   kind = "corrupted", idle = true, mob = HUNTER_MOB },
   { name = "Caster-F", kind = "corrupted", idle = true, mob = CASTER_MOB },
+  { name = "Thrall",   kind = "corrupted", idle = true, mob = THRALL_MOB },
 
   -- CASTER, Herbalist base -- frozen (idle) crew reskin pair (2026-08-16, RedFalcon's request:
   -- "add frozen versions of the herbalist crew caster"). Mirrors the Herbalist non-idle pair
@@ -932,6 +967,31 @@ Config.DECORRUPT_HUNTER = {
   },
 }
 
+-- THRALL (2026-09-02): the ORIGINAL "too zombie to de-corrupt" call (see Config.DECORRUPT_MOB's
+-- own header comment further up) was about his native skin specifically, made in this project's
+-- very first Senkamati de-corrupt pass, apparently without ever actually probing his real material
+-- names first (that same era's own comment says Warrior/Hunter "still need rules matched to their
+-- (as-yet-undumped) material names" -- i.e. NOTHING had real confirmed rules yet at that point).
+-- CONFIRMED via a real lbprobedump on him (2026-09-01, taken during this session's unrelated
+-- BodyTypeParams source-hunting work): his real skin material is
+-- MI_Senkamati_Feather_Male_Medium -- an EXACT match for Config.DECORRUPT_MOB.swaps' existing
+-- pattern, so it needed zero new swap rules, shared here exactly like Hunter's own table does, not
+-- copied. Same probe also confirmed the helmet-hide pattern below exactly
+-- ("SK_ArmorCreature_Senkamati_Thrall_Feather_02_Head") and that his native hair
+-- (SK_Hair_Wavy_03_Default_Male) is a plain, ordinary human hairstyle -- fine left alone, hence the
+-- empty `replaces` below is a confirmed choice, not just a cautious default. Own `hides` table (not
+-- aliasing DECORRUPT_MOB's, same reasoning as Hunter's own note above) so a helmet toggle here can
+-- never affect Warrior/Caster/Healer's own rows.
+Config.DECORRUPT_THRALL = {
+  swaps = Config.DECORRUPT_MOB.swaps,
+  hides = {
+    "Thrall_Feather_%d+_Head",
+  },
+  -- Hair left untouched (empty `replaces`) until a live probe shows what he actually rolls --
+  -- same cautious default Hunter's own rules started from before RedFalcon's mohawk spec came in.
+  replaces = {},
+}
+
 -- CREW re-skin rules — the men. Their body IS a human mesh (e.g. SK_Orient_Male_01),
 -- so a human skin material maps correctly: force the chosen tone so they stop
 -- rolling light-skinned. Also hide the cutlass they inherit from being crew
@@ -1077,6 +1137,25 @@ Config.DECORRUPT_CREW_HUNTER = {
     { name = "mohawk (M)", match = "SK_Hair_", to = MOHAWK_M },
     -- PELVIS GAP fix -- see the note above Config.DECORRUPT_CREW.
     { name = "legs cover (M)", match = "Hunter_Feather_%d+_Legs", to = Config.SENKA_UNDERWEAR_LEGS_M },
+  },
+}
+
+-- THRALL crew re-skin (2026-09-02) -- his armor on an ordinary human body, same shape as
+-- Warrior/Hunter's own crew tables above (never built before, see THRALL_PARAMS' own comment for
+-- why). Head-hide pattern confirmed via the same real lbprobedump as Config.DECORRUPT_THRALL above
+-- ("SK_ArmorCreature_Senkamati_Thrall_Feather_02_Head") -- same armor asset family, worn on a
+-- different body, so the identical pattern applies. No weapon replace entry, BY DESIGN (confirmed
+-- with RedFalcon, not an open gap): unlike Warrior (macuahuitl) and Hunter (dendromorph spear), his
+-- native attack is a claw, not a held weapon prop -- there's nothing to replace the crew base's
+-- inherited cutlass WITH, so leaving it in place is the correct final answer here.
+Config.DECORRUPT_CREW_THRALL = {
+  swaps = Config.DECORRUPT_CREW.swaps,
+  hides = withFacialHair({
+    "Thrall_Feather_%d+_Head",
+  }),
+  replaces = {
+    -- PELVIS GAP fix -- see the note above Config.DECORRUPT_CREW.
+    { name = "legs cover (M)", match = "Thrall_Feather_%d+_Legs", to = Config.SENKA_UNDERWEAR_LEGS_M },
   },
 }
 
@@ -1877,6 +1956,207 @@ Config.CLOTHING_REMOVABLE_SLOTS = {
   "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap",
 }
 
+-- Config.KNOWN_ATTACHMENT_SOCKETS_BY_BODYPART -- (2026-09-04) real socket names, deduplicated,
+-- seen across every real piece's own baked `Attachments` entries for a given MeshBodyPart --
+-- extracted offline from the full 486-piece/560-entry catalog scan (Other/Barbie_Slot_Item_
+-- Catalog.xlsx, see WINDROSE_MODDING_NOTES.md 19q). Feeds "lbtesttool aps <bodyPart>" (RedFalcon:
+-- "can you add a command ... that lists the attachment points") -- a pure reference lookup, not a
+-- live query, since Legs/Torso/Headgear/etc. genuinely have ZERO real Attachments anywhere in the
+-- game (confirmed by the same scan) and are deliberately absent from this table entirely, not just
+-- empty lists.
+Config.KNOWN_ATTACHMENT_SOCKETS_BY_BODYPART = {
+  Belt = {
+    "beltSlot_01_lSocket", "beltSlot_01_rSocket", "soc_Lantern", "soc_Strap01F",
+    "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltStrapB",
+  },
+  Sash = {
+    "soc_Lantern", "soc_Strap01F", "soc_belt02B_l", "soc_beltB", "soc_beltSlingB", "soc_beltStrapB",
+  },
+  Sling = {
+    "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F",
+    "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_beltSlingB",
+  },
+  Strap = {
+    "soc_Sling01F", "soc_Strap01F", "soc_Strap02F", "soc_Strap03F", "soc_Strap04F", "soc_Strap_r",
+  },
+}
+
+-- Config.KNOWN_ATTACHMENT_SOCKETS -- (2026-09-04) RedFalcon's own curated whitelist, from hands-on
+-- testing with "lbtesttool fillall": "This is what i want available. anything else can be removed
+-- from the list." Feeds Spawner.TestFillAllSockets directly (replacing the earlier approach of
+-- just deriving the socket list from Config.KNOWN_ATTACHMENT_TRANSFORMS's own keys) -- this is now
+-- the definitive, hand-picked socket vocabulary for "fillall" and any future attachment-placement
+-- work, independent of which sockets happen to already have a real baked transform on record.
+-- Plain-text locations and the belt/sling/strap/weapon category are RedFalcon's own, from a
+-- refined pass with an explicit "Type" column (2026-09-05) -- category is what `lbtesttool fillall
+-- <soc|belt|sling|strap|weapon|all> <meshPath>` filters on (see Spawner.TestFillAllSockets).
+-- beltSlot_01_lSocket/beltSlot_01_rSocket added (2026-09-06) per a final confirmation pass
+-- ("These are all the sockets I decided to keep") -- the rest of the whitelist was already an exact
+-- match, nothing else needed removing.
+Config.KNOWN_ATTACHMENT_SOCKETS = {
+  { socket = "soc_belt02B_l",         location = "Belt, Back Left",                                          category = "belt" },
+  { socket = "soc_beltB",             location = "Belt, Back Middle",                                        category = "belt" },
+  { socket = "soc_beltB02_l",         location = "Belt, Front Left",                                         category = "belt" },
+  { socket = "soc_beltSlingB",        location = "Bottom Left Back on Sling at Belt Level",                  category = "belt" },
+  { socket = "soc_beltSlingF",        location = "Bottom Left Front on Sling at Belt Level",                 category = "belt" },
+  { socket = "soc_beltStrapB",        location = "Bottom Right Back on Sling at Belt Level",                 category = "belt" },
+  { socket = "soc_Lantern",           location = "Belt, Front Right by Belt Buckle",                         category = "belt" },
+  { socket = "soc_LanternLight",      location = "For FX, not an object",                                    category = "belt" },
+  { socket = "beltSlot_01_lSocket",   location = "Belt, Left Hip -- confirmed real content (SM_Drop_PistolT01_03)",  category = "belt" },
+  { socket = "beltSlot_01_rSocket",   location = "Belt, Right Hip (mirrored)",                               category = "belt" },
+  { socket = "soc_Sling01B",          location = "Bottom Left Back on Sling",                                category = "sling" },
+  { socket = "soc_Sling01F",          location = "Bottom Left Front on Sling",                                category = "sling" },
+  { socket = "soc_Sling02B",          location = "Middle Left Back on Sling On Cross",                       category = "sling" },
+  { socket = "soc_Sling02F",          location = "Middle Left Front on Sling Below Cross",                   category = "sling" },
+  { socket = "soc_Sling03B",          location = "Middle Right Back on Sling Above Cross",                   category = "sling" },
+  { socket = "soc_Sling03F",          location = "Middle Right Front on Sling Above Cross",                  category = "sling" },
+  { socket = "soc_Sling04B",          location = "Top Right Back on Sling By Shoulder",                      category = "sling" },
+  { socket = "soc_Sling04F",          location = "Top Right Front on Sling By Shoulder",                     category = "sling" },
+  { socket = "soc_Strap_r",           location = "Bottom Right on Sling at Hip",                             category = "strap" },
+  { socket = "soc_Strap01B",          location = "Bottom Right Back on Strap",                               category = "strap" },
+  { socket = "soc_Strap01F",          location = "Bottom Right Front on Strap at Belt Level",                category = "strap" },
+  { socket = "soc_Strap02B",          location = "Middle Right Back on Strap On Cross",                      category = "strap" },
+  { socket = "soc_Strap02F",          location = "Middle Right Front on Strap Below Cross",                  category = "strap" },
+  { socket = "soc_Strap03B",          location = "Middle Left Back on Strap Above Cross",                    category = "strap" },
+  { socket = "soc_Strap03F",          location = "Middle Left Front on Strap Above Cross",                   category = "strap" },
+  { socket = "soc_Strap04B",          location = "Top Left Back on Strap By Shoulder",                       category = "strap" },
+  { socket = "soc_Strap04F",          location = "Top Left Front on Strap By Shoulder",                      category = "strap" },
+  { socket = "Axe2h_backsocket",      location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "Axe1h_backsocket",      location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "Crossbow2h_backsocket", location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "GSword_backsocket",     location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "Halberd_backsocket",    location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "Musket_backsocket",     location = "Use-specific weapon socket, back -- don't combine with other back sockets",     category = "weapon" },
+  { socket = "swordSlot_lSocket",     location = "Left hip, in sheath -- don't combine with other lSockets", category = "weapon" },
+  { socket = "rapierSlot_lSocket",    location = "Left hip, in sheath -- don't combine with other lSockets", category = "weapon" },
+}
+
+-- Config.KNOWN_ATTACHMENT_TRANSFORMS -- (2026-09-04) real baked Rotation/Translation/Scale3D
+-- offsets, extracted via UAssetAPI from every real Attachments entry across the full 486-piece
+-- catalog scan (WINDROSE_MODDING_NOTES.md 19q), keyed by "<socket>|<mesh short name>" -- feeds
+-- lbtesttool's own real-transform lookup (RedFalcon: "it does have issues with alignment of the
+-- items" when lbtesttool defaulted to identity/socket-default placement). 112 unique (socket,
+-- mesh) pairs, deduped from 220 of 254 total real attachment instances (34 skipped -- an edge-case
+-- struct shape not yet decoded, not worth chasing for a reference table this size). When a
+-- requested mesh+socket combo matches a real pairing here, lbtesttool applies this EXACT baked
+-- offset instead of guessing identity -- when it does not match (a genuinely new combination never
+-- used anywhere in the real game), there is no reference to fall back to and identity is still
+-- used, same as before this table existed.
+Config.KNOWN_ATTACHMENT_TRANSFORMS = {
+  ["soc_Strap01F|SM_Belt_Misc_BagDrGalen_01"] = { rx=-0.0, ry=0.1305261922200515, rz=0.0, rw=0.9914448613738103, tx=0.0, ty=-2.0, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltSlingB|SM_Belt_Misc_Knife_01"] = { rx=-0.339094, ry=-0.122654, rz=0.931653, rw=-0.044643, tx=0.0, ty=1.0, tz=6.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltStrapB|SM_Belt_Misc_BeltBag_01_Simple"] = { rx=0.17364817766693036, ry=0.0, rz=0.0, rw=0.984807753012208, tx=0.0, ty=-4.0, tz=0.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltSlingB|SM_Belt_Misc_BagKsante_01"] = { rx=0.15545481689770022, ry=-0.18526383652390901, rz=-0.0544887298189307, rw=0.9687838195915867, tx=7.0, ty=1.0, tz=-2.0, sx=0.9, sy=0.9, sz=0.9 },
+  ["soc_beltSlingB|SM_Belt_Misc_Fan"] = { rx=0.21458787677489227, ry=0.12743149312373775, rz=-0.9679437525383972, rw=0.028251541964731168, tx=0.0, ty=0.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Book_01"] = { rx=0.0, ry=-0.700909264299856, rz=0.0, rw=0.7132504491541767, tx=0.0, ty=1.0, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_SkullMark"] = { rx=0.0, ry=-0.3826834323650898, rz=0.0, rw=0.9238795325112866, tx=0.0, ty=1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_SkullMetal_Roped_01"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Knife_01"] = { rx=0.42261826174069883, ry=-2.58779050750983e-17, rz=0.9063077870366499, rw=5.549534652183774e-17, tx=4.0, ty=5.0, tz=0.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltStrapB|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=0.17216259343480292, ry=-0.12854320606946767, rz=0.022665635416815044, rw=0.9763825861650425, tx=0.0, ty=1.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Fishhook_01"] = { rx=0.023361317009728454, ry=0.4277185267063123, rz=0.08132825711123179, rw=0.8999426789384982, tx=-2.0, ty=0.0, tz=2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_BeltBag_01_SimpleSmall"] = { rx=-0.020141191626105646, ry=0.4613091308703497, rz=0.03869086912965024, rw=0.8861665954105442, tx=0.0, ty=-1.5, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=1.9240968858313113e-34, ry=0.043619387365335945, rz=-8.400788428272666e-36, rw=0.9990482215818577, tx=0.0, ty=2.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_Knife_01"] = { rx=0.012161306594123844, ry=0.5036369370577065, rz=-0.10689565208487806, rw=0.8571903276509852, tx=10.0, ty=-2.5, tz=5.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_Sling01B|SM_Belt_Misc_Bag_01"] = { rx=0.0, ry=-0.382683, rz=0.0, rw=0.92388, tx=0.0, ty=3.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Bandoleer_01_Tripple01"] = { rx=0.13706583674914263, ry=-0.07474847900899464, rz=0.09741411442580945, rw=0.9829222306941346, tx=0.0, ty=-1.0, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=-0.028251038652918548, ry=0.2145879430366633, rz=0.12743220028900526, rw=0.9679436594388267, tx=3.0, ty=0.0, tz=3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_BagKsante_02"] = { rx=0.016692416874629072, ry=0.3823192025331839, rz=-0.04029905920751509, rw=0.9230002039112791, tx=0.0, ty=1.0, tz=3.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltB|SM_Belt_Misc_Bandoleer_01_Tripple01"] = { rx=0.07474847900899471, ry=-0.09741411442580943, rz=-0.12200356154037494, rw=0.9849052168447175, tx=-2.0, ty=1.0, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Bottle_01"] = { rx=0.12854320606946854, ry=0.17216259343480453, rz=-0.022665635416815398, rw=0.9763825861650419, tx=3.0, ty=3.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01B|SM_Belt_Misc_BeltBag_02_Large_Strap"] = { rx=-0.0841859828293688, ry=-0.2578341604962992, rz=-0.022557566113149692, rw=0.9622501868990581, tx=4.5, ty=3.0, tz=-6.0, sx=0.7, sy=0.7, sz=0.7 },
+  ["soc_Sling01F|SM_Belt_Misc_Powder_01"] = { rx=0.1710100716628343, ry=0.17101007166283427, rz=-0.03015368960704578, rw=0.9698463103929541, tx=0.0, ty=-1.0, tz=-3.0, sx=0.7, sy=0.7, sz=0.7 },
+  ["soc_Strap01F|SM_Belt_Misc_Knife_04"] = { rx=0.422618, ry=-0.0, rz=0.906308, rw=0.0, tx=3.0, ty=2.0, tz=0.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltStrapB|SM_Belt_Misc_BeltBag_02_FR2"] = { rx=0.09741411442580966, ry=-0.1220035615403748, rz=0.09741411442580891, rw=0.9829222306941348, tx=0.0, ty=-2.0, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_BeltBag_01_Simple"] = { rx=-0.0, ry=0.4226182617406992, rz=0.0, rw=0.9063077870366499, tx=0.0, ty=-3.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01B|SM_Belt_Misc_BeltBag_02_Strap"] = { rx=-0.04981164888204617, ry=-0.2666168292877065, rz=0.10323426985098469, rw=0.9569623563675612, tx=0.0, ty=2.0, tz=-13.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Strap04F|SM_Belt_Misc_Grenade_01"] = { rx=2.970402488322863e-17, ry=-0.4216534985427114, rz=-2.970402488322859e-17, rw=0.9067570386639912, tx=2.0, ty=3.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Strap03F|SM_Belt_Misc_Grenade_01"] = { rx=1.874271944989732e-17, ry=-0.537299608346822, rz=-1.874271944989732e-17, rw=0.8433914458128864, tx=2.0, ty=0.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Strap_r|SM_Belt_Misc_BeltBag_02_BonesBomb_Strap"] = { rx=-0.08682408883346318, ry=0.08682408883346308, rz=0.007596123493895605, rw=0.992403876506104, tx=0.0, ty=-2.0, tz=-5.0, sx=1.1, sy=1.1, sz=1.1 },
+  ["soc_Lantern|SM_Belt_Misc_Pouch_02"] = { rx=-0.0, ry=0.087156, rz=0.0, rw=0.996195, tx=0.0, ty=0.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_Pouch_01"] = { rx=-0.007596002444813514, ry=-0.08682400922001449, rz=-0.08682400922001046, rw=0.9924038913631807, tx=5.0, ty=-2.0, tz=-7.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04F|SM_Belt_Misc_Grenade_01"] = { rx=0.12265449964846548, ry=0.3390941135865668, rz=-0.04464258697085566, rw=0.9316534201490778, tx=0.0, ty=2.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Sling03F|SM_Belt_Misc_Grenade_01"] = { rx=0.16773125949652065, ry=0.2548870022441782, rz=-0.04494345552754768, rw=0.9512512425641978, tx=0.0, ty=2.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Sling01F|SM_Belt_Misc_Grenade_01"] = { rx=0.0508769427796735, ry=0.08295423797606911, rz=-0.09052866510300776, rw=0.9911279896612094, tx=2.0, ty=3.0, tz=-3.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Sling02F|SM_Belt_Misc_Grenade_01"] = { rx=0.15174176157789326, ry=0.3271137140908548, rz=-0.12567165426595495, rw=0.9242173397859303, tx=0.0, ty=3.0, tz=-4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling02B|SM_Belt_Misc_BonesBelt_01_FR"] = { rx=-6.162975822039155e-33, ry=-0.7071067811865477, rz=6.162975822039155e-33, rw=0.7071067811865476, tx=0.0, ty=-1.0, tz=-5.0, sx=1.3, sy=1.3, sz=1.3 },
+  ["soc_Strap_r|SM_Belt_Misc_BeltBag_02_Large_Strap"] = { rx=-0.08682400922001114, ry=0.08682400922001524, rz=0.007596002444813637, rw=0.9924038913631807, tx=0.0, ty=-2.0, tz=-6.0, sx=0.9, sy=0.9, sz=0.9 },
+  ["soc_Strap01F|SM_Belt_Misc_Grenade_01"] = { rx=0.023361059604193282, ry=0.42771870959779945, rz=0.08132799708784469, rw=0.8999426221953493, tx=-5.0, ty=0.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Sling01F|SM_Belt_Misc_BeltBag_02_Simple"] = { rx=-0.0, ry=0.1305261922200515, rz=0.0, rw=0.9914448613738103, tx=0.0, ty=-2.0, tz=-6.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_Sling01B|SM_Belt_Misc_BeltBag_02_BonesBomb_Strap"] = { rx=-0.049812, ry=-0.266617, rz=0.103234, rw=0.956962, tx=0.0, ty=2.0, tz=-13.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Strap02F|SM_Belt_Misc_Grenade_01"] = { rx=0.13052619222005155, ry=-3.055125354765865e-33, rz=4.02214883397505e-34, rw=0.9914448613738099, tx=0.0, ty=2.0, tz=0.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_Strap01F|SM_Belt_Misc_SkullMale_01"] = { rx=-0.26782586987710844, ry=-0.0717637255457342, rz=0.248670999120479, rw=0.9280528030865428, tx=-8.0, ty=0.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=0.12092238132398758, ry=0.2801409235014571, rz=0.1209223813239877, rw=0.9446039478901319, tx=3.0, ty=0.0, tz=-1.5, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap04F|SM_Belt_Misc_Smokepipe_01"] = { rx=0.030153689607045918, ry=-0.969846310392954, rz=0.1710100716628353, rw=0.17101007166283436, tx=0.0, ty=-3.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap03F|SM_Belt_Misc_Pouch_02"] = { rx=0.0, ry=-0.17364817766693036, rz=0.0, rw=0.984807753012208, tx=2.0, ty=-2.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap_r|SM_Belt_Misc_BeltBag_01_Simple"] = { rx=-0.08682408883346406, ry=0.08682408883346403, rz=0.007596123493895773, rw=0.9924038765061037, tx=0.0, ty=-8.0, tz=4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04F|SM_Belt_Misc_BoneSmall_02"] = { rx=-8.659560562354935e-17, ry=-0.7071067811865477, rz=8.659560562354935e-17, rw=-0.7071067811865476, tx=2.0, ty=0.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_BeltBag_01_SimpleSmall"] = { rx=0.2670564165566348, ry=0.5858121153958081, rz=-0.09340823888970401, rw=0.759460293062739, tx=0.0, ty=-3.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01B|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=0.0, ry=-0.3420201433256691, rz=0.0, rw=0.9396926207859082, tx=0.0, ty=0.0, tz=-6.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap04F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=-0.2719873054983126, ry=-0.20284807119551043, rz=0.07082354422843246, rw=0.9380083108602778, tx=1.0, ty=0.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap03F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=-0.054488729818930326, ry=-0.18526383652390918, rz=0.1554548168977004, rw=0.9687838195915864, tx=1.0, ty=-0.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_SkullWolf_01"] = { rx=0.06698729810778091, ry=0.25000000000000056, rz=-0.2500000000000001, rw=0.9330127018922192, tx=3.0, ty=2.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_Bandoleer_01_FR"] = { rx=-0.07042819102789405, ry=0.10058188063493972, rz=-0.1648484033552554, rw=0.9786460847046285, tx=4.0, ty=0.0, tz=-1.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_Gloves_01_FL"] = { rx=0.11763829719157615, ry=0.5428168385874905, rz=0.11763829719157642, rw=0.8232085651969463, tx=2.0, ty=-0.5, tz=-4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=0.0, ry=-0.0, rz=0.17364817766693036, rw=0.984807753012208, tx=3.5, ty=0.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01B|SM_Belt_Misc_SkullWolf_01_L"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=0.0, tz=-6.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap03F|SM_Belt_Misc_BoneSmall_01"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=-1.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Pouch_01"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=7.0, ty=-1.0, tz=-6.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_BeltBag_01_Simple"] = { rx=-0.00759612349389598, ry=-0.0868240888334647, rz=-0.08682408883346472, rw=0.9924038765061037, tx=5.0, ty=-6.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Lantern|SM_Belt_Misc_BonesBelt_01_FR"] = { rx=-0.009440963361569936, ry=0.042585433717795294, rz=0.21623361138472558, rw=0.9753667896506382, tx=-4.0, ty=-4.0, tz=3.0, sx=1.5, sy=1.5, sz=1.5 },
+  ["soc_beltStrapB|SM_Belt_Misc_Gloves_01_FL"] = { rx=0.02416715536197093, ry=-0.17195824553872377, rz=0.1370587488362226, rw=0.9752236716571244, tx=5.0, ty=-3.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_belt02B_l|SM_Belt_Misc_Pouch_01"] = { rx=0.08715574274765808, ry=4.6046428787872546e-33, rz=-4.0285405147925985e-34, rw=0.9961946980917453, tx=0.0, ty=-2.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Knife_03"] = { rx=0.06259403053159618, ry=0.4308589221942436, rz=0.06259403053159256, rw=0.8980671265831041, tx=0.0, ty=0.0, tz=2.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_Strap01F|SM_Belt_Misc_BoneNecklace_01"] = { rx=0.0871524241240344, ry=0.000760567682974566, rz=0.00869332839618952, rw=0.9961567660501534, tx=-5.0, ty=-4.5, tz=4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_belt02B_l|SM_Belt_Misc_SkullDodo_01"] = { rx=0.13052619222005155, ry=0.0, rz=0.0, rw=0.9914448613738103, tx=0.0, ty=3.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_BonesBelt_01_FR"] = { rx=0.12092238132398773, ry=-0.28014092350145725, rz=-0.12092238132398758, rw=0.9446039478901318, tx=3.0, ty=1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_SkullMale_01"] = { rx=-0.5328042132212114, ry=1.1743918924010958e-17, rz=7.394143814193366e-18, rw=0.8462385422407356, tx=0.0, ty=3.0, tz=-3.0, sx=1.2, sy=1.2, sz=1.2 },
+  ["soc_beltB|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=-0.048893110258672885, ry=-0.1283914729244282, rz=-0.04889311025867287, rw=0.989310142078187, tx=-3.0, ty=2.0, tz=-7.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB02_l|SM_Belt_Misc_Feathers_02"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=-1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04F|SM_Belt_Misc_Knife_01"] = { rx=-1.0, ry=-0.0, rz=0.0, rw=6.123233995736766e-17, tx=0.0, ty=4.0, tz=-4.0, sx=0.7, sy=0.7, sz=0.7 },
+  ["soc_beltB|SM_Belt_Misc_SkullWolf_01_L"] = { rx=-0.043577871373829374, ry=0.0019026509541272601, rz=-0.04357787137382935, rw=0.9980973490458729, tx=0.0, ty=1.0, tz=-7.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB02_l|SM_Belt_Misc_RopedBones_01_S_FR"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=-2.0, tz=0.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_Strap01F|SM_Belt_Misc_BoneSmall_01"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=3.0, tz=2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_Holster_01"] = { rx=-0.5792279653395694, ry=0.4055797876726385, rz=-0.4999999999999998, rw=0.5000000000000004, tx=-1.0, ty=5.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Bandoleer_01_Tripple03"] = { rx=0.14019586330472456, ry=-0.06869860719216972, rz=0.14019586330472428, rw=0.9777375625362568, tx=0.0, ty=-1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_Pouch_02"] = { rx=3.783378763518732e-20, ry=8.665362018054639e-19, rz=-0.04361938736533608, rw=0.9990482215818577, tx=0.0, ty=-1.0, tz=-6.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB02_l|SM_Belt_Misc_Gloves_01_FL"] = { rx=-5.387753682830915e-18, ry=2.0107370482991303e-17, rz=0.2588190451025206, rw=0.9659258262890682, tx=0.0, ty=-0.5, tz=-2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Pouch_01"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=0.0, tz=-4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_Powder_01"] = { rx=-8.626608320022359e-17, ry=-0.6427876096865394, rz=8.626608320022359e-17, rw=-0.7660444431189781, tx=0.0, ty=0.0, tz=-10.0, sx=0.7, sy=0.7, sz=0.7 },
+  ["soc_Sling04F|SM_Belt_Misc_HolderCommon_01"] = { rx=-0.7071067811865475, ry=-1.813870234568249e-16, rz=-0.7071067811865476, rw=1.81603863891322e-16, tx=0.0, ty=2.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Drop_WeaponRange_Pistol_Blank"] = { rx=-0.6830127018922196, ry=0.18301270189221946, rz=0.18301270189221952, rw=0.6830127018922191, tx=-5.0, ty=3.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Lantern|SM_Drop_WeaponRange_Pistol_Baneful"] = { rx=-0.6903455270798533, ry=0.1530459187330318, rz=0.32650557562197646, rw=0.6272113751262516, tx=0.0, ty=4.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Drop_PistolT02_01"] = { rx=-0.6622288211875934, ry=0.21526974480094008, rz=0.14931168454587868, rw=0.702009933134782, tx=5.0, ty=0.0, tz=8.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Drop_PistolT02_03"] = { rx=-0.41065815271494466, ry=0.44761430550648873, rz=-0.07892647901187652, rw=0.7904251552332333, tx=12.0, ty=-10.0, tz=10.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltB|SM_Belt_Misc_BeltBag_02_Simple"] = { rx=-0.011376107230962112, ry=-0.08641011328638247, rz=-0.13002950065171884, rw=0.9876721143508954, tx=3.0, ty=-4.0, tz=-3.0, sx=0.7, sy=0.7, sz=0.7 },
+  ["soc_beltB02_l|SM_Belt_Misc_Bandoleer_01_FR"] = { rx=-1.069202451566096e-16, ry=1.8852924005073848e-17, rz=-0.17364817766693033, rw=0.9848077530122079, tx=0.0, ty=-1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Drop_PistolT02_03"] = { rx=-4.329780281177467e-17, ry=-0.7071067811865476, rz=0.7071067811865475, rw=4.329780281177465e-17, tx=-2.0, ty=1.5, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Drop_WeaponRange_Pistol_DrakesDoom"] = { rx=-0.6830127018922196, ry=0.18301270189221946, rz=0.18301270189221952, rw=0.6830127018922191, tx=-5.0, ty=3.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Lantern|SM_Drop_WeaponRange_Pistol_Devastating"] = { rx=-0.6903455270798531, ry=0.15304591873303197, rz=0.32650557562197646, rw=0.6272113751262518, tx=1.0, ty=1.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Bandoleer_01_FR"] = { rx=-0.0, ry=0.0, rz=-0.0697564737441253, rw=0.9975640502598242, tx=-6.0, ty=0.0, tz=2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Lantern|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=-0.022557566113149904, ry=0.08418598282936902, rz=0.2578341604962995, rw=0.9622501868990582, tx=0.0, ty=-1.0, tz=2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04B|SM_Drop_MusketT02_01"] = { rx=0.5372996083468234, ry=0.0, rz=0.0, rw=0.8433914458128858, tx=0.0, ty=-26.0, tz=-70.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap03F|SM_Belt_Misc_Bandoleer_01_Rope"] = { rx=-0.03758434453528547, ry=-0.21315140986521286, rz=-0.16953202249987676, rw=0.9614638770465722, tx=0.0, ty=1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["beltSlot_01_lSocket|SM_Drop_PistolT01_03"] = { rx=-6.162975822039155e-33, ry=0.7071067811865477, rz=-6.162975822039155e-33, rw=0.7071067811865476, tx=0.0, ty=0.0, tz=3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Drop_PistolT02_03"] = { rx=-0.662229, ry=0.21527, rz=0.149312, rw=0.70201, tx=5.0, ty=2.0, tz=8.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=-0.022557566113149716, ry=0.25783416049629904, rz=0.0841859828293688, rw=0.9622501868990583, tx=0.0, ty=2.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling04B|SM_Drop_MusketT02_03"] = { rx=0.5372996083468234, ry=0.0, rz=0.0, rw=0.8433914458128858, tx=0.0, ty=-26.0, tz=-70.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling03F|SM_Belt_Misc_Bandoleer_01_Rope"] = { rx=0.03378266443126014, ry=0.39667667014561475, rz=-0.30438071450436, rw=0.8653662413012924, tx=0.0, ty=1.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=0.13002950065171934, ry=0.08641011328638283, rz=-0.01137610723096211, rw=0.9876721143508952, tx=4.5, ty=0.0, tz=4.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Belt_Misc_Bandoleer_01_Rope"] = { rx=-0.043246217459636006, ry=0.0056934725397687225, rz=-0.13040196020729417, rw=0.9905012255519768, tx=3.0, ty=0.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01B|SM_Belt_Misc_Bandoleer_01_Tripple01"] = { rx=0.0, ry=-0.3826834323650896, rz=0.0, rw=0.9238795325112867, tx=0.0, ty=2.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap02F|SM_Belt_Misc_Bandoleer_01_FL"] = { rx=0.09406091491321372, ry=-0.0789264790118754, rz=0.09406091491321343, rw=0.9879654343559624, tx=1.0, ty=-0.5, tz=2.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Strap01F|SM_Belt_Misc_Pouch_02"] = { rx=-7.534850830235719e-33, ry=-2.9765605757958613e-80, rz=3.9503908476217867e-48, rw=0.9999999999999998, tx=0.0, ty=-1.0, tz=-5.0, sx=0.8, sy=1.0, sz=1.0 },
+  ["soc_Lantern|SM_Belt_Misc_Feathers_02"] = { rx=-0.08583165117743098, ry=0.015134435901338478, rz=-0.17298739392508844, rw=0.9810602621904069, tx=0.0, ty=0.0, tz=4.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltStrapB|SM_Belt_Misc_Knife_04"] = { rx=0.18819680775720832, ry=0.21522966728843973, rz=-0.2804927633984657, rw=0.9162870519384174, tx=10.0, ty=-5.0, tz=7.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_Sling01F|SM_Drop_PistolT02_04"] = { rx=-0.1982668912741466, ry=-0.6208851530148456, rz=0.739942111693848, rw=-0.1663656753428022, tx=-5.0, ty=5.0, tz=5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Knife_02"] = { rx=0.1305261922200515, ry=0.0, rz=0.0, rw=0.9914448613738103, tx=7.0, ty=-3.0, tz=7.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_belt02B_l|SM_Belt_Misc_Pouch_02"] = { rx=0.0, ry=-0.0, rz=0.0, rw=1.0, tx=0.0, ty=0.0, tz=-5.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_belt02B_l|SM_Belt_Misc_Bag_01"] = { rx=0.13002950065171923, ry=-0.011376107230962178, rz=-0.08641011328638341, rw=0.9876721143508953, tx=0.0, ty=4.0, tz=0.0, sx=0.8, sy=0.8, sz=0.8 },
+  ["soc_beltStrapB|SM_Belt_Misc_Pouch_02"] = { rx=-0.0, ry=0.0, rz=-0.17364817766693033, rw=0.984807753012208, tx=0.0, ty=-2.0, tz=-3.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_beltStrapB|SM_Belt_Misc_Bottle_01"] = { rx=0.1305261922200514, ry=1.3759061409293446e-17, rz=-1.8114147989918417e-18, rw=0.99144486137381, tx=0.0, ty=5.0, tz=-6.0, sx=1.0, sy=1.0, sz=1.0 },
+  ["soc_belt02B_l|SM_Belt_Misc_BeltBag_02_Powder_FR2"] = { rx=0.13040196020729417, ry=-0.005693472539768748, rz=-0.04324621745963617, rw=0.9905012255519766, tx=0.0, ty=3.0, tz=0.0, sx=1.0, sy=1.0, sz=1.0 },
+}
+
 -- Config.CLOTHES_REMOVE -- flat roster feeding "Custom > Clothes > Remove" (one entry per
 -- Config.CLOTHING_REMOVABLE_SLOTS, plus one "All"), consumed by spawnmenu_manifest.lua's
 -- custom_clothes_remove_path_and_label and SPAWN_MENU_HANDLERS.CLOTHES_REMOVE (main.lua), which
@@ -1886,6 +2166,14 @@ for _, slotName in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
   table.insert(Config.CLOTHES_REMOVE, { slot = slotName })
 end
 table.insert(Config.CLOTHES_REMOVE, { slot = "All" })
+-- "All Sockets" (2026-09-04, RedFalcon: "add 'remove all sockets' to the remove list with the new
+-- patterns we found for backsocket, soc, ik and hand_") -- a SEPARATE mechanism from every other
+-- row above (those all hide by canonical CLOTHING slot; this hides by SOCKET NAME instead, see
+-- Spawner.RemoveAllSocketAttachments' own comment) -- special-cased by slot value in
+-- SPAWN_MENU_HANDLERS.CLOTHES_REMOVE rather than routed through Spawner.TestRemoveClothingPiece.
+-- Appended at the END, after "All", so every already-generated spawn_menu.ini index for the rows
+-- above it stays valid -- only this one new section needs generating on the next lbreload.
+table.insert(Config.CLOTHES_REMOVE, { slot = "All Sockets" })
 
 -- Women's-clothing fit rules (2026-08-28) -- see Spawner.TestApplyClothingPiece's own comment for
 -- the full mechanism. "Senkamati women just can't wear regular torso or legs. Others slots seem
@@ -3549,6 +3837,268 @@ end
 -- R5ModSettings, highest precedence last) into Config before main.lua reads it. A key changed in
 -- Settings > Mods AFTER this point is picked up live by main.lua's poll, not by this call again.
 ------------------------------------------------------------------
+------------------------------------------------------------------
+-- Config.SOCKETITEMS_* -- (2026-09-07) RedFalcon's own "SocketItems.xlsx" (Other/SocketItems.xlsx),
+-- mechanically converted 1:1 via a Python/openpyxl script (no hand transcription -- regenerate the
+-- same way after any future edit to that workbook, same pattern as every other generated table in
+-- this file). Drives `lbtestsocketitems` (Spawner.TestGenerateSocketItems): a full random belt-
+-- accessory + weapon layout, built from RedFalcon's own 5-tab design (Sockets/Item Ratios/Rarity
+-- Ratios/Items/Weapons) and rules, confirmed in chat before building:
+--   1. SocType "soc" (general belt accessories) and "weapon" (weapon-equip sockets) follow separate
+--      rules.
+--   2. Only sockets whose `beltpiece` (belt/sling/strap) is CURRENTLY VISIBLE are ever considered --
+--      including for weapon sockets (every *_backsocket depends on Sling; swordSlot_lSocket/
+--      rapierSlot_lSocket/beltSlot_01_* depend on Belt), not just soc ones.
+--   3. soc_Strap_r (Location Tag "Side") is MANDATORY whenever Strap is visible -- not a 0..Count
+--      roll like every other group, always exactly filled (Item Ratios' own "Always When Strap is
+--      Visible" note).
+--   4. Tag synergy: once an item/weapon with a given tag is placed, anything else sharing that tag
+--      gets 2x selection weight for the rest of this same generation pass (encourages a themed
+--      look) -- soc items are rolled before weapons, so a themed accessory set can influence which
+--      weapon gets picked afterward too.
+--   5/6. Each weapon LOCATION (Back/Sheath/Hip) gets exactly one independent 60% roll; a hit picks
+--      exactly one weapon for that whole location, which is what makes "only one weapon per
+--      location" true by construction, not a separate rule to enforce.
+--   7/8. Rarity's Chance column (Common=30/Uncommon=10/Rare=5) is a RELATIVE WEIGHT for a weighted-
+--      random pick among the eligible pool for a given socket/location, not an independent
+--      per-item percentage.
+-- Eligibility for every row is decided by matching its `sockets` list against real socket names --
+-- deliberately NOT the sheet's own free-text `location` column, which is inconsistent between tabs
+-- (the Weapons sheet calls the belt-holster sockets "Pistol"; everywhere else calls that same
+-- location "Hip"). Two data-quality fixups applied at generation time: Items row 45's Limit was the
+-- string "1_L" instead of a number (parsed as 1); a few `Available Socket` cells have stray blank
+-- entries from double-commas (dropped when splitting).
+------------------------------------------------------------------
+Config.SOCKETITEMS_SOCKETS = {
+  { socket="soc_belt02B_l", location="Belt, Back Left", socType="soc", beltpiece={ "belt" }, locationTag="Back" },
+  { socket="soc_beltB", location="Belt, Back Middle", socType="soc", beltpiece={ "belt" }, locationTag="Back" },
+  { socket="soc_beltB02_l", location="Belt, Front Left", socType="soc", beltpiece={ "belt" }, locationTag="Front" },
+  { socket="soc_beltSlingB", location="Bottom Left Back on Sling at Belt Level", socType="soc", beltpiece={ "belt" }, locationTag="Back" },
+  { socket="soc_beltSlingF", location="Bottom Left Front on Sling at Belt Level", socType="soc", beltpiece={ "belt" }, locationTag="Front" },
+  { socket="soc_beltStrapB", location="Bottom Right Back on Sling at Belt Level", socType="soc", beltpiece={ "belt" }, locationTag="Back" },
+  { socket="soc_Lantern", location="Belt, Front Right by Belt Buckle", socType="soc", beltpiece={ "belt" }, locationTag="Front" },
+  { socket="soc_Sling01B", location="Bottom Left Back on Sling", socType="soc", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="soc_Sling01F", location="Bottom Left Front on Sling", socType="soc", beltpiece={ "sling" }, locationTag="Front" },
+  { socket="soc_Sling02B", location="Middle Left Back on Sling On Cross", socType="soc", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="soc_Sling02F", location="Middle Left Front on Sling Below Cross", socType="soc", beltpiece={ "sling" }, locationTag="Front" },
+  { socket="soc_Sling03B", location="Middle Right Back on Sling Above Cross", socType="soc", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="soc_Sling03F", location="Middle Right Front on Sling Above Cross", socType="soc", beltpiece={ "sling" }, locationTag="Front" },
+  { socket="soc_Sling04B", location="Top Right Back on Sling By Shoulder", socType="soc", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="soc_Sling04F", location="Top Right Front on Sling By Shoulder", socType="soc", beltpiece={ "sling" }, locationTag="Front" },
+  { socket="soc_Strap_r", location="Bottom Right on Strap at Hip", socType="soc", beltpiece={ "strap" }, locationTag="Side" },
+  { socket="soc_Strap01B", location="Bottom Right Back on Strap", socType="soc", beltpiece={ "strap" }, locationTag="Back" },
+  { socket="soc_Strap01F", location="Bottom Right Front on Strap at Belt Level", socType="soc", beltpiece={ "strap", "belt" }, locationTag="Front" },
+  { socket="soc_Strap02B", location="Middle Right Back on Strap On Cross", socType="soc", beltpiece={ "strap" }, locationTag="Back" },
+  { socket="soc_Strap02F", location="Middle Right Front on Strap Below Cross", socType="soc", beltpiece={ "strap" }, locationTag="Front" },
+  { socket="soc_Strap03B", location="Middle Left Back on Strap Above Cross", socType="soc", beltpiece={ "strap" }, locationTag="Back" },
+  { socket="soc_Strap03F", location="Middle Left Front on Strap Above Cross", socType="soc", beltpiece={ "strap" }, locationTag="Front" },
+  { socket="soc_Strap04B", location="Top Left Back on Strap By Shoulder", socType="soc", beltpiece={ "strap" }, locationTag="Back" },
+  { socket="soc_Strap04F", location="Top Left Front on Strap By Shoulder", socType="soc", beltpiece={ "strap" }, locationTag="Front" },
+  { socket="Axe2h_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="Axe1h_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="Crossbow2h_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="GSword_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="Halberd_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="Musket_backsocket", location="Use Specific Weapon, Do not use with other Back Sockets", socType="weapon", beltpiece={ "sling" }, locationTag="Back" },
+  { socket="swordSlot_lSocket", location="Left Hip in Sheath, do not use with other lSockets", socType="weapon", beltpiece={ "belt" }, locationTag="Sheath" },
+  { socket="rapierSlot_lSocket", location="Left Hip in Sheath, do not use with other lSockets", socType="weapon", beltpiece={ "belt" }, locationTag="Sheath" },
+  { socket="beltSlot_01_lSocket", location="Left Belt Hip Holster Socket", socType="weapon", beltpiece={ "belt" }, locationTag="Hip" },
+  { socket="beltSlot_01_rSocket", location="Right Belt Hip Holster Socket", socType="weapon", beltpiece={ "belt" }, locationTag="Hip" },
+}
+
+Config.SOCKETITEMS_RATIOS = {
+  { location="Front", type="Belt", count=3, mandatory=false },
+  { location="Front", type="Sling", count=3, mandatory=false },
+  { location="Front", type="Strap", count=3, mandatory=false },
+  { location="Back", type="Belt", count=4, mandatory=false },
+  { location="Back", type="Sling", count=3, mandatory=false },
+  { location="Back", type="Strap", count=3, mandatory=false },
+  { location="Side", type="Strap", count=1, mandatory=true },  -- Always When Strap is Visible
+  { location="Sheath", type="Weapon", count=1, mandatory=false },
+  { location="Back", type="Weapon", count=1, mandatory=false },
+  { location="Hip", type="Weapon", count=1, mandatory=false },
+}
+
+-- Config.SOCKETITEMS_SIDE_CAPS -- (2026-09-07, RedFalcon: "I'd like to create limits on items based
+-- just on the side. So total of 5 soc items on the front and 8 soc items on the back total") -- an
+-- overall ceiling on TOTAL soc items (Belt+Sling+Strap combined) per Location, on top of each
+-- individual (Location, Type) group's own Count above -- e.g. Front's 3 groups could sum to 9, but
+-- never more than 5 actually land. Side (soc_Strap_r) is deliberately NOT capped here -- it's its
+-- own separate Location, mandatory rather than rolled, per SOCKETITEMS_RATIOS above.
+Config.SOCKETITEMS_SIDE_CAPS = {
+  Front = 5,
+  Back = 8,
+}
+
+Config.SOCKETITEMS_RARITY_WEIGHTS = {
+  ["Common"] = 30,
+  ["Uncommon"] = 10,
+  ["Rare"] = 5,
+}
+
+Config.SOCKETITEMS_ITEMS = {
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_Bag_01", shortName="SM_Belt_Misc_Bag_01", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BagDrGalen_01", shortName="SM_Belt_Misc_BagDrGalen_01", sockets={ "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Strap_r", "soc_Strap01F" }, limit=2, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BagKsante_01", shortName="SM_Belt_Misc_BagKsante_01", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BagKsante_02", shortName="SM_Belt_Misc_BagKsante_02", sockets={ "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Strap_r", "soc_Strap01F" }, limit=2, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bandoleers/SM_Belt_Misc_Bandoleer_01_FL", shortName="SM_Belt_Misc_Bandoleer_01_FL", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling03F", "soc_Sling04F", "soc_Strap04F", "soc_Strap03F" }, limit=3, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bandoleers/SM_Belt_Misc_Bandoleer_01_FR", shortName="SM_Belt_Misc_Bandoleer_01_FR", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03F", "soc_Sling04F" }, limit=3, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bandoleers/SM_Belt_Misc_Bandoleer_01_Rope", shortName="SM_Belt_Misc_Bandoleer_01_Rope", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F", "soc_Strap01F", "soc_Sling01F" }, limit=3, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bandoleers/SM_Belt_Misc_Bandoleer_01_Tripple01", shortName="SM_Belt_Misc_Bandoleer_01_Tripple01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F", "soc_Strap01F", "soc_Sling01F" }, limit=3, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bandoleers/SM_Belt_Misc_Bandoleer_01_Tripple03", shortName="SM_Belt_Misc_Bandoleer_01_Tripple03", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F", "soc_Strap01F", "soc_Sling01F" }, limit=3, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_01_Simple", shortName="SM_Belt_Misc_BeltBag_01_Simple", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_01_SimpleSmall", shortName="SM_Belt_Misc_BeltBag_01_SimpleSmall", sockets={ "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=4, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_BonesBomb_Strap", shortName="SM_Belt_Misc_BeltBag_02_BonesBomb_Strap", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={ "Hunting", "Soldiering" }, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_FR2", shortName="SM_Belt_Misc_BeltBag_02_FR2", sockets={ "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F", "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F" }, limit=4, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_Large_Strap", shortName="SM_Belt_Misc_BeltBag_02_Large_Strap", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_Powder_FR2", shortName="SM_Belt_Misc_BeltBag_02_Powder_FR2", sockets={ "soc_belt02B_l", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Strap01F", "soc_Strap02F", "soc_Strap04B", "soc_Strap01B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_Simple", shortName="SM_Belt_Misc_BeltBag_02_Simple", sockets={ "soc_beltB", "soc_Strap_r" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_BeltBag_02_Strap", shortName="SM_Belt_Misc_BeltBag_02_Strap", sockets={ "soc_belt02B_l", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Strap01F", "soc_Strap02F", "soc_Strap04B", "soc_Strap01B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_BoneNecklace_01", shortName="SM_Belt_Misc_BoneNecklace_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling03F", "soc_Sling04F", "soc_Strap04F", "soc_Strap03F" }, limit=1, tags={ "Creepy" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_BonesBelt_01_FR", shortName="SM_Belt_Misc_BonesBelt_01_FR", sockets={ "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=2, tags={ "Creepy" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_BoneSmall_01", shortName="SM_Belt_Misc_BoneSmall_01", sockets={ "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=1, tags={ "Creepy" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_BoneSmall_02", shortName="SM_Belt_Misc_BoneSmall_02", sockets={ "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=2, tags={ "Creepy" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Book_01", shortName="SM_Belt_Misc_Book_01", sockets={ "soc_Lantern", "soc_beltStrapB", "soc_beltSlingB", "soc_beltB02_l" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Bottle_01", shortName="SM_Belt_Misc_Bottle_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Fan", shortName="SM_Belt_Misc_Fan", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={}, rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Feathers_01", shortName="SM_Belt_Misc_Feathers_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={ "Hunting" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Feathers_02", shortName="SM_Belt_Misc_Feathers_02", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={ "Hunting" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Fishhook_01", shortName="SM_Belt_Misc_Fishhook_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Strap02F", "soc_Strap03F" }, limit=2, tags={ "Fishing" }, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Gloves_01_FL", shortName="SM_Belt_Misc_Gloves_01_FL", sockets={ "soc_beltStrapB", "soc_beltB02_l", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04F", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04F" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Grenade_01", shortName="SM_Belt_Misc_Grenade_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=6, tags={ "Soldiering" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Knifes/SM_Belt_Misc_Knife_01", shortName="SM_Belt_Misc_Knife_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04F", "soc_Strap01B", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Knifes/SM_Belt_Misc_Knife_01_Simple", shortName="SM_Belt_Misc_Knife_01_Simple", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Strap01B", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Knifes/SM_Belt_Misc_Knife_02", shortName="SM_Belt_Misc_Knife_02", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Strap01B", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Knifes/SM_Belt_Misc_Knife_03", shortName="SM_Belt_Misc_Knife_03", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Strap01B", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Knifes/SM_Belt_Misc_Knife_04", shortName="SM_Belt_Misc_Knife_04", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Strap01B", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Pouch_01", shortName="SM_Belt_Misc_Pouch_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Pouch_02", shortName="SM_Belt_Misc_Pouch_02", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Powder_01", shortName="SM_Belt_Misc_Powder_01", sockets={ "soc_Sling01B", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling04B", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_beltB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_RopedBones_01_S_FR", shortName="SM_Belt_Misc_RopedBones_01_S_FR", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=2, tags={ "Creepy" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_SkullDodo_01", shortName="SM_Belt_Misc_SkullDodo_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={ "Hunting" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_SkullMale_01", shortName="SM_Belt_Misc_SkullMale_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Strap04B", "soc_Strap01B" }, limit=1, tags={ "Creepy" }, rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Skulls/SM_Belt_Misc_SkullMark", shortName="SM_Belt_Misc_SkullMark", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Sling01B", "soc_Sling01F", "soc_Sling02B", "soc_Sling02F", "soc_Sling03B", "soc_Sling03F", "soc_Sling04B", "soc_Sling04F", "soc_Strap01B", "soc_Strap01F", "soc_Strap02B", "soc_Strap02F", "soc_Strap03B", "soc_Strap03F", "soc_Strap04B", "soc_Strap04F" }, limit=2, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Skulls/SM_Belt_Misc_SkullMetal_Roped_01", shortName="SM_Belt_Misc_SkullMetal_Roped_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=2, tags={ "Creepy" }, rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_SkullWolf_01", shortName="SM_Belt_Misc_SkullWolf_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={ "Hunting" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bones/SM_Belt_Misc_SkullWolf_01_L", shortName="SM_Belt_Misc_SkullWolf_01_L", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={ "Hunting" }, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Smokepipe_01", shortName="SM_Belt_Misc_Smokepipe_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern" }, limit=1, tags={}, rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/Bags/SM_Belt_Misc_Wallet_01", shortName="SM_Belt_Misc_Wallet_01", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F" }, limit=1, tags={}, rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_FishingRod/Fishing_Copper/SK_Gear_Fishing_Bobber_Copper", shortName="SK_Gear_Fishing_Bobber_Copper", sockets={ "soc_belt02B_l", "soc_beltB", "soc_beltB02_l", "soc_beltSlingB", "soc_beltSlingF", "soc_beltStrapB", "soc_Lantern", "soc_Strap01F" }, limit=2, tags={ "Fishing" }, rarity="Common" },
+}
+
+Config.SOCKETITEMS_WEAPONS = {
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Corrupted/SK_Axe_Corrupted", shortName="SK_Axe_Corrupted", sockets={ "Axe2h_backsocket" }, tags={ "Creepy" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/SK_AxeT02_01", shortName="SK_AxeT02_01", sockets={ "Axe2h_backsocket" }, tags={}, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT03/SK_AxeT03_01", shortName="SK_AxeT03_01", sockets={ "Axe2h_backsocket" }, tags={}, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT01/SK_ClubT01_01", shortName="SK_ClubT01_01", sockets={ "Axe2h_backsocket" }, tags={ "Hunting" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_FishingRod/Fishing_Regular/SK_Gear_Fishing_Rod_Regular", shortName="SK_Gear_Fishing_Rod_Regular", sockets={ "Halberd_backsocket" }, tags={ "Fishing" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT01/SK_HalberdT01_01", shortName="SK_HalberdT01_01", sockets={ "Halberd_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT01/SK_KnifeT01_01", shortName="SK_KnifeT01_01", sockets={ "swordSlot_lSocket" }, tags={ "Hunting", "Fishing" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT01/SK_MusketT01_02", shortName="SK_MusketT01_02", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Corrupted/SK_Pickaxe_Corrupted", shortName="SK_Pickaxe_Corrupted", sockets={ "Axe2h_backsocket" }, tags={ "Creepy", "Tool" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/SK_PickaxeT02_01", shortName="SK_PickaxeT02_01", sockets={ "Axe2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT03/SK_PickaxeT03_01", shortName="SK_PickaxeT03_01", sockets={ "Axe2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/SK_SaberT02_01", shortName="SK_SaberT02_01", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT03/SK_SaberT03_01", shortName="SK_SaberT03_01", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/SK_ShovelT02_01", shortName="SK_ShovelT02_01", sockets={ "Musket_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Dendromorph/SK_Weapon_Dendromorph_Macuahuitl", shortName="SK_Weapon_Dendromorph_Macuahuitl", sockets={ "swordSlot_lSocket" }, tags={ "Creepy", "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Dendromorph/SK_Weapon_Dendromorph_Spear_Scale075", shortName="SK_Weapon_Dendromorph_Spear_Scale075", sockets={ "Musket_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Stone/SK_Weapon_Stone_Axe", shortName="SK_Weapon_Stone_Axe", sockets={ "Axe2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Stone/SK_Weapon_Stone_Pickaxe", shortName="SK_Weapon_Stone_Pickaxe", sockets={ "Axe2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Boss/Thorn/Saber/SK_WeaponBoss_Thorn_Saber", shortName="SK_WeaponBoss_Thorn_Saber", sockets={ "Axe2h_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/SK_WeaponMelee_Club_Blank", shortName="SK_WeaponMelee_Club_Blank", sockets={ "swordSlot_lSocket" }, tags={ "Hunting" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/SK_WeaponMelee_Club_Corrupted", shortName="SK_WeaponMelee_Club_Corrupted", sockets={ "swordSlot_lSocket" }, tags={}, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/SK_WeaponMelee_Club_Forceful", shortName="SK_WeaponMelee_Club_Forceful", sockets={ "swordSlot_lSocket" }, tags={ "Hunting" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/SK_WeaponMelee_Club_Stunning", shortName="SK_WeaponMelee_Club_Stunning", sockets={ "swordSlot_lSocket" }, tags={ "Hunting" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/SK_WeaponMelee_Club_Tremor", shortName="SK_WeaponMelee_Club_Tremor", sockets={ "swordSlot_lSocket" }, tags={}, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Blank", shortName="SK_WeaponMelee_Greatsword_Blank", sockets={ "GSword_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Parrying", shortName="SK_WeaponMelee_Greatsword_Parrying", sockets={ "GSword_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Reliable", shortName="SK_WeaponMelee_Greatsword_Reliable", sockets={ "GSword_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Savage", shortName="SK_WeaponMelee_Greatsword_Savage", sockets={ "GSword_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Slicer", shortName="SK_WeaponMelee_Greatsword_Slicer", sockets={ "GSword_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Souldrinker", shortName="SK_WeaponMelee_Greatsword_Souldrinker", sockets={ "GSword_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/SK_WeaponMelee_Greatsword_Wicked", shortName="SK_WeaponMelee_Greatsword_Wicked", sockets={ "GSword_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Halberd/SK_WeaponMelee_Halberd_Blank", shortName="SK_WeaponMelee_Halberd_Blank", sockets={ "Halberd_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Halberd/SK_WeaponMelee_Halberd_Corrupted", shortName="SK_WeaponMelee_Halberd_Corrupted", sockets={ "Halberd_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Halberd/SK_WeaponMelee_Halberd_Executioner", shortName="SK_WeaponMelee_Halberd_Executioner", sockets={ "Halberd_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Halberd/SK_WeaponMelee_Halberd_Reliable", shortName="SK_WeaponMelee_Halberd_Reliable", sockets={ "Halberd_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Blank", shortName="SK_WeaponMelee_Rapier_Blank", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Bleeding", shortName="SK_WeaponMelee_Rapier_Bleeding", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Bleeding_Advanced", shortName="SK_WeaponMelee_Rapier_Bleeding_Advanced", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Eviscerate", shortName="SK_WeaponMelee_Rapier_Eviscerate", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Loyal", shortName="SK_WeaponMelee_Rapier_Loyal", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Relentless", shortName="SK_WeaponMelee_Rapier_Relentless", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Reliable", shortName="SK_WeaponMelee_Rapier_Reliable", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Rapier/SK_WeaponMelee_Rapier_Swift", shortName="SK_WeaponMelee_Rapier_Swift", sockets={ "rapierSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Baneful", shortName="SK_WeaponMelee_Saber_Baneful", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Blank", shortName="SK_WeaponMelee_Saber_Blank", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Boarding", shortName="SK_WeaponMelee_Saber_Boarding", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Broken", shortName="SK_WeaponMelee_Saber_Broken", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Corrupted", shortName="SK_WeaponMelee_Saber_Corrupted", sockets={ "swordSlot_lSocket" }, tags={ "Creepy", "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Feral", shortName="SK_WeaponMelee_Saber_Feral", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Flaweless", shortName="SK_WeaponMelee_Saber_Flaweless", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Forged", shortName="SK_WeaponMelee_Saber_Forged", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Graceful", shortName="SK_WeaponMelee_Saber_Graceful", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Parrying", shortName="SK_WeaponMelee_Saber_Parrying", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Relentless", shortName="SK_WeaponMelee_Saber_Relentless", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Reliable", shortName="SK_WeaponMelee_Saber_Reliable", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Resolute", shortName="SK_WeaponMelee_Saber_Resolute", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Restless", shortName="SK_WeaponMelee_Saber_Restless", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Savage", shortName="SK_WeaponMelee_Saber_Savage", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Severe", shortName="SK_WeaponMelee_Saber_Severe", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Saber/SK_WeaponMelee_Saber_Vengeful", shortName="SK_WeaponMelee_Saber_Vengeful", sockets={ "swordSlot_lSocket" }, tags={ "Soldiering" }, location="Sheath", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/SK_WeaponRange_Blunderbuss_Blank", shortName="SK_WeaponRange_Blunderbuss_Blank", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/SK_WeaponRange_Blunderbuss_DragonBreath", shortName="SK_WeaponRange_Blunderbuss_DragonBreath", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/SK_WeaponRange_Blunderbuss_Reliable", shortName="SK_WeaponRange_Blunderbuss_Reliable", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/SK_WeaponRange_Musket_Blank", shortName="SK_WeaponRange_Musket_Blank", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/SK_WeaponRange_Musket_Infantry", shortName="SK_WeaponRange_Musket_Infantry", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/SK_WeaponRange_Musket_Reliable", shortName="SK_WeaponRange_Musket_Reliable", sockets={ "Musket_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/SK_WeaponRange_Musket_Sniper", shortName="SK_WeaponRange_Musket_Sniper", sockets={ "Musket_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Pistol/SK_WeaponRange_Pistol_Blank", shortName="SK_WeaponRange_Pistol_Blank", sockets={ "beltSlot_01_lSocket", "beltSlot_01_rSocket" }, tags={ "Hunting" }, location="Pistol", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Pistol/SK_WeaponRange_Pistol_Corrupted", shortName="SK_WeaponRange_Pistol_Corrupted", sockets={ "beltSlot_01_lSocket", "beltSlot_01_rSocket" }, tags={ "Creepy", "Hunting", "Soldiering" }, location="Pistol", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Pistol/SK_WeaponRange_Pistol_DrakesDoom", shortName="SK_WeaponRange_Pistol_DrakesDoom", sockets={ "beltSlot_01_lSocket", "beltSlot_01_rSocket" }, tags={ "Hunting", "Soldiering" }, location="Pistol", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Pistol/SK_WeaponRange_Pistol_Reliable", shortName="SK_WeaponRange_Pistol_Reliable", sockets={ "beltSlot_01_lSocket", "beltSlot_01_rSocket" }, tags={ "Hunting", "Soldiering" }, location="Pistol", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Pistol/SK_WeaponRange_Pistol_Rusty", shortName="SK_WeaponRange_Pistol_Rusty", sockets={ "beltSlot_01_lSocket", "beltSlot_01_rSocket" }, tags={ "Hunting", "Soldiering" }, location="Pistol", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/Drop/SM_Drop__WeaponRange_Blunderbuss_DragonBreath", shortName="SM_Drop__WeaponRange_Blunderbuss_DragonBreath", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/Drop/SM_Drop__WeaponRange_Blunderbuss_Fateful", shortName="SM_Drop__WeaponRange_Blunderbuss_Fateful", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/Drop/SM_Drop__WeaponRange_Blunderbuss_Reliable", shortName="SM_Drop__WeaponRange_Blunderbuss_Reliable", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Corrupted/Drop/SM_Drop_Axe_Corrupted", shortName="SM_Drop_Axe_Corrupted", sockets={ "Crossbow2h_backsocket" }, tags={ "Creepy", "Tool" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Stone/Drop/SM_Drop_Axe_Stone", shortName="SM_Drop_Axe_Stone", sockets={ "Crossbow2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/Drop/SM_Drop_AxeT02_01", shortName="SM_Drop_AxeT02_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT03/Drop/SM_Drop_AxeT03_01", shortName="SM_Drop_AxeT03_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Artifact/Drop/SM_Drop_ClubArtifact_01", shortName="SM_Drop_ClubArtifact_01", sockets={ "swordSlot_lSocket", "Crossbow2h_backsocket" }, tags={ "Hunting" }, location="Sheath,Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Steel/Drop/SM_Drop_Gaff_Steel_01", shortName="SM_Drop_Gaff_Steel_01", sockets={ "Halberd_backsocket" }, tags={ "Fishing" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_FishingRod/Fishing_Regular/SM_Drop_Gear_Fishing_Rod_Regular", shortName="SM_Drop_Gear_Fishing_Rod_Regular", sockets={ "Halberd_backsocket" }, tags={ "Fishing" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/Drop/SM_Drop_GreatAxeT02_01", shortName="SM_Drop_GreatAxeT02_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT02/Drop/SM_Drop_MusketArtifact_01", shortName="SM_Drop_MusketArtifact_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT01/Drop/SM_Drop_MusketT01_01", shortName="SM_Drop_MusketT01_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT01/Drop/SM_Drop_MusketT01_02", shortName="SM_Drop_MusketT01_02", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT01/Drop/SM_Drop_MusketT01_03", shortName="SM_Drop_MusketT01_03", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT02/Drop/SM_Drop_MusketT02_01", shortName="SM_Drop_MusketT02_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/FirearmsT02/Drop/SM_Drop_MusketT02_03", shortName="SM_Drop_MusketT02_03", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT02/Drop/SM_Drop_ShovelT02_01", shortName="SM_Drop_ShovelT02_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponT03/Drop/SM_Drop_ShovelT03_01", shortName="SM_Drop_ShovelT03_01", sockets={ "Crossbow2h_backsocket" }, tags={ "Tool" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Corrupted/Drop/SM_Drop_Spear_Corrupted", shortName="SM_Drop_Spear_Corrupted", sockets={ "Halberd_backsocket" }, tags={ "Creepy", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/Weapon_Steel/Drop/SM_Drop_Spear_Steel_01", shortName="SM_Drop_Spear_Steel_01", sockets={ "Halberd_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/Drop/SM_Drop_WeaponMelee_Club_Blank", shortName="SM_Drop_WeaponMelee_Club_Blank", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/Drop/SM_Drop_WeaponMelee_Club_Corrupted", shortName="SM_Drop_WeaponMelee_Club_Corrupted", sockets={ "Crossbow2h_backsocket" }, tags={ "Creepy", "Hunting" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/Drop/SM_Drop_WeaponMelee_Club_Forceful", shortName="SM_Drop_WeaponMelee_Club_Forceful", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/Drop/SM_Drop_WeaponMelee_Club_Stunning", shortName="SM_Drop_WeaponMelee_Club_Stunning", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_Club/Drop/SM_Drop_WeaponMelee_Club_Tremor", shortName="SM_Drop_WeaponMelee_Club_Tremor", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/Drop/SM_Drop_WeaponMelee_GreatSword_Blank", shortName="SM_Drop_WeaponMelee_GreatSword_Blank", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/Drop/SM_Drop_WeaponMelee_GreatSword_Parrying", shortName="SM_Drop_WeaponMelee_GreatSword_Parrying", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/Drop/SM_Drop_WeaponMelee_GreatSword_Reliable", shortName="SM_Drop_WeaponMelee_GreatSword_Reliable", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/Drop/SM_Drop_WeaponMelee_GreatSword_Souldrinker", shortName="SM_Drop_WeaponMelee_GreatSword_Souldrinker", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponMelee_GreatSword/Drop/SM_Drop_WeaponMelee_GreatSword_Voved", shortName="SM_Drop_WeaponMelee_GreatSword_Voved", sockets={ "Crossbow2h_backsocket" }, tags={ "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Blunderbuss/Drop/SM_Drop_WeaponRange_Blunderbuss_Blank", shortName="SM_Drop_WeaponRange_Blunderbuss_Blank", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Baneful", shortName="SM_Drop_WeaponRange_Musket_Baneful", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Blank", shortName="SM_Drop_WeaponRange_Musket_Blank", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Infantry", shortName="SM_Drop_WeaponRange_Musket_Infantry", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Common" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Relentless", shortName="SM_Drop_WeaponRange_Musket_Relentless", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Reliable", shortName="SM_Drop_WeaponRange_Musket_Reliable", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Uncommon" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Sniper", shortName="SM_Drop_WeaponRange_Musket_Sniper", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
+  { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Wicked", shortName="SM_Drop_WeaponRange_Musket_Wicked", sockets={ "Crossbow2h_backsocket" }, tags={ "Creepy", "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
+}
 do
   local ok, ModSettings = pcall(require, "modsettings")
   if ok and ModSettings then

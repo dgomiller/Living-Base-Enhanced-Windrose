@@ -12,3 +12,6 @@ R5/Binaries/Win64/ue4ss/Mods/LivingBase/__pycache__/
 
 # Stray dev artifacts
 *.bak_check
+
+# Regenerable build output -- gen_socketitems_lua.py's own output, paste-in only, not tracked
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/socketitems_generated.lua

@@ -670,7 +670,13 @@ local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, on
         end)
     end
     if Config.DECORRUPT and ExecuteWithDelay and not skipDecorrupt then
-        local rules = rulesWithHelmet((name == "Hunter") and Config.DECORRUPT_HUNTER or Config.DECORRUPT_MOB, showHelmet)
+        -- Thrall (2026-09-02) routed to his own dedicated ruleset, same dispatch shape as Hunter's
+        -- own carve-out -- see Config.DECORRUPT_THRALL's own header comment for why he needed one
+        -- (a real helmet-hide pattern DECORRUPT_MOB's shared/empty `hides` table can't provide).
+        local mobRules = Config.DECORRUPT_MOB
+        if name == "Hunter" then mobRules = Config.DECORRUPT_HUNTER
+        elseif name == "Thrall" then mobRules = Config.DECORRUPT_THRALL end
+        local rules = rulesWithHelmet(mobRules, showHelmet)
         local gen = Spawner.generation
         local tries, quiet = 0, 0
         -- Reflects the PREVIOUS completed attempt, not the one in flight -- doFixWork's own
@@ -748,6 +754,8 @@ local function senkaCrewFix(actor, name, showHelmet, onDone)
     local legPattern = "Warrior_Feather_%d+_Legs"
     if name == "Hunter" then
         rulesName, rules, legPattern = "DECORRUPT_CREW_HUNTER", Config.DECORRUPT_CREW_HUNTER, "Hunter_Feather_%d+_Legs"
+    elseif name == "Thrall" then
+        rulesName, rules, legPattern = "DECORRUPT_CREW_THRALL", Config.DECORRUPT_CREW_THRALL, "Thrall_Feather_%d+_Legs"
     elseif name == "Caster-F" or name == "Healer" then
         rulesName, rules, legPattern = "DECORRUPT_CREW_FEMALE", Config.DECORRUPT_CREW_FEMALE, "Witch_Feather_%d+_Legs"
         -- Config.SENKA_FEMALE_BASE_CLASS (Handyman Gatherer) has her own idle/bark voice lines --
@@ -2115,34 +2123,60 @@ function Testbed.SpawnFemaleWalkerByName(name)
     return nil, "no walking-woman target named '" .. tostring(name) .. "'"
 end
 
--- Testbed.SpawnBarbieByName(name) -- named lblook-only look (2026-08-13, "Female_Barbie").
--- Spawns the same walking-woman base (SENKA_FEMALE_BASE_CLASS + the "Brethren Woman" params)
--- spawnFemaleWalkerTarget uses, but instead of calling Testbed.ApplyFemaleReskinTarget to dress
--- her, runs its own retry loop HIDING every armor piece as it attaches (broad "^SK_Armor_"
--- pattern -- every real armor mesh in this game uses that prefix, confirmed by the ANCHORING fix
--- noted in ApplyFemaleReskinTarget's own comment -- this also covers hats, which are named
--- SK_Armor_*Hat) so only her base body + hair stays visible; hair meshes are SK_Hair_-prefixed,
--- untouched by this pattern, so she always keeps her hair and never a hat.
--- Deliberately lblook-only -- no numpad key of its own, not part of the Numpad-. walking-women
--- rotation, reachable only via `lblook Female_Barbie` (see LBLOOK_CATEGORIES in main.lua).
+-- Testbed.SpawnBarbieByName(name) -- named lblook-only look (2026-08-13, "Female_Barbie";
+-- extended 2026-09-03 to "Male_Barbie"/"Male_Barbie_Sailor", RedFalcon: "i want female barbie,
+-- male barbie, male barbie sailor"). Every barbie is the SAME idea on a different base
+-- class/skeleton: spawn it, strip every armor piece with the broad "^SK_Armor_" hide pattern
+-- (every real armor mesh in this game uses that prefix, confirmed by the ANCHORING fix noted in
+-- ApplyFemaleReskinTarget's own comment -- this also covers hats, named SK_Armor_*Hat) so only
+-- the base body + hair stays visible; hair meshes are SK_Hair_-prefixed, untouched by this
+-- pattern, so hair (where present) always stays.
+--   Female_Barbie        -- Config.SENKA_FEMALE_BASE_CLASS (Handyman Gatherer, a genuinely
+--                           female-presenting NPC in the wild), forced female via the same
+--                           "Brethren Woman" composite params spawnFemaleWalkerTarget uses.
+--   Male_Barbie           -- Config.TOWNSFOLK_WALKER_CLASS, no composite override -- the
+--                           Handyman-family townsfolk skeleton's own native (male) presentation,
+--                           for testing gear against a DIFFERENT skeleton/proportions than the
+--                           two below.
+--   Male_Barbie_Sailor    -- Config.CREW_CLASS (BP_Mob_Crew_Regular_Player, the "Player Crew"/
+--                           whistle-escort/FACTION_VISITOR_LOOKS base) -- a THIRD, distinct
+--                           skeleton family from the Handyman-based two above.
+-- Deliberately lblook-only -- no numpad key of its own, not part of any existing roster,
+-- reachable only via `lblook <name>` (see LBLOOK_CATEGORIES in main.lua).
 -- Spawner.DeCorrupt refuses to ever touch the player pawn (its own NEVER-de-corrupt-player
 -- guard), so this can't affect anyone but this one spawned actor.
+local BARBIE_RECIPES = {
+    female_barbie = function()
+        local entry = nil
+        for _, e in ipairs(Config.FACTION_VISITOR_LOOKS or {}) do
+            if e.name == "Brethren Woman" then entry = e; break end
+        end
+        if not entry then return nil, "internal: missing Brethren Woman params" end
+        return Config.SENKA_FEMALE_BASE_CLASS, { params = entry.params }
+    end,
+    male_barbie = function()
+        return Config.TOWNSFOLK_WALKER_CLASS, nil
+    end,
+    male_barbie_sailor = function()
+        return Config.CREW_CLASS, nil
+    end,
+}
 function Testbed.SpawnBarbieByName(name)
-    if tostring(name):lower() ~= "female_barbie" then
+    local key = tostring(name):lower()
+    local recipe = BARBIE_RECIPES[key]
+    if not recipe then
         return nil, "no lblook-only look named '" .. tostring(name) .. "'"
     end
-    local entry = nil
-    for _, e in ipairs(Config.FACTION_VISITOR_LOOKS or {}) do
-        if e.name == "Brethren Woman" then entry = e; break end
+    local class, compositeLook = recipe()
+    if not class then
+        log("SpawnBarbieByName: " .. key .. " recipe failed to produce a class.")
+        return nil, "internal: recipe failed"
     end
-    if not entry then
-        log("SpawnBarbieByName: no 'Brethren Woman' entry in Config.FACTION_VISITOR_LOOKS.")
-        return nil, "internal: missing Brethren Woman params"
-    end
-    local actor = Spawner.Spawn(Config.SENKA_FEMALE_BASE_CLASS, "Female_Barbie",
-        frontSpot(300), nil, nil, nil, false, { params = entry.params })
+    local label = name
+    local actor = Spawner.Spawn(class, label,
+        frontSpot(300), nil, nil, nil, false, compositeLook)
     if not (actor and actor:IsValid()) then
-        log("SpawnBarbieByName: spawn FAILED.")
+        log("SpawnBarbieByName: spawn FAILED for " .. key .. ".")
         return nil, "spawn failed"
     end
     local gen = Spawner.generation
@@ -2157,7 +2191,7 @@ function Testbed.SpawnBarbieByName(name)
             pcall(function()
                 if stillAlive(actor, gen) then
                     local changed = Spawner.DeCorrupt(actor, { hides = { "^SK_Armor_" } })
-                    log(string.format("Female_Barbie strip pass %d: %d change(s).", tries + 1, changed or 0))
+                    log(string.format("%s strip pass %d: %d change(s).", label, tries + 1, changed or 0))
                 end
             end)
             tries = tries + 1

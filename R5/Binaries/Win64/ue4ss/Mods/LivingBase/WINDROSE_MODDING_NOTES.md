@@ -984,6 +984,68 @@ is NOT a class-level behavior-tree difference reachable via the already-establis
 hiring/placement system — genuinely unexplored this session, a real candidate for "give a custom
 NPC a craft-station job" as a future, separate investigation, not solved here.
 
+**2026-09-08 addendum — "Main/Secondary/Detail" renamed to Color1/Color2/Color3, and a full
+per-body-part CPD color reference table, from RedFalcon's own real testing across the whole game.**
+The master material's own NameMap comment (this section's own earlier paragraph) names CPD03-05
+"MainColor/SecondaryColor/DetailColor," and that naming was carried into `lbtestcpdcolor`'s own
+arguments -- but RedFalcon's own hands-on testing across every colorable body part found those
+labels overpromise a consistency that isn't really there: "they aren't used in a reliable way to say
+main and detail or anything like that." Renamed throughout (`Spawner.TestSetCPDPaletteColor`'s own
+params, `lbtestcpdcolor`'s usage text) to the neutral **Color1/Color2/Color3** -- same 3 floats
+(CPD03/04/05), same write mechanism, just without a role name that doesn't actually hold across
+pieces.
+
+**The real per-body-part reference**, now `Config.CPD_BODYPART_COLOR_INFO` (keyed by the same
+BodyPart ordinal `lbtestcpdcolor`'s first argument takes) plus `Config.CPD_HAIR_COLOR_NAMES`
+(superseding the earlier hex-decoded best-guess pass with RedFalcon's own confirmed-in-game names)
+and `Config.CPD_CLOTH_COLOR_NAMES`:
+
+| BodyPart | Part | Palette | Color slots used | Notes |
+|---|---|---|---|---|
+| 1 | Eyebrows | hair (0-8) | 1 | |
+| 2 | Beard | hair (0-8) | 1 | |
+| 3 | Hair | hair (0-8) | 1 | |
+| 4 | Headgear | cloth (0-23) | 3 | shares its BodyPart ordinal with Head, below |
+| 4 | Head (bare) | cloth (0-23) | 1 (Color1 only) | Senkamati Head never changes color at all |
+| 5 | Scarf | cloth (0-23) | 1 | only Blackbeard Pirate has this piece |
+| 6 | Cape/TorsoCloth | cloth (0-23) | 1 (which slot varies by piece) | write the SAME value to all 3 slots to be safe; Senkamati TorsoCloth never changes color |
+| 7 | Torso | cloth (0-23) | 3 | |
+| 8 | Belt2 | none | 0 | |
+| 9 | Belt1 | none | 0 | |
+| 10 | Sling/Neck | none | 0 | Neck is only used by the Senkamati Witch |
+| 11 | Strap | none | 0 | |
+| 12 | Frog | none | 0 | |
+| 13 | Legs | cloth (0-23) | 3 | |
+| 14 | Shoes | cloth (0-23) | 3 | |
+| 15 | Waist | cloth (0-23) | 1 (Color3 only) | Color1/Color2 have no visible effect here |
+| 16 | Gloves | cloth (0-23) | 3 | |
+| 17 | Moustache | hair (0-8) | 1 | |
+| 18 | Whiskers | hair (0-8) | 1 | |
+
+**The two genuinely separate palettes, confirmed distinct atlases, not one palette reused at two
+sizes**: cloth/general body parts (Torso/Legs/Shoes/Gloves/Waist/Hat/Scarf/Cape) index into the
+24-entry `CRV_CharacterClothPalette` (Harp/IceBerg/Ivory/BlueCharcoal/BlackOlive/WoodBark/Crimson/
+Carmine/Bordeaux/PaleOrange/YellowGreen/PaleGold/EmeraldGreen/ColdGreen/OliveGreen/LightBlue/
+NavyBlue/OceanBlue/Purple/Violet/Lilac/ChocolateBrown/BrownLeather/BrownCopper, indices 0-23); the
+5 hair-family body parts (Hair/Eyebrows/Beard/Moustache/Whiskers) index into a SEPARATE, smaller
+9-entry atlas instead (indices 0-8): **Ash Brown, Charcoal, Light Brown, Blond, Copper, Chocolate,
+Slate, Silver, Salt and Pepper** -- confirmed by RedFalcon in-game across the whole roster, not
+inferred. (An earlier attempt to name this 9-color hair atlas by decoding its raw
+`CurveLinearColor` asset bytes directly -- retoc extract, UAssetGUI `tojson`, then a hand-validated
+binary parse of the resulting base64 property blob, gamma-corrected linear-to-sRGB -- got real hex
+values and reasonable-looking guesses, several of which happened to land close, but RedFalcon's own
+tested names are the authoritative ones now; the decode method is kept on record since it's a
+genuinely reusable technique for any future CPD-driven palette this game ships.)
+
+**Two real per-piece exceptions, not slot-count differences**: the Senkamati Head and Senkamati
+TorsoCloth pieces specifically never change color at all, regardless of which slot is written --
+these are content-level exceptions on those two specific meshes, not a gap in the CPD mechanism
+itself (every other Head/TorsoCloth-family piece responds normally).
+
+**Not yet tested, planned for later**: Eye color (CPD15 on the base body mesh, plus the separate
+5-variant discrete material swap already documented earlier this section) -- RedFalcon: "i plan to
+verify eyes tomorrow."
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

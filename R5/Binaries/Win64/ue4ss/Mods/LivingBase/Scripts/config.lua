@@ -4099,6 +4099,74 @@ Config.SOCKETITEMS_WEAPONS = {
   { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Sniper", shortName="SM_Drop_WeaponRange_Musket_Sniper", sockets={ "Crossbow2h_backsocket" }, tags={ "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
   { asset="/Game/Character/Skeletal_Meshes/Weapons/WeaponRange_Musket/Drop/SM_Drop_WeaponRange_Musket_Wicked", shortName="SM_Drop_WeaponRange_Musket_Wicked", sockets={ "Crossbow2h_backsocket" }, tags={ "Creepy", "Hunting", "Soldiering" }, location="Back", rarity="Rare" },
 }
+------------------------------------------------------------------
+-- Config.CPD_CLOTH_COLOR_NAMES / Config.CPD_HAIR_COLOR_NAMES / Config.CPD_BODYPART_COLOR_INFO --
+-- (2026-09-08) RedFalcon's own real per-body-part CPD color testing, done live across the whole
+-- game -- see `lbtestcpdcolor`/Spawner.TestSetCPDPaletteColor for the write mechanism this data
+-- documents. Two SEPARATE named palettes exist (confirmed distinct atlases, not one palette reused
+-- at two sizes):
+--   CPD_CLOTH_COLOR_NAMES -- the 24-entry CurveLinearColorAtlas cloth/general body parts index
+--   into (0-23). Source: CRV_CharacterClothPalette, found by RedFalcon via a direct JSON export.
+--   CPD_HAIR_COLOR_NAMES -- the SEPARATE, smaller 9-entry atlas (0-8) hair-family body parts
+--   (Hair/Eyebrows/Beard/Moustache/Whiskers) index into instead. Source: the 9 individual
+--   CRV_HairColor_00..08 assets under .../CharacterHairPalette/ -- names below are RedFalcon's own
+--   confirmed-in-game tests, superseding an earlier hex-decoded best-guess pass (see
+--   WINDROSE_MODDING_NOTES.md for that decode method, kept for the record but these real tested
+--   names are the authoritative ones).
+------------------------------------------------------------------
+Config.CPD_CLOTH_COLOR_NAMES = {
+  [0] = "Harp", [1] = "IceBerg", [2] = "Ivory", [3] = "BlueCharcoal",
+  [4] = "BlackOlive", [5] = "WoodBark", [6] = "Crimson", [7] = "Carmine",
+  [8] = "Bordeaux", [9] = "PaleOrange", [10] = "YellowGreen", [11] = "PaleGold",
+  [12] = "EmeraldGreen", [13] = "ColdGreen", [14] = "OliveGreen", [15] = "LightBlue",
+  [16] = "NavyBlue", [17] = "OceanBlue", [18] = "Purple", [19] = "Violet",
+  [20] = "Lilac", [21] = "ChocolateBrown", [22] = "BrownLeather", [23] = "BrownCopper",
+}
+
+Config.CPD_HAIR_COLOR_NAMES = {
+  [0] = "Ash Brown", [1] = "Charcoal", [2] = "Light Brown", [3] = "Blond",
+  [4] = "Copper", [5] = "Chocolate", [6] = "Slate", [7] = "Silver",
+  [8] = "Salt and Pepper",
+}
+
+-- Config.CPD_BODYPART_COLOR_INFO -- keyed by the SAME BodyPart enum ordinal `lbtestcpdcolor`'s
+-- first argument takes. `palette` says which of the two name tables above (or "none") applies;
+-- `colorSlots` is how many of the 3 CPD floats (Color1/Color2/Color3) that body part actually
+-- reads at all -- a body part with 1 slot still needs all 3 args when calling
+-- Spawner.TestSetCPDPaletteColor, the other 2 just have no visible effect. A `colorSlots` of 0
+-- means this body part has no CPD color capability whatsoever (its material never reads CPD03-05).
+-- BodyPart 4 and 6 each cover TWO real pieces sharing one ordinal, confirmed by RedFalcon
+-- (2026-09-08) after the first pass here flagged both as needing follow-up:
+--   4 (Hat/Head): Headgear reads all 3 slots; Head (bare-head skin/face tone) only reads Color1 --
+--     Color2/Color3 have no effect on Head. The Senkamati Head piece specifically has NO changing
+--     color at all (a per-piece exception, not a slot-count difference).
+--   6 (Cape/TorsoCloth): a cape/cloth piece is a SINGLE visible color, but WHICH of the 3 slots
+--     actually decides it varies per specific cape asset -- there's no one fixed slot to rely on.
+--     Practical rule: when setting a cape/cloth's color, write the SAME value to all 3 slots so it
+--     lands correctly regardless of which one that particular piece actually reads. The Senkamati
+--     TorsoCloth piece specifically has NO changing color at all (same kind of per-piece exception
+--     as the Senkamati Head above).
+Config.CPD_BODYPART_COLOR_INFO = {
+  [1]  = { name = "Eyebrows",       palette = "hair",  colorSlots = 1, notes = nil },
+  [2]  = { name = "Beard",          palette = "hair",  colorSlots = 1, notes = nil },
+  [3]  = { name = "Hair",           palette = "hair",  colorSlots = 1, notes = nil },
+  [4]  = { name = "Hat/Head",       palette = "cloth", colorSlots = "3 (Hat) / 1 (Head)", notes = "Headgear uses all 3 color slots; the bare Head only reads Color1 (Color2/Color3 have no effect on it). The Senkamati Head piece specifically never changes color at all, regardless of any slot." },
+  [5]  = { name = "Scarf",          palette = "cloth", colorSlots = 1, notes = "Only Blackbeard Pirate has this piece at all." },
+  [6]  = { name = "Cape/TorsoCloth",palette = "cloth", colorSlots = 1, notes = "A cape/cloth piece shows ONE color, but which of the 3 slots actually decides it varies by piece -- write the SAME value to all 3 slots to be safe regardless of which one a given piece reads. The Senkamati TorsoCloth piece specifically never changes color at all." },
+  [7]  = { name = "Torso",          palette = "cloth", colorSlots = 3, notes = nil },
+  [8]  = { name = "Belt2",          palette = "none",  colorSlots = 0, notes = nil },
+  [9]  = { name = "Belt1",          palette = "none",  colorSlots = 0, notes = nil },
+  [10] = { name = "Sling/Neck",     palette = "none",  colorSlots = 0, notes = "Neck is only used by the Senkamati Witch." },
+  [11] = { name = "Strap",          palette = "none",  colorSlots = 0, notes = nil },
+  [12] = { name = "Frog",           palette = "none",  colorSlots = 0, notes = nil },
+  [13] = { name = "Legs",           palette = "cloth", colorSlots = 3, notes = nil },
+  [14] = { name = "Shoes",          palette = "cloth", colorSlots = 3, notes = nil },
+  [15] = { name = "Waist",          palette = "cloth", colorSlots = 1, notes = "Only uses Color3 -- Color1/Color2 have no visible effect here." },
+  [16] = { name = "Gloves",         palette = "cloth", colorSlots = 3, notes = nil },
+  [17] = { name = "Moustache",      palette = "hair",  colorSlots = 1, notes = nil },
+  [18] = { name = "Whiskers",       palette = "hair",  colorSlots = 1, notes = nil },
+}
+
 do
   local ok, ModSettings = pcall(require, "modsettings")
   if ok and ModSettings then

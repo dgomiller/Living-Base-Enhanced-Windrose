@@ -13205,8 +13205,8 @@ function Spawner.TestSetCPDIndex(bodyPart, idx, colorVec, say)
     return okSet
 end
 
--- Spawner.TestSetCPDPaletteColor(bodyPart, mainIdx, secondaryIdx, detailIdx, say) --
--- "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>" (2026-08-31). THE REAL MECHANISM,
+-- Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Idx, say) --
+-- "lbtestcpdcolor <bodyPart> <color1> <color2> <color3>" (2026-08-31). THE REAL MECHANISM,
 -- confirmed via offline inspection, not guessing: extracted the equipped piece's actual master
 -- material (MI_ArmorRegular_01 -> parent M_Common_Cloth, via retoc + UAssetGUI's undocumented CLI
 -- `tojson` mode) and read its own NameMap, which spells out the FULL Custom Primitive Data layout as
@@ -13220,9 +13220,20 @@ end
 -- crucially `SetCustomPrimitiveDataVector4(idx, ...)` does NOT address 8 independent "slots" the way
 -- that test assumed -- idx is a flat FLOAT offset, and a Vector4 write spans 4 CONSECUTIVE floats, so
 -- those writes were overlapping into each other AND into unrelated effect slots the whole time.
--- MainColor/SecondaryColor/DetailColor sit at exactly consecutive floats 3/4/5, so ONE
--- SetCustomPrimitiveDataVector4(3, {Main, Secondary, Detail, 0}) call addresses precisely those 3
+-- The 3 color floats sit at exactly consecutive floats 3/4/5, so ONE
+-- SetCustomPrimitiveDataVector4(3, {Color1, Color2, Color3, 0}) call addresses precisely those 3
 -- slots and nothing else -- no Dirt(7)/BloodWounds(8) contamination this time.
+--
+-- RENAMED from Main/Secondary/Detail to Color1/Color2/Color3 (2026-09-08, RedFalcon, after real
+-- per-body-part testing across the whole game: "let's just use color 1, color 2, and color 3, they
+-- aren't used in a reliable way to say main and detail or anything like that"). The master
+-- material's own NameMap comment names them "MainColor/SecondaryColor/DetailColor," and that's
+-- still literally which floats they are (3/4/5) -- but which VISIBLE part of a given piece each one
+-- actually paints varies per piece/body-part rather than following one consistent "primary vs
+-- accent vs trim" role, so a role-based name overpromises a consistency that isn't really there.
+-- See Config.CPD_BODYPART_COLOR_INFO for the full per-body-part reference (which range applies,
+-- how many of the 3 slots a given body part actually uses, and real behavioral quirks -- e.g. Waist
+-- only ever uses Color3, Senkamati's Head ignores color entirely).
 --
 -- Also confirms the VALUE SHAPE was wrong before: these are the SAME 0..23 PALETTE INDEX values as
 -- FR5BLCharacterColorData.Value (SelectedColors/ColorData, already found and confirmed to differ per
@@ -13231,7 +13242,7 @@ end
 -- palette-texture asset type, confirmed present in M_Common_Cloth's own NameMap) to get the actual
 -- RGB. Pass BotC's own real values onto Gatherer's own actor for the cleanest possible confirmation
 -- test, rather than an arbitrary guess.
-function Spawner.TestSetCPDPaletteColor(bodyPart, mainIdx, secondaryIdx, detailIdx, say)
+function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Idx, say)
     say = say or function(m) print("[LivingBase] [test-cpdcolor] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
@@ -13277,17 +13288,121 @@ function Spawner.TestSetCPDPaletteColor(bodyPart, mainIdx, secondaryIdx, detailI
         return false
     end
 
-    local m = tonumber(mainIdx) or 0
-    local s = tonumber(secondaryIdx) or 0
-    local d = tonumber(detailIdx) or 0
+    local m = tonumber(color1Idx) or 0
+    local s = tonumber(color2Idx) or 0
+    local d = tonumber(color3Idx) or 0
     local vec4 = { X = m, Y = s, Z = d, W = 0.0 }
-    say(string.format("writing CPD floats 3/4/5 (Main/Secondary/Detail) = %d/%d/%d via ONE SetCustomPrimitiveDataVector4(3, ...) call.",
+    say(string.format("writing CPD floats 3/4/5 (Color1/Color2/Color3) = %d/%d/%d via ONE SetCustomPrimitiveDataVector4(3, ...) call.",
         m, s, d))
     local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataVector4(3, vec4) end)
     say(string.format("SetCustomPrimitiveDataVector4(3, {%d,%d,%d,0}) = %s%s", m, s, d, tostring(okSet),
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
     say("done -- check visually now, no reload needed.")
     return okSet
+end
+
+-- Spawner.TestDumpAllCPD(say) -- "lbdumpcpd" (2026-09-07, RedFalcon: "is there a way to scan and
+-- see whats populated in each cpd vector?... like item" -- one component at a time, PER PIECE, not
+-- just whichever single mesh `lbprobecpd` (2026-08-21, Spawner.ProbeCustomPrimitiveData) happens to
+-- be pointed at). PURE READ, no write. Walks the SAME `comp.BuildedCompositeMeshes` list
+-- Spawner.TestSetCPDPaletteColor/TestSetCPDFloat already use to find a write TARGET by BodyPart --
+-- here every entry's own `.EquippedMesh` gets read instead, via the identical
+-- `.CustomPrimitiveData.Data` property access Spawner.ProbeCustomPrimitiveData already proved out
+-- (2026-08-21) -- plus the base body mesh (`actor.Mesh`) separately, since EyeColor (CPD15) lives
+-- there, not on any BuildedCompositeMeshes entry. Reports only entries that actually HAVE a non-
+-- empty Data array -- an equipped piece whose own material never reads CPD at all (most non-cloth
+-- pieces) legitimately has none, not a read failure.
+function Spawner.TestDumpAllCPD(say)
+    say = say or function(m) print("[LivingBase] [dump-cpd] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    -- Always reports SOMETHING per checked component (2026-09-08, fixing a real diagnostic gap:
+    -- the first version treated "CustomPrimitiveData not accessible at all in this build/on this
+    -- component" and "accessible, genuinely empty" identically -- both just silently didn't count,
+    -- so a run that found zero everywhere gave no way to tell which case it actually was. Now
+    -- returns one of "data"/"empty"/"noprop"/"nomesh" so the caller can tally each separately, and
+    -- prints the piece's own current mesh name too so it's clear WHICH real piece each BodyPart
+    -- number actually is.
+    local function dumpOne(comp, label)
+        if not (comp and comp:IsValid()) then
+            say(label .. " -- no component/mesh to check.")
+            return "nomesh"
+        end
+        local meshName = "?"
+        pcall(function()
+            local sk = comp.SkeletalMesh
+            if not (sk and sk:IsValid()) and comp.GetSkeletalMeshAsset then sk = comp:GetSkeletalMeshAsset() end
+            if not (sk and sk:IsValid()) then sk = comp.StaticMesh end
+            if not (sk and sk:IsValid()) and comp.GetStaticMesh then sk = comp:GetStaticMesh() end
+            if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+        end)
+        local okRead, dataArr = pcall(function() return comp.CustomPrimitiveData.Data end)
+        if not (okRead and dataArr) then
+            say(string.format("%s (mesh=%s) -- CustomPrimitiveData not accessible on this component.", label, meshName))
+            return "noprop"
+        end
+        local n = 0
+        pcall(function() n = dataArr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #dataArr end) end
+        if n == 0 then
+            say(string.format("%s (mesh=%s) -- CustomPrimitiveData readable, 0 entries (this piece's own material never writes to it).", label, meshName))
+            return "empty"
+        end
+        local parts = {}
+        for i = 1, n do
+            local v = nil
+            pcall(function() v = dataArr[i] end)
+            if v == nil then pcall(function() v = dataArr:Get(i) end) end
+            parts[#parts + 1] = string.format("[%d]=%s", i - 1, tostring(v))
+        end
+        say(string.format("%s (mesh=%s) -- %d CPD float(s): %s", label, meshName, n, table.concat(parts, " ")))
+        return "data"
+    end
+
+    local tally = { data = 0, empty = 0, noprop = 0, nomesh = 0 }
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    local bodyResult = dumpOne(body, name .. " base body (EyeColor lives here, CPD15)")
+    tally[bodyResult] = (tally[bodyResult] or 0) + 1
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if comp and comp:IsValid() then
+        local list = nil
+        pcall(function() list = comp.BuildedCompositeMeshes end)
+        local n = 0
+        if list then
+            pcall(function() n = list:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #list end) end
+        end
+        for i = 1, n do
+            local el = nil
+            pcall(function() el = list[i] end)
+            if el == nil then pcall(function() el = list:Get(i) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            if el then
+                local bp = "?"
+                pcall(function() bp = tostring(el.BodyPart) end)
+                local piece = nil
+                pcall(function() piece = el.EquippedMesh end)
+                local result = dumpOne(piece, name .. " BodyPart=" .. bp)
+                tally[result] = (tally[result] or 0) + 1
+            end
+        end
+    else
+        say(name .. " has no CompositeMeshComponent -- only the base body was checked.")
+    end
+
+    say(string.format("done -- %d with data, %d readable-but-empty, %d not-accessible, %d no-component.",
+        tally.data, tally.empty, tally.noprop, tally.nomesh))
+    return tally.data > 0
 end
 
 -- Spawner.TestSetCPDFloat(bodyPart, idx, value, say) -- "lbtestcpdfloat <bodyPart> <index> <value>"

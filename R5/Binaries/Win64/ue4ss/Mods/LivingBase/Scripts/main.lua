@@ -2572,6 +2572,33 @@ else
     log("lbprobecpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdumpcpd" (2026-09-07, RedFalcon: "is there a way to scan and see whats
+-- populated in each cpd vector?... like item") -- see Spawner.TestDumpAllCPD's own comment. PURE
+-- READ, dumps EVERY per-piece component's CPD data on the nearest/locked actor (not just one
+-- cached target like the older lbprobecpd) -- point this at a native NPC to read their real color
+-- indices per body part.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpcpd", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbdumpcpd] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestDumpAllCPD(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpcpd")
+    registerCmdInfo("lbdumpcpd", "lbdumpcpd", "PURE READ: dumps every real per-piece component's live CustomPrimitiveData array on the nearest/locked actor (base body + every BuildedCompositeMeshes entry), so you can see a native NPC's actual populated CPD color/effect indices per body part.")
+else
+    log("lbdumpcpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbprobecpdsig" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCPDIndexSignature's
 -- own comment. Read-only diagnostic: dumps the parameter list for the CPD index-lookup functions.
 if RegisterConsoleCommandHandler then
@@ -3826,13 +3853,18 @@ else
     log("lbtestcpdidx unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>" (2026-08-31) --
+-- Console command "lbtestcpdcolor <bodyPart> <color1> <color2> <color3>" (2026-08-31) --
 -- THE REAL MECHANISM. M_Common_Cloth's own NameMap (extracted+converted offline via retoc +
--- UAssetGUI's undocumented `tojson` CLI mode) spells out CPD03/04/05 = Cloth Main/Secondary/
--- DetailColor, each a 0..23 PALETTE INDEX (same Value field as SelectedColors/ColorData), looked up
--- in a CurveLinearColorAtlas by the shader. Writes exactly those 3 floats in ONE
--- SetCustomPrimitiveDataVector4(3, ...) call -- no Dirt/BloodWounds contamination this time. See
--- Spawner.TestSetCPDPaletteColor's own header comment for the full reasoning.
+-- UAssetGUI's undocumented `tojson` CLI mode) spells out CPD03/04/05 as the 3 color floats, each a
+-- 0..23 PALETTE INDEX (same Value field as SelectedColors/ColorData) for the cloth palette, or
+-- 0..8 for hair-family body parts (their own separate, smaller palette) -- looked up in a
+-- CurveLinearColorAtlas by the shader. Writes exactly those 3 floats in ONE
+-- SetCustomPrimitiveDataVector4(3, ...) call -- no Dirt/BloodWounds contamination this time.
+-- RENAMED from Main/Secondary/Detail to Color1/Color2/Color3 (2026-09-08, RedFalcon, after real
+-- per-body-part testing: "they aren't used in a reliable way to say main and detail or anything
+-- like that" -- which slot paints which visible part varies per body part, see Config.
+-- CPD_BODYPART_COLOR_INFO for the full reference). See Spawner.TestSetCPDPaletteColor's own header
+-- comment for the full reasoning.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestcpdcolor", function(FullCommand, Parameters, Ar)
@@ -3845,20 +3877,20 @@ if RegisterConsoleCommandHandler then
                 end)
             end
             local bodyPartArg = Parameters and Parameters[1]
-            local mainArg = Parameters and Parameters[2]
-            local secArg = Parameters and Parameters[3]
-            local detArg = Parameters and Parameters[4]
-            if not (bodyPartArg and mainArg) then
-                say("usage: lbtestcpdcolor <bodyPart enum int, e.g. 7 for Torso> <mainIdx 0-23> <secondaryIdx 0-23> <detailIdx 0-23>")
+            local c1Arg = Parameters and Parameters[2]
+            local c2Arg = Parameters and Parameters[3]
+            local c3Arg = Parameters and Parameters[4]
+            if not (bodyPartArg and c1Arg) then
+                say("usage: lbtestcpdcolor <bodyPart enum int, e.g. 7 for Torso> <color1> <color2> <color3> (see Config.CPD_BODYPART_COLOR_INFO for each body part's valid range and slot count)")
                 return true
             end
-            local ok, err = pcall(function() Spawner.TestSetCPDPaletteColor(bodyPartArg, mainArg, secArg, detArg, say) end)
+            local ok, err = pcall(function() Spawner.TestSetCPDPaletteColor(bodyPartArg, c1Arg, c2Arg, c3Arg, say) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>")
-    registerCmdInfo("lbtestcpdcolor", "lbtestcpdcolor <bodyPart> <mainIdx> <secondaryIdx> <detailIdx>", "Writes the real CPD03/04/05 Main/Secondary/DetailColor palette indices (0-23) in one clean Vector4 write -- confirmed via offline material inspection.")
+    log("Console command registered: lbtestcpdcolor <bodyPart> <color1> <color2> <color3>")
+    registerCmdInfo("lbtestcpdcolor", "lbtestcpdcolor <bodyPart> <color1> <color2> <color3>", "Writes the real CPD03/04/05 color palette indices in one clean Vector4 write (0-23 for cloth-family body parts, 0-8 for hair-family ones) -- see Config.CPD_BODYPART_COLOR_INFO for which body parts use how many of the 3 slots.")
 else
     log("lbtestcpdcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

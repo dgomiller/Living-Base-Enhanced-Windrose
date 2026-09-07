@@ -2572,6 +2572,35 @@ else
     log("lbprobecpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbprobeclothpalette" (2026-09-08) -- see Spawner.TestProbeClothPalette's own
+-- comment. PURE READ, diagnostic. RESULT (confirmed live 2026-09-07): resolves the atlas and its
+-- 24-entry GradientCurves array fine, but every FRichCurve.Keys comes back empty at runtime --
+-- this is cooked-away editor-only authoring data, not a reflection-path mistake. The real values
+-- were recovered instead via FModel's "Save Properties" JSON export (which understands
+-- CurveLinearColorAtlas natively) -- see the Cloth Color Palette artifact / config.lua
+-- Config.CPD_CLOTH_COLOR_NAMES. Left in place as a documented dead end, not a working decoder.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeclothpalette", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobeclothpalette] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestProbeClothPalette(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeclothpalette")
+    registerCmdInfo("lbprobeclothpalette", "lbprobeclothpalette", "PURE READ, diagnostic only -- confirmed the live atlas's FRichCurve.Keys are always empty at runtime (cooked-away editor data). The real 24 cloth colors were decoded via FModel's JSON export instead; see Config.CPD_CLOTH_COLOR_NAMES.")
+else
+    log("lbprobeclothpalette unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbdumpcpd" (2026-09-07, RedFalcon: "is there a way to scan and see whats
 -- populated in each cpd vector?... like item") -- see Spawner.TestDumpAllCPD's own comment. PURE
 -- READ, dumps EVERY per-piece component's CPD data on the nearest/locked actor (not just one

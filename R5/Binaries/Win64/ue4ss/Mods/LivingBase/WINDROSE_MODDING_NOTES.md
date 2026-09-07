@@ -1077,6 +1077,30 @@ own "custom NPC from scratch" checklist now has a real, confirmed, working mecha
 per-body-part reference for all of the CPD-driven categories: `Config.CPD_BODYPART_COLOR_INFO` /
 `CPD_CLOTH_COLOR_NAMES` / `CPD_HAIR_COLOR_NAMES` / `CPD_EYE_COLOR_NAMES` in config.lua.
 
+**RESOLVED 2026-09-07 -- the 24-entry cloth palette's real RGB values decoded too, and it took a
+genuinely different technique from hair/eye.** The hair/eye binary parser (retoc extract ->
+UAssetGUI `tojson` -> hand-validated RawExport byte layout) does NOT work on
+`CRV_CharacterClothPalette` -- it's a `CurveLinearColorAtlas` (24 nested curve-sets), structurally
+different from a standalone `CurveLinearColor`; every offset tried hit the wrong marker byte.
+Built a live UE4SS reflection probe instead (`lbprobeclothpalette`/`Spawner.TestProbeClothPalette`)
+to try reading `atlas.GradientCurves` directly in-game, following this project's own "ask the
+running game instead of reverse-engineering blind" principle -- it successfully resolved the atlas
+and its 24-entry array, but every `FRichCurve.Keys` came back **empty** for all 24 entries x 4
+channels. Not a wrong property-name guess: this is cooked-away editor-only authoring data -- the
+atlas keeps no live keyframes at runtime at all, only whatever baked texture the shader actually
+samples. Left `lbprobeclothpalette` in place as a documented dead end (confirmed, not attempted).
+
+The actual fix: **FModel's own "Save Properties" JSON export**, which understands
+`CurveLinearColorAtlas`/`FRichCurve` as real reflected classes (unlike UAssetGUI, which is why the
+binary route failed) and dumps genuine `Time`/`Value` keyframes directly -- no parsing needed at
+all. One real surprise in the data: each of the 24 cloth colors is a **true 3-stop gradient**
+(Time 0 / 0.5 / 1.0 per R/G/B channel), not a flat color like hair/eye's simple root-tip pair --
+reads like a shadow/base/highlight shading ramp baked per named color. Same linear->sRGB gamma
+correction (IEC 61966-2-1) applied on top. Full swatch reference (all 24, all 3 stops, real hex):
+see the "Cloth Color Palette" artifact published this session. The FModel export's own filenames
+already carried the real names (`CRV_ClothColor_00_Harp.json`, etc.) -- independent confirmation
+that `Config.CPD_CLOTH_COLOR_NAMES` was already correct.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

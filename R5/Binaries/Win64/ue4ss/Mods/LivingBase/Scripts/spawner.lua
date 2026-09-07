@@ -13419,6 +13419,111 @@ end
 -- Detail at floats 3-5 simply not producing a visually distinct jump from palette index 0 to 1. Can't
 -- tell which from that data -- this tool exists to find out empirically, one clean float at a time,
 -- rather than trust the comment mapping any further.
+-- Spawner.TestProbeClothPalette(say) -- "lbprobeclothpalette" (2026-09-08). PURE READ, exploratory.
+-- Same goal as the hair-palette decode (get real RGB per index, not just the game's own internal
+-- names), but CRV_CharacterClothPalette turned out to be a genuinely different asset shape under
+-- the hood -- hair/eye are 24 (well, 9/8) separate single-color CurveLinearColor files with a
+-- simple, already-reverse-engineered binary layout; the cloth palette is ONE CurveLinearColorAtlas
+-- asset holding all 24 as a nested array, in a binary layout that did NOT match the hair/eye parser
+-- (confirmed by direct byte inspection -- a real structural difference, not a bug in that parser).
+-- Rather than reverse-engineer a SECOND binary format offline, this asks the running game to decode
+-- its own asset instead (same "stop inspecting offline, ask the live game" principle already
+-- established elsewhere in this project) -- UCurveLinearColorAtlas's own `GradientCurves` is a
+-- plain UPROPERTY array of `FRuntimeCurveLinearColor` structs, each wrapping 4 `FRichCurve`
+-- channels (R/G/B/A) whose own `Keys` array is ALSO a plain UPROPERTY -- if UE4SS's Lua binding
+-- exposes nested-struct-array properties this deeply, a live read should just work with zero
+-- binary parsing at all. UNTESTED as of this writing -- genuinely exploratory, reports exactly
+-- what it finds (or where it stops working) rather than assuming success.
+function Spawner.TestProbeClothPalette(say)
+    say = say or function(m) print("[LivingBase] [probe-clothpalette] " .. tostring(m) .. "\n") end
+    local path = "/Game/Common/Textures/Gradients/CRV_CharacterClothPalette.CRV_CharacterClothPalette"
+    local atlas = resolveAsset(path)
+    if not (atlas and atlas:IsValid()) then
+        say("could not resolve " .. path)
+        return false
+    end
+    say("resolved atlas OK: " .. path)
+
+    local curves = nil
+    local okRead, errRead = pcall(function() curves = atlas.GradientCurves end)
+    if not (okRead and curves) then
+        say("atlas.GradientCurves not readable this way: " .. tostring(errRead or "nil"))
+        return false
+    end
+    local n = 0
+    pcall(function() n = curves:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #curves end) end
+    say(string.format("GradientCurves: %d entries (expect 24)", n))
+    if n == 0 then return false end
+
+    local function readChannel(channelObj, label)
+        -- Try the most likely shapes in order, reporting which one worked.
+        local keys = nil
+        local okA = pcall(function() keys = channelObj.EditorCurveData.Keys end)
+        if not (okA and keys) then
+            okA = pcall(function() keys = channelObj.Keys end)
+        end
+        if not (okA and keys) then return nil, "no readable .Keys (tried EditorCurveData.Keys and .Keys)" end
+        local kn = 0
+        pcall(function() kn = keys:GetArrayNum() end)
+        if kn == 0 then pcall(function() kn = #keys end) end
+        if kn == 0 then return nil, "Keys array empty" end
+        local first, last = nil, nil
+        pcall(function()
+            local k1 = keys[1]; if not k1 then k1 = keys:Get(1) end
+            first = { t = k1.Time, v = k1.Value }
+        end)
+        pcall(function()
+            local kL = keys[kn]; if not kL then kL = keys:Get(kn) end
+            last = { t = kL.Time, v = kL.Value }
+        end)
+        return { first = first, last = last, count = kn }, nil
+    end
+
+    for i = 1, math.min(n, 24) do
+        local entry = nil
+        pcall(function() entry = curves[i] end)
+        if entry == nil then pcall(function() entry = curves:Get(i) end) end
+        if entry == nil then
+            say(string.format("[%d] could not index into GradientCurves", i - 1))
+        else
+            -- FRuntimeCurveLinearColor wraps one FRichCurve[4] (or ColorCurves[4]) member --
+            -- try the two most likely field names.
+            local channels = nil
+            local okCh = pcall(function() channels = entry.ColorCurves end)
+            if not (okCh and channels) then
+                okCh = pcall(function() channels = entry end)  -- maybe entry itself already IS a plain 4-channel struct
+            end
+            if not (okCh and channels) then
+                say(string.format("[%d] could not find a ColorCurves field on this entry", i - 1))
+            else
+                local parts = {}
+                local anyOk = false
+                for ci, label in ipairs({ "R", "G", "B", "A" }) do
+                    local ch = nil
+                    pcall(function() ch = channels[ci] end)
+                    if ch == nil then pcall(function() ch = channels:Get(ci) end) end
+                    if ch == nil then
+                        parts[#parts + 1] = label .. "=?"
+                    else
+                        local result, err = readChannel(ch, label)
+                        if result then
+                            anyOk = true
+                            parts[#parts + 1] = string.format("%s[%d keys, first=(%.3f,%.4f) last=(%.3f,%.4f)]",
+                                label, result.count, result.first and result.first.t or -1, result.first and result.first.v or -1,
+                                result.last and result.last.t or -1, result.last and result.last.v or -1)
+                        else
+                            parts[#parts + 1] = label .. "=FAIL(" .. tostring(err) .. ")"
+                        end
+                    end
+                end
+                say(string.format("[%d] %s", i - 1, table.concat(parts, "  ")))
+            end
+        end
+    end
+    return true
+end
+
 function Spawner.TestSetCPDFloat(bodyPart, idx, value, say)
     say = say or function(m) print("[LivingBase] [test-cpdfloat] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0

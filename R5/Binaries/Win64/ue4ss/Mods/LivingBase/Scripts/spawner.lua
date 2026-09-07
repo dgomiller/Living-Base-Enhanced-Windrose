@@ -13468,7 +13468,18 @@ function Spawner.TestReadCategoryColors(categories)
             end
         end
     end
-    local function readSlot(dataArr, idx0) -- idx0 = 0-based CPD float index (3/4/5)
+    -- BUG FIX (2026-09-08, RedFalcon: "it seemed to populate all colors as harp when reading
+    -- current"): this originally indexed dataArr[4]/[5]/[6] (1-based, CPD 3/4/5) with no bounds
+    -- check at all -- unlike TestDumpAllCPD's own dumpOne, which only ever reads indices 1..n
+    -- after checking GetArrayNum(). A piece whose material never writes CPD03-05 doesn't
+    -- necessarily have a 0-length Data array; it can have a SHORTER one (e.g. only 0-2 populated
+    -- for something unrelated to color), and indexing PAST that length on this UE4SS array binding
+    -- silently returned 0.0 instead of nil/erroring -- so every under-length piece read back as
+    -- "index 0 (Harp)" on all 3 slots instead of correctly showing as unreadable/(none). Now checks
+    -- the array's own length first and refuses to read past it, matching TestDumpAllCPD's own
+    -- established bounds discipline.
+    local function readSlot(dataArr, arrLen, idx0) -- idx0 = 0-based CPD float index (3/4/5)
+        if arrLen < idx0 + 1 then return nil end
         local v = nil
         pcall(function() v = dataArr[idx0 + 1] end)
         if v == nil then pcall(function() v = dataArr:Get(idx0 + 1) end) end
@@ -13482,7 +13493,10 @@ function Spawner.TestReadCategoryColors(categories)
             local dataArr = nil
             pcall(function() dataArr = mesh.CustomPrimitiveData.Data end)
             if dataArr then
-                c1, c2, c3 = readSlot(dataArr, 3), readSlot(dataArr, 4), readSlot(dataArr, 5)
+                local arrLen = 0
+                pcall(function() arrLen = dataArr:GetArrayNum() end)
+                if arrLen == 0 then pcall(function() arrLen = #dataArr end) end
+                c1, c2, c3 = readSlot(dataArr, arrLen, 3), readSlot(dataArr, arrLen, 4), readSlot(dataArr, arrLen, 5)
             end
         end
         results[#results + 1] = { key = row.key, c1 = c1, c2 = c2, c3 = c3 }

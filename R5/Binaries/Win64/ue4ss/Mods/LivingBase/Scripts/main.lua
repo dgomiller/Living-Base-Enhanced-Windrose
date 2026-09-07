@@ -905,8 +905,14 @@ local function pollCustomColorReadRequest()
 
     ExecuteInGameThread(function()
         local lines = {}
+        -- Real say() (2026-09-08, RedFalcon: "now its coming back with nothing" -- this whole path
+        -- was silent, no way to tell WHY without instrumenting it) -- prints per-category detail
+        -- (target found, BuildedCompositeMeshes count, each entry's own BodyPart/mesh, and each
+        -- category's own array length + resolved values) so a "nothing" result can be diagnosed
+        -- from the log directly instead of guessing.
+        local function say(m) print("[LivingBase] [custom-read-current] " .. tostring(m) .. "\n") end
         local ok, results = pcall(function()
-            return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES)
+            return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES, say)
         end)
         if ok and results then
             for _, r in ipairs(results) do

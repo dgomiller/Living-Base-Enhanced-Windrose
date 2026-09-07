@@ -13434,16 +13434,24 @@ end
 -- Returns one {key=, c1=, c2=, c3=} row per input category, in the SAME order -- c1/c2/c3 are nil
 -- (not 0) when that piece isn't equipped or CustomPrimitiveData isn't readable on it, so a caller
 -- can tell "genuinely index 0 (Harp)" apart from "nothing there to read."
-function Spawner.TestReadCategoryColors(categories)
+function Spawner.TestReadCategoryColors(categories, say)
+    say = say or function() end
     local results = {}
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
-    if not bestI then return results end
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return results
+    end
     local actor = e.actor
-    if not (actor and actor:IsValid()) then return results end
+    if not (actor and actor:IsValid()) then say("no actor"); return results end
+    say("target=" .. tostring(e.label or "actor"))
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
-    if not (comp and comp:IsValid()) then return results end
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on actor")
+        return results
+    end
     local list = nil
     pcall(function() list = comp.BuildedCompositeMeshes end)
     local n = 0
@@ -13451,6 +13459,51 @@ function Spawner.TestReadCategoryColors(categories)
         pcall(function() n = list:GetArrayNum() end)
         if n == 0 then pcall(function() n = #list end) end
     end
+    say(string.format("BuildedCompositeMeshes: %d entries", n))
+
+    -- FALLBACK SOURCE (2026-09-08, RedFalcon: lbprobecolors on this same target showed
+    -- SavedCustomizationData.SelectedColors fully populated -- 3 consecutive {BodyPart, Value,
+    -- bOverrideDefaultColor} entries per body part, in Color1/Color2/Color3 order -- while every
+    -- piece's own CustomPrimitiveData.Data read back empty). CPD is only ever POPULATED the moment
+    -- OUR OWN Apply/lbtestcpdcolor writes to it -- a vanilla NPC's native per-piece color instead
+    -- lives here, in a plain struct on the composite component itself (see
+    -- Spawner.TestProbeSelectedColors's own header comment for the fuller archetype/soft-ptr
+    -- history of how this was found). Read once, grouped by BodyPart, so each category below can
+    -- fall back to it when CPD has nothing -- CPD stays authoritative when present (e.g. right
+    -- after an Apply click, which never touches this struct at all, so reading it alone would show
+    -- stale pre-Apply values).
+    local savedColorsByBodyPart = {}
+    do
+        local struct = nil
+        pcall(function() struct = comp.SavedCustomizationData end)
+        local arr = struct and nil
+        if struct then pcall(function() arr = struct.SelectedColors end) end
+        if arr then
+            local an = 0
+            pcall(function() an = arr:GetArrayNum() end)
+            if an == 0 then pcall(function() an = #arr end) end
+            for i = 1, an do
+                local el = nil
+                pcall(function() el = arr[i] end)
+                if el == nil then pcall(function() el = arr:Get(i) end) end
+                pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+                if el then
+                    local bp, val = nil, nil
+                    pcall(function() bp = tonumber(el.BodyPart) end)
+                    pcall(function() val = tonumber(el.Value) end)
+                    if bp and val then
+                        savedColorsByBodyPart[bp] = savedColorsByBodyPart[bp] or {}
+                        local slots = savedColorsByBodyPart[bp]
+                        slots[#slots + 1] = val
+                    end
+                end
+            end
+            say(string.format("SavedCustomizationData.SelectedColors: %d entries (fallback source, used only where CPD has nothing)", an))
+        else
+            say("SavedCustomizationData.SelectedColors not readable -- no fallback available if CPD is empty.")
+        end
+    end
+
     -- BodyPart -> EquippedMesh, built once rather than re-walking the list per category.
     local meshByBodyPart = {}
     for i = 1, n do
@@ -13461,9 +13514,19 @@ function Spawner.TestReadCategoryColors(categories)
         if el then
             local bp = nil
             pcall(function() bp = tonumber(el.BodyPart) end)
+            local meshName = "?"
+            local mesh = nil
+            pcall(function() mesh = el.EquippedMesh end)
+            pcall(function()
+                if mesh and mesh:IsValid() then
+                    local sk = mesh.SkeletalMesh
+                    if not (sk and sk:IsValid()) and mesh.GetSkeletalMeshAsset then sk = mesh:GetSkeletalMeshAsset() end
+                    if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+                end
+            end)
+            say(string.format("  [%d] BodyPart=%s mesh=%s validMesh=%s", i, tostring(bp), meshName,
+                tostring(mesh ~= nil and mesh.IsValid and mesh:IsValid())))
             if bp then
-                local mesh = nil
-                pcall(function() mesh = el.EquippedMesh end)
                 meshByBodyPart[bp] = mesh
             end
         end
@@ -13489,14 +13552,34 @@ function Spawner.TestReadCategoryColors(categories)
     for _, row in ipairs(categories or {}) do
         local mesh = meshByBodyPart[row.bodyPart]
         local c1, c2, c3 = nil, nil, nil
+        local fromCpd = false
         if mesh and mesh.IsValid and mesh:IsValid() then
             local dataArr = nil
-            pcall(function() dataArr = mesh.CustomPrimitiveData.Data end)
+            local okRead = pcall(function() dataArr = mesh.CustomPrimitiveData.Data end)
             if dataArr then
                 local arrLen = 0
                 pcall(function() arrLen = dataArr:GetArrayNum() end)
                 if arrLen == 0 then pcall(function() arrLen = #dataArr end) end
                 c1, c2, c3 = readSlot(dataArr, arrLen, 3), readSlot(dataArr, arrLen, 4), readSlot(dataArr, arrLen, 5)
+                fromCpd = c1 ~= nil or c2 ~= nil or c3 ~= nil
+                say(string.format("%s (bodyPart=%s): CPD array len=%d -> c1=%s c2=%s c3=%s", row.key,
+                    tostring(row.bodyPart), arrLen, tostring(c1), tostring(c2), tostring(c3)))
+            else
+                say(string.format("%s (bodyPart=%s): CustomPrimitiveData.Data not readable (okRead=%s)",
+                    row.key, tostring(row.bodyPart), tostring(okRead)))
+            end
+        else
+            say(string.format("%s (bodyPart=%s): no valid EquippedMesh for this BodyPart", row.key, tostring(row.bodyPart)))
+        end
+        -- CPD wins whenever it has ANYTHING (it's what Apply itself writes, so it must win right
+        -- after an Apply click) -- only fall back to the native SavedCustomizationData snapshot
+        -- when CPD came up completely empty, e.g. a vanilla piece never touched by this tool.
+        if not fromCpd then
+            local slots = savedColorsByBodyPart[row.bodyPart]
+            if slots then
+                c1, c2, c3 = slots[1], slots[2], slots[3]
+                say(string.format("%s (bodyPart=%s): falling back to SavedCustomizationData -> c1=%s c2=%s c3=%s",
+                    row.key, tostring(row.bodyPart), tostring(c1), tostring(c2), tostring(c3)))
             end
         end
         results[#results + 1] = { key = row.key, c1 = c1, c2 = c2, c3 = c3 }

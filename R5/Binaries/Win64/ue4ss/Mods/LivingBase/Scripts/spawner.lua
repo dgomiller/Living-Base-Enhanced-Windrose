@@ -13252,6 +13252,15 @@ function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Id
     end
     local actor = e.actor
     if not (actor and actor:IsValid()) then say("no actor"); return false end
+    -- Identity logging (2026-09-08, RedFalcon: "applied a couple changes, then read current...
+    -- only populated the original colors") -- this write path never logged WHICH actor it actually
+    -- resolved, so an Apply/Read-Current mismatch (e.g. the lock dropping/retargeting between the
+    -- two clicks) was invisible in the log. GetFullName() includes the per-instance path, unlike
+    -- the label/class alone, so two different spawned copies of the SAME NPC class are
+    -- distinguishable here.
+    local fullName = "?"
+    pcall(function() fullName = actor:GetFullName() end)
+    say(string.format("target=%s (%s) locked=%s", tostring(e.label or "actor"), fullName, tostring(Spawner.lockedTarget ~= nil)))
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
     if not (comp and comp:IsValid()) then
@@ -13445,7 +13454,9 @@ function Spawner.TestReadCategoryColors(categories, say)
     end
     local actor = e.actor
     if not (actor and actor:IsValid()) then say("no actor"); return results end
-    say("target=" .. tostring(e.label or "actor"))
+    local fullName = "?"
+    pcall(function() fullName = actor:GetFullName() end)
+    say(string.format("target=%s (%s) locked=%s", tostring(e.label or "actor"), fullName, tostring(Spawner.lockedTarget ~= nil)))
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
     if not (comp and comp:IsValid()) then

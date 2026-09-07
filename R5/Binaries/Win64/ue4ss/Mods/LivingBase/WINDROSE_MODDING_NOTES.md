@@ -1101,6 +1101,47 @@ see the "Cloth Color Palette" artifact published this session. The FModel export
 already carried the real names (`CRV_ClothColor_00_Harp.json`, etc.) -- independent confirmation
 that `Config.CPD_CLOTH_COLOR_NAMES` was already correct.
 
+**2026-09-08: the first real GUI built on top of all this (LivingBaseSpawnMenu's new "Custom"
+tab) immediately surfaced a real durability bug in the CPD write mechanism itself.** Full build
+details live in `project_livingbase_spawn_menu` memory, not duplicated here -- short version: a
+target-gated 7-category cloth-color panel (Torso/Legs/Waist/Hands/Feet/Hat/Cape, per-slot swatches
+for the 5 that use all 3 CPD floats) shipped clean, including a "Read Current" round-trip to
+populate swatches from a target's real colors. Read Current is what caught this, because it's the
+first thing in this whole project's history to check a color back MORE than a few seconds after
+setting it.
+
+**The bug**: `SetCustomPrimitiveDataVector4` on a piece's leaf mesh returns `true` and the color
+visibly changes, but re-reading `CustomPrimitiveData.Data` -- via `lbdumpcpd`, an independent,
+long-established diagnostic, not just the new Custom tab code -- shows it back to 0 entries within
+as little as ~2 seconds. Reproduced repeatedly, confirmed independent of the SpawnMenu companion
+window entirely: same result with the window fully closed, using only `lbtestcpdcolor`/`lbdumpcpd`
+console commands, on a single stable native NPC in range (so no target-identity ambiguity either --
+an earlier theory, ruled out once it was clear only one candidate NPC existed nearby).
+
+**Leading theory, not yet confirmed**: a probe dump (`lbprobedump`) on the same NPC class showed
+every `BuildedCompositeMeshes` entry has an ACTIVE per-piece tick (`bTickDisabled=false`) with a
+MISMATCHED significance level (`Params.EnableTickSignificanceLevel=3` vs. the live
+`EnableTickSignificanceLevel=4`), plus its own `ColorData.ColorIndexesMap` -- the same official,
+archetype-driven color source the 2026-08-31 investigation already found and deliberately bypassed
+in favor of the simpler raw-CPD write. A significance/LOD-driven refresh re-deriving each piece's
+appearance from that official data would explain a revert this fast, since the raw CPD write never
+updates it. This has likely been true since CPD recoloring was first built -- nothing before Read
+Current had a reason to check.
+
+**Agreed workaround (RedFalcon, 2026-09-08), NOT YET BUILT**: rather than chase the significance/
+tick system further right now, add a SEPARATE persisted color-record file (not folded into
+`persist.txt`, which only ever tracks the mod's own spawns and should stay simple for anyone who
+never touches NPC colors) keyed by a NATIVE actor's own name -- unlike a mod-`SpawnActor`'d object
+(no stable identity across a reload, which is exactly why `persist.txt` matches by class+position
+instead), a hand-placed LEVEL actor's `GetFullName()`/instance suffix is very likely deterministic
+across reloads, since it comes from the level's own serialized actor list rather than runtime
+object numbering -- worth confirming empirically (restart once, check the suffix matches) before
+committing to it as the key. Once built, `Spawner.TestReadCategoryColors`'s priority becomes: (1)
+this file (authoritative, immune to the revert), (2) live CPD, (3) the existing
+`SavedCustomizationData.SelectedColors` native fallback. Sidesteps needing to fix the underlying
+revert at all for now, and incidentally builds most of the real "restore custom NPC colors across
+a reload" feature in the process.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

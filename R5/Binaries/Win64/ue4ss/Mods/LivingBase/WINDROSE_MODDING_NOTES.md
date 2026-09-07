@@ -3535,8 +3535,24 @@ many different classes and trying to match log lines to classes afterward. Fixed
 actor's own real class short-name via `GetClass():GetFullName()` (same idiom `RetrackOrphans`
 already used elsewhere in this file) and prefer that over `e.label`.
 
-Not yet started: the actual `BodyTypeParams` construction for all 7 x 2 = 14 variants -- see 19n
-for the separate "every clothing/item slot available" work, which turned out to be its own real
+**STALE, CORRECTED 2026-09-08 -- this line said "not yet started" for two sessions after it was
+actually done.** The `BodyTypeParams` mesh-retarget templates for all 7 donor classes were built
+the SAME DAY this roster was finalized (file timestamps confirm 2026-09-02), using the general
+"keep the class's native tag, retarget just the BodyMesh" recipe from this section's own earlier
+2026-09-01 addendum, scaled cheaply via batch duplication (~150 `DA_Custom_BodyType(List)_<Donor>
+As<Ethnicity>` assets, one per donor per destination ethnicity) -- but this work was never
+committed to git and never written up here, so it sat invisible until RedFalcon asked to pick
+"generation of the different body types" back up on 2026-09-08. Verified live that day: Gatherer/
+Herbalist/Farmer/Woodman were already confirmed 2026-09-01; Hunter, BlackAxel, MortarMan, and
+JasperCrowe were freshly confirmed via `lbtestbodytypes` -- all 4 spawned as their own correct
+class with the retargeted body, no failures. Now committed (`Living-Base-Extended-Windrose`
+`eeb4fe3`). **General lesson: a "not yet started" note is a claim about a point in time, not a
+durable fact -- if work happens after the note is written and nobody circles back to correct it,
+the note actively misleads every future session that trusts it at face value.** All 7 donors are
+now confirmed working; picking the final ethnicity target per donor for the actual 14-variant
+roster is the real remaining step, not asset construction.
+
+See 19n for the separate "every clothing/item slot available" work, which turned out to be its own real
 investigation.
 
 ### 19n. "Every slot filled" -- built, broke on sex-variance, fixed, confirmed live (2026-09-02)

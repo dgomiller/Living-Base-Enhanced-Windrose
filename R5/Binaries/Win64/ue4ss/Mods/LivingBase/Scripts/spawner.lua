@@ -13288,9 +13288,26 @@ function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Id
         return false
     end
 
-    local m = tonumber(color1Idx) or 0
-    local s = tonumber(color2Idx) or 0
-    local d = tonumber(color3Idx) or 0
+    -- A nil arg means "leave this slot alone" (2026-09-08, Custom tab per-slot swatches: Apply only
+    -- sends the slots the user actually picked a color for) rather than defaulting to 0/Harp --
+    -- read the piece's OWN current CPD floats first so an untouched slot keeps whatever it already
+    -- was instead of getting silently reset. Every existing caller (lbtestcpdcolor, the old
+    -- single-swatch Custom tab) always passes explicit numbers, so this is purely additive -- they
+    -- never hit the nil branch at all.
+    local curData = nil
+    pcall(function() curData = target.CustomPrimitiveData.Data end)
+    local function currentOrZero(idx0) -- idx0 = 0-based CPD float index (3/4/5)
+        if curData then
+            local v = nil
+            pcall(function() v = curData[idx0 + 1] end)
+            if v == nil then pcall(function() v = curData:Get(idx0 + 1) end) end
+            if v ~= nil then return tonumber(v) or 0 end
+        end
+        return 0
+    end
+    local m = tonumber(color1Idx); if m == nil then m = currentOrZero(3) end
+    local s = tonumber(color2Idx); if s == nil then s = currentOrZero(4) end
+    local d = tonumber(color3Idx); if d == nil then d = currentOrZero(5) end
     local vec4 = { X = m, Y = s, Z = d, W = 0.0 }
     say(string.format("writing CPD floats 3/4/5 (Color1/Color2/Color3) = %d/%d/%d via ONE SetCustomPrimitiveDataVector4(3, ...) call.",
         m, s, d))
@@ -13403,6 +13420,74 @@ function Spawner.TestDumpAllCPD(say)
     say(string.format("done -- %d with data, %d readable-but-empty, %d not-accessible, %d no-component.",
         tally.data, tally.empty, tally.noprop, tally.nomesh))
     return tally.data > 0
+end
+
+-- Spawner.TestReadCategoryColors(categories) -- (2026-09-08) pure read, built for the Custom tab's
+-- "Read Current" button (RedFalcon: "a read current button to set all the initial colors from the
+-- selected NPC"). main.lua's own pollCustomColorReadRequest can't call findNearestSpawnInFront
+-- itself -- it's a spawner.lua-local, not exposed on Spawner -- so this is the public entry point
+-- that does the SAME target resolution (respects Spawner.lockedTarget, same as
+-- TestSetCPDPaletteColor/TestDumpAllCPD above) plus the same CustomPrimitiveData.Data[4..6] read
+-- TestDumpAllCPD already proved out, but shaped as a plain return value instead of `say()` prints
+-- since this is consumed by code, not a console command. `categories` is a list of {key=,
+-- bodyPart=} rows (Config.CUSTOM_TAB_CLOTH_CATEGORIES itself, or any subset shaped the same way).
+-- Returns one {key=, c1=, c2=, c3=} row per input category, in the SAME order -- c1/c2/c3 are nil
+-- (not 0) when that piece isn't equipped or CustomPrimitiveData isn't readable on it, so a caller
+-- can tell "genuinely index 0 (Harp)" apart from "nothing there to read."
+function Spawner.TestReadCategoryColors(categories)
+    local results = {}
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return results end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then return results end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then return results end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    local n = 0
+    if list then
+        pcall(function() n = list:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #list end) end
+    end
+    -- BodyPart -> EquippedMesh, built once rather than re-walking the list per category.
+    local meshByBodyPart = {}
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = tonumber(el.BodyPart) end)
+            if bp then
+                local mesh = nil
+                pcall(function() mesh = el.EquippedMesh end)
+                meshByBodyPart[bp] = mesh
+            end
+        end
+    end
+    local function readSlot(dataArr, idx0) -- idx0 = 0-based CPD float index (3/4/5)
+        local v = nil
+        pcall(function() v = dataArr[idx0 + 1] end)
+        if v == nil then pcall(function() v = dataArr:Get(idx0 + 1) end) end
+        if v == nil then return nil end
+        return math.floor((tonumber(v) or 0) + 0.5)
+    end
+    for _, row in ipairs(categories or {}) do
+        local mesh = meshByBodyPart[row.bodyPart]
+        local c1, c2, c3 = nil, nil, nil
+        if mesh and mesh.IsValid and mesh:IsValid() then
+            local dataArr = nil
+            pcall(function() dataArr = mesh.CustomPrimitiveData.Data end)
+            if dataArr then
+                c1, c2, c3 = readSlot(dataArr, 3), readSlot(dataArr, 4), readSlot(dataArr, 5)
+            end
+        end
+        results[#results + 1] = { key = row.key, c1 = c1, c2 = c2, c3 = c3 }
+    end
+    return results
 end
 
 -- Spawner.TestSetCPDFloat(bodyPart, idx, value, say) -- "lbtestcpdfloat <bodyPart> <index> <value>"

@@ -792,12 +792,22 @@ end
 ------------------------------------------------------------
 -- CUSTOM TAB COLOR BRIDGE (2026-09-08): LivingBaseSpawnMenu's new "Custom" tab (CustomMenu.cpp) --
 -- a target-gated list of gradient-swatch buttons, one per cloth category (Torso/Legs/Waist/Hands/
--- Feet/Hat/Cape, see Config.CUSTOM_TAB_CLOTH_CATEGORIES) plus a single Apply button -- writes one
--- "COLOR:<KEY>:<paletteIdx>\n" line per category the user actually picked a color for to
--- custom_color_request.txt when Apply is pressed. Same one-shot "process and delete" shape as
--- spawn_request.txt above (a stale leftover from a previous session, or the mod not loaded that
--- tick, must never get replayed later) -- NOT the append-because-many-ticks shape move_request.txt
--- needs, since Apply is a single deliberate click, not a held-repeat button.
+-- Feet/Hat/Cape, see Config.CUSTOM_TAB_CLOTH_CATEGORIES), one button PER COLOR SLOT for the
+-- categories that actually use all 3 (Torso/Legs/Hands/Feet/Hat), plus a single Apply button --
+-- writes one "COLOR:<KEY>:<c1>:<c2>:<c3>\n" line per category the user picked AT LEAST ONE color
+-- for to custom_color_request.txt when Apply is pressed (a slot the user didn't touch is sent as
+-- the literal "-", not a number). Same one-shot "process and delete" shape as spawn_request.txt
+-- above (a stale leftover from a previous session, or the mod not loaded that tick, must never get
+-- replayed later) -- NOT the append-because-many-ticks shape move_request.txt needs, since Apply is
+-- a single deliberate click, not a held-repeat button.
+--
+-- READ-CURRENT (2026-09-08, RedFalcon: "a read current button to set all the initial colors from
+-- the selected NPC"): the reverse leg. CustomMenu.cpp writes an empty custom_color_read_request.txt
+-- on click; pollCustomColorReadRequest below answers it by reading the LOCKED/nearest target's own
+-- current CPD floats per category (pure read, same CustomPrimitiveData.Data access
+-- Spawner.TestDumpAllCPD already proved out) and writing custom_color_status.txt as one
+-- "<KEY>:<c1>:<c2>:<c3>" line per category ("-" for anything unreadable, e.g. no piece equipped in
+-- that slot) -- CustomMenu.cpp polls for that file appearing and populates every swatch from it.
 ------------------------------------------------------------
 local CUSTOM_COLOR_REQUEST_PATH_CANDIDATES = {
     "ue4ss/Mods/LivingBase/custom_color_request.txt",
@@ -811,11 +821,35 @@ local function findCustomColorRequestPath()
     end
     return nil
 end
+local CUSTOM_COLOR_READ_REQUEST_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_color_read_request.txt",
+    "Mods/LivingBase/custom_color_read_request.txt",
+    "custom_color_read_request.txt",
+}
+local function findCustomColorReadRequestPath()
+    for _, p in ipairs(CUSTOM_COLOR_READ_REQUEST_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); return p end
+    end
+    return nil
+end
+-- Written next to wherever the request candidates above actually resolved -- the request file's
+-- own directory is the only one guaranteed writable from this side (matches the "same folder as
+-- the request" convention every other file in this bridge already uses instead of guessing a
+-- second independent candidate list for the response half).
+local CUSTOM_COLOR_STATUS_PATH = "ue4ss/Mods/LivingBase/custom_color_status.txt"
 
 -- key -> Config.CUSTOM_TAB_CLOTH_CATEGORIES row, built once rather than scanning the list per line.
 local CUSTOM_TAB_CATEGORY_BY_KEY = {}
 for _, row in ipairs(Config.CUSTOM_TAB_CLOTH_CATEGORIES or {}) do
     CUSTOM_TAB_CATEGORY_BY_KEY[row.key] = row
+end
+
+-- "-" means "leave this slot alone" -- see Spawner.TestSetCPDPaletteColor's own 2026-09-08 comment
+-- for why nil now means that instead of defaulting to 0/Harp.
+local function parseColorSlot(s)
+    if s == "-" then return nil end
+    return tonumber(s)
 end
 
 local function pollCustomColorRequest()
@@ -827,16 +861,15 @@ local function pollCustomColorRequest()
     f:close()
     os.remove(path)
 
-    -- Collect every well-formed "COLOR:<KEY>:<idx>" line before gating/applying anything -- a
-    -- malformed individual line shouldn't sink every OTHER category the user also picked in the
-    -- same Apply click.
+    -- Collect every well-formed "COLOR:<KEY>:<c1>:<c2>:<c3>" line before gating/applying anything
+    -- -- a malformed individual line shouldn't sink every OTHER category the user also picked in
+    -- the same Apply click.
     local applies = {}
     for line in content:gmatch("[^\r\n]+") do
-        local key, idxStr = line:match("^COLOR%s*:%s*(%u+)%s*:%s*(%d+)$")
-        local idx = idxStr and tonumber(idxStr)
+        local key, v1, v2, v3 = line:match("^COLOR%s*:%s*(%u+)%s*:%s*([%d%-]+)%s*:%s*([%d%-]+)%s*:%s*([%d%-]+)$")
         local row = key and CUSTOM_TAB_CATEGORY_BY_KEY[key]
-        if row and idx then
-            applies[#applies + 1] = { row = row, idx = idx }
+        if row then
+            applies[#applies + 1] = { row = row, c1 = parseColorSlot(v1), c2 = parseColorSlot(v2), c3 = parseColorSlot(v3) }
         else
             print("[LivingBase] custom tab color: skipping malformed/unknown line '" .. tostring(line) .. "'\n")
         end
@@ -849,7 +882,7 @@ local function pollCustomColorRequest()
     ExecuteInGameThread(function()
         for _, a in ipairs(applies) do
             local ok, err = pcall(function()
-                return Spawner.TestSetCPDPaletteColor(a.row.bodyPart, a.idx, a.idx, a.idx)
+                return Spawner.TestSetCPDPaletteColor(a.row.bodyPart, a.c1, a.c2, a.c3)
             end)
             if not ok then
                 log("custom tab color FAILED for " .. tostring(a.row.key) .. ": " .. tostring(err))
@@ -858,15 +891,51 @@ local function pollCustomColorRequest()
     end)
 end
 
+-- PURE READ -- never touches restoreGate, same as lbdumpcpd/lbprobecpd staying available
+-- regardless of the world-load restore lock (nothing here writes anything to the game). All the
+-- actual target-resolution/CPD-reading work lives in Spawner.TestReadCategoryColors (spawner.lua)
+-- -- findNearestSpawnInFront is a spawner.lua-local, not reachable from this file directly.
+local function pollCustomColorReadRequest()
+    local path = findCustomColorReadRequestPath()
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    f:close()
+    os.remove(path)
+
+    ExecuteInGameThread(function()
+        local lines = {}
+        local ok, results = pcall(function()
+            return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES)
+        end)
+        if ok and results then
+            for _, r in ipairs(results) do
+                lines[#lines + 1] = string.format("%s:%s:%s:%s", r.key,
+                    r.c1 and tostring(r.c1) or "-", r.c2 and tostring(r.c2) or "-", r.c3 and tostring(r.c3) or "-")
+            end
+        elseif not ok then
+            log("custom tab read-current FAILED: " .. tostring(results))
+        end
+        -- Always write SOMETHING, even an empty dump (no target / no composite mesh) -- CustomMenu.cpp
+        -- is waiting on this file's mere existence to know the read finished, not just its content.
+        local outF = io.open(CUSTOM_COLOR_STATUS_PATH, "w")
+        if outF then
+            outF:write(table.concat(lines, "\n"))
+            outF:close()
+        end
+    end)
+end
+
 if ExecuteWithDelay then
     local function customColorPollLoop()
         ExecuteWithDelay(400, function()
             pollCustomColorRequest()
+            pollCustomColorReadRequest()
             customColorPollLoop()
         end)
     end
     customColorPollLoop()
-    print("[LivingBase] Custom tab color bridge armed — watching for custom_color_request.txt from LivingBaseSpawnMenu.\n")
+    print("[LivingBase] Custom tab color bridge armed — watching for custom_color_request.txt/custom_color_read_request.txt from LivingBaseSpawnMenu.\n")
 end
 
 ------------------------------------------------------------

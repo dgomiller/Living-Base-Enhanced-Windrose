@@ -4129,6 +4129,20 @@ Config.CPD_HAIR_COLOR_NAMES = {
   [8] = "Salt and Pepper",
 }
 
+-- Config.CPD_EYE_COLOR_NAMES -- (2026-09-08) a THIRD separate atlas, confirmed in-game by
+-- RedFalcon. Deliberately NOT part of Config.CPD_BODYPART_COLOR_INFO -- eyes are written on
+-- `actor.Mesh` (the base body component) at CPD index 15, not on a `BuildedCompositeMeshes` piece
+-- via `lbtestcpdcolor`'s normal bodyPart argument, so they need their own write path
+-- (`lbtestbasecpd 15 <index>`) rather than going through the per-bodypart table above.
+-- RedFalcon's own comparison against `lbtesteye`'s discrete material variants found they match:
+-- "All the CPD colors match their lbtesteye counterparts so we dont need the testeye ones" -- see
+-- Spawner.TestSetEyeColor's own 2026-09-08 update. The one exception, "Evil"/"Glowing" (a genuinely
+-- emissive look CPD can't reproduce), stays as its own separate `lbtesteye Glowing` swap.
+Config.CPD_EYE_COLOR_NAMES = {
+  [0] = "Brown", [1] = "Hazel", [2] = "Amber", [3] = "Green",
+  [4] = "Aquamarine", [5] = "Blue", [6] = "Gray", [7] = "Silver",
+}
+
 -- Config.CPD_BODYPART_COLOR_INFO -- keyed by the SAME BodyPart enum ordinal `lbtestcpdcolor`'s
 -- first argument takes. `palette` says which of the two name tables above (or "none") applies;
 -- `colorSlots` is how many of the 3 CPD floats (Color1/Color2/Color3) that body part actually

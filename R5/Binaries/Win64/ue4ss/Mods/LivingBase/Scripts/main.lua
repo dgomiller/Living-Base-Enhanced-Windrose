@@ -3960,10 +3960,13 @@ else
     log("lbtestbasecpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbtesteye <colorName>" (2026-08-31) -- eyes aren't CPD-driven; swaps the eye
--- material slot on actor.Mesh to one of the game's own discrete pre-made eye-color materials
--- (Blue/Brown/Evil/Green/Grey), the same safe swap mechanism already proven for skin tone. See
--- Spawner.TestSetEyeColor's own header comment.
+-- Console command "lbtesteye <colorName>" (2026-08-31, narrowed 2026-09-08) -- swaps the eye
+-- material slot on actor.Mesh to one of the game's own discrete pre-made eye-color materials, the
+-- same safe swap mechanism already proven for skin tone. Only "Glowing" (the real MI_EyeRound_Evil
+-- material) remains -- RedFalcon confirmed the other 4 discrete variants (Blue/Brown/Green/Grey)
+-- are visually redundant with their CPD15 counterparts (`lbtestcpdcolor`/`lbdumpcpd`), so only the
+-- one CPD can't reproduce is worth keeping separate. See Spawner.TestSetEyeColor's own header
+-- comment.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtesteye", function(FullCommand, Parameters, Ar)
@@ -3981,8 +3984,8 @@ if RegisterConsoleCommandHandler then
             return true
         end)
     end)
-    log("Console command registered: lbtesteye <colorName>")
-    registerCmdInfo("lbtesteye", "lbtesteye <Blue|Brown|Evil|Green|Grey|Default>", "Swaps the eye material slot on actor.Mesh to a pre-made eye-color variant (or back to the plain native default) -- eyes aren't CPD-driven, unlike cloth/hair/eyebrows.")
+    log("Console command registered: lbtesteye <Glowing|Default>")
+    registerCmdInfo("lbtesteye", "lbtesteye <Glowing|Default>", "Swaps the eye material slot on actor.Mesh to the 'Glowing' variant (the real emissive MI_EyeRound_Evil material, not reproducible via CPD) or back to the plain native default. Everything else in this atlas overlaps with CPD15's own palette -- use `lbtestcpdcolor`/`Config.CPD_EYE_COLOR_NAMES` for normal eye colors instead.")
 else
     log("lbtesteye unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

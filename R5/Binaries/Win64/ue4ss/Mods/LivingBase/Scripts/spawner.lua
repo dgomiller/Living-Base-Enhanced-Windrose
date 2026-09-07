@@ -13597,43 +13597,50 @@ end
 -- lbtestbasecpd(15, ...) test that happened to land on an "unlucky value" (same trap cloth's Main
 -- channel hit at 23 before 20 worked) -- a later sweep the same night DID find real color shifts,
 -- and RedFalcon has since confirmed both mechanisms live: lbtestbasecpd 15 <value> DOES recolor
--- eyes, applied on top of the plain default MI_Eye material, and looks like a natural/subtle shade
--- shift -- genuinely different in character from this function's own discrete variants below,
--- which render as vivid, almost-glowing colors. Both are real, both are meant to be used together
--- (see WINDROSE_MODDING_NOTES.md's own SS on eyes for the full resolution), not either/or. This
--- function itself remains exactly as originally built -- there's a small, discrete,
--- pre-made set of eye-color material INSTANCES instead
--- (/Game/Character/Shaders/InstanceMaterials/Eyes/Round/MI_EyeRound_<Color>_01: Blue/Brown/Evil/
--- Green/Grey), the SAME "swap to an existing variant" mechanism already proven safe for skin tone
--- (a plain SetMaterial call, nothing like the crashy CreateDynamicMaterialInstance). Finds the eye
--- material SLOT on actor.Mesh by checking each slot's CURRENT material name for "Eye" (case-
--- insensitive), then swaps just that slot.
+-- eyes, applied on top of the plain default MI_Eye material.
+--
+-- NARROWED (2026-09-08) after RedFalcon directly compared all 5 discrete variants against the real
+-- CPD15 palette: "All the CPD colors match their lbtesteye counterparts so we dont need the testeye
+-- ones. The only one of those we will want is 'Evil' but i'd prefer to call it 'Glowing'." Blue/
+-- Brown/Green/Grey/Default all turned out to be visually redundant with their CPD15 counterparts --
+-- only `MI_EyeRound_Evil_01` (a real, genuinely emissive/glowing look, also the Senkamati Caster's
+-- own native eye material -- see the DECORRUPT `MI_EyeRound_Evil` replace rules elsewhere in
+-- config.lua) is something CPD's own palette can't reproduce, so it's the one variant worth keeping
+-- as its own separate option. User-facing name is "Glowing"; the underlying asset name (`Evil`) is
+-- unchanged since that's the real, shipped material's own name, not something we can rename.
+-- This function itself is otherwise unchanged -- still the same "swap to an existing pre-made
+-- material instance" mechanism already proven safe for skin tone (a plain SetMaterial call, nothing
+-- like the crashy CreateDynamicMaterialInstance). Finds the eye material SLOT on actor.Mesh by
+-- checking each slot's CURRENT material name for "Eye" (case-insensitive), then swaps just that
+-- slot.
 --
 -- CONFIRMED EXHAUSTIVE 2026-08-31 via lbtestlistclass against the live AssetRegistry (not just an
 -- offline pak-name-substring guess): every MaterialInstanceConstant with "Eye" in its path, across
--- the WHOLE game, is either one of these 5 human eye-color variants, the plain base `MI_Eye`
--- itself (no color suffix -- almost certainly the Gatherer/every un-recolored NPC's own native
--- material, since none of the 5 named variants matched what RedFalcon actually sees), an animal/
+-- the WHOLE game, is either one of the 5 original human eye-color variants (Blue/Brown/Evil/Green/
+-- Grey -- now narrowed to just Evil/"Glowing" above), the plain base `MI_Eye` itself (no color
+-- suffix -- almost certainly the Gatherer/every un-recolored NPC's own native material), an animal/
 -- creature eye material (Dodo/Crocodile/Wolf/Goat/Boar/SwampToad -- unrelated skeletons), or an
 -- unrelated FX/post-process material whose name just happens to contain "Eye"
--- ("...StrictEyeAdaptation"/"...DisableDepth..."). There is no 6th human eye COLOR beyond these 5 --
+-- ("...StrictEyeAdaptation"/"...DisableDepth..."). There is no 6th human eye COLOR beyond those 5 --
 -- "Default"/"Native" (below) is the plain base material, not a recolor.
-local EYE_COLOR_NAMES = { "Blue", "Brown", "Evil", "Green", "Grey" }
+local EYE_COLOR_VARIANTS = { { display = "Glowing", asset = "Evil" } }
 local EYE_DEFAULT_PATH = "/Game/Character/Shaders/InstanceMaterials/Eyes/MI_Eye.MI_Eye"
 function Spawner.TestSetEyeColor(colorName, say)
     say = say or function(m) print("[LivingBase] [test-eye] " .. tostring(m) .. "\n") end
     if not colorName then
-        say("usage: lbtesteye <Blue|Brown|Evil|Green|Grey|Default>")
+        say("usage: lbtesteye <Glowing|Default>")
         return false
     end
     local isDefault = (colorName:lower() == "default" or colorName:lower() == "native")
     local matched = nil
     if not isDefault then
-        for _, n in ipairs(EYE_COLOR_NAMES) do
-            if n:lower() == colorName:lower() then matched = n; break end
+        for _, v in ipairs(EYE_COLOR_VARIANTS) do
+            if v.display:lower() == colorName:lower() then matched = v.asset; break end
         end
         if not matched then
-            say(string.format("unknown color '%s' -- known: %s, Default", colorName, table.concat(EYE_COLOR_NAMES, ", ")))
+            local names = {}
+            for _, v in ipairs(EYE_COLOR_VARIANTS) do names[#names + 1] = v.display end
+            say(string.format("unknown color '%s' -- known: %s, Default", colorName, table.concat(names, ", ")))
             return false
         end
     end
@@ -13680,7 +13687,7 @@ function Spawner.TestSetEyeColor(colorName, say)
         return false
     end
     local okSet, errSet = pcall(function() target:SetMaterial(eyeSlot, newMat) end)
-    say(string.format("SetMaterial(%d, %s) = %s%s", eyeSlot, (matched or "Default"), tostring(okSet),
+    say(string.format("SetMaterial(%d, %s) = %s%s", eyeSlot, (isDefault and "Default" or colorName), tostring(okSet),
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
     say("done -- check visually now, no reload needed.")
     return okSet

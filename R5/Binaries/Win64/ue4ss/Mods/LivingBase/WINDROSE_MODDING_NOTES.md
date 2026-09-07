@@ -1046,6 +1046,37 @@ itself (every other Head/TorsoCloth-family piece responds normally).
 5-variant discrete material swap already documented earlier this section) -- RedFalcon: "i plan to
 verify eyes tomorrow."
 
+**RESOLVED 2026-09-08 -- eye color verified, and it collapses to a much simpler picture than the
+cloth/hair split suggested.** Same extraction/decode technique used for the hair palette (retoc
+`--filter "CRV_EyeColor"` -> UAssetGUI `tojson` -> the same hand-validated binary curve parser,
+zero assertion failures across all 8 entries) found a THIRD separate atlas,
+`/Game/Common/Textures/Gradients/CharacterEyePalette/CRV_EyeColor_00..07`, confirmed live by
+RedFalcon against every real NPC he checked: **Brown, Hazel, Amber, Green, Aquamarine, Blue, Gray,
+Silver** (`Config.CPD_EYE_COLOR_NAMES`). Deliberately NOT folded into `Config.
+CPD_BODYPART_COLOR_INFO` -- eyes write CPD15 on `actor.Mesh` directly (`lbtestbasecpd 15 <index>`),
+not on a `BuildedCompositeMeshes` piece via `lbtestcpdcolor`'s normal bodyPart argument, so they
+need their own write path, not the per-piece table.
+
+**The real payoff: RedFalcon's own side-by-side comparison closed out the earlier "two independent,
+both-real levers, meant to be used together" theory from this section's 2026-09-02 update.** Direct
+comparison found the discrete `lbtesteye` material variants (Blue/Brown/Green/Grey/Default) all
+visually MATCH their CPD15 counterparts -- "All the CPD colors match their lbtesteye counterparts so
+we dont need the testeye ones." Only one discrete variant survives: `MI_EyeRound_Evil_01` (also the
+Senkamati Caster's own real native eye material) is genuinely emissive/glowing in a way CPD's own
+palette can't reproduce -- kept as its own separate swap, renamed **"Glowing"** for the user-facing
+command (`lbtesteye Glowing` / `lbtesteye Default`; the underlying asset name stays `Evil` since
+that's the real shipped material's own name). `Spawner.TestSetEyeColor`'s own `EYE_COLOR_VARIANTS`
+list narrowed from 5 entries to this 1.
+
+**Appearance customization is now fully mapped, end to end**: Gender, Body Type (mesh/ethnicity, via
+`BodyTypeParams` retarget), Body Shape (proportions, via `BodyMorph` -- 7 unique values x 2 sexes,
+19m's own roster), Skin Tone (comes free with the Body Type mesh swap), Hair Style (mesh swap), Hair
+Color, Cloth/Garment Color (Torso/Legs/Shoes/Gloves/Waist/Hat/Scarf/Cape, all via the same CPD
+mechanism), Eye Color, and the one "Glowing" discrete eye variant -- every category on RedFalcon's
+own "custom NPC from scratch" checklist now has a real, confirmed, working mechanism. Full
+per-body-part reference for all of the CPD-driven categories: `Config.CPD_BODYPART_COLOR_INFO` /
+`CPD_CLOTH_COLOR_NAMES` / `CPD_HAIR_COLOR_NAMES` / `CPD_EYE_COLOR_NAMES` in config.lua.
+
 ---
 
 ## 3. THE CRASH TRAPS (each cost hours)

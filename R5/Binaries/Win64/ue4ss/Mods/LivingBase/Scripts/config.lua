@@ -4181,6 +4181,30 @@ Config.CPD_BODYPART_COLOR_INFO = {
   [18] = { name = "Whiskers",       palette = "hair",  colorSlots = 1, notes = nil },
 }
 
+-- Config.CUSTOM_TAB_CLOTH_CATEGORIES -- (2026-09-08) the LivingBaseSpawnMenu "Custom" tab's 7-row
+-- cloth-color list (CustomMenu.cpp): a target-gated readout + one gradient-swatch button per
+-- category + a single Apply button. `key` is the exact string CustomMenu.cpp writes into
+-- custom_color_request.txt ("COLOR:<key>:<paletteIdx>", one line per category the user actually
+-- picked a color for); `bodyPart` is the same CPD_BODYPART_COLOR_INFO ordinal above --
+-- pollCustomColorRequest (main.lua) looks it up here and calls Spawner.TestSetCPDPaletteColor.
+-- Deliberately ONE swatch per category rather than separate Color1/Color2/Color3 pickers -- the
+-- request handler writes the chosen palette index to all 3 CPD slots uniformly, the same
+-- "write the same value to all 3 slots to be safe" rule CPD_BODYPART_COLOR_INFO's own Cape/
+-- TorsoCloth entry already established, and harmless for every other row here too (Waist ignores
+-- Color1/Color2 outright; the 3-slot pieces just render as one flat color instead of a 3-tone mix,
+-- which is exactly what a single swatch button implies). "Hands"/"Feet" are this list's own
+-- friendlier names for Gloves/Shoes; "Hat" here always means Headgear (bodyPart 4's OTHER meaning,
+-- bare Head, isn't a separate pickable piece in this list).
+Config.CUSTOM_TAB_CLOTH_CATEGORIES = {
+  { key = "TORSO", label = "Torso", bodyPart = 7 },
+  { key = "LEGS",  label = "Legs",  bodyPart = 13 },
+  { key = "WAIST", label = "Waist", bodyPart = 15 },
+  { key = "HANDS", label = "Hands", bodyPart = 16 },
+  { key = "FEET",  label = "Feet",  bodyPart = 14 },
+  { key = "HAT",   label = "Hat",   bodyPart = 4 },
+  { key = "CAPE",  label = "Cape",  bodyPart = 6 },
+}
+
 do
   local ok, ModSettings = pcall(require, "modsettings")
   if ok and ModSettings then

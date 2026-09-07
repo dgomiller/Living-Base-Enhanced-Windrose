@@ -790,6 +790,86 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- CUSTOM TAB COLOR BRIDGE (2026-09-08): LivingBaseSpawnMenu's new "Custom" tab (CustomMenu.cpp) --
+-- a target-gated list of gradient-swatch buttons, one per cloth category (Torso/Legs/Waist/Hands/
+-- Feet/Hat/Cape, see Config.CUSTOM_TAB_CLOTH_CATEGORIES) plus a single Apply button -- writes one
+-- "COLOR:<KEY>:<paletteIdx>\n" line per category the user actually picked a color for to
+-- custom_color_request.txt when Apply is pressed. Same one-shot "process and delete" shape as
+-- spawn_request.txt above (a stale leftover from a previous session, or the mod not loaded that
+-- tick, must never get replayed later) -- NOT the append-because-many-ticks shape move_request.txt
+-- needs, since Apply is a single deliberate click, not a held-repeat button.
+------------------------------------------------------------
+local CUSTOM_COLOR_REQUEST_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_color_request.txt",
+    "Mods/LivingBase/custom_color_request.txt",
+    "custom_color_request.txt",
+}
+local function findCustomColorRequestPath()
+    for _, p in ipairs(CUSTOM_COLOR_REQUEST_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); return p end
+    end
+    return nil
+end
+
+-- key -> Config.CUSTOM_TAB_CLOTH_CATEGORIES row, built once rather than scanning the list per line.
+local CUSTOM_TAB_CATEGORY_BY_KEY = {}
+for _, row in ipairs(Config.CUSTOM_TAB_CLOTH_CATEGORIES or {}) do
+    CUSTOM_TAB_CATEGORY_BY_KEY[row.key] = row
+end
+
+local function pollCustomColorRequest()
+    local path = findCustomColorRequestPath()
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+
+    -- Collect every well-formed "COLOR:<KEY>:<idx>" line before gating/applying anything -- a
+    -- malformed individual line shouldn't sink every OTHER category the user also picked in the
+    -- same Apply click.
+    local applies = {}
+    for line in content:gmatch("[^\r\n]+") do
+        local key, idxStr = line:match("^COLOR%s*:%s*(%u+)%s*:%s*(%d+)$")
+        local idx = idxStr and tonumber(idxStr)
+        local row = key and CUSTOM_TAB_CATEGORY_BY_KEY[key]
+        if row and idx then
+            applies[#applies + 1] = { row = row, idx = idx }
+        else
+            print("[LivingBase] custom tab color: skipping malformed/unknown line '" .. tostring(line) .. "'\n")
+        end
+    end
+    if #applies == 0 then return end
+
+    -- restoreGate only, NOT modGate (2026-08-16 split, see restoreGate's own comment) -- same
+    -- exemption every other GUI-window action in this bridge gets.
+    if not restoreGate("custom tab: apply color") then return end
+    ExecuteInGameThread(function()
+        for _, a in ipairs(applies) do
+            local ok, err = pcall(function()
+                return Spawner.TestSetCPDPaletteColor(a.row.bodyPart, a.idx, a.idx, a.idx)
+            end)
+            if not ok then
+                log("custom tab color FAILED for " .. tostring(a.row.key) .. ": " .. tostring(err))
+            end
+        end
+    end)
+end
+
+if ExecuteWithDelay then
+    local function customColorPollLoop()
+        ExecuteWithDelay(400, function()
+            pollCustomColorRequest()
+            customColorPollLoop()
+        end)
+    end
+    customColorPollLoop()
+    print("[LivingBase] Custom tab color bridge armed — watching for custom_color_request.txt from LivingBaseSpawnMenu.\n")
+end
+
+------------------------------------------------------------
 -- HOVER HIGHLIGHT (2026-08-20, RedFalcon's request): ghost-highlight whatever's under the reticle
 -- while the LivingBaseSpawnMenu window is open and nothing is target-locked/being placed, so it's
 -- clear what Num+/F7 would grab before committing. Deliberately gated on the WINDOW being open, not

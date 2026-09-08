@@ -7191,3 +7191,79 @@ if ExecuteWithDelay then
     end
     disableCam3PollLoop()
 end
+
+------------------------------------------------------------
+-- lbfixfreecamstuck -- (2026-09-08) EMERGENCY RECOVERY. lbtestdisablecam3's manual restoration
+-- reattached APlayerController.Player (a BACK-reference) but never touched ULocalPlayer's own
+-- FORWARD reference (LocalPlayer.PlayerController) -- the property that actually decides which
+-- controller drives input/rendering. RedFalcon confirmed this left the game frozen (camera view
+-- unchanged, neither the debug cam nor the player can move) -- a mismatch between the two sides of
+-- that relationship fits exactly. This finds every live PlayerController, and for each one whose
+-- own .Player is non-nil, forces LocalPlayer.PlayerController = thatController (syncing the
+-- forward pointer to match the backward one) -- preferring a controller that ISN'T a debug camera
+-- controller if there's a choice. Also tries ClientSetViewTarget as a belt-and-suspenders camera
+-- kick in case the render target itself is stuck on a stale reference.
+------------------------------------------------------------
+local pendingFixFreeCamStuck = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfixfreecamstuck", function(FullCommand, Parameters, Ar)
+            pendingFixFreeCamStuck = true
+            print("[LivingBase] [lbfixfreecamstuck] queued -- attempting recovery on the next poll tick.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbfixfreecamstuck")
+    registerCmdInfo("lbfixfreecamstuck", "lbfixfreecamstuck", "EMERGENCY: run this if lbfreecam/lbtestdisablecam left you frozen (can't move camera or player). Forces ULocalPlayer.PlayerController to match whichever controller currently owns it, undoing a one-sided reattachment.")
+else
+    log("lbfixfreecamstuck unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function fixFreeCamStuckPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingFixFreeCamStuck then
+                pendingFixFreeCamStuck = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbfixfreecamstuck] starting recovery attempt -- scanning all PlayerControllers for one with a live Player.\n")
+                    local ok, err = pcall(function()
+                        local candidates = {}
+                        for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+                            local okName, n = pcall(function() return pc:GetFullName() end)
+                            if okName and n and not n:find("Default__") then
+                                local pl = nil
+                                pcall(function() pl = pc.Player end)
+                                if pl then
+                                    table.insert(candidates, { pc = pc, name = n, player = pl, isDebug = (n:find("DebugCameraController") ~= nil) })
+                                end
+                            end
+                        end
+                        print(string.format("[LivingBase] [lbfixfreecamstuck] found %d PlayerController(s) with a non-nil Player.\n", #candidates))
+                        for _, c in ipairs(candidates) do
+                            print(string.format("[LivingBase] [lbfixfreecamstuck]   candidate: %s (isDebug=%s)\n", c.name, tostring(c.isDebug)))
+                        end
+                        -- Prefer a non-debug controller if there's a choice.
+                        local chosen = nil
+                        for _, c in ipairs(candidates) do
+                            if not c.isDebug then chosen = c; break end
+                        end
+                        if not chosen and #candidates > 0 then chosen = candidates[1] end
+                        if not chosen then
+                            print("[LivingBase] [lbfixfreecamstuck] no candidate found -- cannot recover automatically. A level reload/game restart may be needed.\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbfixfreecamstuck] chosen: %s -- forcing LocalPlayer.PlayerController = this controller.\n", chosen.name))
+                        local okSet, errSet = pcall(function() chosen.player.PlayerController = chosen.pc end)
+                        print(string.format("[LivingBase] [lbfixfreecamstuck] LocalPlayer.PlayerController reassignment: %s%s\n", tostring(okSet), okSet and "" or (" (" .. tostring(errSet) .. ")")))
+                        local okView, errView = pcall(function() chosen.pc:ClientSetViewTarget(chosen.pc, nil) end)
+                        print(string.format("[LivingBase] [lbfixfreecamstuck] ClientSetViewTarget kick: %s%s\n", tostring(okView), okView and "" or (" (" .. tostring(errView) .. ")")))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbfixfreecamstuck] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            fixFreeCamStuckPollLoop()
+        end)
+    end
+    fixFreeCamStuckPollLoop()
+end

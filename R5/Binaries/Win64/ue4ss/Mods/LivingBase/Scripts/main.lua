@@ -6463,6 +6463,12 @@ if ExecuteWithDelay then
                     print("[LivingBase] [lbtestdaytime17] component not found -- aborting.\n")
                     pendingDayTime17 = false
                 elseif req.stage == "start" then
+                    -- RE-ENABLE tick FIRST -- a previous run may have frozen it via
+                    -- SetComponentTickEnabled(false), and while disabled, NOTHING (including
+                    -- DayCycleSpeedInv writes) has any effect since Tick() never runs to consume
+                    -- them. Confirmed live 2026-09-08: re-running after a freeze "wasn't moving"
+                    -- until this was added.
+                    pcall(function() comp:SetComponentTickEnabled(true) end)
                     local h0 = nil
                     pcall(function() h0 = comp:GetCurrentTimeInHours() end)
                     if h0 == nil then
@@ -6471,7 +6477,7 @@ if ExecuteWithDelay then
                     else
                         local distance = (req.rawHour - h0) % 24
                         comp.DayCycleSpeedInv = req.speedInv
-                        print(string.format("[LivingBase] [lbtestdaytime17] current raw hour=%.4f, target raw=%.4f (real %.2f), distance=%.4f -- set DayCycleSpeedInv=%.4f ONCE and converging...\n", h0, req.rawHour, req.realHour, distance, req.speedInv))
+                        print(string.format("[LivingBase] [lbtestdaytime17] re-enabled tick, current raw hour=%.4f, target raw=%.4f (real %.2f), distance=%.4f -- set DayCycleSpeedInv=%.4f ONCE and converging...\n", h0, req.rawHour, req.realHour, distance, req.speedInv))
                         pendingDayTime17 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
                     end
                 elseif req.stage == "waiting" then

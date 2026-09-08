@@ -3753,6 +3753,35 @@ else
     log("lbtestbodytypes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+------------------------------------------------------------
+-- lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-] -- (2026-09-08) for the Barbie
+-- capture session: same idea as lbtestbodytypes, but locks the spawn position/rotation on the
+-- FIRST call and reuses that EXACT transform for every subsequent call, destroying the previous
+-- spawn first -- only the body type changes, the subject stays in the same spot/facing so
+-- lbphototripod/lbfirstperson framing doesn't need to be redone between shots. "lbtestbodyswap
+-- reset" clears the locked position (next call picks a fresh in-front-of-player spot).
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbodyswap", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbodyswap] " .. msg .. "\n")
+            end
+            local bodyTypesArg = Parameters and Parameters[1]
+            local classArg = Parameters and Parameters[2]
+            if classArg == "-" or classArg == "" then classArg = nil end
+            local sexArg = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-]")
+    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-]", "Like lbtestbodytypes, but locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body type changes -- ideal for cycling through origins without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
+else
+    log("lbtestbodyswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbteststatuebody <bodyMeshPath> <presetName> [classPath]" (2026-09-01) -- the
 -- statue equivalent of lbtestbody: explicitly forces BOTH the body-mesh family AND the MorphParams
 -- shape preset on a statue-family class (defaults to the real Standing Woman class, which normally

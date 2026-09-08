@@ -11410,6 +11410,83 @@ function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classP
     return true
 end
 
+-- Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say) -- "lbtestbodyswap <bodyTypesPath>
+-- [classPath|-] [sex: M/F|-]" (2026-09-08). RedFalcon's request for the Barbie capture session:
+-- lbtestbodytypes always spawns fresh "in front of the player" (Spawner.Spawn's own default when
+-- atLocation/yaw are nil), so every new body type lands somewhere slightly different depending on
+-- exactly where you're standing/facing that moment -- annoying when you've carefully set up
+-- lbphototripod/lbfirstperson framing and just want to cycle through origins in the SAME spot.
+-- Spawner.Spawn already accepts an explicit atLocation+yaw (just never used by lbtestbodytypes) --
+-- this locks one in on the FIRST call (using wherever a normal in-front-of-player spawn lands),
+-- then every SUBSEQUENT call destroys the previous swap actor and spawns the new one at that exact
+-- same locked transform, so only the body type changes, never the position/facing. Position resets
+-- on the next lbreload (module-level state, like every other cached-reference feature this
+-- session), or via the "reset" first argument.
+function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
+    say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
+    if bodyTypesPath and bodyTypesPath:lower() == "reset" then
+        if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
+            pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
+        end
+        Spawner._bodySwapActor = nil
+        Spawner._bodySwapLoc = nil
+        Spawner._bodySwapYaw = nil
+        say("swap position reset -- next call will pick a fresh spot in front of you.")
+        return true
+    end
+    local function ensureFullPath(p)
+        if not p then return nil end
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    bodyTypesPath = ensureFullPath(bodyTypesPath)
+    classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
+    local sex = nil
+    if type(sexArg) == "string" then
+        local s = sexArg:lower()
+        if s == "f" or s == "female" then sex = 2
+        elseif s == "m" or s == "male" then sex = 1 end
+    end
+
+    -- Destroy the previous swap actor BEFORE spawning the new one -- avoids two overlapping actors
+    -- at the same spot even for one frame.
+    if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
+        pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
+    end
+    Spawner._bodySwapActor = nil
+
+    local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
+    say(string.format("spawning %s with bodyTypes=%s sex=%s at %s",
+        classPath, tostring(bodyTypesPath), tostring(sexArg or "native"),
+        atLocation and "the LOCKED swap position" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false,
+        { bodyTypes = bodyTypesPath, sex = sex }, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    pcall(function() Spawner.SetAILogic(actor, false) end)
+    Spawner._bodySwapActor = actor
+
+    -- Lock the position from THIS spawn if nothing was locked yet.
+    if not Spawner._bodySwapLoc then
+        local loc, rot = nil, nil
+        pcall(function() loc = actor:K2_GetActorLocation() end)
+        pcall(function() rot = actor:K2_GetActorRotation() end)
+        if loc and rot then
+            Spawner._bodySwapLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
+            Spawner._bodySwapYaw = rot.Yaw
+            say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot until 'lbtestbodyswap reset'.",
+                loc.X, loc.Y, loc.Z, rot.Yaw))
+        end
+    end
+    say("Spawn call returned an actor (AI frozen).")
+    return true
+end
+
 -- Spawner.TestMorphShapeOnTargetClass(presetName, say) -- "lbtestmorphshape <presetName>"
 -- (2026-08-31). Built so RedFalcon can test any of the 18 confirmed-exhaustive MorphParams presets
 -- (Config.MORPH_PARAMS_PRESETS) against whatever mesh/mob type is currently nearest/locked, without

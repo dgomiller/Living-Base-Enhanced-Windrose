@@ -5358,18 +5358,19 @@ if ExecuteWithDelay then
                                 pcall(function() partOfDay = comp:GetPartOfDay() end)
                                 print(string.format("[LivingBase] [lbtestdaytime5] %s\n    raw WorldDayTime=%s  DayCycleSpeedInv=%s\n    GetCurrentTimeInHours()=%s  GetNormalizedDayTime()=%s  GetPartOfDay()=%s\n",
                                     name, tostring(worldDayTime), tostring(speedInv), tostring(hours), tostring(normalized), tostring(partOfDay)))
+                                -- NOTE: settings.IsValid was tried first and crashed the Lua handler --
+                                -- "attempt to call a FWeakObjectPtr value (method 'IsValid')" -- so this
+                                -- binding doesn't expose a callable :IsValid() the way FindAllOf results
+                                -- do. Skip the validity gate entirely and just try each field read behind
+                                -- its own pcall -- a nil/invalid weak ptr will simply fail those reads.
                                 local settings = nil
-                                pcall(function() settings = comp.Settings end)
-                                if settings and settings.IsValid and settings:IsValid() then
-                                    local dayDur, nightDur, startDayTime = nil, nil, nil
-                                    pcall(function() dayDur = settings.DayDuration end)
-                                    pcall(function() nightDur = settings.NightDuration end)
-                                    pcall(function() startDayTime = settings.StartDayTime end)
-                                    print(string.format("[LivingBase] [lbtestdaytime5]     Settings: DayDuration=%s  NightDuration=%s  StartDayTime=%s\n",
-                                        tostring(dayDur), tostring(nightDur), tostring(startDayTime)))
-                                else
-                                    print("[LivingBase] [lbtestdaytime5]     Settings sub-object not resolved (nil/invalid weak ptr).\n")
-                                end
+                                local settingsOk = pcall(function() settings = comp.Settings end)
+                                local dayDur, nightDur, startDayTime = nil, nil, nil
+                                pcall(function() dayDur = settings.DayDuration end)
+                                pcall(function() nightDur = settings.NightDuration end)
+                                pcall(function() startDayTime = settings.StartDayTime end)
+                                print(string.format("[LivingBase] [lbtestdaytime5]     Settings (type=%s, read ok=%s): DayDuration=%s  NightDuration=%s  StartDayTime=%s\n",
+                                    tostring(type(settings)), tostring(settingsOk), tostring(dayDur), tostring(nightDur), tostring(startDayTime)))
                             end
                         end
                     end)
@@ -5482,6 +5483,14 @@ end
 -- lbphotoscene/lbfreecam commands.
 ------------------------------------------------------------
 local pendingEnableCam2 = false
+-- Cached across calls: EnableDebugCamera() spawns a NEW ADebugCameraController and it becomes
+-- the thing UEHelpers.GetPlayerController() returns afterwards (confirmed live: a second
+-- lbtestenablecam2 call logged "no CheatManager on player controller" -- the debug-cam controller
+-- itself has no CheatManager). Real UE behavior: DisableDebugCamera() must be called on the
+-- ORIGINAL player controller's CheatManager (the one holding DebugCameraControllerRef), not looked
+-- up fresh -- so the original CheatManager reference is cached here at enable-time for
+-- lbtestdisablecam2 to reuse.
+local cachedOriginalCheatManager = nil
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestenablecam2", function(FullCommand, Parameters, Ar)
@@ -5515,7 +5524,8 @@ if ExecuteWithDelay then
                     end
                     local ok, err = pcall(function() cheatManager:EnableDebugCamera() end)
                     if ok then
-                        print("[LivingBase] [lbtestenablecam2] done, no crash -- EnableDebugCamera() returned normally.\n")
+                        cachedOriginalCheatManager = cheatManager
+                        print("[LivingBase] [lbtestenablecam2] done, no crash -- EnableDebugCamera() returned normally. Cached this CheatManager for lbtestdisablecam2.\n")
                     else
                         print("[LivingBase] [lbtestenablecam2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
                     end
@@ -5525,6 +5535,56 @@ if ExecuteWithDelay then
         end)
     end
     enableCam2PollLoop()
+end
+
+------------------------------------------------------------
+-- lbtestdisablecam2 -- (2026-09-08) companion to lbtestenablecam2. RedFalcon confirmed
+-- lbtestenablecam2 turns the free cam ON with no crash, but asked how to turn it back OFF -- a
+-- fresh UEHelpers.GetPlayerController() lookup at that point returns the NEW ADebugCameraController
+-- UE spawned (it has no CheatManager of its own), not the original player controller. Real UE
+-- behavior requires calling DisableDebugCamera() on the SAME CheatManager instance that called
+-- EnableDebugCamera() (it privately tracks DebugCameraControllerRef), so this reuses the
+-- cachedOriginalCheatManager reference saved by lbtestenablecam2 instead of looking it up again.
+-- Same queue-then-poll pattern for the actual native call.
+------------------------------------------------------------
+local pendingDisableCam2 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdisablecam2", function(FullCommand, Parameters, Ar)
+            pendingDisableCam2 = true
+            print("[LivingBase] [lbtestdisablecam2] queued -- will apply on the next poll tick (~200ms).\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdisablecam2")
+    registerCmdInfo("lbtestdisablecam2", "lbtestdisablecam2", "Turns the free/debug camera back off -- reuses the CheatManager reference cached by lbtestenablecam2 (a fresh player-controller lookup after enabling returns the new debug-cam controller, which has no CheatManager of its own).")
+else
+    log("lbtestdisablecam2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function disableCam2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDisableCam2 then
+                pendingDisableCam2 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdisablecam2] starting attempt (from poll loop) -- cached CheatManager:DisableDebugCamera().\n")
+                    local cheatManager = cachedOriginalCheatManager
+                    if not (cheatManager and cheatManager:IsValid()) then
+                        print("[LivingBase] [lbtestdisablecam2] no cached CheatManager (never successfully enabled via lbtestenablecam2 this session, or it went invalid) -- nothing attempted.\n")
+                        return
+                    end
+                    local ok, err = pcall(function() cheatManager:DisableDebugCamera() end)
+                    if ok then
+                        print("[LivingBase] [lbtestdisablecam2] done, no crash -- DisableDebugCamera() returned normally.\n")
+                    else
+                        print("[LivingBase] [lbtestdisablecam2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            disableCam2PollLoop()
+        end)
+    end
+    disableCam2PollLoop()
 end
 
 if RegisterConsoleCommandHandler then

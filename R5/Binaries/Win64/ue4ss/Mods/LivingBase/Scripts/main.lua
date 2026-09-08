@@ -5312,6 +5312,79 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime5 -- (2026-09-08) DIAGNOSTIC ONLY, writes nothing. RedFalcon reports lbtestdaytime4
+-- always lands on night no matter what hour (0-24) is requested. Log confirms the component's own
+-- "normal" DayCycleSpeedInv is 1.0 (not something tiny) -- so WorldDayTime is very likely NOT
+-- "hours 0-24" at all, but a raw unit (probably real seconds elapsed into the cycle) that only
+-- reads as an hour-of-day AFTER going through GetCurrentTimeInHours()/the Settings sub-object
+-- (DayDuration/NightDuration/StartDayTime, see R5N_DayCycleTimeSettingsComponent.h). Rather than
+-- guess further, this dumps: the component's CURRENT raw WorldDayTime + DayCycleSpeedInv, the
+-- result of calling GetCurrentTimeInHours()/GetNormalizedDayTime()/GetPartOfDay() on it as-is, and
+-- (if Settings resolves) DayDuration/NightDuration/StartDayTime -- enough to derive the real
+-- hour<->raw-unit conversion instead of guessing again. Same queue-then-poll pattern (UFUNCTION
+-- calls, even BlueprintPure ones, get the same treatment as everything else touched this session).
+------------------------------------------------------------
+local pendingDayTime5 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime5", function(FullCommand, Parameters, Ar)
+            pendingDayTime5 = true
+            print("[LivingBase] [lbtestdaytime5] queued -- will dump calibration info on the next poll tick (~200ms). Writes nothing.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime5")
+    registerCmdInfo("lbtestdaytime5", "lbtestdaytime5", "Diagnostic only -- dumps the day-cycle component's raw WorldDayTime/DayCycleSpeedInv plus GetCurrentTimeInHours()/GetNormalizedDayTime()/GetPartOfDay() and the Settings sub-object's DayDuration/NightDuration/StartDayTime, to figure out why lbtestdaytime4 always lands on night regardless of the hour requested.")
+else
+    log("lbtestdaytime5 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime5PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime5 then
+                pendingDayTime5 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdaytime5] starting dump (from poll loop) -- FindAllOf('R5N_DayCycleTimeComponent').\n")
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, name = pcall(function() return comp:GetFullName() end)
+                            if okName and name and not name:find("Default__") then
+                                local worldDayTime, speedInv = nil, nil
+                                pcall(function() worldDayTime = comp.WorldDayTime end)
+                                pcall(function() speedInv = comp.DayCycleSpeedInv end)
+                                local hours, normalized, partOfDay = nil, nil, nil
+                                pcall(function() hours = comp:GetCurrentTimeInHours() end)
+                                pcall(function() normalized = comp:GetNormalizedDayTime() end)
+                                pcall(function() partOfDay = comp:GetPartOfDay() end)
+                                print(string.format("[LivingBase] [lbtestdaytime5] %s\n    raw WorldDayTime=%s  DayCycleSpeedInv=%s\n    GetCurrentTimeInHours()=%s  GetNormalizedDayTime()=%s  GetPartOfDay()=%s\n",
+                                    name, tostring(worldDayTime), tostring(speedInv), tostring(hours), tostring(normalized), tostring(partOfDay)))
+                                local settings = nil
+                                pcall(function() settings = comp.Settings end)
+                                if settings and settings.IsValid and settings:IsValid() then
+                                    local dayDur, nightDur, startDayTime = nil, nil, nil
+                                    pcall(function() dayDur = settings.DayDuration end)
+                                    pcall(function() nightDur = settings.NightDuration end)
+                                    pcall(function() startDayTime = settings.StartDayTime end)
+                                    print(string.format("[LivingBase] [lbtestdaytime5]     Settings: DayDuration=%s  NightDuration=%s  StartDayTime=%s\n",
+                                        tostring(dayDur), tostring(nightDur), tostring(startDayTime)))
+                                else
+                                    print("[LivingBase] [lbtestdaytime5]     Settings sub-object not resolved (nil/invalid weak ptr).\n")
+                                end
+                            end
+                        end
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestdaytime5] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            dayTime5PollLoop()
+        end)
+    end
+    dayTime5PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

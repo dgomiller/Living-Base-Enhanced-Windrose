@@ -7343,3 +7343,61 @@ if ExecuteWithDelay then
     end
     disableCam4PollLoop()
 end
+
+------------------------------------------------------------
+-- lbtestenabletoggle -- (2026-09-08) ZERO NEW RISK test. Calls EnableDebugCamera() a SECOND time
+-- via the SAME cachedFreeCamCheatManager reference lbfreecam's "on" already uses successfully --
+-- this is the exact same call already proven safe (no crash, no corruption) for turning the camera
+-- ON in the first place, just invoked again. Testing whether the engine's own EnableDebugCamera()
+-- self-toggles (checks if a DebugCameraControllerRef already exists and disables it instead of
+-- spawning a second one) rather than always just enabling. Reports the live debug-cam-controller
+-- count before and after so a toggle-off (count drops) is distinguishable from a no-op (count
+-- unchanged) or a bad double-spawn (count increases).
+------------------------------------------------------------
+local pendingEnableToggle = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestenabletoggle", function(FullCommand, Parameters, Ar)
+            pendingEnableToggle = true
+            print("[LivingBase] [lbtestenabletoggle] queued -- calling EnableDebugCamera() again via the cached CheatManager on the next poll tick.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestenabletoggle")
+    registerCmdInfo("lbtestenabletoggle", "lbtestenabletoggle", "Zero-new-risk test: calls EnableDebugCamera() a second time via the same cached CheatManager lbfreecam's 'on' uses, to see if the engine self-toggles it off instead of always just enabling.")
+else
+    log("lbtestenabletoggle unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function countLiveDebugCams()
+        local n = 0
+        for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
+            for _, c in ipairs(FindAllOf(className) or {}) do
+                local okName, name = pcall(function() return c:GetFullName() end)
+                if okName and name and not name:find("Default__") then n = n + 1 end
+            end
+        end
+        return n
+    end
+    local function enableTogglePollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingEnableToggle then
+                pendingEnableToggle = false
+                ExecuteInGameThread(function()
+                    if not (cachedFreeCamCheatManager and cachedFreeCamCheatManager:IsValid()) then
+                        print("[LivingBase] [lbtestenabletoggle] no cached CheatManager -- run 'lbfreecam on' first this session.\n")
+                        return
+                    end
+                    local before = countLiveDebugCams()
+                    local ok, err = pcall(function() cachedFreeCamCheatManager:EnableDebugCamera() end)
+                    local after = countLiveDebugCams()
+                    print(string.format("[LivingBase] [lbtestenabletoggle] EnableDebugCamera() again: %s%s -- live debug-cam count before=%d after=%d (%s)\n",
+                        tostring(ok), ok and "" or (" (" .. tostring(err) .. ")"), before, after,
+                        after < before and "DROPPED -- looks like a toggle-off!" or (after > before and "INCREASED -- spawned another, not a toggle" or "unchanged -- likely a no-op")))
+                end)
+            end
+            enableTogglePollLoop()
+        end)
+    end
+    enableTogglePollLoop()
+end

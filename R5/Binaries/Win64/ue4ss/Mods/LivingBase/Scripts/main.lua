@@ -5802,6 +5802,76 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime10 -- (2026-09-08) DIAGNOSTIC. lbtestdaytime9 confirmed "freeze via
+-- DayCycleSpeedInv=100000" doesn't hold position at all -- EVERY subsequent read (even a fraction
+-- of a second after freezing at hour=14.0173) came back to ~0.0006, as if the freeze itself
+-- collapses the displayed hour, not just its future rate. Working theory: hour is computed as
+-- (some real-time progress accumulator) / DayCycleSpeedInv, so CHANGING the divisor instantly
+-- RESCALES the current displayed hour too, not just the going-forward speed -- jumping from 0.01
+-- to 100000 divides the display by ~1e7, collapsing it near zero. 100000 is also a very extreme
+-- value that might hit an internal clamp. This diagnostic: read hour at the current (whatever it
+-- is) speedInv, then switch to a much MORE MODERATE divisor (20, not 100000) and re-read hour on
+-- the VERY NEXT tick, to see if the same collapse-on-switch happens proportionally (confirming the
+-- rescale theory) or is totally broken regardless of magnitude (pointing to something else).
+------------------------------------------------------------
+local pendingDayTime10 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime10", function(FullCommand, Parameters, Ar)
+            local moderateSpeedInv = tonumber(Parameters and Parameters[1]) or 20.0
+            pendingDayTime10 = { stage = 1, moderateSpeedInv = moderateSpeedInv }
+            print(string.format("[LivingBase] [lbtestdaytime10] queued moderateSpeedInv=%.2f -- reads current hour, switches to this divisor, re-reads next tick.\n", moderateSpeedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime10 [moderateSpeedInv]")
+    registerCmdInfo("lbtestdaytime10", "lbtestdaytime10 [moderateSpeedInv]", "Diagnostic only -- tests whether switching DayCycleSpeedInv to a MODERATE value (default 20, not 100000) still collapses the current displayed hour the way lbtestdaytime9's freeze did, to see if 100000 was hitting some extreme-value clamp/precision issue.")
+else
+    log("lbtestdaytime10 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime10PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime10 ~= false then
+                local req = pendingDayTime10
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime10] component not found -- aborting.\n")
+                    pendingDayTime10 = false
+                else
+                    if req.stage == 1 then
+                        local hBefore, speedBefore = nil, nil
+                        pcall(function() hBefore = comp:GetCurrentTimeInHours() end)
+                        pcall(function() speedBefore = comp.DayCycleSpeedInv end)
+                        comp.DayCycleSpeedInv = req.moderateSpeedInv
+                        print(string.format("[LivingBase] [lbtestdaytime10] stage 1: hour BEFORE switch=%s (at DayCycleSpeedInv=%s) -- wrote DayCycleSpeedInv=%.2f. Reading again next tick...\n",
+                            tostring(hBefore), tostring(speedBefore), req.moderateSpeedInv))
+                        pendingDayTime10 = { stage = 2, moderateSpeedInv = req.moderateSpeedInv, hBefore = hBefore, speedBefore = speedBefore }
+                    elseif req.stage == 2 then
+                        local hAfter = nil
+                        pcall(function() hAfter = comp:GetCurrentTimeInHours() end)
+                        local predicted = nil
+                        if req.hBefore and req.speedBefore and req.speedBefore ~= 0 then
+                            predicted = req.hBefore * (req.speedBefore / req.moderateSpeedInv)
+                        end
+                        print(string.format("[LivingBase] [lbtestdaytime10] stage 2: hour AFTER switch=%s -- rescale-theory predicted=%s (hBefore=%s * speedBefore=%s / newSpeed=%.2f). %s\n",
+                            tostring(hAfter), tostring(predicted), tostring(req.hBefore), tostring(req.speedBefore), req.moderateSpeedInv,
+                            (hAfter and req.hBefore and math.abs(hAfter - req.hBefore) < 0.05) and "HELD STEADY (no collapse!)" or "collapsed/changed."))
+                        pendingDayTime10 = false
+                    end
+                end
+            end
+            dayTime10PollLoop()
+        end)
+    end
+    dayTime10PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

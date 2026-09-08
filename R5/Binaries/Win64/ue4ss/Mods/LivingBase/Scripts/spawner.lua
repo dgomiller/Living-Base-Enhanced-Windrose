@@ -5589,24 +5589,29 @@ function Spawner.ProbeCameraRig(say)
     end
 end
 
--- Spawner.SetFaceCam(mode, distance, heightOffset, say) -- "lbfacecam <on|off> [distance]
--- [heightOffset]" (2026-09-08). RedFalcon's follow-up to the noclip/nudge photo-composition tools:
--- move the CAMERA in close to the character's face, independent of lbnoclip2/lbnudge. Deliberately
--- does NOT touch Windrose's own SpringArmComponent (ProbeCameraRig's own finding above already
--- shows that arm's config doesn't even move for the game's OWN native camera-raise -- something
--- downstream reasserts/ignores direct SpringArm config in this project, matching the broader
--- write-reverts pattern seen elsewhere this session with CPD colors/WorldDayTime) and does NOT go
--- anywhere near the confirmed-broken ADebugCameraController/CheatManager system (see
+-- Spawner.SetPhotoTripod(mode, distance, heightOffset, say) -- "lbphototripod <on|off> [distance]
+-- [heightOffset]" (2026-09-08, renamed from an original "lbfacecam" -- RedFalcon's actual original
+-- ask was a ghost-mode-style RELATIVE camera reposition, similar to build-mode's own move-away-
+-- and-up camera pull, not specifically a fixed face shot -- that relative-offset idea is a
+-- SEPARATE, not-yet-built feature to revisit later. This fixed, independently-placed camera turned
+-- out to have its own genuine use on its own, hence the rename+keep rather than a throwaway).
+-- RedFalcon's follow-up to the noclip/nudge photo-composition tools: an independent, fixed-position
+-- camera ("tripod") for photo composition, separate from lbnoclip2/lbnudge. Deliberately does NOT
+-- touch Windrose's own SpringArmComponent (ProbeCameraRig's own finding above already shows that
+-- arm's config doesn't even move for the game's OWN native camera-raise -- something downstream
+-- reasserts/ignores direct SpringArm config in this project, matching the broader write-reverts
+-- pattern seen elsewhere this session with CPD colors/WorldDayTime) and does NOT go anywhere near
+-- the confirmed-broken ADebugCameraController/CheatManager system (see
 -- [[feedback_windrose_cheatmanager_neutered]]) -- instead spawns a plain, fully independent
 -- CameraActor via the SAME GameplayStatics deferred-spawn pattern already proven for
 -- TestNiagaraActor/HoverEffect, positions it via K2_SetActorLocation/K2_SetActorRotation (the
 -- proven-reliable property-write pattern from Spawner.WarpNear), and redirects rendering to it
 -- with SetViewTargetWithBlend -- a core, non-cheat AController function, not a UCheatManager one,
 -- so not expected to share that system's neutering. 'off' blends the view back to the player's own
--- pawn and destroys the spawned camera. Only one face-cam actor is tracked at a time
--- (Spawner._faceCamActor) -- calling 'on' again replaces the previous one.
-function Spawner.SetFaceCam(mode, distance, heightOffset, say)
-    say = say or function(m) print("[LivingBase] [facecam] " .. tostring(m) .. "\n") end
+-- pawn and destroys the spawned camera. Only one tripod camera actor is tracked at a time
+-- (Spawner._photoTripodActor) -- calling 'on' again replaces the previous one.
+function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
+    say = say or function(m) print("[LivingBase] [phototripod] " .. tostring(m) .. "\n") end
     local pc, pawn
     pcall(function()
         pc = UEHelpers.GetPlayerController()
@@ -5619,14 +5624,14 @@ function Spawner.SetFaceCam(mode, distance, heightOffset, say)
     if mode == "off" then
         local ok = pcall(function() pc:SetViewTargetWithBlend(pawn, 0.0, 0, 0.0, false) end)
         say("view target restored to player pawn: " .. tostring(ok))
-        if Spawner._faceCamActor and Spawner._faceCamActor:IsValid() then
-            pcall(function() Spawner._faceCamActor:K2_DestroyActor() end)
+        if Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid() then
+            pcall(function() Spawner._photoTripodActor:K2_DestroyActor() end)
         end
-        Spawner._faceCamActor = nil
+        Spawner._photoTripodActor = nil
         return true
     end
     if not (pawn and pawn:IsValid()) then
-        say("no pawn possessed -- cannot position face cam.")
+        say("no pawn possessed -- cannot position tripod cam.")
         return false
     end
     distance = distance or 150.0
@@ -5648,9 +5653,9 @@ function Spawner.SetFaceCam(mode, distance, heightOffset, say)
     local camYaw = pawnRot.Yaw + 180.0
 
     -- Clear any previous face-cam actor before spawning a new one.
-    if Spawner._faceCamActor and Spawner._faceCamActor:IsValid() then
-        pcall(function() Spawner._faceCamActor:K2_DestroyActor() end)
-        Spawner._faceCamActor = nil
+    if Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid() then
+        pcall(function() Spawner._photoTripodActor:K2_DestroyActor() end)
+        Spawner._photoTripodActor = nil
     end
 
     local cls
@@ -5682,8 +5687,8 @@ function Spawner.SetFaceCam(mode, distance, heightOffset, say)
         pcall(function() camActor:K2_DestroyActor() end)
         return false
     end
-    Spawner._faceCamActor = camActor
-    say(string.format("face cam ON -- positioned at (%.1f, %.1f, %.1f), yaw=%.1f, distance=%.1f, heightOffset=%.1f.",
+    Spawner._photoTripodActor = camActor
+    say(string.format("tripod cam ON -- positioned at (%.1f, %.1f, %.1f), yaw=%.1f, distance=%.1f, heightOffset=%.1f.",
         camPos.X, camPos.Y, camPos.Z, camYaw, distance, heightOffset))
     return true
 end

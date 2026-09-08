@@ -7647,3 +7647,88 @@ if ExecuteWithDelay then
     end
     noClipPollLoop()
 end
+
+------------------------------------------------------------
+-- lbtestnoclipcheck -- (2026-09-08) DIAGNOSTIC. RedFalcon confirmed lbnoclip on "didn't do
+-- anything" -- Ghost() returned success but produced no visible effect, the same "reports success,
+-- does nothing" pattern already seen with EnableCheats()/DisableDebugCamera(). Stock Ghost() only
+-- works if GetOuterAPlayerController()->GetCharacter() resolves to a real ACharacter -- this reads
+-- back the pawn's own MovementMode + collision-enabled state (both BEFORE and, separately, calls
+-- Ghost() then reads AGAIN) to see whether the underlying state actually changed (meaning
+-- animation/rendering just didn't reflect it) or nothing happened at all (meaning the function
+-- body silently no-op'd, most likely because GetCharacter() found no character). Writes via
+-- Ghost() only -- no other manual changes.
+------------------------------------------------------------
+local pendingNoClipCheck = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestnoclipcheck", function(FullCommand, Parameters, Ar)
+            pendingNoClipCheck = true
+            print("[LivingBase] [lbtestnoclipcheck] queued -- reading pawn movement state, calling Ghost(), reading again.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestnoclipcheck")
+    registerCmdInfo("lbtestnoclipcheck", "lbtestnoclipcheck", "Diagnostic only -- reads the player pawn's MovementMode/collision state, calls Ghost(), then reads again, to see whether Ghost() actually changes anything at the data level or is a complete no-op.")
+else
+    log("lbtestnoclipcheck unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function noClipCheckPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingNoClipCheck then
+                pendingNoClipCheck = false
+                ExecuteInGameThread(function()
+                    local ok, err = pcall(function()
+                        local pc = UEHelpers.GetPlayerController()
+                        if not (pc and pc:IsValid()) then
+                            print("[LivingBase] [lbtestnoclipcheck] no player controller.\n")
+                            return
+                        end
+                        local pawn = nil
+                        pcall(function() pawn = pc:GetPawn() end)
+                        if not (pawn and pawn:IsValid()) then
+                            print("[LivingBase] [lbtestnoclipcheck] pc:GetPawn() returned nothing -- no pawn possessed right now.\n")
+                            return
+                        end
+                        local pawnName = "?"
+                        pcall(function() pawnName = pawn:GetFullName() end)
+                        print(string.format("[LivingBase] [lbtestnoclipcheck] pawn: %s\n", pawnName))
+                        local charFunc = nil
+                        pcall(function() charFunc = pc:GetCharacter() end)
+                        print(string.format("[LivingBase] [lbtestnoclipcheck] pc:GetCharacter()=%s (Ghost()'s own internal lookup uses this exact path -- nil here means Ghost() would have nothing to act on)\n", tostring(charFunc)))
+                        local moveComp = nil
+                        pcall(function() moveComp = pawn.CharacterMovement end)
+                        local function readMoveState(label)
+                            local mode, collisionEnabled = nil, nil
+                            pcall(function() mode = moveComp.MovementMode end)
+                            pcall(function() collisionEnabled = pawn:GetActorEnableCollision() end)
+                            print(string.format("[LivingBase] [lbtestnoclipcheck] %s: MovementMode=%s  CollisionEnabled=%s\n", label, tostring(mode), tostring(collisionEnabled)))
+                        end
+                        if not moveComp then
+                            print("[LivingBase] [lbtestnoclipcheck] pawn.CharacterMovement not found/readable.\n")
+                        else
+                            readMoveState("BEFORE Ghost()")
+                        end
+                        local cheatManager = nil
+                        pcall(function() cheatManager = pc.CheatManager end)
+                        if cheatManager and cheatManager:IsValid() then
+                            local okGhost, errGhost = pcall(function() cheatManager:Ghost() end)
+                            print(string.format("[LivingBase] [lbtestnoclipcheck] Ghost() call: %s%s\n", tostring(okGhost), okGhost and "" or (" (" .. tostring(errGhost) .. ")")))
+                        else
+                            print("[LivingBase] [lbtestnoclipcheck] no CheatManager -- skipped Ghost() call.\n")
+                        end
+                        if moveComp then
+                            readMoveState("AFTER Ghost()")
+                        end
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestnoclipcheck] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            noClipCheckPollLoop()
+        end)
+    end
+    noClipCheckPollLoop()
+end

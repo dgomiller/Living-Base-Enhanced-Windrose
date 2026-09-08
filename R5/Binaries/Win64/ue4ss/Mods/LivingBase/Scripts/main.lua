@@ -7045,6 +7045,20 @@ end
 ------------------------------------------------------------
 -- lbfreecam <on|off> -- toggles a free/debug camera detached from the player, for consistent
 -- photo composition. Independent of lbphototime/lbphotoweather.
+--
+-- KNOWN LIMITATION (2026-09-08, confirmed via 5 separate live attempts -- lbtestdisablecam3/4/5,
+-- lbtestenabletoggle/2): 'off' does not actually work in this build. DisableDebugCamera() returns
+-- successfully (no error) but never destroys the spawned ADebugCameraController, even after
+-- restoring the original controller's Player first (the most promising theory, still a no-op).
+-- Calling EnableDebugCamera() a second time is also confirmed to just no-op, not toggle. This
+-- matches an EARLIER, independent finding in this same crash-diagnosis arc: the native
+-- ToggleDebugCamera Exec console command's own OFF-branch is ALSO broken (confirmed live by typing
+-- it repeatedly with no effect) -- two independently-broken paths pointing at the same conclusion:
+-- this specific shipping build of Windrose does not support turning the debug camera back off
+-- through any standard path. RedFalcon's own call: accept this as a known limitation rather than
+-- keep probing live (each attempt carries real risk -- one manual-property-surgery attempt froze
+-- the game entirely, requiring a full relaunch). 'off' is left in place below (harmless if it's
+-- ever fixed by a future game patch) but prints a clear message instead of false success.
 ------------------------------------------------------------
 local pendingFreeCam = nil
 local cachedFreeCamCheatManager = nil
@@ -7062,7 +7076,7 @@ if RegisterConsoleCommandHandler then
         end)
     end)
     log("Console command registered: lbfreecam <on|off>")
-    registerCmdInfo("lbfreecam", "lbfreecam <on|off>", "Toggles a free/debug camera detached from the player, for consistent photo composition. Independent of lbphototime/lbphotoweather.")
+    registerCmdInfo("lbfreecam", "lbfreecam <on|off>", "Turns on a free/debug camera detached from the player, for consistent photo composition -- 'on' works reliably. 'off' is a KNOWN, confirmed-unfixable limitation in this build (the engine's own DisableDebugCamera()/ToggleDebugCamera never actually restore control) -- exit and relaunch Windrose to get normal control back after using this. Independent of lbphototime/lbphotoweather.")
 else
     log("lbfreecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

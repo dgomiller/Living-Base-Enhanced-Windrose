@@ -7736,3 +7736,84 @@ if ExecuteWithDelay then
     end
     noClipCheckPollLoop()
 end
+
+------------------------------------------------------------
+-- lbnoclip2 <on|off> -- (2026-09-08) DIRECT PROPERTY approach, bypassing Ghost()/Fly()/Walk()
+-- entirely. lbtestnoclipcheck confirmed Ghost() reports success but never actually changes
+-- MovementMode (stayed at 1/Walking before and after) -- the third stock UCheatManager function in
+-- this session found to silently no-op (after EnableCheats() and DisableDebugCamera()), a strong
+-- pattern suggesting this shipping build's cheat-manager functions are deliberately neutered. This
+-- session has consistently found DIRECT PROPERTY WRITES far more reliable than function calls
+-- (CPD colors, day-cycle, weather all worked this way) -- so this writes
+-- CharacterMovement.GravityScale directly (0 = no gravity, "disable physics pulling them to the
+-- ground", the user's literal ask) and CharacterMovement.MovementMode directly (5 = MOVE_Flying,
+-- standard UE enum value, confirmed via lbtestnoclipcheck's own readback that 1 = Walking matches
+-- the standard numbering) -- restoring both to normal (GravityScale=1, MovementMode=1/Walking) for
+-- 'off'.
+------------------------------------------------------------
+local pendingNoClip2 = nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbnoclip2", function(FullCommand, Parameters, Ar)
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
+            if mode ~= "on" and mode ~= "off" then
+                print(string.format("[LivingBase] [lbnoclip2] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
+                return true
+            end
+            pendingNoClip2 = mode
+            print(string.format("[LivingBase] [lbnoclip2] turning %s (direct property writes)...\n", mode))
+            return true
+        end)
+    end)
+    log("Console command registered: lbnoclip2 <on|off>")
+    registerCmdInfo("lbnoclip2", "lbnoclip2 <on|off>", "Direct-property alternative to lbnoclip (Ghost() confirmed to silently no-op) -- writes CharacterMovement.GravityScale=0 (no gravity) and MovementMode=5 (Flying) directly for 'on'; restores GravityScale=1, MovementMode=1 (Walking) for 'off'.")
+else
+    log("lbnoclip2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function noClip2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingNoClip2 ~= nil then
+                local mode = pendingNoClip2
+                pendingNoClip2 = nil
+                ExecuteInGameThread(function()
+                    local ok, err = pcall(function()
+                        local pc = UEHelpers.GetPlayerController()
+                        if not (pc and pc:IsValid()) then
+                            print("[LivingBase] [lbnoclip2] no player controller.\n")
+                            return
+                        end
+                        local pawn = nil
+                        pcall(function() pawn = pc.Pawn end)
+                        if not (pawn and pawn:IsValid()) then
+                            print("[LivingBase] [lbnoclip2] no pawn possessed.\n")
+                            return
+                        end
+                        local moveComp = nil
+                        pcall(function() moveComp = pawn.CharacterMovement end)
+                        if not (moveComp and moveComp:IsValid()) then
+                            print("[LivingBase] [lbnoclip2] pawn.CharacterMovement not found/readable.\n")
+                            return
+                        end
+                        if mode == "on" then
+                            moveComp.GravityScale = 0
+                            moveComp.MovementMode = 5 -- MOVE_Flying
+                        else
+                            moveComp.GravityScale = 1
+                            moveComp.MovementMode = 1 -- MOVE_Walking
+                        end
+                        local gAfter, mAfter = nil, nil
+                        pcall(function() gAfter = moveComp.GravityScale end)
+                        pcall(function() mAfter = moveComp.MovementMode end)
+                        print(string.format("[LivingBase] [lbnoclip2] %s -- readback: GravityScale=%s MovementMode=%s\n", mode, tostring(gAfter), tostring(mAfter)))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbnoclip2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            noClip2PollLoop()
+        end)
+    end
+    noClip2PollLoop()
+end

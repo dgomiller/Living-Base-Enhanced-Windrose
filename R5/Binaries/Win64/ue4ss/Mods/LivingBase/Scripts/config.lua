@@ -1951,9 +1951,16 @@ Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE = { X = 1.5, Y = 1.1, Z = 1.0 }
 -- (SetVisibility(false)), not swaps to nil -- clearing a component's mesh entirely would make
 -- clothingSlotOf unable to re-identify that slot afterward (it matches by the CURRENT mesh name),
 -- breaking the ability to dress that slot again later.
+-- "Hair" added 2026-09-08 (RedFalcon: "in remove i'd like a remove all hair option") -- NOT part of
+-- CLOTHING_SLOT_TOKENS/clothingSlotOf's name-token vocabulary (hair mesh names don't reliably carry
+-- a "Hair" token at all -- see the Undercut naming bug documented on Spawner.TestApplyHairStyle);
+-- Spawner.RemoveClothingOnActor matches it separately, by the mesh's FULL ASSET PATH containing
+-- "/Hair/" instead. Listed here anyway so the GUI's Remove dropdown picks it up the same way as
+-- every other slot, and now included by "All" too (it previously excluded hair/eyebrows/base body
+-- by construction, since none of those matched any clothing token).
 Config.CLOTHING_REMOVABLE_SLOTS = {
   "Headgear", "Torso", "TorsoCloth", "Legs", "Hands", "Feet", "Head", "Neck",
-  "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap",
+  "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap", "Hair",
 }
 
 -- Config.KNOWN_ATTACHMENT_SOCKETS_BY_BODYPART -- (2026-09-04) real socket names, deduplicated,

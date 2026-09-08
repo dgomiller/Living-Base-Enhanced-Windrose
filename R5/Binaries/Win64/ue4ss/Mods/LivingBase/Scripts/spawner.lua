@@ -10433,9 +10433,13 @@ end
 -- clothingSlotOf unable to re-identify that slot's component afterward (it matches by the
 -- CURRENT mesh name), which would permanently break dressing that slot again via lbtestclothes/
 -- the GUI. `slotArg` of "all" (case-insensitive) hides every component that resolves to ANY
--- canonical slot via clothingSlotOf -- naturally excludes the base body mesh, hair, and eyebrows,
--- since none of their mesh names contain a recognized clothing-slot token. A specific slot name
--- (from Config.CLOTHING_REMOVABLE_SLOTS) hides only components resolving to that one slot.
+-- canonical slot via clothingSlotOf -- naturally excludes the base body mesh and eyebrows, since
+-- neither's mesh name contains a recognized clothing-slot token. A specific slot name (from
+-- Config.CLOTHING_REMOVABLE_SLOTS) hides only components resolving to that one slot.
+-- HAIR (2026-09-08, RedFalcon: "in remove i'd like a remove all hair option"): matched separately
+-- by full asset PATH containing "/Hair/" (not a clothingSlotOf name-token match -- hair mesh names
+-- don't reliably carry one, see the Undercut naming bug on Spawner.TestApplyHairStyle) -- "all" now
+-- includes hair too, and "hair" works as its own explicit slotArg.
 -- RedFalcon separately asked for a clear notice when a slot has nothing to act on -- both branches
 -- toast an explicit "nothing found" message rather than silently no-op'ing, same as the equivalent
 -- notice just added to Spawner.TestApplyClothingPiece's own empty-slot case.
@@ -10534,11 +10538,14 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                 -- accessor family, so a throw in one can never block the other (same fix
                 -- Spawner.TestHideOnePouch's own working StaticMesh-only read already didn't need,
                 -- since it never tried SkeletalMesh at all).
-                local curName = ""
+                local curName, curFullPath = "", ""
                 pcall(function()
                     local sk = c.SkeletalMesh
                     if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
-                    if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+                    if sk and sk:IsValid() then
+                        curName = sk:GetFName():ToString()
+                        pcall(function() curFullPath = sk:GetFullName() end)
+                    end
                 end)
                 if curName == "" then
                     pcall(function()
@@ -10548,6 +10555,14 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                     end)
                 end
                 local slotHere = clothingSlotOf(curName)
+                -- Hair (2026-09-08, RedFalcon: "in remove i'd like a remove all hair option") --
+                -- clothingSlotOf matches by NAME TOKEN, but hair mesh names don't reliably carry a
+                -- "Hair" token at all (see Spawner.TestApplyHairStyle's own Undercut bug writeup:
+                -- SK_Undercut_01_..._Female has none). Match by the FULL ASSET PATH containing
+                -- "/Hair/" instead, the same technique TestApplyHairStyle already uses to find the
+                -- hair component reliably regardless of naming irregularities. Only ever applies to
+                -- the SkeletalMeshComponent sweep (curFullPath is only ever populated there).
+                if not slotHere and curFullPath:find("/Hair/") then slotHere = "Hair" end
                 -- SM_Drop_* fallback (2026-09-04, RedFalcon: "i think sm_drop also needs to be
                 -- added to removeall") -- decorative weapon-replica props (muskets/pistols worn as
                 -- belt/sling decoration) share none of clothingSlotOf's clothing-family tokens in

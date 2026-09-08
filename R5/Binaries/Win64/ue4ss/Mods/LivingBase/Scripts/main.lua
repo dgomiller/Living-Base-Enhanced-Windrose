@@ -6360,9 +6360,17 @@ if ExecuteWithDelay then
             if pendingDayTime16 then
                 pendingDayTime16 = false
                 ExecuteInGameThread(function()
-                    print("[LivingBase] [lbtestdaytime16] starting dump (from poll loop) -- FindAllOf('R5NatureSettings') (including Default__, that's the live singleton for this class).\n")
+                    print("[LivingBase] [lbtestdaytime16] starting dump (from poll loop) -- FindAllOf('R5NatureSettings') found 0 last time, so trying StaticFindObject on the CDO path directly instead (same pattern spawner.lua already uses for other singletons, e.g. Default__GameplayStatics).\n")
                     local ok, err = pcall(function()
-                        local found = FindAllOf("R5NatureSettings") or {}
+                        local found = {}
+                        local direct = nil
+                        local okDirect, errDirect = pcall(function() direct = StaticFindObject("/Script/R5Nature.Default__R5NatureSettings") end)
+                        if okDirect and direct then
+                            table.insert(found, direct)
+                        else
+                            print(string.format("[LivingBase] [lbtestdaytime16] StaticFindObject direct path failed/nil (ok=%s, err=%s) -- falling back to FindAllOf.\n", tostring(okDirect), tostring(errDirect)))
+                            found = FindAllOf("R5NatureSettings") or {}
+                        end
                         print(string.format("[LivingBase] [lbtestdaytime16] found %d R5NatureSettings instance(s).\n", #found))
                         for _, settings in ipairs(found) do
                             local okName, name = pcall(function() return settings:GetFullName() end)

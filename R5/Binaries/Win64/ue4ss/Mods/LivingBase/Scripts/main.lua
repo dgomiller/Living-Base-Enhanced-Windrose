@@ -6875,41 +6875,77 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
--- lbphotoweather -- forces clear/Sunny weather immediately, independent of lbphototime. Safe to
--- run any time, as often as needed (e.g. weather changed mid-session while composing a shot).
+-- lbphotoweather [name] -- forces the named weather immediately (default: clear/Sunny), independent
+-- of lbphototime. Safe to run any time, as often as needed (e.g. weather changed mid-session while
+-- composing a shot). Weather names/IDs taken directly from the WeatherControl reference mod found
+-- in Other/ (Other/WeatherControl Mod v2.../Scripts/main.lua), which reads the same
+-- R5N_WeatherComponent.CheatWeatherID this does.
 ------------------------------------------------------------
-local pendingPhotoWeather = false
+local PHOTO_WEATHERS = {
+    { name = "Sunny",        id = 0  },
+    { name = "Cloudy",       id = 1  },
+    { name = "Fog",          id = 2  },
+    { name = "Mist",         id = 3  },
+    { name = "Rain",         id = 4  },
+    { name = "RainHeavy",    id = 5  },
+    { name = "Storm",        id = 6  },
+    { name = "Windy",        id = 7  },
+    { name = "HighPressure", id = 8  },
+    { name = "Rainbow",      id = 9  },
+    { name = "Overcast",     id = 10 },
+    { name = "AshlandsFog",  id = 11 },
+    { name = "TortugaMist",  id = 12 },
+    { name = "Default",      id = 13 },
+}
+local function findPhotoWeather(nameArg)
+    if not nameArg then return PHOTO_WEATHERS[1] end -- Sunny, the default
+    local lowered = tostring(nameArg):lower()
+    for _, w in ipairs(PHOTO_WEATHERS) do
+        if w.name:lower() == lowered then return w end
+    end
+    return nil
+end
+local pendingPhotoWeather = nil
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbphotoweather", function(FullCommand, Parameters, Ar)
-            pendingPhotoWeather = true
-            print("[LivingBase] [lbphotoweather] clearing weather...\n")
+            local nameArg = Parameters and Parameters[1]
+            local weather = findPhotoWeather(nameArg)
+            if not weather then
+                local names = {}
+                for _, w in ipairs(PHOTO_WEATHERS) do table.insert(names, w.name) end
+                print(string.format("[LivingBase] [lbphotoweather] unknown weather '%s'. Valid names: %s\n", tostring(nameArg), table.concat(names, ", ")))
+                return true
+            end
+            pendingPhotoWeather = weather
+            print(string.format("[LivingBase] [lbphotoweather] setting weather to %s (ID=%d)...\n", weather.name, weather.id))
             return true
         end)
     end)
-    log("Console command registered: lbphotoweather")
-    registerCmdInfo("lbphotoweather", "lbphotoweather", "Forces clear/Sunny weather immediately, independent of lbphototime/lbfreecam. Safe to re-run any time weather changes mid-session.")
+    log("Console command registered: lbphotoweather [name]")
+    registerCmdInfo("lbphotoweather", "lbphotoweather [name]", "Forces the named weather immediately (no argument = clear/Sunny). Valid names: Sunny, Cloudy, Fog, Mist, Rain, RainHeavy, Storm, Windy, HighPressure, Rainbow, Overcast, AshlandsFog, TortugaMist, Default. Independent of lbphototime/lbfreecam -- safe to re-run any time weather changes mid-session.")
 else
     log("lbphotoweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 if ExecuteWithDelay then
     local function photoWeatherPollLoop()
         ExecuteWithDelay(200, function()
-            if pendingPhotoWeather then
-                pendingPhotoWeather = false
+            if pendingPhotoWeather ~= nil then
+                local weather = pendingPhotoWeather
+                pendingPhotoWeather = nil
                 ExecuteInGameThread(function()
                     local count = 0
                     local ok, err = pcall(function()
                         for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
                             local okName, n = pcall(function() return comp:GetFullName() end)
                             if okName and n and not n:find("Default__") then
-                                comp.CheatWeatherID = 0
+                                comp.CheatWeatherID = weather.id
                                 count = count + 1
                             end
                         end
                     end)
                     if ok then
-                        print(string.format("[LivingBase] [lbphotoweather] done -- %d weather component(s) set to clear/Sunny.\n", count))
+                        print(string.format("[LivingBase] [lbphotoweather] done -- %d weather component(s) set to %s (ID=%d).\n", count, weather.name, weather.id))
                     else
                         print("[LivingBase] [lbphotoweather] Lua-level error: " .. tostring(err) .. "\n")
                     end

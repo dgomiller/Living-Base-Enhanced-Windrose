@@ -7112,3 +7112,79 @@ if ExecuteWithDelay then
     end
     freeCamPollLoop()
 end
+
+------------------------------------------------------------
+-- lbtestdisablecam3 -- (2026-09-08) DIAGNOSTIC. RedFalcon confirmed: lbfreecam off logs "free
+-- camera OFF" (DisableDebugCamera() returns with no error) but the camera visibly stays free.
+-- Checked the SDK header dump: ADebugCameraController exposes a real OriginalControllerRef +
+-- (inherited from APlayerController) Player property. Working theory: EnableDebugCamera() moves
+-- the ULocalPlayer from the original controller's .Player onto the new debug-cam controller, and
+-- stock DisableDebugCamera() looks up that LocalPlayer through ITS OWN outer controller's .Player
+-- -- but we call it from the CACHED ORIGINAL controller's CheatManager, whose .Player is now nil
+-- (moved away at enable time), so the lookup silently no-ops. This tries a manual restoration
+-- instead, bypassing DisableDebugCamera() entirely: find the live debug-cam controller directly,
+-- read its OriginalControllerRef + Player, reattach Player to the original controller, clear it on
+-- the debug-cam controller, then Destroy() it.
+------------------------------------------------------------
+local pendingDisableCam3 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdisablecam3", function(FullCommand, Parameters, Ar)
+            pendingDisableCam3 = true
+            print("[LivingBase] [lbtestdisablecam3] queued -- manual restoration attempt on the next poll tick.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdisablecam3")
+    registerCmdInfo("lbtestdisablecam3", "lbtestdisablecam3", "Diagnostic only -- manually restores control from the free/debug camera instead of calling DisableDebugCamera() (which silently no-ops when called from the cached original CheatManager, per RedFalcon's live confirmation lbfreecam off doesn't actually work).")
+else
+    log("lbtestdisablecam3 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function disableCam3PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDisableCam3 then
+                pendingDisableCam3 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdisablecam3] starting manual restoration attempt -- searching for a live R5DebugCameraController.\n")
+                    local ok, err = pcall(function()
+                        local dcc, dccName = nil, nil
+                        for _, c in ipairs(FindAllOf("R5DebugCameraController") or {}) do
+                            local okName, n = pcall(function() return c:GetFullName() end)
+                            if okName and n and not n:find("Default__") then dcc = c; dccName = n; break end
+                        end
+                        if not dcc then
+                            print("[LivingBase] [lbtestdisablecam3] no live R5DebugCameraController found -- is the free camera actually on?\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbtestdisablecam3] found %s\n", dccName))
+                        local originalPC, dccPlayer = nil, nil
+                        pcall(function() originalPC = dcc.OriginalControllerRef end)
+                        pcall(function() dccPlayer = dcc.Player end)
+                        print(string.format("[LivingBase] [lbtestdisablecam3] OriginalControllerRef=%s  Player=%s\n", tostring(originalPC), tostring(dccPlayer)))
+                        if not (originalPC and originalPC.IsValid and originalPC:IsValid()) then
+                            print("[LivingBase] [lbtestdisablecam3] OriginalControllerRef missing/invalid -- cannot restore.\n")
+                            return
+                        end
+                        if not dccPlayer then
+                            print("[LivingBase] [lbtestdisablecam3] debug-cam controller has no Player -- cannot restore.\n")
+                            return
+                        end
+                        local okSet1, err1 = pcall(function() originalPC.Player = dccPlayer end)
+                        local okSet2, err2 = pcall(function() dcc.Player = nil end)
+                        local okDestroy, err3 = pcall(function() dcc:Destroy() end)
+                        print(string.format("[LivingBase] [lbtestdisablecam3] reattach Player to original: %s%s | clear debug-cam Player: %s%s | Destroy(): %s%s\n",
+                            tostring(okSet1), okSet1 and "" or (" (" .. tostring(err1) .. ")"),
+                            tostring(okSet2), okSet2 and "" or (" (" .. tostring(err2) .. ")"),
+                            tostring(okDestroy), okDestroy and "" or (" (" .. tostring(err3) .. ")")))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestdisablecam3] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            disableCam3PollLoop()
+        end)
+    end
+    disableCam3PollLoop()
+end

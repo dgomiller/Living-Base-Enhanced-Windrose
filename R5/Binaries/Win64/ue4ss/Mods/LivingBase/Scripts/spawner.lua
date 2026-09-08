@@ -15498,21 +15498,28 @@ end
 -- permanently detaching without restoring would risk breaking that.
 local PLACEMENT_CAMERA_RAISE_UU = Config.PLACEMENT_CAMERA_RAISE_UU or 35.0
 local PLACEMENT_CAMERA_FOV_DELTA = Config.PLACEMENT_CAMERA_FOV_DELTA or 6.0
+-- PULLBACK RETRY (2026-09-08, RedFalcon: "would this improve our camera move process for placing
+-- items?") -- the ORIGINAL TargetArmLength pullback experiment above ("100uu, never worked") was
+-- tried BEFORE the CameraParams detach fix was ever discovered (that came later, for FOV
+-- specifically, in the very same 2026-08-22 pass) -- so it was very likely abandoned for the exact
+-- same root cause the FOV write had, never actually a dead end for TargetArmLength itself. This
+-- session's lbfirstperson work independently re-confirmed detach-then-write reliably holds for
+-- TargetArmLength too (0uu, all the way to first-person) via this exact same
+-- pawn.CameraBoom/pawn.FollowCamera pair. Retrying the original 100uu pullback now that detach
+-- happens BEFORE any arm write (order matters -- the old code wrote the arm's RelativeLocation in
+-- a SEPARATE pcall block that ran before the FOV/detach block).
+local PLACEMENT_CAMERA_PULLBACK_UU = Config.PLACEMENT_CAMERA_PULLBACK_UU or 100.0
 function Spawner.ApplyPlacementCameraOffset()
-    local armOk, armErr = pcall(function()
-        local pc = UEHelpers.GetPlayerController()
-        local pawn = pc and pc:IsValid() and pc.Pawn
-        local arm = pawn and pawn:IsValid() and pawn.CameraBoom
-        if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
-        local rel = arm.RelativeLocation
-        if not rel then error("RelativeLocation read failed") end
-        Spawner._placementCamOrigArmZ = rel.Z
-        arm:K2_SetRelativeLocation({ X = rel.X, Y = rel.Y, Z = rel.Z + PLACEMENT_CAMERA_RAISE_UU }, false, {}, true)
+    local pc, pawn, arm, cam
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+        arm = pawn and pawn:IsValid() and pawn.CameraBoom
+        cam = pawn and pawn:IsValid() and pawn.FollowCamera
     end)
+    -- Detach FIRST, before any arm/camera write -- this is the actual fix (see lbfirstperson's own
+    -- writeup): Windrose's FollowCamera re-asserts values via CameraParams unless detached.
     local fovOk, fovErr = pcall(function()
-        local pc = UEHelpers.GetPlayerController()
-        local pawn = pc and pc:IsValid() and pc.Pawn
-        local cam = pawn and pawn:IsValid() and pawn.FollowCamera
         if not (cam and cam:IsValid()) then error("no pawn.FollowCamera") end
         pcall(function() Spawner._placementCamOrigUseSettingsFov = cam.bUseSettingsFov end)
         pcall(function() Spawner._placementCamOrigParams = cam.CameraParams end)
@@ -15523,9 +15530,24 @@ function Spawner.ApplyPlacementCameraOffset()
         cam.CameraParams = nil
         cam.FieldOfView = curFov + PLACEMENT_CAMERA_FOV_DELTA
     end)
-    print(string.format("[LivingBase] [placecam] apply: arm=%s (%s) fov=%s (%s)\n",
+    local armOk, armErr = pcall(function()
+        if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
+        local rel = arm.RelativeLocation
+        if not rel then error("RelativeLocation read failed") end
+        Spawner._placementCamOrigArmZ = rel.Z
+        arm:K2_SetRelativeLocation({ X = rel.X, Y = rel.Y, Z = rel.Z + PLACEMENT_CAMERA_RAISE_UU }, false, {}, true)
+    end)
+    local pullbackOk, pullbackErr = pcall(function()
+        if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
+        local curLen = arm.TargetArmLength
+        if not curLen then error("TargetArmLength read failed") end
+        Spawner._placementCamOrigArmLength = curLen
+        arm.TargetArmLength = curLen + PLACEMENT_CAMERA_PULLBACK_UU
+    end)
+    print(string.format("[LivingBase] [placecam] apply: fov=%s (%s) arm=%s (%s) pullback=%s (%s)\n",
+        tostring(fovOk), fovOk and "ok" or tostring(fovErr),
         tostring(armOk), armOk and "ok" or tostring(armErr),
-        tostring(fovOk), fovOk and "ok" or tostring(fovErr)))
+        tostring(pullbackOk), pullbackOk and "ok" or tostring(pullbackErr)))
 end
 
 function Spawner.RestorePlacementCameraOffset()
@@ -15541,6 +15563,17 @@ function Spawner.RestorePlacementCameraOffset()
         end)
         if not ok then print("[LivingBase] [placecam] restore: arm restore FAILED (" .. tostring(err) .. ") -- camera may stay raised until next reload.\n") end
         Spawner._placementCamOrigArmZ = nil
+    end
+    if Spawner._placementCamOrigArmLength then
+        local ok, err = pcall(function()
+            local pc = UEHelpers.GetPlayerController()
+            local pawn = pc and pc:IsValid() and pc.Pawn
+            local arm = pawn and pawn:IsValid() and pawn.CameraBoom
+            if not (arm and arm:IsValid()) then error("no pawn.CameraBoom") end
+            arm.TargetArmLength = Spawner._placementCamOrigArmLength
+        end)
+        if not ok then print("[LivingBase] [placecam] restore: pullback restore FAILED (" .. tostring(err) .. ") -- camera may stay pulled back until next reload.\n") end
+        Spawner._placementCamOrigArmLength = nil
     end
     if Spawner._placementCamOrigFov then
         local ok, err = pcall(function()

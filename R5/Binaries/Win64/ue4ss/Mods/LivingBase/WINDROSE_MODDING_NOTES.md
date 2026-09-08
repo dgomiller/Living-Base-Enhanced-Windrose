@@ -33,6 +33,7 @@ Companion to `CLAUDE.md` (which is older and partly stale — trust THIS file wh
   - [3p. A property write can succeed with zero pcall error yet have no lasting (or any) visible effect, if a native settings/params system re-asserts it (2026-08-22)](#3p-a-property-write-can-succeed-with-zero-pcall-error-yet-have-no-lasting-or-any-visible-effect-if-a-native-settingsparams-system-re-asserts-it-2026-08-22)
   - [3q. How UE4SS actually counts arguments for a raw UFunction call with a return value (2026-08-21)](#3q-how-ue4ss-actually-counts-arguments-for-a-raw-ufunction-call-with-a-return-value-2026-08-21)
   - [3r. A generic `ForEachProperty` walk over `FAssetData` is safe for one asset class and a real crash for another (2026-08-31)](#3r-a-generic-foreachproperty-walk-over-fassetdata-is-safe-for-one-asset-class-and-a-real-crash-for-another-2026-08-31)
+  - [3s. Touching a genuinely new property/function shape can crash INSIDE UE4SS.dll itself, not the game -- and a from-scratch minidump parser can prove it without a debugger installed (2026-09-08)](#3s-touching-a-genuinely-new-propertyfunction-shape-can-crash-inside-ue4ssdll-itself-not-the-game----and-a-from-scratch-minidump-parser-can-prove-it-without-a-debugger-installed-2026-09-08)
 - [4. Restore-on-load design (why it looks the way it does)](#4-restore-on-load-design-why-it-looks-the-way-it-does)
 - [5. Peace / faction mechanics](#5-peace-faction-mechanics)
 - [5b. Movement: THIS GAME DOES NOT USE THE UE NAVMESH](#5b-movement-this-game-does-not-use-the-ue-navmesh)
@@ -1370,6 +1371,53 @@ lesson from SS3l still holds for a class's own fixed property list; it does not 
 struct returned from every API," and this is the second confirmed case (after SS10's own
 `AnimNode_*` correction) where a previously-safe recipe needed a real, class-specific carve-out
 rather than being trusted blindly on a new target.
+
+### 3s. Touching a genuinely new property/function shape can crash INSIDE UE4SS.dll itself, not the game -- and a from-scratch minidump parser can prove it without a debugger installed (2026-09-08)
+
+Two new Lua commands built the same session -- one calling a real, existing `UCheatManager`
+UFUNCTION directly (`EnableDebugCamera()`, confirmed via the SDK header dump, no-arg/void, about
+as simple a call shape as this project ever sees), one writing two ordinary `ActorComponent`
+properties (`R5N_DayCycleTimeComponent.WorldDayTime`/`DayCycleSpeedInv`, both plain
+`float`+`BlueprintReadWrite`) -- both **crashed the game natively**, confirmed live. Neither class,
+property, nor function name was stale or wrong (independently re-confirmed against the current
+build's own SDK dump before assuming otherwise, per this file's own "don't guess" discipline).
+
+**No debugger was installed on this machine** (`Windows Kits\10\Debuggers` only has the bare DLLs,
+not `cdb.exe`/WinDbg itself) -- rather than treat the crash dumps as a dead end, wrote a ~80-line
+Python parser directly against the documented Microsoft `MINIDUMP_HEADER`/`MINIDUMP_DIRECTORY`/
+`MINIDUMP_EXCEPTION_STREAM`/`MINIDUMP_MODULE_LIST` binary structures: read the stream directory,
+pull the exception code + faulting address from the Exception stream, then walk the Module List to
+find which loaded module's base/size range contains that address. No symbols needed for this much
+-- just "which module." Result, all 3 crash dumps (two from the property write, one from the
+UFUNCTION call): `EXCEPTION_ACCESS_VIOLATION` (0xC0000005), landing inside **`UE4SS.dll` itself**
+at nearly identical offsets (0x3a9114 for both write-crashes, 0x3a9139 for the call-crash -- 37
+bytes apart, same code region) -- NOT inside `Windrose-Win64-Shipping.exe`.
+
+**This one fact reframes the whole investigation.** A crash landing in the GAME's own exe usually
+means a content/asset-specific problem (a genuinely bad reference, a class that doesn't handle
+some state well). A crash landing in **UE4SS.dll itself** means UE4SS's own generic Lua<->native
+reflection bridge is failing on this specific property/function SHAPE -- something about how it's
+declared (an unusual type, an unusual access/exposure combination, or simply "never resolved by
+this UE4SS build before") trips a bug in the generic marshaling code, independent of whether the
+Lua logic calling it is correct. One real, not-yet-proven lead: the property write's target,
+`CheatWeatherID` (a SEPARATE, untested component from the same session), is declared `int8` and
+only `EditAnywhere` -- NOT `BlueprintReadWrite` -- a genuinely different shape from the
+ordinary-float-BlueprintReadWrite properties this project writes constantly elsewhere without
+incident; it doesn't obviously explain the UFUNCTION-call crash landing at a near-identical offset
+too, so the true common root cause is still open.
+
+**General lesson: when a crash's own dump can be read (even without a real debugger), always check
+which MODULE the fault landed in before theorizing about the Lua-level cause.** A fault inside a
+mod-loading/reflection layer (UE4SS.dll, or a compiled companion mod's own DLL) points at "this
+specific reflection shape isn't safe to touch this way," not at whatever business logic the Lua
+code was trying to express -- a very different, and much narrower, class of problem to isolate.
+**Practical follow-up discipline once a combined command is confirmed to crash**: split it into
+one console command per individual operation and log a "starting attempt" line immediately BEFORE
+each risky call, not just after -- a native access violation leaves ZERO further log output
+(confirmed 3 times this exact session), so the isolated commands' own pre-call log line is the only
+way to know which specific operation was running at the moment of a subsequent crash, and testing
+one operation at a time avoids re-triggering an already-confirmed combined crash while narrowing
+down which piece is actually unsafe.
 
 ---
 

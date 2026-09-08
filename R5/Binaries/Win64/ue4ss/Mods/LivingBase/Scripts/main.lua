@@ -7935,21 +7935,16 @@ else
 end
 
 ------------------------------------------------------------
--- lbfirstperson <on|off> -- (2026-09-08) RedFalcon's real "simulate debug mode" ask: a camera at
--- the player's own eyes, full free mouse-look, not a separately-tracked camera. See
--- Spawner.SetFirstPerson's own comment -- pulls the EXISTING third-person SpringArm's
--- TargetArmLength to 0 rather than spawning anything new, so normal look/movement input keeps
--- working exactly as-is.
---
--- RedFalcon confirmed (2026-09-08): a single write "moves to my head and bounces back" -- the SAME
--- write-reverts pattern already seen elsewhere in this project (CPD colors, WorldDayTime) --
--- something re-asserts TargetArmLength on a tick. Fix: keep REASSERTING it continuously via a
--- recurring ExecuteWithDelay poll loop (short interval, 50ms) while first-person is active, instead
--- of trusting a single write to hold -- Spawner.SetFirstPerson("on") only caches the original arm
--- length on its FIRST call (guarded by a nil check), so repeated calls are safe/idempotent and just
--- keep re-forcing TargetArmLength=0. 'off' stops the loop and restores the cached original once.
+-- lbfirstperson <on|off> -- (2026-09-08, REWRITTEN after a real crash) RedFalcon's real "simulate
+-- debug mode" ask: a camera at the player's own eyes, full free mouse-look, not a separately-
+-- tracked camera. See Spawner.SetFirstPerson's own comment for the full story -- the FIRST version
+-- (a single write, then a 50ms continuous-reassertion poll loop to fight the "bounces back"
+-- symptom) crashed the game (UE4SS.dll internal). REAL FIX, found in RedFalcon's own reference mod
+-- (Other/Camera Toggle System (UE4SS)): detach Windrose's settings-driven camera system first
+-- (cam.bUseSettingsFov=false; cam.CameraParams=nil) BEFORE writing TargetArmLength -- that alone is
+-- what makes the write hold, no continuous reassertion/poll loop needed at all. Back to a single,
+-- direct call.
 ------------------------------------------------------------
-local firstPersonActive = false
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbfirstperson", function(FullCommand, Parameters, Ar)
@@ -7958,34 +7953,15 @@ if RegisterConsoleCommandHandler then
                 print(string.format("[LivingBase] [lbfirstperson] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
                 return true
             end
-            if mode == "on" then
-                firstPersonActive = true
-                local ok, err = pcall(function() Spawner.SetFirstPerson("on") end)
-                if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
-                print("[LivingBase] [lbfirstperson] ON -- continuously reasserting TargetArmLength=0 to fight the revert.\n")
-            else
-                firstPersonActive = false
-                local ok, err = pcall(function() Spawner.SetFirstPerson("off") end)
-                if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
-            end
+            local ok, err = pcall(function() Spawner.SetFirstPerson(mode) end)
+            if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
             return true
         end)
     end)
     log("Console command registered: lbfirstperson <on|off>")
-    registerCmdInfo("lbfirstperson", "lbfirstperson <on|off>", "Pulls the camera to the player's own eyes (TargetArmLength=0, continuously reasserted to fight a confirmed write-revert) for full free mouse-look, simulating debug/free-cam using the existing camera rig. 'off' stops reasserting and restores the original third-person distance.")
+    registerCmdInfo("lbfirstperson", "lbfirstperson <on|off>", "Pulls the camera to the player's own eyes (detaches Windrose's own settings-driven camera system first, then TargetArmLength=0) for full free mouse-look, simulating debug/free-cam using the existing camera rig. 'off' restores the original third-person distance.")
 else
     log("lbfirstperson unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
-if ExecuteWithDelay then
-    local function firstPersonPollLoop()
-        ExecuteWithDelay(50, function()
-            if firstPersonActive then
-                ExecuteInGameThread(function() pcall(function() Spawner.SetFirstPerson("on", function() end) end) end)
-            end
-            firstPersonPollLoop()
-        end)
-    end
-    firstPersonPollLoop()
 end
 
 ------------------------------------------------------------

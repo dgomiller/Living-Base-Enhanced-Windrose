@@ -5611,15 +5611,25 @@ end
 -- pawn and destroys the spawned camera. Only one tripod camera actor is tracked at a time
 -- (Spawner._photoTripodActor) -- calling 'on' again replaces the previous one.
 
--- Spawner.SetFirstPerson(mode, say) -- "lbfirstperson <on|off>" (2026-09-08). RedFalcon's real
--- "simulate debug mode" ask: a camera at the player's own eyes, looking the SAME direction they're
--- facing, with full free mouse-look -- i.e. genuine first-person, not a separately-spawned/tracked
--- camera at all. The existing third-person rig already IS a SpringArmComponent + camera at the end
--- of it, following head rotation every frame by design -- pulling TargetArmLength to (near) 0
--- makes the existing camera sit right at the pivot socket instead of spawning anything new, so
--- normal mouselook/movement keeps working exactly as it already does. Caches the ORIGINAL
--- TargetArmLength (read once, on first 'on' this session) so 'off' can restore the exact prior
--- third-person distance rather than a guessed default.
+-- Spawner.SetFirstPerson(mode, say) -- "lbfirstperson <on|off>" (2026-09-08, REWRITTEN after a
+-- real crash). RedFalcon's real "simulate debug mode" ask: a camera at the player's own eyes,
+-- looking the SAME direction they're facing, with full free mouse-look -- genuine first-person,
+-- not a separately-spawned/tracked camera. FIRST VERSION crashed the game (UE4SS.dll internal,
+-- same family as the original day-cycle/weather/camera crash) after "bouncing back" once and then
+-- being fought with a 50ms continuous-reassertion poll loop -- wrong fix for the wrong diagnosis.
+-- REAL FIX, found by reading RedFalcon's own reference mod (Other/Camera Toggle System (UE4SS)/
+-- Scripts/main.lua, which genuinely ships a working first-person toggle in this exact game): it
+-- calls a "DetachCameraSystem" step -- cam.bUseSettingsFov = false; cam.CameraParams = nil -- on
+-- pawn.FollowCamera BEFORE ever touching pawn.CameraBoom.TargetArmLength. This project's own
+-- earlier FOV work (2026-08-22, see the build-mode camera raise section above) already root-caused
+-- WHY: Windrose's FollowCamera has a settings-driven CameraParams system that keeps re-asserting
+-- values unless explicitly detached first -- exactly the "bounces back" symptom, just never
+-- connected to TargetArmLength specifically until now. Also switched to NAMED properties
+-- (pawn.CameraBoom / pawn.FollowCamera) instead of class-searching, matching both the reference mod
+-- and this project's own already-proven-superior lookup (see the 2026-08-22 comment above). A
+-- SINGLE write after detaching is the whole fix -- explicitly NOT porting the reference mod's
+-- head-bob effect (RedFalcon: "i wouldnt want headbob though") or its smooth Lerp-based transition,
+-- just the core detach+set mechanism.
 function Spawner.SetFirstPerson(mode, say)
     say = say or function(m) print("[LivingBase] [firstperson] " .. tostring(m) .. "\n") end
     local pawn
@@ -5631,34 +5641,29 @@ function Spawner.SetFirstPerson(mode, say)
         say("no pawn possessed.")
         return false
     end
-    local springArmClass
-    pcall(function() springArmClass = StaticFindObject("/Script/Engine.SpringArmComponent") end)
-    if not (springArmClass and springArmClass:IsValid()) then
-        say("SpringArmComponent class not found.")
-        return false
-    end
-    local comps
-    pcall(function() comps = pawn:GetComponentsByClass(springArmClass) end)
-    if not comps then pcall(function() comps = pawn:K2_GetComponentsByClass(springArmClass) end) end
-    local n = 0
-    pcall(function() n = comps and (comps.GetArrayNum and comps:GetArrayNum() or #comps) or 0 end)
-    if n == 0 then
-        say("no SpringArmComponent found on the pawn.")
-        return false
-    end
-    local arm = comps[1]
-    pcall(function() if arm ~= nil and type(arm) == "userdata" and arm.get then arm = arm:get() end end)
+    local arm, cam
+    pcall(function() arm = pawn.CameraBoom end)
+    pcall(function() cam = pawn.FollowCamera end)
     if not (arm and arm:IsValid()) then
-        say("could not resolve the SpringArmComponent instance.")
+        say("no pawn.CameraBoom found.")
         return false
     end
     if mode == "on" then
         if Spawner._firstPersonOriginalArmLength == nil then
             pcall(function() Spawner._firstPersonOriginalArmLength = arm.TargetArmLength end)
         end
+        -- Detach FIRST -- the reference mod's own proven fix for exactly this "reverts/bounces
+        -- back" symptom on Windrose's camera. Only touched once (not restored on 'off'), matching
+        -- the reference mod's own behavior -- it relies on the engine's own respawn/relevel logic
+        -- to naturally re-establish CameraParams, not manual restoration.
+        local okDetach = true
+        if cam and cam:IsValid() then
+            okDetach = pcall(function() cam.bUseSettingsFov = false end)
+            okDetach = pcall(function() cam.CameraParams = nil end) and okDetach
+        end
         local ok = pcall(function() arm.TargetArmLength = 0.0 end)
-        say(string.format("first-person ON (TargetArmLength=0): %s. Original length cached: %s",
-            tostring(ok), tostring(Spawner._firstPersonOriginalArmLength)))
+        say(string.format("first-person ON -- detach camera system: %s, TargetArmLength=0: %s. Original length cached: %s",
+            tostring(okDetach), tostring(ok), tostring(Spawner._firstPersonOriginalArmLength)))
     else
         local restoreTo = Spawner._firstPersonOriginalArmLength or 300.0
         local ok = pcall(function() arm.TargetArmLength = restoreTo end)

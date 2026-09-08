@@ -6067,7 +6067,7 @@ if RegisterConsoleCommandHandler then
             local realHour = tonumber(Parameters and Parameters[1]) or 12.0
             if realHour < 0 then realHour = 0 end
             if realHour > 24 then realHour = 24 end
-            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.025
             local holdSpeedInv = tonumber(Parameters and Parameters[3]) or 1.5
             local switchMargin = tonumber(Parameters and Parameters[4]) or 3.0
             local rawHour = realHourToRawHour(realHour)

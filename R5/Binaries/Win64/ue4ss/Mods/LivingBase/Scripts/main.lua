@@ -5156,14 +5156,14 @@ if ExecuteWithDelay then
                 local hour = pendingDayTime2Hour
                 pendingDayTime2Hour = nil
                 ExecuteInGameThread(function()
-                    print(string.format("[LivingBase] [lbtestdaytime2] starting attempt (from poll loop, not console handler) -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f/DayCycleSpeedInv=0.\n", hour))
+                    print(string.format("[LivingBase] [lbtestdaytime2] starting attempt (from poll loop, not console handler) -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f THEN DayCycleSpeedInv=0 (order swapped from the first test, 2026-09-08: no crash across 5 hours, but the sun visually snapped to noon/zenith regardless of the requested hour every time -- testing whether entering frozen mode has a snap-to-noon side effect that only wins if it's written AFTER WorldDayTime).\n", hour))
                     local count = 0
                     local ok, err = pcall(function()
                         for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
                             local okName, name = pcall(function() return comp:GetFullName() end)
                             if okName and name and not name:find("Default__") then
-                                comp.DayCycleSpeedInv = 0
                                 comp.WorldDayTime = hour
+                                comp.DayCycleSpeedInv = 0
                                 count = count + 1
                             end
                         end

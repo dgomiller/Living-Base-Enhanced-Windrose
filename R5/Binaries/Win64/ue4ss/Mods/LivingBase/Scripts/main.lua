@@ -5591,6 +5591,114 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime8 -- (2026-09-08) DIAGNOSTIC ONLY. lbtestdaytime7's own probe proved something
+-- bigger than a units mismatch: writing WorldDayTime by +1000, then again to a wildly different
+-- solved value, left GetCurrentTimeInHours() almost completely unmoved (0.0002 -> 0.0003 ->
+-- 0.0003) regardless of what was written. That smells exactly like this project's own established
+-- "revert" pattern (see the CPD-color write-doesn't-persist bug, WINDROSE_MODDING_NOTES.md) --
+-- the component likely runs its own private internal clock (seeded once, ticking via
+-- DayCycleSpeedInv) and silently reasserts/ignores the public WorldDayTime property from its own
+-- Tick(), rather than reading external writes back. Two things this dumps, writing only ONCE at
+-- the very start (not repeatedly, so any drift/reversion afterward is the component's own doing,
+-- not new interference from us):
+--   (1) the REAL authored day-length settings, read directly off a separately-found
+--       R5N_DayCycleTimeSettingsComponent instance instead of through the broken
+--       comp.Settings weak-pointer indirection (DayDuration/NightDuration/StartDayTime/
+--       bDynamicDayTime/PartOfDay/PartOfNight) -- ground truth instead of another guess.
+--   (2) a 6-tick trace (~200ms apart, ~1.2s total): write WorldDayTime once to a big probe value,
+--       then just READ raw WorldDayTime + GetCurrentTimeInHours() every tick with NO further
+--       writes, to see whether it sticks, drifts, or snaps back -- and how fast.
+------------------------------------------------------------
+local pendingDayTime8 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime8", function(FullCommand, Parameters, Ar)
+            pendingDayTime8 = { stage = 0 }
+            print("[LivingBase] [lbtestdaytime8] queued -- dumps real Settings fields, then writes WorldDayTime ONCE and traces it (+ the derived hour) across 6 poll ticks with no further writes. Writes only once.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime8")
+    registerCmdInfo("lbtestdaytime8", "lbtestdaytime8", "Diagnostic only -- dumps the REAL DayDuration/NightDuration/StartDayTime/bDynamicDayTime settings (found directly via FindAllOf, bypassing the broken comp.Settings weak pointer), then writes WorldDayTime once and traces raw+hour across 6 poll ticks with no further writes to see whether/how fast it reverts.")
+else
+    log("lbtestdaytime8 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime8PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime8 ~= false then
+                local req = pendingDayTime8
+                if req.stage == 0 then
+                    ExecuteInGameThread(function()
+                        print("[LivingBase] [lbtestdaytime8] ---- Settings dump (found directly, not via comp.Settings) ----\n")
+                        local ok1 = pcall(function()
+                            for _, sc in ipairs(FindAllOf("R5N_DayCycleTimeSettingsComponent") or {}) do
+                                local okName, name = pcall(function() return sc:GetFullName() end)
+                                if okName and name and not name:find("Default__") then
+                                    local dayDur, nightDur, startDayTime, dynamic, partOfDay, partOfNight = nil, nil, nil, nil, nil, nil
+                                    pcall(function() dayDur = sc.DayDuration end)
+                                    pcall(function() nightDur = sc.NightDuration end)
+                                    pcall(function() startDayTime = sc.StartDayTime end)
+                                    pcall(function() dynamic = sc.bDynamicDayTime end)
+                                    pcall(function() partOfDay = sc.PartOfDay end)
+                                    pcall(function() partOfNight = sc.PartOfNight end)
+                                    print(string.format("[LivingBase] [lbtestdaytime8] %s\n    DayDuration=%s  NightDuration=%s  StartDayTime=%s  bDynamicDayTime=%s  PartOfDay=%s  PartOfNight=%s\n",
+                                        name, tostring(dayDur), tostring(nightDur), tostring(startDayTime), tostring(dynamic), tostring(partOfDay), tostring(partOfNight)))
+                                end
+                            end
+                        end)
+                        if not ok1 then
+                            print("[LivingBase] [lbtestdaytime8] Settings dump errored (Lua-level, not a crash).\n")
+                        end
+                        local comp, name = nil, nil
+                        for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, n = pcall(function() return c:GetFullName() end)
+                            if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                        end
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime8] no non-default R5N_DayCycleTimeComponent found -- aborting trace.\n")
+                            pendingDayTime8 = false
+                            return
+                        end
+                        local r0 = nil
+                        pcall(function() r0 = comp.WorldDayTime end)
+                        local probeRaw = (r0 or 0) + 5000.0
+                        comp.WorldDayTime = probeRaw
+                        print(string.format("[LivingBase] [lbtestdaytime8] ---- trace start: r0=%s, wrote WorldDayTime=%.4f ONCE. Reading every ~200ms with NO further writes for 6 ticks. ----\n", tostring(r0), probeRaw))
+                        pendingDayTime8 = { stage = 1 }
+                    end)
+                elseif req.stage >= 1 and req.stage <= 6 then
+                    ExecuteInGameThread(function()
+                        local comp, name = nil, nil
+                        for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, n = pcall(function() return c:GetFullName() end)
+                            if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                        end
+                        if not comp then
+                            print(string.format("[LivingBase] [lbtestdaytime8] trace tick %d/6: component not found.\n", req.stage))
+                        else
+                            local raw, hours, speedInv = nil, nil, nil
+                            pcall(function() raw = comp.WorldDayTime end)
+                            pcall(function() hours = comp:GetCurrentTimeInHours() end)
+                            pcall(function() speedInv = comp.DayCycleSpeedInv end)
+                            print(string.format("[LivingBase] [lbtestdaytime8] trace tick %d/6: raw WorldDayTime=%s  GetCurrentTimeInHours()=%s  DayCycleSpeedInv=%s\n",
+                                req.stage, tostring(raw), tostring(hours), tostring(speedInv)))
+                        end
+                    end)
+                    if req.stage == 6 then
+                        pendingDayTime8 = false
+                    else
+                        pendingDayTime8 = { stage = req.stage + 1 }
+                    end
+                end
+            end
+            dayTime8PollLoop()
+        end)
+    end
+    dayTime8PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

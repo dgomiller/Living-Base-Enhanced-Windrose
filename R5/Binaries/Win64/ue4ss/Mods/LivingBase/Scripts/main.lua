@@ -7471,3 +7471,93 @@ if ExecuteWithDelay then
     end
     enableToggle2PollLoop()
 end
+
+------------------------------------------------------------
+-- lbtestdisablecam5 -- (2026-09-08) lbtestenabletoggle2 confirmed EnableDebugCamera() called
+-- again on the original CheatManager is a no-op (count unchanged) -- meaning its internal guard
+-- still sees DebugCameraControllerRef as valid, so DisableDebugCamera() SHOULD be able to find it
+-- too. The real failure is very likely one step deeper: the engine's own DisableDebugCamera()
+-- needs to resolve the LocalPlayer via originalController.Player, which is nil right now (moved to
+-- the debug-cam controller at enable time) -- so the function probably bails out silently right
+-- there. This RESTORES originalController.Player (read off the live debug-cam controller) FIRST,
+-- THEN calls DisableDebugCamera() through the original CheatManager -- letting the engine's own
+-- (presumably complete and correct) internal logic do the actual destroy + LocalPlayer
+-- forward-pointer sync, rather than replicating it by hand again.
+------------------------------------------------------------
+local pendingDisableCam5 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdisablecam5", function(FullCommand, Parameters, Ar)
+            pendingDisableCam5 = true
+            print("[LivingBase] [lbtestdisablecam5] queued -- restore Player then call the engine's own DisableDebugCamera() on the next poll tick.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdisablecam5")
+    registerCmdInfo("lbtestdisablecam5", "lbtestdisablecam5", "Restores the original controller's Player (read off the live debug-cam controller) BEFORE calling the engine's own DisableDebugCamera() through the original CheatManager -- letting the native logic do the actual restoration instead of manual property surgery.")
+else
+    log("lbtestdisablecam5 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function disableCam5PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDisableCam5 then
+                pendingDisableCam5 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdisablecam5] starting -- finding live debug-cam controller and original CheatManager.\n")
+                    local ok, err = pcall(function()
+                        local dcc, dccName = nil, nil
+                        for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
+                            for _, c in ipairs(FindAllOf(className) or {}) do
+                                local okName, n = pcall(function() return c:GetFullName() end)
+                                if okName and n and not n:find("Default__") then dcc = c; dccName = n; break end
+                            end
+                            if dcc then break end
+                        end
+                        if not dcc then
+                            print("[LivingBase] [lbtestdisablecam5] no live debug camera controller found -- is the free camera actually on?\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbtestdisablecam5] found debug-cam controller: %s\n", dccName))
+                        local dccPlayer = nil
+                        pcall(function() dccPlayer = dcc.Player end)
+                        if not dccPlayer then
+                            print("[LivingBase] [lbtestdisablecam5] debug-cam controller has no Player -- cannot proceed.\n")
+                            return
+                        end
+                        local foundCM, foundPC, foundName = nil, nil, nil
+                        for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+                            local okName, n = pcall(function() return pc:GetFullName() end)
+                            if okName and n and not n:find("Default__") then
+                                local cm = nil
+                                pcall(function() cm = pc.CheatManager end)
+                                if cm and cm:IsValid() then
+                                    foundCM = cm; foundPC = pc; foundName = n
+                                    break
+                                end
+                            end
+                        end
+                        if not foundCM then
+                            print("[LivingBase] [lbtestdisablecam5] no PlayerController with a valid CheatManager found -- cannot proceed.\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbtestdisablecam5] found original controller: %s -- restoring its Player BEFORE calling DisableDebugCamera().\n", foundName))
+                        local okSetPlayer, errSetPlayer = pcall(function() foundPC.Player = dccPlayer end)
+                        print(string.format("[LivingBase] [lbtestdisablecam5] restore originalController.Player: %s%s\n", tostring(okSetPlayer), okSetPlayer and "" or (" (" .. tostring(errSetPlayer) .. ")")))
+                        local before = countLiveDebugCams()
+                        local okDisable, errDisable = pcall(function() foundCM:DisableDebugCamera() end)
+                        local after = countLiveDebugCams()
+                        print(string.format("[LivingBase] [lbtestdisablecam5] DisableDebugCamera(): %s%s -- live debug-cam count before=%d after=%d (%s)\n",
+                            tostring(okDisable), okDisable and "" or (" (" .. tostring(errDisable) .. ")"), before, after,
+                            after < before and "DROPPED -- destroyed! check if control is restored now." or "unchanged -- still didn't destroy it."))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestdisablecam5] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            disableCam5PollLoop()
+        end)
+    end
+    disableCam5PollLoop()
+end

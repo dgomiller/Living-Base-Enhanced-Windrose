@@ -5113,6 +5113,74 @@ else
     log("lbtestdaytime unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+------------------------------------------------------------
+-- lbtestdaytime2 [hour] -- (2026-09-08) SAME operation as lbtestdaytime above, CONFIRMED CRASH-
+-- FREE via a real, independent, side-by-side test: RedFalcon installed the two ORIGINAL reference
+-- mods directly (WeatherControl Mod v2 / Windrose Eternal Day, bypassing Vortex, plain UE4SS
+-- mods) and BOTH worked correctly via their own native keybinds (EternalDay's F1, WeatherControl's
+-- Shift+F1) -- same FindAllOf("R5N_DayCycleTimeComponent") + WorldDayTime/DayCycleSpeedInv write,
+-- same underlying operation lbtestdaytime crashed on 100% of the time. The one real difference:
+-- both reference mods trigger via RegisterKeyBind; lbtestdaytime triggers via
+-- RegisterConsoleCommandHandler (even with ExecuteInGameThread wrapping, which WeatherControl's
+-- own keybind ALSO uses -- so ExecuteInGameThread itself isn't the differentiator either).
+--
+-- This version tests whether the SAME "console handler just queues, a separate recurring poll
+-- loop does the actual work" pattern already proven safe elsewhere in this exact file (the
+-- spawn-menu bridge, hover highlight, the Custom-tab color bridge) ALSO sidesteps this specific
+-- crash -- i.e. whether it's really "console-handler's own synchronous execution context is
+-- unsafe for this operation" rather than "this operation is unsafe, full stop." Deliberately kept
+-- SEPARATE from the original lbtestdaytime (left disabled-in-spirit, not deleted, as the confirmed-
+-- crash baseline) rather than editing it in place.
+------------------------------------------------------------
+local pendingDayTime2Hour = nil -- nil = nothing queued
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime2", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            pendingDayTime2Hour = hour
+            print(string.format("[LivingBase] [lbtestdaytime2] queued hour=%.2f -- will apply on the next poll tick (~200ms).\n", hour))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime2 [hour]")
+    registerCmdInfo("lbtestdaytime2", "lbtestdaytime2 [hour]", "Same operation as lbtestdaytime, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way the original reference mods' RegisterKeyBind trigger does.")
+else
+    log("lbtestdaytime2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime2Hour ~= nil then
+                local hour = pendingDayTime2Hour
+                pendingDayTime2Hour = nil
+                ExecuteInGameThread(function()
+                    print(string.format("[LivingBase] [lbtestdaytime2] starting attempt (from poll loop, not console handler) -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f/DayCycleSpeedInv=0.\n", hour))
+                    local count = 0
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, name = pcall(function() return comp:GetFullName() end)
+                            if okName and name and not name:find("Default__") then
+                                comp.DayCycleSpeedInv = 0
+                                comp.WorldDayTime = hour
+                                count = count + 1
+                            end
+                        end
+                    end)
+                    if ok then
+                        print(string.format("[LivingBase] [lbtestdaytime2] done, no crash -- %d component(s) written.\n", count))
+                    else
+                        print("[LivingBase] [lbtestdaytime2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            dayTime2PollLoop()
+        end)
+    end
+    dayTime2PollLoop()
+end
+
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestweather", function(FullCommand, Parameters, Ar)

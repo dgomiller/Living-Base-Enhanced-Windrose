@@ -6437,7 +6437,7 @@ if RegisterConsoleCommandHandler then
             local realHour = tonumber(Parameters and Parameters[1]) or 12.0
             if realHour < 0 then realHour = 0 end
             if realHour > 24 then realHour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.025
             local rawHour = realHourToRawHour(realHour)
             pendingDayTime17 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
             print(string.format("[LivingBase] [lbtestdaytime17] queued realHour=%.2f -> rawHour=%.4f speedInv=%.4f -- converges normally, then calls comp:SetComponentTickEnabled(false) (engine-level Tick disable) to try a TRUE freeze.\n", realHour, rawHour, speedInv))

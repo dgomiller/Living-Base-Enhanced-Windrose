@@ -6420,6 +6420,98 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime17 [realHour] [speedInv] -- (2026-09-08) TRUE FREEZE, ATTEMPT 2. bDynamicDayTime=
+-- false (lbtestdaytime15) had ZERO effect -- hour kept drifting at the exact same rate, meaning
+-- that flag isn't consulted at runtime (same "write doesn't take effect after BeginPlay" pattern
+-- already seen with WorldDayTime itself). Trying a lower-level, ENGINE-standard mechanism instead:
+-- every UActorComponent (which UR5N_DayCycleTimeComponent is) has a built-in
+-- SetComponentTickEnabled(bool) UFUNCTION -- this disables the component's Tick() at the engine
+-- level, independent of any of its own custom flags/logic. Converges normally (single fixed
+-- speedInv, no switching), then calls comp:SetComponentTickEnabled(false) instead of touching any
+-- property, and verifies across 5 ticks whether the hour genuinely stops advancing this time.
+------------------------------------------------------------
+local pendingDayTime17 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime17", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local rawHour = realHourToRawHour(realHour)
+            pendingDayTime17 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime17] queued realHour=%.2f -> rawHour=%.4f speedInv=%.4f -- converges normally, then calls comp:SetComponentTickEnabled(false) (engine-level Tick disable) to try a TRUE freeze.\n", realHour, rawHour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime17 [realHour] [speedInv]")
+    registerCmdInfo("lbtestdaytime17", "lbtestdaytime17 [realHour] [speedInv]", "Same safe single-speed convergence as lbtestdaytime12/15, but once arrived, calls comp:SetComponentTickEnabled(false) -- the engine's own built-in Tick disable for any UActorComponent -- instead of a custom property flag, to try for a TRUE exact freeze for repeatable photo lighting.")
+else
+    log("lbtestdaytime17 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime17PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime17 ~= false then
+                local req = pendingDayTime17
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime17] component not found -- aborting.\n")
+                    pendingDayTime17 = false
+                elseif req.stage == "start" then
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbtestdaytime17] could not read current hour -- aborting.\n")
+                        pendingDayTime17 = false
+                    else
+                        local distance = (req.rawHour - h0) % 24
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbtestdaytime17] current raw hour=%.4f, target raw=%.4f (real %.2f), distance=%.4f -- set DayCycleSpeedInv=%.4f ONCE and converging...\n", h0, req.rawHour, req.realHour, distance, req.speedInv))
+                        pendingDayTime17 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
+                    end
+                elseif req.stage == "waiting" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        local ok, err = pcall(function() comp:SetComponentTickEnabled(false) end)
+                        print(string.format("[LivingBase] [lbtestdaytime17] ARRIVED -- hour=%.4f (target raw %.4f, real %.2f) after %d ticks. SetComponentTickEnabled(false) call %s%s. Verifying it holds across the next few ticks...\n",
+                            h, req.rawHour, req.realHour, req.ticks, ok and "succeeded" or "FAILED", ok and "" or (": " .. tostring(err))))
+                        pendingDayTime17 = { stage = "verify", rawHour = req.rawHour, realHour = req.realHour, verifyTicks = 0, hAtFreeze = h }
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime17] safety cutoff (1100 ticks) -- last hour=%s, target=%.4f.\n", tostring(h), req.rawHour))
+                        pendingDayTime17 = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime17] ...still en route: hour=%s, target raw=%.4f (real %.2f), remaining=%s (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.rawHour, req.realHour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
+                        pendingDayTime17 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = req.ticks + 1 }
+                    end
+                elseif req.stage == "verify" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    print(string.format("[LivingBase] [lbtestdaytime17] verify tick %d/5: hour=%s (was %.4f at freeze moment)\n", req.verifyTicks + 1, tostring(h), req.hAtFreeze))
+                    if req.verifyTicks >= 4 then
+                        print("[LivingBase] [lbtestdaytime17] verify complete -- if the hour above stayed the same across all 5 ticks, SetComponentTickEnabled(false) is a genuine, exact freeze.\n")
+                        pendingDayTime17 = false
+                    else
+                        pendingDayTime17 = { stage = "verify", rawHour = req.rawHour, realHour = req.realHour, verifyTicks = req.verifyTicks + 1, hAtFreeze = req.hAtFreeze }
+                    end
+                end
+            end
+            dayTime17PollLoop()
+        end)
+    end
+    dayTime17PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

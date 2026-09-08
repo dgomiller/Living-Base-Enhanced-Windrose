@@ -902,8 +902,17 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     local fp = nil
     if makeFriendly then fp = Spawner.GetFriendlyFactionParams() end
     local effPreFinish = preFinish
+    -- "sex" added to this check (2026-09-08, RedFalcon: "the genderswaping isnt working") -- a
+    -- sex-ONLY override (no bodyTypes/params/etc, e.g. lbtestbodyswap's baseline Barbie donors --
+    -- Gatherer/Herbalist/JasperCrowe are already native Adventurer, so bodyTypes is deliberately
+    -- nil and sex is the ONLY field set) was silently dropped: hasLook never became true, so
+    -- Spawner.SetCompositeParams (which is what actually applies compositeLook.sex) never even got
+    -- called. This is a real, independent bug from the separate "-.-" path bug found the same
+    -- session (lbtestbodyswap's "-" skip sentinel needing an lbreload to take effect) -- both had to
+    -- be fixed for the sex-swap to work on the baseline donors specifically.
     local hasLook = compositeLook and (compositeLook.params or compositeLook.archetype
-        or compositeLook.bodyTypes or compositeLook.colorParams or compositeLook.morphParams)
+        or compositeLook.bodyTypes or compositeLook.colorParams or compositeLook.morphParams
+        or compositeLook.sex)
     if fp or hasLook then
         local base = preFinish
         effPreFinish = function(a)

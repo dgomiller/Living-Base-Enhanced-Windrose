@@ -7575,3 +7575,75 @@ if ExecuteWithDelay then
     end
     disableCam5PollLoop()
 end
+
+------------------------------------------------------------
+-- lbnoclip <on|off> -- (2026-09-08) RedFalcon's alternative to the broken lbfreecam: instead of
+-- the engine's ADebugCameraController system (confirmed one-way broken in this build across 5
+-- separate live attempts), use the stock UCheatManager Ghost()/Walk() Exec functions -- the same
+-- BlueprintCallable/Exec access pattern as everything else already proven safe to call from this
+-- mod's poll-loop pattern, but operating ENTIRELY on the EXISTING player controller/pawn -- no
+-- second controller ever gets spawned, no Player/PlayerController pointer surgery, nothing to
+-- desync. Ghost() is true no-clip (flying + no collision, passes through walls/floor -- "disable
+-- physics pulling them to the ground" and lets the camera get anywhere, e.g. right in front of the
+-- character's face). Walk() cleanly reverts either Ghost() or Fly() back to normal. Always looks up
+-- the CheatManager FRESH (no caching needed) since the controller never changes.
+------------------------------------------------------------
+local pendingNoClip = nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbnoclip", function(FullCommand, Parameters, Ar)
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
+            if mode ~= "on" and mode ~= "off" then
+                print(string.format("[LivingBase] [lbnoclip] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
+                return true
+            end
+            pendingNoClip = mode
+            print(string.format("[LivingBase] [lbnoclip] turning %s...\n", mode))
+            return true
+        end)
+    end)
+    log("Console command registered: lbnoclip <on|off>")
+    registerCmdInfo("lbnoclip", "lbnoclip <on|off>", "True no-clip (Ghost(): flying + no collision, passes through walls/floor) or back to normal (Walk()). Uses the stock UCheatManager cheats -- operates entirely on the existing player controller/pawn, no second controller spawned, fully reversible unlike lbfreecam's broken off-path.")
+else
+    log("lbnoclip unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function noClipPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingNoClip ~= nil then
+                local mode = pendingNoClip
+                pendingNoClip = nil
+                ExecuteInGameThread(function()
+                    local pc = UEHelpers.GetPlayerController()
+                    if not (pc and pc:IsValid()) then
+                        print("[LivingBase] [lbnoclip] no player controller -- nothing attempted.\n")
+                        return
+                    end
+                    local cheatManager = nil
+                    pcall(function() cheatManager = pc.CheatManager end)
+                    if not (cheatManager and cheatManager:IsValid()) then
+                        print("[LivingBase] [lbnoclip] no CheatManager on player controller -- nothing attempted.\n")
+                        return
+                    end
+                    if mode == "on" then
+                        local ok, err = pcall(function() cheatManager:Ghost() end)
+                        if ok then
+                            print("[LivingBase] [lbnoclip] Ghost() -- no-clip ON (flying, no collision).\n")
+                        else
+                            print("[LivingBase] [lbnoclip] error calling Ghost(): " .. tostring(err) .. "\n")
+                        end
+                    else
+                        local ok, err = pcall(function() cheatManager:Walk() end)
+                        if ok then
+                            print("[LivingBase] [lbnoclip] Walk() -- no-clip OFF (normal movement restored).\n")
+                        else
+                            print("[LivingBase] [lbnoclip] error calling Walk(): " .. tostring(err) .. "\n")
+                        end
+                    end
+                end)
+            end
+            noClipPollLoop()
+        end)
+    end
+    noClipPollLoop()
+end

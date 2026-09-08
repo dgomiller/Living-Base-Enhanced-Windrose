@@ -7750,6 +7750,17 @@ end
 -- standard UE enum value, confirmed via lbtestnoclipcheck's own readback that 1 = Walking matches
 -- the standard numbering) -- restoring both to normal (GravityScale=1, MovementMode=1/Walking) for
 -- 'off'.
+--
+-- RedFalcon confirmed (2026-09-08): gravity IS off (character floats/doesn't fall), but no
+-- vertical control (can't ascend/descend) and "friction is very low" (slides around). The
+-- friction issue is BrakingDecelerationFlying -- this project's own CharacterMovement almost
+-- certainly never tuned this value (players never fly in normal play), leaving it at the ENGINE'S
+-- OWN default of 0.0, meaning nothing decelerates the character once moving -- now set to 2048 (a
+-- standard UE flying-template value) alongside the existing writes. Vertical control has no
+-- solution here yet -- there's no input action bound to "ascend/descend" in this game's own
+-- control scheme, and this codebase has no reliable continuous-key-hold polling (only discrete
+-- keybinds registered once at mod load, with known reliability issues -- see CLAUDE.md's own
+-- "Known limitations"). See lbnudge below for a command-based (not held-key) alternative.
 ------------------------------------------------------------
 local pendingNoClip2 = nil
 if RegisterConsoleCommandHandler then
@@ -7798,6 +7809,7 @@ if ExecuteWithDelay then
                         if mode == "on" then
                             moveComp.GravityScale = 0
                             moveComp.MovementMode = 5 -- MOVE_Flying
+                            pcall(function() moveComp.BrakingDecelerationFlying = 2048 end)
                         else
                             moveComp.GravityScale = 1
                             moveComp.MovementMode = 1 -- MOVE_Walking
@@ -7816,4 +7828,70 @@ if ExecuteWithDelay then
         end)
     end
     noClip2PollLoop()
+end
+
+------------------------------------------------------------
+-- lbnudge <up|down> [amount] -- (2026-09-08) command-based vertical movement, since there's no
+-- input action bound to ascend/descend in this game's own control scheme and no reliable way in
+-- this codebase to poll a continuously-held key. Directly writes the pawn's world Z location by
+-- +/- amount (default 100 units) via AddActorWorldOffset -- meant to pair with lbnoclip2 on (no
+-- gravity/collision-through-flying) for repositioning during a photo session: nudge up/down by
+-- typing the command repeatedly rather than holding a key.
+------------------------------------------------------------
+local pendingNudge = nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbnudge", function(FullCommand, Parameters, Ar)
+            local dir = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "up"
+            if dir ~= "up" and dir ~= "down" then
+                print(string.format("[LivingBase] [lbnudge] unknown direction '%s' -- use 'up' or 'down'.\n", dir))
+                return true
+            end
+            local amount = tonumber(Parameters and Parameters[2]) or 100.0
+            pendingNudge = { dir = dir, amount = amount }
+            print(string.format("[LivingBase] [lbnudge] nudging %s by %.1f...\n", dir, amount))
+            return true
+        end)
+    end)
+    log("Console command registered: lbnudge <up|down> [amount]")
+    registerCmdInfo("lbnudge", "lbnudge <up|down> [amount]", "Moves the player pawn up or down by [amount] units (default 100) via a direct world-offset write -- for vertical positioning while flying (lbnoclip2 on), since there's no held-key ascend/descend control available. Repeat the command to keep climbing/descending.")
+else
+    log("lbnudge unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function nudgePollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingNudge ~= nil then
+                local req = pendingNudge
+                pendingNudge = nil
+                ExecuteInGameThread(function()
+                    local ok, err = pcall(function()
+                        local pc = UEHelpers.GetPlayerController()
+                        if not (pc and pc:IsValid()) then
+                            print("[LivingBase] [lbnudge] no player controller.\n")
+                            return
+                        end
+                        local pawn = nil
+                        pcall(function() pawn = pc.Pawn end)
+                        if not (pawn and pawn:IsValid()) then
+                            print("[LivingBase] [lbnudge] no pawn possessed.\n")
+                            return
+                        end
+                        local delta = (req.dir == "up") and req.amount or -req.amount
+                        -- K2_GetActorLocation/K2_SetActorLocation is the pattern already proven
+                        -- reliable in this codebase (spawner.lua's Spawner.WarpNear) -- not
+                        -- AddActorWorldOffset, which is unverified here.
+                        local loc = pawn:K2_GetActorLocation()
+                        pawn:K2_SetActorLocation({ X = loc.X, Y = loc.Y, Z = loc.Z + delta }, false, {}, false)
+                        print(string.format("[LivingBase] [lbnudge] moved %s by %.1f.\n", req.dir, req.amount))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbnudge] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            nudgePollLoop()
+        end)
+    end
+    nudgePollLoop()
 end

@@ -5023,3 +5023,89 @@ if ExecuteWithDelay then
 else
     log("Leash unavailable — ExecuteWithDelay missing; wanderers roam free.")
 end
+
+------------------------------------------------------------
+-- lbphotoscene [hour] -- (2026-09-08, RedFalcon: "pause the day, set it to a specific time and
+-- ensure the weather is clear so i can do consistent pictures" -- for the Barbie body-type/origin
+-- thumbnail captures, but generally useful any time a consistent, reproducible lighting/weather
+-- reference shot is needed). Combines the exact mechanisms of two standalone reference mods found
+-- in Other/ (both plain UE4SS Lua, read directly rather than guessed):
+--   "WeatherControl Mod v2" -- finds the live (non-CDO) R5N_WeatherComponent and sets its
+--   CheatWeatherID (0 = Sunny, per that mod's own WEATHERS table).
+--   "Windrose Eternal Day" -- finds the live (non-CDO) R5N_DayCycleTimeComponent and sets
+--   DayCycleSpeedInv = 0 (freezes the cycle -- 0 means "advance at 1/0 speed", i.e. never) plus
+--   WorldDayTime (a 0-24 float hour-of-day).
+-- This folds both into ONE call: freeze time at a CHOSEN hour (not just that mod's own fixed
+-- noon) AND force clear weather, so a whole capture session (many spawns, many shots) never needs
+-- separate weather/time upkeep once run. Pure world-singleton-component writes, no actor
+-- targeting involved at all -- unlike almost everything else in this file -- so there's no
+-- target-lock/restore-lock gating to worry about either.
+------------------------------------------------------------
+local function applyPhotoScene(hour)
+    hour = tonumber(hour)
+    if hour == nil then hour = 12.0 end
+    -- Clamp into the sane 0-24 range rather than handing the day-cycle component a value it was
+    -- never designed for (negative, or past 24) -- neither reference mod bothered clamping since
+    -- both only ever wrote their own single hardcoded value.
+    if hour < 0 then hour = 0 end
+    if hour > 24 then hour = 24 end
+
+    local dayCount = 0
+    for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+        local ok, name = pcall(function() return comp:GetFullName() end)
+        if ok and name and not name:find("Default__") then
+            local setOk = pcall(function()
+                comp.DayCycleSpeedInv = 0
+                comp.WorldDayTime = hour
+            end)
+            if setOk then dayCount = dayCount + 1 end
+        end
+    end
+
+    local weatherCount = 0
+    for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
+        local ok, name = pcall(function() return comp:GetFullName() end)
+        if ok and name and not name:find("Default__") then
+            local setOk = pcall(function() comp.CheatWeatherID = 0 end) -- 0 = Sunny
+            if setOk then weatherCount = weatherCount + 1 end
+        end
+    end
+
+    return hour, dayCount, weatherCount
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbphotoscene", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbphotoscene] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local hourArg = Parameters and Parameters[1]
+            ExecuteInGameThread(function()
+                local ok, hour, dayCount, weatherCount = pcall(applyPhotoScene, hourArg)
+                if not ok then
+                    say("FAILED: " .. tostring(hour))
+                    return
+                end
+                if dayCount == 0 then
+                    say("WARNING: no live R5N_DayCycleTimeComponent found -- time not frozen/set.")
+                end
+                if weatherCount == 0 then
+                    say("WARNING: no live R5N_WeatherComponent found -- weather not forced clear.")
+                end
+                say(string.format("day frozen at %.2f (%d component(s)), weather forced Sunny (%d component(s)).",
+                    hour, dayCount, weatherCount))
+            end)
+            return true
+        end)
+    end)
+    log("Console command registered: lbphotoscene [hour]")
+    registerCmdInfo("lbphotoscene", "lbphotoscene [hour]", "Freezes the day/night cycle at the given hour (0-24, default 12=noon) and forces clear/Sunny weather -- for consistent reference/thumbnail screenshots. No target needed, affects the whole world. One-shot; run again with a different hour to change it, there's no separate 'undo'.")
+else
+    log("lbphotoscene unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end

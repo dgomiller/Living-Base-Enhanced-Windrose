@@ -6048,6 +6048,107 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime13 [realHour] [fastSpeedInv=0.05] [holdSpeedInv=1.5] [switchMargin=3.0] --
+-- (2026-09-08) TWO-PHASE version: RedFalcon noticed lbtestdaytime11/12 never actually slow down
+-- after arriving -- by design, since a SECOND DayCycleSpeedInv change at that point would trigger
+-- the same unpredictable jump lbtestdaytime10 already proved happens on any switch. Instead of
+-- switching speed AT/AFTER arrival, this switches ONCE, EARLY -- while still switchMargin raw-hours
+-- away from the target -- from fastSpeedInv (quick approach) to holdSpeedInv (slow enough to look
+-- genuinely still for a photo). The jump the switch itself causes is unknown in exact size (only
+-- one data point exists, an extreme 2000x ratio switch that moved ~9 raw hours) -- this leaves a
+-- generous 3-hour margin and re-polls normally afterward (no further switches) to absorb whatever
+-- the jump turns out to be. If the jump overshoots badly, the safety cutoff will say so rather than
+-- hanging forever.
+------------------------------------------------------------
+local pendingDayTime13 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime13", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local holdSpeedInv = tonumber(Parameters and Parameters[3]) or 1.5
+            local switchMargin = tonumber(Parameters and Parameters[4]) or 3.0
+            local rawHour = realHourToRawHour(realHour)
+            pendingDayTime13 = { stage = "fast", realHour = realHour, rawHour = rawHour, fastSpeedInv = fastSpeedInv, holdSpeedInv = holdSpeedInv, switchMargin = switchMargin, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime13] queued realHour=%.2f -> rawHour=%.4f. Phase 1: fastSpeedInv=%.4f until within %.2f raw-hours of target, then ONE switch to holdSpeedInv=%.4f (never switched again).\n", realHour, rawHour, fastSpeedInv, switchMargin, holdSpeedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime13 [realHour] [fastSpeedInv] [holdSpeedInv] [switchMargin]")
+    registerCmdInfo("lbtestdaytime13", "lbtestdaytime13 [realHour] [fastSpeedInv] [holdSpeedInv] [switchMargin]", "Two-phase version of lbtestdaytime12: fast-forwards at fastSpeedInv until within switchMargin raw-hours of the target, switches ONCE to a slower holdSpeedInv (so the final approach -- and the post-arrival hold -- both happen at the slow, photo-stable rate), then never touches DayCycleSpeedInv again.")
+else
+    log("lbtestdaytime13 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime13PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime13 ~= false then
+                local req = pendingDayTime13
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime13] component not found -- aborting.\n")
+                    pendingDayTime13 = false
+                elseif req.stage == "fast" then
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbtestdaytime13] could not read current hour -- aborting.\n")
+                        pendingDayTime13 = false
+                    else
+                        comp.DayCycleSpeedInv = req.fastSpeedInv
+                        print(string.format("[LivingBase] [lbtestdaytime13] phase 1 (fast): current raw hour=%.4f, target raw=%.4f -- set DayCycleSpeedInv=%.4f.\n", h0, req.rawHour, req.fastSpeedInv))
+                        pendingDayTime13 = { stage = "approaching", realHour = req.realHour, rawHour = req.rawHour, fastSpeedInv = req.fastSpeedInv, holdSpeedInv = req.holdSpeedInv, switchMargin = req.switchMargin, ticks = 0 }
+                    end
+                elseif req.stage == "approaching" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and remaining <= req.switchMargin then
+                        comp.DayCycleSpeedInv = req.holdSpeedInv
+                        print(string.format("[LivingBase] [lbtestdaytime13] within margin (raw hour=%.4f, remaining=%.4f) -- SWITCHING ONCE to holdSpeedInv=%.4f now. Will not switch again.\n", h, remaining, req.holdSpeedInv))
+                        pendingDayTime13 = { stage = "holding", realHour = req.realHour, rawHour = req.rawHour, holdSpeedInv = req.holdSpeedInv, ticks = 0 }
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime13] safety cutoff during phase 1 approach (1100 ticks) -- last raw hour=%s, target=%.4f. Aborting.\n", tostring(h), req.rawHour))
+                        pendingDayTime13 = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime13] ...approaching: raw hour=%s, target raw=%.4f, remaining=%s (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.rawHour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
+                        pendingDayTime13 = { stage = "approaching", realHour = req.realHour, rawHour = req.rawHour, fastSpeedInv = req.fastSpeedInv, holdSpeedInv = req.holdSpeedInv, switchMargin = req.switchMargin, ticks = req.ticks + 1 }
+                    end
+                elseif req.stage == "holding" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        print(string.format("[LivingBase] [lbtestdaytime13] ARRIVED -- raw hour=%.4f (target raw %.4f, real %.2f) after the switch, %d holding-phase ticks. DayCycleSpeedInv stays at %.4f -- take your screenshot.\n", h, req.rawHour, req.realHour, req.ticks, req.holdSpeedInv))
+                        pendingDayTime13 = false
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime13] safety cutoff during holding phase (1100 ticks) -- the switch may have jumped further than expected. Last raw hour=%s, target=%.4f. DayCycleSpeedInv left at %.4f (still converging on its own).\n", tostring(h), req.rawHour, req.holdSpeedInv))
+                        pendingDayTime13 = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime13] ...holding-phase converging: raw hour=%s, target raw=%.4f, remaining=%s (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.rawHour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
+                        pendingDayTime13 = { stage = "holding", realHour = req.realHour, rawHour = req.rawHour, holdSpeedInv = req.holdSpeedInv, ticks = req.ticks + 1 }
+                    end
+                end
+            end
+            dayTime13PollLoop()
+        end)
+    end
+    dayTime13PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

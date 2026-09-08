@@ -5589,6 +5589,105 @@ function Spawner.ProbeCameraRig(say)
     end
 end
 
+-- Spawner.SetFaceCam(mode, distance, heightOffset, say) -- "lbfacecam <on|off> [distance]
+-- [heightOffset]" (2026-09-08). RedFalcon's follow-up to the noclip/nudge photo-composition tools:
+-- move the CAMERA in close to the character's face, independent of lbnoclip2/lbnudge. Deliberately
+-- does NOT touch Windrose's own SpringArmComponent (ProbeCameraRig's own finding above already
+-- shows that arm's config doesn't even move for the game's OWN native camera-raise -- something
+-- downstream reasserts/ignores direct SpringArm config in this project, matching the broader
+-- write-reverts pattern seen elsewhere this session with CPD colors/WorldDayTime) and does NOT go
+-- anywhere near the confirmed-broken ADebugCameraController/CheatManager system (see
+-- [[feedback_windrose_cheatmanager_neutered]]) -- instead spawns a plain, fully independent
+-- CameraActor via the SAME GameplayStatics deferred-spawn pattern already proven for
+-- TestNiagaraActor/HoverEffect, positions it via K2_SetActorLocation/K2_SetActorRotation (the
+-- proven-reliable property-write pattern from Spawner.WarpNear), and redirects rendering to it
+-- with SetViewTargetWithBlend -- a core, non-cheat AController function, not a UCheatManager one,
+-- so not expected to share that system's neutering. 'off' blends the view back to the player's own
+-- pawn and destroys the spawned camera. Only one face-cam actor is tracked at a time
+-- (Spawner._faceCamActor) -- calling 'on' again replaces the previous one.
+function Spawner.SetFaceCam(mode, distance, heightOffset, say)
+    say = say or function(m) print("[LivingBase] [facecam] " .. tostring(m) .. "\n") end
+    local pc, pawn
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if not (pc and pc:IsValid()) then
+        say("no player controller.")
+        return false
+    end
+    if mode == "off" then
+        local ok = pcall(function() pc:SetViewTargetWithBlend(pawn, 0.0, 0, 0.0, false) end)
+        say("view target restored to player pawn: " .. tostring(ok))
+        if Spawner._faceCamActor and Spawner._faceCamActor:IsValid() then
+            pcall(function() Spawner._faceCamActor:K2_DestroyActor() end)
+        end
+        Spawner._faceCamActor = nil
+        return true
+    end
+    if not (pawn and pawn:IsValid()) then
+        say("no pawn possessed -- cannot position face cam.")
+        return false
+    end
+    distance = distance or 150.0
+    heightOffset = heightOffset or 160.0
+    local pawnLoc, pawnRot
+    pcall(function() pawnLoc = pawn:K2_GetActorLocation() end)
+    pcall(function() pawnRot = pawn:K2_GetActorRotation() end)
+    if not (pawnLoc and pawnRot) then
+        say("could not read pawn location/rotation.")
+        return false
+    end
+    -- UE convention: Yaw=0 points along +X. Forward vector from Yaw alone (Pitch/Roll ignored --
+    -- we want a level shot, not tilted with however the player happens to be looking).
+    local yawRad = math.rad(pawnRot.Yaw)
+    local fwdX, fwdY = math.cos(yawRad), math.sin(yawRad)
+    local headPoint = { X = pawnLoc.X, Y = pawnLoc.Y, Z = pawnLoc.Z + heightOffset }
+    local camPos = { X = headPoint.X + fwdX * distance, Y = headPoint.Y + fwdY * distance, Z = headPoint.Z }
+    -- Camera looks back the way it came (toward the face) -- reverse of the pawn's own facing.
+    local camYaw = pawnRot.Yaw + 180.0
+
+    -- Clear any previous face-cam actor before spawning a new one.
+    if Spawner._faceCamActor and Spawner._faceCamActor:IsValid() then
+        pcall(function() Spawner._faceCamActor:K2_DestroyActor() end)
+        Spawner._faceCamActor = nil
+    end
+
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Engine.CameraActor") end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve CameraActor class.")
+        return false
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return false
+    end
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = camPos.X, Y = camPos.Y, Z = camPos.Z },
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+    local camActor = Spawner._DoEngineSpawn(gs, world, cls, transform, "FaceCam", nil, nil)
+    if not (camActor and camActor:IsValid()) then
+        say("camera actor spawn failed.")
+        return false
+    end
+    pcall(function() camActor:K2_SetActorRotation({ Pitch = 0.0, Yaw = camYaw, Roll = 0.0 }, false) end)
+    local okView = pcall(function() pc:SetViewTargetWithBlend(camActor, 0.0, 0, 0.0, false) end)
+    if not okView then
+        say("SetViewTargetWithBlend failed -- destroying the spawned camera.")
+        pcall(function() camActor:K2_DestroyActor() end)
+        return false
+    end
+    Spawner._faceCamActor = camActor
+    say(string.format("face cam ON -- positioned at (%.1f, %.1f, %.1f), yaw=%.1f, distance=%.1f, heightOffset=%.1f.",
+        camPos.X, camPos.Y, camPos.Z, camYaw, distance, heightOffset))
+    return true
+end
+
 -- Spawner.ProbeBuildAbility() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview feasibility spike):
 -- lbprobe/lbprobedump aim via the camera+cone sweep over FindAllOf("Actor"), which -- CONFIRMED
 -- LIVE -- lands on GCA_BuildingCreate_C (a GameplayCueNotify_Actor, the one-shot "place" VFX/SFX

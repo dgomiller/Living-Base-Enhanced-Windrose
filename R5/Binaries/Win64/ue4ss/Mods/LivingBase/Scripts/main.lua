@@ -7895,3 +7895,37 @@ if ExecuteWithDelay then
     end
     nudgePollLoop()
 end
+
+------------------------------------------------------------
+-- lbfacecam <on|off> [distance] [heightOffset] -- (2026-09-08) moves the camera in close to the
+-- character's face, independent of lbnoclip2/lbnudge -- see Spawner.SetFaceCam's own comment for
+-- the full design rationale. Spawns a plain CameraActor (via the same proven GameplayStatics
+-- deferred-spawn pattern as lbtestniagaraactor) and uses SetViewTargetWithBlend (a core, non-cheat
+-- AController function) to redirect rendering to it -- avoids both the confirmed-broken debug-
+-- camera system and Windrose's own SpringArm rig (which doesn't reliably hold direct writes, per
+-- lbprobecam's own earlier finding). No queue-then-poll needed here -- actor spawning + ordinary
+-- property writes are NOT part of the narrow set of operations confirmed to crash synchronously
+-- from a console handler (only R5N_DayCycleTimeComponent/R5N_WeatherComponent writes and
+-- CheatManager's Enable/DisableDebugCamera calls were ever confirmed to do that) -- matches
+-- lbtestniagaraactor's own already-direct, synchronous call.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfacecam", function(FullCommand, Parameters, Ar)
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
+            if mode ~= "on" and mode ~= "off" then
+                print(string.format("[LivingBase] [lbfacecam] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
+                return true
+            end
+            local distance = tonumber(Parameters and Parameters[2])
+            local heightOffset = tonumber(Parameters and Parameters[3])
+            local ok, err = pcall(function() Spawner.SetFaceCam(mode, distance, heightOffset) end)
+            if not ok then print("[LivingBase] [lbfacecam] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbfacecam <on|off> [distance] [heightOffset]")
+    registerCmdInfo("lbfacecam", "lbfacecam <on|off> [distance] [heightOffset]", "Spawns an independent camera positioned in front of the character's face (default 150 units out, 160 units up) and switches the view to it. 'off' restores the normal player view and destroys the spawned camera. Independent of lbnoclip2/lbnudge/lbphototime/lbphotoweather.")
+else
+    log("lbfacecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end

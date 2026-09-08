@@ -5247,6 +5247,70 @@ if ExecuteWithDelay then
     dayTime3PollLoop()
 end
 
+------------------------------------------------------------
+-- lbtestdaytime4 [hour] [speedInv] -- (2026-09-08) CONFIRMED via lbtestdaytime3: setting ONLY
+-- WorldDayTime (no freeze at all) correctly moves the sun -- RedFalcon confirmed live. This
+-- closes out the divide-by-zero theory: DayCycleSpeedInv=0 is what breaks the visual time, not
+-- WorldDayTime or write order. RedFalcon's own next idea: slow the cycle way down instead of
+-- literally stopping it (speedInv is presumably a divisor -- LARGER = slower, matching "speed
+-- INVERSE" as a name), which should avoid the singularity entirely while still holding still
+-- enough for a photo session. Logs the component's OWN previous DayCycleSpeedInv value before
+-- overwriting it, so we get a real reference point for "normal" speed for free. Same queue-then-
+-- poll pattern as lbtestdaytime2/3 (already confirmed crash-free).
+------------------------------------------------------------
+local pendingDayTime4 = nil -- {hour=, speedInv=} or nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime4", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
+            pendingDayTime4 = { hour = hour, speedInv = speedInv }
+            print(string.format("[LivingBase] [lbtestdaytime4] queued hour=%.2f speedInv=%.1f -- will apply on the next poll tick (~200ms).\n", hour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime4 [hour] [speedInv]")
+    registerCmdInfo("lbtestdaytime4", "lbtestdaytime4 [hour] [speedInv]", "Sets WorldDayTime AND a large-but-nonzero DayCycleSpeedInv (default 100000, larger = slower) instead of freezing at exactly 0 -- avoids the divide-by-zero/snap-to-noon bug lbtestdaytime2 found while still slowing the cycle way down for a photo session.")
+else
+    log("lbtestdaytime4 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime4PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime4 ~= nil then
+                local req = pendingDayTime4
+                pendingDayTime4 = nil
+                ExecuteInGameThread(function()
+                    print(string.format("[LivingBase] [lbtestdaytime4] starting attempt (from poll loop) -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f, DayCycleSpeedInv=%.1f (not zero).\n", req.hour, req.speedInv))
+                    local count = 0
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, name = pcall(function() return comp:GetFullName() end)
+                            if okName and name and not name:find("Default__") then
+                                local before = nil
+                                pcall(function() before = comp.DayCycleSpeedInv end)
+                                comp.WorldDayTime = req.hour
+                                comp.DayCycleSpeedInv = req.speedInv
+                                print(string.format("[LivingBase] [lbtestdaytime4] component's previous DayCycleSpeedInv was %s (this is the real 'normal' value, for reference) -- now set to %.1f.\n", tostring(before), req.speedInv))
+                                count = count + 1
+                            end
+                        end
+                    end)
+                    if ok then
+                        print(string.format("[LivingBase] [lbtestdaytime4] done, no crash -- %d component(s) written.\n", count))
+                    else
+                        print("[LivingBase] [lbtestdaytime4] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            dayTime4PollLoop()
+        end)
+    end
+    dayTime4PollLoop()
+end
+
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestweather", function(FullCommand, Parameters, Ar)

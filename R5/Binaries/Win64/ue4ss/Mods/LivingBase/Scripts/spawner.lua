@@ -11449,6 +11449,11 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
         say("swap position reset -- next call will pick a fresh spot in front of you.")
         return true
     end
+    -- "-" skip sentinel (2026-09-08) -- for baseline donors already native to the target family
+    -- (Gatherer/Herbalist/JasperCrowe are all already Adventurer -- no bodyTypes override needed
+    -- at all), matching the SAME "-" convention lbtestbodytypes already uses for its own optional
+    -- morphParamsPath/classPath slots.
+    if bodyTypesPath == "-" or bodyTypesPath == "" then bodyTypesPath = nil end
     local function ensureFullPath(p)
         if not p then return nil end
         if not p:match("%.[%w_]+$") then

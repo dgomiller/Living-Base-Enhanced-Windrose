@@ -5386,6 +5386,94 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime6 [hour] [speedInv] -- (2026-09-08) THE REAL FIX for "always lands on night".
+-- lbtestdaytime5 confirmed raw WorldDayTime is NOT hours-0-24 (default state: raw=2391.67 ==
+-- GetCurrentTimeInHours()=14.52, a ratio of ~164.6 raw units per hour) -- and the Settings
+-- sub-object's fields are unreadable from Lua (same broken-metatable issue as .IsValid, returns
+-- the weak-ptr struct itself for any field name), so there's no clean static conversion constant
+-- to read off. Instead this CALIBRATES LIVE, every call, with no hardcoded ratio: read the
+-- component's own current (raw, hours) pair, nudge WorldDayTime forward by a probe delta and read
+-- hours again to get a real raw-units-per-hour slope straight from the component's own behavior,
+-- then solve for the raw value that produces the requested hour and write that -- and finally
+-- re-reads GetCurrentTimeInHours() ONE more time after the real write to self-verify the result
+-- landed where requested, instead of trusting the math blindly.
+------------------------------------------------------------
+local pendingDayTime6 = nil -- {hour=, speedInv=} or nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime6", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
+            pendingDayTime6 = { hour = hour, speedInv = speedInv }
+            print(string.format("[LivingBase] [lbtestdaytime6] queued hour=%.2f speedInv=%.1f -- will calibrate + apply on the next poll tick (~200ms).\n", hour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime6 [hour] [speedInv]")
+    registerCmdInfo("lbtestdaytime6", "lbtestdaytime6 [hour] [speedInv]", "The real fix: live-calibrates the raw WorldDayTime<->GetCurrentTimeInHours() ratio (no hardcoded constant -- lbtestdaytime4 assumed raw units WERE hours, which was wrong) then writes the correct raw value for the requested hour, and self-verifies by reading the hour back afterward.")
+else
+    log("lbtestdaytime6 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime6PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime6 ~= nil then
+                local req = pendingDayTime6
+                pendingDayTime6 = nil
+                ExecuteInGameThread(function()
+                    print(string.format("[LivingBase] [lbtestdaytime6] starting attempt (from poll loop) -- calibrating live, target hour=%.2f speedInv=%.1f.\n", req.hour, req.speedInv))
+                    local count = 0
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, name = pcall(function() return comp:GetFullName() end)
+                            if okName and name and not name:find("Default__") then
+                                local r0, h0 = nil, nil
+                                pcall(function() r0 = comp.WorldDayTime end)
+                                pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                                if r0 == nil or h0 == nil then
+                                    print(string.format("[LivingBase] [lbtestdaytime6] %s -- could not read initial raw/hours, skipping.\n", name))
+                                else
+                                    -- Probe: nudge raw forward by a fixed delta, see how many hours that moved.
+                                    local PROBE_DELTA = 1000.0
+                                    comp.WorldDayTime = r0 + PROBE_DELTA
+                                    local h1 = nil
+                                    pcall(function() h1 = comp:GetCurrentTimeInHours() end)
+                                    local diffHours = (h1 or h0) - h0
+                                    if diffHours <= 0 then diffHours = diffHours + 24 end -- crossed midnight during the probe
+                                    local slope = PROBE_DELTA / diffHours -- raw units per hour, straight from the component's own behavior
+                                    -- Solve for the raw value that lands on req.hour, taking the shortest signed hour
+                                    -- delta from where the probe left us (h1) so the jump stays small either direction.
+                                    local hourDelta = req.hour - (h1 or h0)
+                                    if hourDelta > 12 then hourDelta = hourDelta - 24 end
+                                    if hourDelta < -12 then hourDelta = hourDelta + 24 end
+                                    local targetRaw = (r0 + PROBE_DELTA) + hourDelta * slope
+                                    comp.WorldDayTime = targetRaw
+                                    comp.DayCycleSpeedInv = req.speedInv
+                                    local hFinal = nil
+                                    pcall(function() hFinal = comp:GetCurrentTimeInHours() end)
+                                    print(string.format("[LivingBase] [lbtestdaytime6] %s\n    calibration: r0=%.4f h0=%.4f -> probe r0+%.0f gave h1=%.4f -> slope=%.4f raw/hour\n    wrote WorldDayTime=%.4f DayCycleSpeedInv=%.1f -- readback GetCurrentTimeInHours()=%.4f (requested %.2f)\n",
+                                        name, r0, h0, PROBE_DELTA, (h1 or h0), slope, targetRaw, req.speedInv, (hFinal or -1), req.hour))
+                                    count = count + 1
+                                end
+                            end
+                        end
+                    end)
+                    if ok then
+                        print(string.format("[LivingBase] [lbtestdaytime6] done, no crash -- %d component(s) written.\n", count))
+                    else
+                        print("[LivingBase] [lbtestdaytime6] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            dayTime6PollLoop()
+        end)
+    end
+    dayTime6PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

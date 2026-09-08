@@ -6877,28 +6877,43 @@ end
 ------------------------------------------------------------
 -- lbphotoweather [name] -- forces the named weather immediately (default: clear/Sunny), independent
 -- of lbphototime. Safe to run any time, as often as needed (e.g. weather changed mid-session while
--- composing a shot). Weather names/IDs taken directly from the WeatherControl reference mod found
--- in Other/ (Other/WeatherControl Mod v2.../Scripts/main.lua), which reads the same
--- R5N_WeatherComponent.CheatWeatherID this does.
+-- composing a shot).
+--
+-- CheatWeatherID is NOT a fixed global enum -- it's a plain int8 INDEX into
+-- R5N_WeatherComponent.AllWeatherPresets, an array authored PER LEVEL (see lbphotoweatherlist,
+-- the diagnostic that found this). The WeatherControl reference mod's Sunny=0/Cloudy=1/etc table
+-- (Other/WeatherControl Mod v2.../Scripts/main.lua) assumed an ordering that does NOT match this
+-- level -- confirmed live via lbphotoweatherlist against Genlandia specifically, which also has
+-- extra dev/test-only entries (TestSunny/TestCloudy/LobbySunny) mixed into the array that shifted
+-- everything else out of alignment with the reference mod's guess. This table is the REAL
+-- Genlandia ordering. If this is ever used on a different map, re-run lbphotoweatherlist there
+-- first -- the ordering is almost certainly different per level.
 ------------------------------------------------------------
 local PHOTO_WEATHERS = {
-    { name = "Sunny",        id = 0  },
-    { name = "Cloudy",       id = 1  },
-    { name = "Fog",          id = 2  },
-    { name = "Mist",         id = 3  },
-    { name = "Rain",         id = 4  },
-    { name = "RainHeavy",    id = 5  },
-    { name = "Storm",        id = 6  },
-    { name = "Windy",        id = 7  },
-    { name = "HighPressure", id = 8  },
-    { name = "Rainbow",      id = 9  },
-    { name = "Overcast",     id = 10 },
-    { name = "AshlandsFog",  id = 11 },
-    { name = "TortugaMist",  id = 12 },
-    { name = "Default",      id = 13 },
+    { name = "Windy",        id = 0  },
+    { name = "TortugaMist",  id = 1  },
+    { name = "TestSunny",    id = 2  },
+    { name = "TestCloudy",   id = 3  },
+    { name = "Sunny",        id = 4  },
+    { name = "Storm",        id = 5  },
+    { name = "RainHeavy",    id = 6  },
+    { name = "Rainbow",      id = 7  },
+    { name = "Rain",         id = 8  },
+    { name = "Overcast",     id = 9  },
+    { name = "Mist",         id = 10 },
+    { name = "LobbySunny",   id = 11 },
+    { name = "HighPressure", id = 12 },
+    { name = "Fog",          id = 13 },
+    { name = "Default",      id = 14 },
+    { name = "Cloudy",       id = 15 },
+    { name = "AshlandsFog",  id = 16 },
 }
 local function findPhotoWeather(nameArg)
-    if not nameArg then return PHOTO_WEATHERS[1] end -- Sunny, the default
+    if not nameArg then
+        for _, w in ipairs(PHOTO_WEATHERS) do
+            if w.name == "Sunny" then return w end
+        end
+    end
     local lowered = tostring(nameArg):lower()
     for _, w in ipairs(PHOTO_WEATHERS) do
         if w.name:lower() == lowered then return w end
@@ -6923,7 +6938,7 @@ if RegisterConsoleCommandHandler then
         end)
     end)
     log("Console command registered: lbphotoweather [name]")
-    registerCmdInfo("lbphotoweather", "lbphotoweather [name]", "Forces the named weather immediately (no argument = clear/Sunny). Valid names: Sunny, Cloudy, Fog, Mist, Rain, RainHeavy, Storm, Windy, HighPressure, Rainbow, Overcast, AshlandsFog, TortugaMist, Default. Independent of lbphototime/lbfreecam -- safe to re-run any time weather changes mid-session.")
+    registerCmdInfo("lbphotoweather", "lbphotoweather [name]", "Forces the named weather immediately (no argument = clear/Sunny). Valid names (Genlandia's real preset order, see lbphotoweatherlist): Windy, TortugaMist, TestSunny, TestCloudy, Sunny, Storm, RainHeavy, Rainbow, Rain, Overcast, Mist, LobbySunny, HighPressure, Fog, Default, Cloudy, AshlandsFog. Independent of lbphototime/lbfreecam -- safe to re-run any time weather changes mid-session.")
 else
     log("lbphotoweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

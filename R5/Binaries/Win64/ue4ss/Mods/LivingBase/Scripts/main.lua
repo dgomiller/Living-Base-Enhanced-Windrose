@@ -5880,9 +5880,14 @@ end
 -- expected natural drift. The lesson: don't ever CHANGE DayCycleSpeedInv after arriving -- pick
 -- ONE moderate (not extreme) value, set it ONCE, and use that same rate for both the approach AND
 -- the hold. No second "freeze" step at all (that step is exactly what was breaking lbtestdaytime9).
--- Default speedInv=0.15 -> full cycle ~615 real seconds (~10 min) worst-case wait to reach any
--- target hour, and slow enough (~7 min of sim-time per 3 real seconds) to look effectively still
--- for a quick photo.
+-- Default speedInv lowered to 0.05 (2026-09-08, RedFalcon: "a little faster as well") -> full
+-- cycle ~205 real seconds (~3.4 min) worst-case wait to reach any target hour, vs ~10 min at the
+-- original 0.15 default. Also added periodic progress prints (every ~2s) -- RedFalcon: "an
+-- occasional check as it goes... I'll have a better idea of where we're at" -- the original
+-- version stayed silent from "polling..." all the way to "ARRIVED", which made a multi-minute
+-- wait look like nothing was happening (confirmed live: RedFalcon kept re-issuing new target
+-- hours every few seconds, each one abandoning the previous still-in-flight attempt, because nothing
+-- printed in between to show real progress was being made).
 ------------------------------------------------------------
 local pendingDayTime11 = false
 if RegisterConsoleCommandHandler then
@@ -5891,14 +5896,14 @@ if RegisterConsoleCommandHandler then
             local hour = tonumber(Parameters and Parameters[1]) or 12.0
             if hour < 0 then hour = 0 end
             if hour > 24 then hour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.15
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
             pendingDayTime11 = { stage = "start", hour = hour, speedInv = speedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime11] queued hour=%.2f speedInv=%.4f -- will set DayCycleSpeedInv ONCE and hold it there the whole time (approach AND hold at the same rate -- no second freeze switch, which is what broke lbtestdaytime9).\n", hour, speedInv))
+            print(string.format("[LivingBase] [lbtestdaytime11] queued hour=%.2f speedInv=%.4f -- will set DayCycleSpeedInv ONCE and hold it there the whole time (approach AND hold at the same rate -- no second freeze switch, which is what broke lbtestdaytime9). Progress will print every ~2s -- let it reach ARRIVED before trying another value.\n", hour, speedInv))
             return true
         end)
     end)
     log("Console command registered: lbtestdaytime11 [hour] [speedInv]")
-    registerCmdInfo("lbtestdaytime11", "lbtestdaytime11 [hour] [speedInv]", "The actual fix: lbtestdaytime10 proved holding DayCycleSpeedInv steady (no change) keeps the hour rock-solid, while ANY change to it (even a modest one) causes an unpredictable jump -- not a clean rescale. So this sets DayCycleSpeedInv ONCE (default 0.15) and never touches it again, using the same moderate rate for both fast-forwarding to the target hour and holding there afterward.")
+    registerCmdInfo("lbtestdaytime11", "lbtestdaytime11 [hour] [speedInv]", "The actual fix: lbtestdaytime10 proved holding DayCycleSpeedInv steady (no change) keeps the hour rock-solid, while ANY change to it (even a modest one) causes an unpredictable jump -- not a clean rescale. So this sets DayCycleSpeedInv ONCE (default 0.05) and never touches it again, using the same moderate rate for both fast-forwarding to the target hour and holding there afterward. Prints progress every ~2s while waiting.")
 else
     log("lbtestdaytime11 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -5934,10 +5939,14 @@ if ExecuteWithDelay then
                     if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
                         print(string.format("[LivingBase] [lbtestdaytime11] ARRIVED -- hour=%.4f (target %.2f) after %d ticks. DayCycleSpeedInv stays at %.4f (untouched from here) -- take your screenshot.\n", h, req.hour, req.ticks, req.speedInv))
                         pendingDayTime11 = false
-                    elseif req.ticks >= 300 then
-                        print(string.format("[LivingBase] [lbtestdaytime11] safety cutoff hit (300 ticks, ~60s) -- last hour=%s, target=%.2f, speedInv still %.4f (left running, will keep approaching on its own).\n", tostring(h), req.hour, req.speedInv))
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime11] safety cutoff hit (1100 ticks, ~220s) -- last hour=%s, target=%.2f, speedInv still %.4f (left running, will keep approaching on its own).\n", tostring(h), req.hour, req.speedInv))
                         pendingDayTime11 = false
                     else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime11] ...still en route: hour=%s, target=%.2f, remaining=%s hours (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.hour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
                         pendingDayTime11 = { stage = "waiting", hour = req.hour, speedInv = req.speedInv, ticks = req.ticks + 1 }
                     end
                 end

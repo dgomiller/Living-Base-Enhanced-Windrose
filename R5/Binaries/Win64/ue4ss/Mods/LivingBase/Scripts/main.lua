@@ -7939,9 +7939,17 @@ end
 -- the player's own eyes, full free mouse-look, not a separately-tracked camera. See
 -- Spawner.SetFirstPerson's own comment -- pulls the EXISTING third-person SpringArm's
 -- TargetArmLength to 0 rather than spawning anything new, so normal look/movement input keeps
--- working exactly as-is. No queue-then-poll needed (a plain component property write, not one of
--- the narrow set of operations confirmed to crash synchronously from a console handler).
+-- working exactly as-is.
+--
+-- RedFalcon confirmed (2026-09-08): a single write "moves to my head and bounces back" -- the SAME
+-- write-reverts pattern already seen elsewhere in this project (CPD colors, WorldDayTime) --
+-- something re-asserts TargetArmLength on a tick. Fix: keep REASSERTING it continuously via a
+-- recurring ExecuteWithDelay poll loop (short interval, 50ms) while first-person is active, instead
+-- of trusting a single write to hold -- Spawner.SetFirstPerson("on") only caches the original arm
+-- length on its FIRST call (guarded by a nil check), so repeated calls are safe/idempotent and just
+-- keep re-forcing TargetArmLength=0. 'off' stops the loop and restores the cached original once.
 ------------------------------------------------------------
+local firstPersonActive = false
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbfirstperson", function(FullCommand, Parameters, Ar)
@@ -7950,15 +7958,34 @@ if RegisterConsoleCommandHandler then
                 print(string.format("[LivingBase] [lbfirstperson] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
                 return true
             end
-            local ok, err = pcall(function() Spawner.SetFirstPerson(mode) end)
-            if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
+            if mode == "on" then
+                firstPersonActive = true
+                local ok, err = pcall(function() Spawner.SetFirstPerson("on") end)
+                if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
+                print("[LivingBase] [lbfirstperson] ON -- continuously reasserting TargetArmLength=0 to fight the revert.\n")
+            else
+                firstPersonActive = false
+                local ok, err = pcall(function() Spawner.SetFirstPerson("off") end)
+                if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
+            end
             return true
         end)
     end)
     log("Console command registered: lbfirstperson <on|off>")
-    registerCmdInfo("lbfirstperson", "lbfirstperson <on|off>", "Pulls the camera to the player's own eyes (TargetArmLength=0) for full free mouse-look, simulating debug/free-cam using the existing camera rig. 'off' restores the original third-person distance.")
+    registerCmdInfo("lbfirstperson", "lbfirstperson <on|off>", "Pulls the camera to the player's own eyes (TargetArmLength=0, continuously reasserted to fight a confirmed write-revert) for full free mouse-look, simulating debug/free-cam using the existing camera rig. 'off' stops reasserting and restores the original third-person distance.")
 else
     log("lbfirstperson unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function firstPersonPollLoop()
+        ExecuteWithDelay(50, function()
+            if firstPersonActive then
+                ExecuteInGameThread(function() pcall(function() Spawner.SetFirstPerson("on", function() end) end) end)
+            end
+            firstPersonPollLoop()
+        end)
+    end
+    firstPersonPollLoop()
 end
 
 ------------------------------------------------------------

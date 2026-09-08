@@ -5639,6 +5639,7 @@ function Spawner.SetFirstPerson(mode, say)
     end
     local comps
     pcall(function() comps = pawn:GetComponentsByClass(springArmClass) end)
+    if not comps then pcall(function() comps = pawn:K2_GetComponentsByClass(springArmClass) end) end
     local n = 0
     pcall(function() n = comps and (comps.GetArrayNum and comps:GetArrayNum() or #comps) or 0 end)
     if n == 0 then
@@ -5696,6 +5697,36 @@ function Spawner.MoveTripodCamera(axis, amount, say)
     end
     local ok = pcall(function() cam:K2_SetActorLocation(newLoc, false, {}, false) end)
     say(string.format("moved %s by %.2f -- now at (%.1f, %.1f, %.1f): %s", axis, amount, newLoc.X, newLoc.Y, newLoc.Z, tostring(ok)))
+    return ok
+end
+
+-- Spawner.RotateTripodCamera(axis, amount, say) -- "lbcamerarotate <pitch|yaw|roll> <amount>"
+-- (2026-09-08). Same idea as MoveTripodCamera but for orientation -- nudges the ACTIVE
+-- Spawner._photoTripodActor's rotation by a signed number of degrees on one axis, for exact/
+-- repeatable framing. Uses K2_GetActorRotation/K2_SetActorRotation.
+function Spawner.RotateTripodCamera(axis, amount, say)
+    say = say or function(m) print("[LivingBase] [camerarotate] " .. tostring(m) .. "\n") end
+    local cam = Spawner._photoTripodActor
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- run lbphototripod on first.")
+        return false
+    end
+    local rot
+    pcall(function() rot = cam:K2_GetActorRotation() end)
+    if not rot then
+        say("could not read tripod camera rotation.")
+        return false
+    end
+    local newRot = { Pitch = rot.Pitch, Yaw = rot.Yaw, Roll = rot.Roll }
+    if axis == "pitch" then newRot.Pitch = rot.Pitch + amount
+    elseif axis == "yaw" then newRot.Yaw = rot.Yaw + amount
+    elseif axis == "roll" then newRot.Roll = rot.Roll + amount
+    else
+        say(string.format("unknown axis '%s' -- use pitch, yaw, or roll.", tostring(axis)))
+        return false
+    end
+    local ok = pcall(function() cam:K2_SetActorRotation(newRot, false) end)
+    say(string.format("rotated %s by %.2f -- now Pitch=%.1f Yaw=%.1f Roll=%.1f: %s", axis, amount, newRot.Pitch, newRot.Yaw, newRot.Roll, tostring(ok)))
     return ok
 end
 

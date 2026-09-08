@@ -7985,3 +7985,28 @@ if RegisterConsoleCommandHandler then
 else
     log("lbcameramove unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
+
+------------------------------------------------------------
+-- lbcamerarotate <pitch|yaw|roll> <amount> -- (2026-09-08) same idea as lbcameramove but for
+-- orientation: nudges the active lbphototripod camera's rotation by a signed number of degrees on
+-- one axis. No-ops with a clear message if no tripod camera is currently active.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcamerarotate", function(FullCommand, Parameters, Ar)
+            local axis = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or nil
+            local amount = tonumber(Parameters and Parameters[2])
+            if not axis or (axis ~= "pitch" and axis ~= "yaw" and axis ~= "roll") or not amount then
+                print("[LivingBase] [lbcamerarotate] usage: lbcamerarotate <pitch|yaw|roll> <amount>\n")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.RotateTripodCamera(axis, amount) end)
+            if not ok then print("[LivingBase] [lbcamerarotate] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcamerarotate <pitch|yaw|roll> <amount>")
+    registerCmdInfo("lbcamerarotate", "lbcamerarotate <pitch|yaw|roll> <amount>", "Rotates the active lbphototripod camera on one axis (pitch, yaw, or roll) by a signed number of degrees, for exact/repeatable framing. No-ops if no tripod camera is active (run lbphototripod on first).")
+else
+    log("lbcamerarotate unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end

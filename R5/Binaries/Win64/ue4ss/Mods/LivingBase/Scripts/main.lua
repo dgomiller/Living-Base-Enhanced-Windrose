@@ -5699,6 +5699,109 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime9 [hour] [fastSpeedInv=0.01] [freezeSpeedInv=100000] -- (2026-09-08) THE REAL FIX.
+-- lbtestdaytime8's trace proved WorldDayTime is a one-time BeginPlay seed only (confirmed: it
+-- held our written value perfectly across 6 ticks with zero drift) while GetCurrentTimeInHours()
+-- climbs from a completely separate, private internal clock that never reads WorldDayTime back --
+-- so no amount of writing that property will ever change the visible time of day. The settings
+-- dump (DayDuration=3300, NightDuration=800 -> a full cycle is 4100 "seconds" at normal speed)
+-- confirms DayCycleSpeedInv is a genuine, LASTING divisor on how fast that private clock ticks
+-- (already proven: 100000 = near-frozen, 1.0 = normal pace). So instead of trying to jump straight
+-- to a target hour, this FAST-FORWARDS the real clock there: sets DayCycleSpeedInv to a small
+-- value (default 0.01 -> a full cycle takes ~41 real seconds instead of 4100) and polls
+-- GetCurrentTimeInHours() every tick until it reaches/crosses the requested hour, then snaps
+-- DayCycleSpeedInv to a large freeze value (default 100000) right at that moment. Has a safety
+-- cutoff (300 ticks, ~60s) in case the component goes missing or something's wrong.
+------------------------------------------------------------
+local pendingDayTime9 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime9", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.01
+            local freezeSpeedInv = tonumber(Parameters and Parameters[3]) or 100000.0
+            pendingDayTime9 = { stage = "start", hour = hour, fastSpeedInv = fastSpeedInv, freezeSpeedInv = freezeSpeedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime9] queued hour=%.2f fastSpeedInv=%.4f freezeSpeedInv=%.1f -- will fast-forward the real clock to the target hour, then freeze.\n", hour, fastSpeedInv, freezeSpeedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime9 [hour] [fastSpeedInv] [freezeSpeedInv]")
+    registerCmdInfo("lbtestdaytime9", "lbtestdaytime9 [hour] [fastSpeedInv] [freezeSpeedInv]", "The real fix: WorldDayTime is a one-time BeginPlay seed that the visible clock never reads back, so instead this fast-forwards DayCycleSpeedInv (small, default 0.01) until GetCurrentTimeInHours() reaches the requested hour, then freezes it there (DayCycleSpeedInv large, default 100000).")
+else
+    log("lbtestdaytime9 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime9PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime9 ~= false then
+                local req = pendingDayTime9
+                if req.stage == "start" then
+                    ExecuteInGameThread(function()
+                        local comp, name = nil, nil
+                        for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, n = pcall(function() return c:GetFullName() end)
+                            if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                        end
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime9] no non-default R5N_DayCycleTimeComponent found -- aborting.\n")
+                            pendingDayTime9 = false
+                            return
+                        end
+                        local h0 = nil
+                        pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                        if h0 == nil then
+                            print("[LivingBase] [lbtestdaytime9] could not read current hour -- aborting.\n")
+                            pendingDayTime9 = false
+                            return
+                        end
+                        local distance = (req.hour - h0) % 24
+                        if distance < 0.02 then
+                            comp.DayCycleSpeedInv = req.freezeSpeedInv
+                            print(string.format("[LivingBase] [lbtestdaytime9] already at/near target hour (current=%.4f, target=%.2f) -- froze immediately with DayCycleSpeedInv=%.1f, no fast-forward needed.\n", h0, req.hour, req.freezeSpeedInv))
+                            pendingDayTime9 = false
+                            return
+                        end
+                        comp.DayCycleSpeedInv = req.fastSpeedInv
+                        print(string.format("[LivingBase] [lbtestdaytime9] current hour=%.4f, target=%.2f, distance=%.4f hours -- set DayCycleSpeedInv=%.4f (fast-forward) and polling until it arrives...\n", h0, req.hour, distance, req.fastSpeedInv))
+                        pendingDayTime9 = { stage = "waiting", hour = req.hour, fastSpeedInv = req.fastSpeedInv, freezeSpeedInv = req.freezeSpeedInv, ticks = 0 }
+                    end)
+                elseif req.stage == "waiting" then
+                    ExecuteInGameThread(function()
+                        local comp, name = nil, nil
+                        for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                            local okName, n = pcall(function() return c:GetFullName() end)
+                            if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                        end
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime9] component disappeared while waiting -- aborting.\n")
+                            pendingDayTime9 = false
+                            return
+                        end
+                        local h = nil
+                        pcall(function() h = comp:GetCurrentTimeInHours() end)
+                        local remaining = h and ((req.hour - h) % 24) or nil
+                        if h ~= nil and (remaining <= 0.02 or remaining >= 23.9) then
+                            comp.DayCycleSpeedInv = req.freezeSpeedInv
+                            print(string.format("[LivingBase] [lbtestdaytime9] ARRIVED -- hour=%.4f (target %.2f) after %d ticks. Froze with DayCycleSpeedInv=%.1f.\n", h, req.hour, req.ticks, req.freezeSpeedInv))
+                            pendingDayTime9 = false
+                        elseif req.ticks >= 300 then
+                            print(string.format("[LivingBase] [lbtestdaytime9] safety cutoff hit (300 ticks, ~60s) -- last hour read=%s, target=%.2f. Leaving DayCycleSpeedInv=%.4f as-is; something may be wrong (component missing, or fastSpeedInv too slow).\n", tostring(h), req.hour, req.fastSpeedInv))
+                            pendingDayTime9 = false
+                        else
+                            pendingDayTime9 = { stage = "waiting", hour = req.hour, fastSpeedInv = req.fastSpeedInv, freezeSpeedInv = req.freezeSpeedInv, ticks = req.ticks + 1 }
+                        end
+                    end)
+                end
+            end
+            dayTime9PollLoop()
+        end)
+    end
+    dayTime9PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

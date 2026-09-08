@@ -7267,3 +7267,79 @@ if ExecuteWithDelay then
     end
     fixFreeCamStuckPollLoop()
 end
+
+------------------------------------------------------------
+-- lbtestdisablecam4 -- (2026-09-08) SAFER disable attempt. lbtestdisablecam3's manual Player/
+-- PlayerController surgery caused a real freeze (missed the ULocalPlayer forward-pointer half of
+-- the relationship). This tries the ENGINE'S OWN complete DisableDebugCamera() logic instead, but
+-- fixes the CONTEXT problem that made it no-op before: it calls
+-- APlayerController::EnableCheats() (public, Exec, confirmed in the SDK header dump) on the LIVE
+-- DEBUG-CAM CONTROLLER ITSELF first, to force-create a CheatManager whose outer controller is the
+-- debug-cam controller (not the cached original) -- then calls DisableDebugCamera() through THAT
+-- CheatManager. Since the debug-cam controller's own .Player should still hold the live
+-- LocalPlayer (moved there at enable time), this should let the native lookup that failed before
+-- actually resolve, and run the FULL correct restoration (both pointer directions + Destroy())
+-- instead of a partial manual one. Does NOT touch Player/PlayerController manually at all -- if
+-- this doesn't fully restore control, STOP and exit/restart rather than trying more manual
+-- surgery.
+------------------------------------------------------------
+local pendingDisableCam4 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdisablecam4", function(FullCommand, Parameters, Ar)
+            pendingDisableCam4 = true
+            print("[LivingBase] [lbtestdisablecam4] queued -- safer disable attempt on the next poll tick.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdisablecam4")
+    registerCmdInfo("lbtestdisablecam4", "lbtestdisablecam4", "Safer free-cam disable attempt: calls EnableCheats() on the LIVE debug-cam controller itself to force a correctly-contextualized CheatManager, then calls the engine's own DisableDebugCamera() through it -- no manual Player/PlayerController surgery.")
+else
+    log("lbtestdisablecam4 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function disableCam4PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDisableCam4 then
+                pendingDisableCam4 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdisablecam4] starting -- searching for a live debug camera controller.\n")
+                    local ok, err = pcall(function()
+                        local dcc, dccName = nil, nil
+                        for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
+                            for _, c in ipairs(FindAllOf(className) or {}) do
+                                local okName, n = pcall(function() return c:GetFullName() end)
+                                if okName and n and not n:find("Default__") then dcc = c; dccName = n; break end
+                            end
+                            if dcc then break end
+                        end
+                        if not dcc then
+                            print("[LivingBase] [lbtestdisablecam4] no live debug camera controller found -- is the free camera actually on?\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbtestdisablecam4] found %s\n", dccName))
+                        local dccPlayer = nil
+                        pcall(function() dccPlayer = dcc.Player end)
+                        print(string.format("[LivingBase] [lbtestdisablecam4] debug-cam controller's own Player=%s\n", tostring(dccPlayer)))
+                        local okEnable, errEnable = pcall(function() dcc:EnableCheats() end)
+                        print(string.format("[LivingBase] [lbtestdisablecam4] EnableCheats() on debug-cam controller: %s%s\n", tostring(okEnable), okEnable and "" or (" (" .. tostring(errEnable) .. ")")))
+                        local cheatManager = nil
+                        pcall(function() cheatManager = dcc.CheatManager end)
+                        if not (cheatManager and cheatManager:IsValid()) then
+                            print("[LivingBase] [lbtestdisablecam4] still no CheatManager on the debug-cam controller after EnableCheats() -- cannot proceed this way.\n")
+                            return
+                        end
+                        print("[LivingBase] [lbtestdisablecam4] got a CheatManager -- calling DisableDebugCamera() through it.\n")
+                        local okDisable, errDisable = pcall(function() cheatManager:DisableDebugCamera() end)
+                        print(string.format("[LivingBase] [lbtestdisablecam4] DisableDebugCamera() via debug-cam's own CheatManager: %s%s\n", tostring(okDisable), okDisable and "" or (" (" .. tostring(errDisable) .. ")")))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestdisablecam4] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            disableCam4PollLoop()
+        end)
+    end
+    disableCam4PollLoop()
+end

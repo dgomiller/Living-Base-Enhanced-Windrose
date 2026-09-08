@@ -11466,9 +11466,20 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
         elseif s == "m" or s == "male" then sex = 1 end
     end
 
-    -- Destroy the previous swap actor BEFORE spawning the new one -- avoids two overlapping actors
-    -- at the same spot even for one frame.
+    -- RE-READ the CURRENT actor's live transform before destroying it (2026-09-08, RedFalcon:
+    -- "what if i decide to adjust the angle of the subject and then swap") -- the locked
+    -- position/rotation must track whatever the actor was last actually posed at (via any means --
+    -- another tool, a manual nudge, etc.), not stay frozen at whatever the FIRST spawn happened to
+    -- land at. Only falls back to the previously-stored lock if this read fails for some reason
+    -- (actor already gone, etc.) -- never silently loses the lock entirely.
     if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
+        local liveLoc, liveRot = nil, nil
+        pcall(function() liveLoc = Spawner._bodySwapActor:K2_GetActorLocation() end)
+        pcall(function() liveRot = Spawner._bodySwapActor:K2_GetActorRotation() end)
+        if liveLoc and liveRot then
+            Spawner._bodySwapLoc = { X = liveLoc.X, Y = liveLoc.Y, Z = liveLoc.Z }
+            Spawner._bodySwapYaw = liveRot.Yaw
+        end
         pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
     end
     Spawner._bodySwapActor = nil
@@ -11476,7 +11487,7 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
     say(string.format("spawning %s with bodyTypes=%s sex=%s at %s",
         classPath, tostring(bodyTypesPath), tostring(sexArg or "native"),
-        atLocation and "the LOCKED swap position" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+        atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
     local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false,
         { bodyTypes = bodyTypesPath, sex = sex }, nil, false)
     if not (actor and actor:IsValid()) then
@@ -11486,7 +11497,8 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     pcall(function() Spawner.SetAILogic(actor, false) end)
     Spawner._bodySwapActor = actor
 
-    -- Lock the position from THIS spawn if nothing was locked yet.
+    -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after
+    -- a reset).
     if not Spawner._bodySwapLoc then
         local loc, rot = nil, nil
         pcall(function() loc = actor:K2_GetActorLocation() end)
@@ -11494,7 +11506,7 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
         if loc and rot then
             Spawner._bodySwapLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
             Spawner._bodySwapYaw = rot.Yaw
-            say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot until 'lbtestbodyswap reset'.",
+            say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot (updated to match any repositioning of the current subject) until 'lbtestbodyswap reset'.",
                 loc.X, loc.Y, loc.Z, rot.Yaw))
         end
     end

@@ -7685,10 +7685,14 @@ if ExecuteWithDelay then
                             print("[LivingBase] [lbtestnoclipcheck] no player controller.\n")
                             return
                         end
+                        -- NOTE: pc:GetPawn() (the function call) falsely reported "no pawn" here on a
+                        -- fresh, confirmed-valid session -- pc.Pawn (the property) is the pattern
+                        -- already proven reliable everywhere else in this codebase (spawner.lua), so
+                        -- use that instead.
                         local pawn = nil
-                        pcall(function() pawn = pc:GetPawn() end)
+                        pcall(function() pawn = pc.Pawn end)
                         if not (pawn and pawn:IsValid()) then
-                            print("[LivingBase] [lbtestnoclipcheck] pc:GetPawn() returned nothing -- no pawn possessed right now.\n")
+                            print("[LivingBase] [lbtestnoclipcheck] pc.Pawn is nil/invalid -- no pawn possessed right now.\n")
                             return
                         end
                         local pawnName = "?"

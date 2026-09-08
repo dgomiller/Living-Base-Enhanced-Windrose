@@ -5474,6 +5474,123 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime7 [hour] [speedInv] -- (2026-09-08) FIX FOR lbtestdaytime6's readback bug.
+-- lbtestdaytime6's own log proved something important: h1 came back IDENTICAL to h0 even after a
+-- 1000-unit probe write to WorldDayTime, all inside one synchronous ExecuteInGameThread call.
+-- That means GetCurrentTimeInHours() is NOT a live function of the WorldDayTime property -- it's
+-- almost certainly a value the component's own Tick() recomputes once per frame from some internal
+-- accumulator, so reading it back in the very same call just sees stale pre-write data. This
+-- spreads the same probe-then-solve-then-verify sequence lbtestdaytime6 used across SEPARATE poll
+-- ticks (~200ms apart, i.e. real frames apart) instead of one synchronous block, giving the
+-- component's own Tick() a chance to actually recompute the derived hour between each step. Uses a
+-- little state machine (pendingDayTime7.stage) driven by the existing 200ms poll loop.
+------------------------------------------------------------
+local pendingDayTime7 = nil -- {stage=1|2|3, hour=, speedInv=, r0=, h0=, h1=, probeRaw=} or nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime7", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
+            pendingDayTime7 = { stage = 1, hour = hour, speedInv = speedInv }
+            print(string.format("[LivingBase] [lbtestdaytime7] queued hour=%.2f speedInv=%.1f -- calibration will run across several poll ticks (~200ms apart) so the component's own Tick() has a chance to recompute between steps.\n", hour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime7 [hour] [speedInv]")
+    registerCmdInfo("lbtestdaytime7", "lbtestdaytime7 [hour] [speedInv]", "Same live-calibration idea as lbtestdaytime6, but spread across separate poll ticks (real frames apart) instead of one synchronous block -- lbtestdaytime6's own probe proved GetCurrentTimeInHours() doesn't update until the component's Tick() runs, so reading it back in the same call as the write was always going to see stale data.")
+else
+    log("lbtestdaytime7 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function findDayCycleComp()
+        for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+            local okName, name = pcall(function() return comp:GetFullName() end)
+            if okName and name and not name:find("Default__") then
+                return comp, name
+            end
+        end
+        return nil, nil
+    end
+    local function dayTime7PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime7 ~= nil then
+                local req = pendingDayTime7
+                if req.stage == 1 then
+                    ExecuteInGameThread(function()
+                        local comp, name = findDayCycleComp()
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime7] no non-default R5N_DayCycleTimeComponent found -- aborting.\n")
+                            pendingDayTime7 = nil
+                            return
+                        end
+                        local r0, h0 = nil, nil
+                        pcall(function() r0 = comp.WorldDayTime end)
+                        pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                        if r0 == nil or h0 == nil then
+                            print(string.format("[LivingBase] [lbtestdaytime7] %s -- could not read initial raw/hours, aborting.\n", name))
+                            pendingDayTime7 = nil
+                            return
+                        end
+                        local PROBE_DELTA = 1000.0
+                        local probeRaw = r0 + PROBE_DELTA
+                        comp.WorldDayTime = probeRaw
+                        print(string.format("[LivingBase] [lbtestdaytime7] stage 1/3: %s -- r0=%.4f h0=%.4f, wrote probe WorldDayTime=%.4f. Waiting a poll tick for Tick() to recompute...\n", name, r0, h0, probeRaw))
+                        pendingDayTime7 = { stage = 2, hour = req.hour, speedInv = req.speedInv, r0 = r0, h0 = h0, probeRaw = probeRaw }
+                    end)
+                elseif req.stage == 2 then
+                    ExecuteInGameThread(function()
+                        local comp, name = findDayCycleComp()
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime7] component disappeared before stage 2 -- aborting.\n")
+                            pendingDayTime7 = nil
+                            return
+                        end
+                        local h1 = nil
+                        pcall(function() h1 = comp:GetCurrentTimeInHours() end)
+                        if h1 == nil then
+                            print(string.format("[LivingBase] [lbtestdaytime7] %s -- could not read h1 at stage 2, aborting.\n", name))
+                            pendingDayTime7 = nil
+                            return
+                        end
+                        local diffHours = h1 - req.h0
+                        if diffHours <= 0.0001 then diffHours = diffHours + 24 end -- crossed midnight, or (still) stale -- guarded below too
+                        local slope = 1000.0 / diffHours -- raw units per hour (PROBE_DELTA was 1000)
+                        local hourDelta = req.hour - h1
+                        if hourDelta > 12 then hourDelta = hourDelta - 24 end
+                        if hourDelta < -12 then hourDelta = hourDelta + 24 end
+                        local targetRaw = req.probeRaw + hourDelta * slope
+                        comp.WorldDayTime = targetRaw
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbtestdaytime7] stage 2/3: %s -- h1=%.4f (moved %.4f hours from h0=%.4f after probe) -> slope=%.4f raw/hour. Wrote WorldDayTime=%.4f DayCycleSpeedInv=%.1f. Waiting a poll tick to verify...\n",
+                            name, h1, diffHours, req.h0, slope, targetRaw, req.speedInv))
+                        pendingDayTime7 = { stage = 3, hour = req.hour, speedInv = req.speedInv, targetRaw = targetRaw }
+                    end)
+                elseif req.stage == 3 then
+                    ExecuteInGameThread(function()
+                        local comp, name = findDayCycleComp()
+                        if not comp then
+                            print("[LivingBase] [lbtestdaytime7] component disappeared before stage 3 -- aborting.\n")
+                            pendingDayTime7 = nil
+                            return
+                        end
+                        local hFinal = nil
+                        pcall(function() hFinal = comp:GetCurrentTimeInHours() end)
+                        print(string.format("[LivingBase] [lbtestdaytime7] stage 3/3: %s -- FINAL readback GetCurrentTimeInHours()=%s (requested %.2f). %s\n",
+                            name, tostring(hFinal), req.hour,
+                            (hFinal and math.abs(hFinal - req.hour) < 0.5) and "MATCH -- looks correct!" or "still off -- see notes, may need another look."))
+                        pendingDayTime7 = nil
+                    end)
+                end
+            end
+            dayTime7PollLoop()
+        end)
+    end
+    dayTime7PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

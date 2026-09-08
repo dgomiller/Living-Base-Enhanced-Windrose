@@ -3617,6 +3617,22 @@ the note actively misleads every future session that trusts it at face value.** 
 now confirmed working; picking the final ethnicity target per donor for the actual 14-variant
 roster is the real remaining step, not asset construction.
 
+**UPDATE 2026-09-08 -- the plan for "picking the final ethnicity" changed: it's now a live,
+independently-selectable "Origin" axis (a separate picker grid), not a fixed choice baked per
+donor.** RedFalcon: "pick an ethnicity... from one list using thumbnails and no hover text... and
+another selection matrix of the male and female body types... when both are selected, we can
+spawn." Full design in `project_livingbase_spawn_menu` memory. Running a full tag+sex existence
+validation across the matrix (UAssetAPI, not guessing from filenames) before handing out capture
+commands found one real, closeable gap: Hunter's own named origin templates
+(`HunterAsAdventurer/Albion/Fable/Native/Orient/Scum`) had sat Editor-constructed but never
+cooked+retargeted+packaged since 2026-09-02, and `HunterAsSenkamati` didn't exist at all. Closed
+same session -- built the missing Senkamati entry, cooked all 6 in one pass, retargeted
+BodyMesh+SkinMaterials on the cooked output, packaged as `HunterOriginBatch-Windows`, installed
+live (needs a restart to confirm). With this, both the Body Type grid (14, all origins already
+covered at the shared African test-origin) and the Origin grid's own Male AND Female columns
+(Gatherer/Hunter, 8 origins each) have a real working asset for every cell -- the matrix is
+complete; only capturing the 30 thumbnails and building the actual GUI grids remain.
+
 See 19n for the separate "every clothing/item slot available" work, which turned out to be its own real
 investigation.
 

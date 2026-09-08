@@ -5311,6 +5311,58 @@ if ExecuteWithDelay then
     dayTime4PollLoop()
 end
 
+------------------------------------------------------------
+-- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
+-- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
+-- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to
+-- crash 100% of the time -- RedFalcon re-confirmed it again just now. This tests whether the same
+-- "queue from the console handler, do the actual write from a separate recurring poll loop"
+-- pattern also sidesteps the crash here the way it did for the day-cycle write.
+------------------------------------------------------------
+local pendingWeather2 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestweather2", function(FullCommand, Parameters, Ar)
+            pendingWeather2 = true
+            print("[LivingBase] [lbtestweather2] queued -- will apply on the next poll tick (~200ms).\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestweather2")
+    registerCmdInfo("lbtestweather2", "lbtestweather2", "Same operation as lbtestweather, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way it did for lbtestdaytime2.")
+else
+    log("lbtestweather2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function weather2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingWeather2 then
+                pendingWeather2 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestweather2] starting attempt (from poll loop, not console handler) -- FindAllOf('R5N_WeatherComponent') then write CheatWeatherID=0.\n")
+                    local count = 0
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
+                            local okName, name = pcall(function() return comp:GetFullName() end)
+                            if okName and name and not name:find("Default__") then
+                                comp.CheatWeatherID = 0
+                                count = count + 1
+                            end
+                        end
+                    end)
+                    if ok then
+                        print(string.format("[LivingBase] [lbtestweather2] done, no crash -- %d component(s) written.\n", count))
+                    else
+                        print("[LivingBase] [lbtestweather2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            weather2PollLoop()
+        end)
+    end
+    weather2PollLoop()
+end
+
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestweather", function(FullCommand, Parameters, Ar)

@@ -5958,6 +5958,96 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime12 [realHour] [speedInv] -- (2026-09-08) REAL-CLOCK CONVERSION on top of
+-- lbtestdaytime11's confirmed-working fast-forward-and-hold mechanism. GetCurrentTimeInHours()'s
+-- own 0-24 "raw hour" scale does NOT match a real 24-hour clock 1:1 (confirmed live: raw=14
+-- looked like sunset, not 2pm -- expected, given DayDuration=3300/NightDuration=800 means night
+-- is squeezed into only ~19.5% of the raw scale instead of a real clock's ~50%). RedFalcon
+-- provided two real anchor points by eye: raw~0.415 looked like midnight, raw~10.94 looked like
+-- noon. That's 10.525 raw-hours spanning 12 real-hours, so:
+--   rawHour = MIDNIGHT_RAW + realHour * ((NOON_RAW - MIDNIGHT_RAW) / 12)
+-- This is a SINGLE linear fit across the whole 24h range from just two anchor points, not a proper
+-- piecewise day/night-aware conversion -- treat it as a good working approximation, refinable
+-- later with more anchors (sunrise/sunset) if the mid-range hours (like 6am/6pm) look off.
+-- RedFalcon's own call: round the eyeballed anchors rather than trust false precision from a
+-- by-eye judgment -- midnight=0, noon=11 (not 0.415/10.94).
+------------------------------------------------------------
+local MIDNIGHT_RAW = 0.0
+local NOON_RAW = 11.0
+local RAW_PER_REAL_HOUR = (NOON_RAW - MIDNIGHT_RAW) / 12.0
+local function realHourToRawHour(realHour)
+    return (MIDNIGHT_RAW + realHour * RAW_PER_REAL_HOUR) % 24
+end
+local pendingDayTime12 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime12", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local rawHour = realHourToRawHour(realHour)
+            pendingDayTime12 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime12] queued realHour=%.2f -> converted rawHour=%.4f (speedInv=%.4f) -- fast-forwarding, progress every ~2s, let it reach ARRIVED.\n", realHour, rawHour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime12 [realHour] [speedInv]")
+    registerCmdInfo("lbtestdaytime12", "lbtestdaytime12 [realHour] [speedInv]", "Same fast-forward-and-hold mechanism as lbtestdaytime11, but takes a REAL 24-hour-clock hour (e.g. 14 for 2pm) and converts it to the game's own raw hour scale first, using a linear fit from two eyeballed anchors (midnight~raw 0.415, noon~raw 10.94).")
+else
+    log("lbtestdaytime12 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime12PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime12 ~= false then
+                local req = pendingDayTime12
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime12] component not found -- aborting.\n")
+                    pendingDayTime12 = false
+                elseif req.stage == "start" then
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbtestdaytime12] could not read current hour -- aborting.\n")
+                        pendingDayTime12 = false
+                    else
+                        local distance = (req.rawHour - h0) % 24
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbtestdaytime12] current raw hour=%.4f, target raw=%.4f (real %.2f), distance=%.4f -- set DayCycleSpeedInv=%.4f ONCE and polling...\n", h0, req.rawHour, req.realHour, distance, req.speedInv))
+                        pendingDayTime12 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
+                    end
+                elseif req.stage == "waiting" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        print(string.format("[LivingBase] [lbtestdaytime12] ARRIVED -- raw hour=%.4f (target raw %.4f, real %.2f) after %d ticks. DayCycleSpeedInv stays at %.4f -- take your screenshot.\n", h, req.rawHour, req.realHour, req.ticks, req.speedInv))
+                        pendingDayTime12 = false
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime12] safety cutoff hit (1100 ticks, ~220s) -- last raw hour=%s, target raw=%.4f.\n", tostring(h), req.rawHour))
+                        pendingDayTime12 = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime12] ...still en route: raw hour=%s, target raw=%.4f (real %.2f), remaining=%s (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.rawHour, req.realHour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
+                        pendingDayTime12 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = req.ticks + 1 }
+                    end
+                end
+            end
+            dayTime12PollLoop()
+        end)
+    end
+    dayTime12PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

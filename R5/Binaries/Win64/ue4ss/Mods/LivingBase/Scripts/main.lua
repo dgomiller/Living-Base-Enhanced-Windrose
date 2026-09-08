@@ -5401,6 +5401,59 @@ else
     log("lbtestweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+------------------------------------------------------------
+-- lbtestenablecam2 -- (2026-09-08) SAME queue-then-poll fix, applied to the last untested piece
+-- of the original crash trio: CheatManager:EnableDebugCamera(). Both lbtestdaytime2/3/4 (day-
+-- cycle write) and lbtestweather2 (weather write) are CONFIRMED crash-free with this pattern --
+-- this is the last piece to confirm before consolidating everything into real, final
+-- lbphotoscene/lbfreecam commands.
+------------------------------------------------------------
+local pendingEnableCam2 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestenablecam2", function(FullCommand, Parameters, Ar)
+            pendingEnableCam2 = true
+            print("[LivingBase] [lbtestenablecam2] queued -- will apply on the next poll tick (~200ms).\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestenablecam2")
+    registerCmdInfo("lbtestenablecam2", "lbtestenablecam2", "Same operation as lbtestenablecam, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way it did for lbtestdaytime2/lbtestweather2.")
+else
+    log("lbtestenablecam2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function enableCam2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingEnableCam2 then
+                pendingEnableCam2 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestenablecam2] starting attempt (from poll loop, not console handler) -- PlayerController.CheatManager:EnableDebugCamera().\n")
+                    local pc = UEHelpers.GetPlayerController()
+                    if not (pc and pc:IsValid()) then
+                        print("[LivingBase] [lbtestenablecam2] no player controller -- nothing attempted.\n")
+                        return
+                    end
+                    local cheatManager = nil
+                    pcall(function() cheatManager = pc.CheatManager end)
+                    if not (cheatManager and cheatManager:IsValid()) then
+                        print("[LivingBase] [lbtestenablecam2] no CheatManager on player controller -- nothing attempted.\n")
+                        return
+                    end
+                    local ok, err = pcall(function() cheatManager:EnableDebugCamera() end)
+                    if ok then
+                        print("[LivingBase] [lbtestenablecam2] done, no crash -- EnableDebugCamera() returned normally.\n")
+                    else
+                        print("[LivingBase] [lbtestenablecam2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            enableCam2PollLoop()
+        end)
+    end
+    enableCam2PollLoop()
+end
+
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestenablecam", function(FullCommand, Parameters, Ar)

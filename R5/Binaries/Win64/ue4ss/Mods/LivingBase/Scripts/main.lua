@@ -6958,6 +6958,76 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbphotoweatherlist -- DIAGNOSTIC, GROUND TRUTH. RedFalcon reported the named weathers "change,
+-- but to the wrong look" -- checked the SDK header dump and found why: CheatWeatherID is NOT a
+-- fixed global enum, it's a plain int8 INDEX into THIS component's own AllWeatherPresets:
+-- TArray<UR5NWeatherPreset*> array. The WeatherControl reference mod's Sunny=0/Cloudy=1/etc. table
+-- assumes a preset ORDER that has no guarantee of matching this level's (Genlandia's) actual
+-- array. Each UR5NWeatherPreset has its own real PresetName (FName) though -- this dumps
+-- AllWeatherPresets with its REAL index+name for this level, ground truth instead of guessing.
+-- Writes nothing.
+------------------------------------------------------------
+local pendingPhotoWeatherList = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbphotoweatherlist", function(FullCommand, Parameters, Ar)
+            pendingPhotoWeatherList = true
+            print("[LivingBase] [lbphotoweatherlist] queued -- dumping this level's real AllWeatherPresets index->PresetName mapping. Writes nothing.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbphotoweatherlist")
+    registerCmdInfo("lbphotoweatherlist", "lbphotoweatherlist", "Diagnostic only -- dumps this level's REAL CheatWeatherID index -> PresetName mapping (read directly off AllWeatherPresets), since CheatWeatherID is a per-level array index, not a fixed global enum -- the WeatherControl reference mod's name table doesn't necessarily apply here.")
+else
+    log("lbphotoweatherlist unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function photoWeatherListPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingPhotoWeatherList then
+                pendingPhotoWeatherList = false
+                ExecuteInGameThread(function()
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
+                            local okName, n = pcall(function() return comp:GetFullName() end)
+                            if okName and n and not n:find("Default__") then
+                                print(string.format("[LivingBase] [lbphotoweatherlist] %s\n", n))
+                                local presets = nil
+                                local okPresets = pcall(function() presets = comp.AllWeatherPresets end)
+                                local count = 0
+                                pcall(function() count = #presets end)
+                                if not okPresets or presets == nil or count == 0 then
+                                    print("[LivingBase] [lbphotoweatherlist]   could not read AllWeatherPresets (or it's empty).\n")
+                                else
+                                    print(string.format("[LivingBase] [lbphotoweatherlist]   AllWeatherPresets has %d entries (CheatWeatherID is 0-indexed into this array):\n", count))
+                                    for i = 1, count do
+                                        local preset = nil
+                                        pcall(function() preset = presets[i] end)
+                                        if preset then
+                                            local pName = nil
+                                            pcall(function() pName = preset.PresetName end)
+                                            print(string.format("[LivingBase] [lbphotoweatherlist]     CheatWeatherID=%d -> PresetName=%s\n", i - 1, tostring(pName)))
+                                        end
+                                    end
+                                end
+                                local currentID = nil
+                                pcall(function() currentID = comp.CurrentWeatherID end)
+                                print(string.format("[LivingBase] [lbphotoweatherlist]   current CurrentWeatherID=%s\n", tostring(currentID)))
+                            end
+                        end
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbphotoweatherlist] Lua-level error: " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            photoWeatherListPollLoop()
+        end)
+    end
+    photoWeatherListPollLoop()
+end
+
+------------------------------------------------------------
 -- lbfreecam <on|off> -- toggles a free/debug camera detached from the player, for consistent
 -- photo composition. Independent of lbphototime/lbphotoweather.
 ------------------------------------------------------------

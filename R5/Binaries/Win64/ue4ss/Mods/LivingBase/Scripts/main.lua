@@ -7933,3 +7933,55 @@ if RegisterConsoleCommandHandler then
 else
     log("lbphototripod unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
+
+------------------------------------------------------------
+-- lbfirstperson <on|off> -- (2026-09-08) RedFalcon's real "simulate debug mode" ask: a camera at
+-- the player's own eyes, full free mouse-look, not a separately-tracked camera. See
+-- Spawner.SetFirstPerson's own comment -- pulls the EXISTING third-person SpringArm's
+-- TargetArmLength to 0 rather than spawning anything new, so normal look/movement input keeps
+-- working exactly as-is. No queue-then-poll needed (a plain component property write, not one of
+-- the narrow set of operations confirmed to crash synchronously from a console handler).
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfirstperson", function(FullCommand, Parameters, Ar)
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
+            if mode ~= "on" and mode ~= "off" then
+                print(string.format("[LivingBase] [lbfirstperson] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
+                return true
+            end
+            local ok, err = pcall(function() Spawner.SetFirstPerson(mode) end)
+            if not ok then print("[LivingBase] [lbfirstperson] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbfirstperson <on|off>")
+    registerCmdInfo("lbfirstperson", "lbfirstperson <on|off>", "Pulls the camera to the player's own eyes (TargetArmLength=0) for full free mouse-look, simulating debug/free-cam using the existing camera rig. 'off' restores the original third-person distance.")
+else
+    log("lbfirstperson unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+------------------------------------------------------------
+-- lbcameramove <x|y|z> <amount> -- (2026-09-08) nudges the ACTIVE lbphototripod camera along one
+-- world axis by a signed amount, for exact/repeatable positioning (RedFalcon: "then i can give you
+-- exact positioning"). No-ops with a clear message if no tripod camera is currently active.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcameramove", function(FullCommand, Parameters, Ar)
+            local axis = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or nil
+            local amount = tonumber(Parameters and Parameters[2])
+            if not axis or (axis ~= "x" and axis ~= "y" and axis ~= "z") or not amount then
+                print("[LivingBase] [lbcameramove] usage: lbcameramove <x|y|z> <amount>\n")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.MoveTripodCamera(axis, amount) end)
+            if not ok then print("[LivingBase] [lbcameramove] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcameramove <x|y|z> <amount>")
+    registerCmdInfo("lbcameramove", "lbcameramove <x|y|z> <amount>", "Moves the active lbphototripod camera along one world axis (x, y, or z) by a signed amount, for exact/repeatable positioning. No-ops if no tripod camera is active (run lbphototripod on first).")
+else
+    log("lbcameramove unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end

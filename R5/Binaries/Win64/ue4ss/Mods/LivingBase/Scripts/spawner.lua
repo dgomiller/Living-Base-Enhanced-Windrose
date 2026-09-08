@@ -5610,6 +5610,95 @@ end
 -- so not expected to share that system's neutering. 'off' blends the view back to the player's own
 -- pawn and destroys the spawned camera. Only one tripod camera actor is tracked at a time
 -- (Spawner._photoTripodActor) -- calling 'on' again replaces the previous one.
+
+-- Spawner.SetFirstPerson(mode, say) -- "lbfirstperson <on|off>" (2026-09-08). RedFalcon's real
+-- "simulate debug mode" ask: a camera at the player's own eyes, looking the SAME direction they're
+-- facing, with full free mouse-look -- i.e. genuine first-person, not a separately-spawned/tracked
+-- camera at all. The existing third-person rig already IS a SpringArmComponent + camera at the end
+-- of it, following head rotation every frame by design -- pulling TargetArmLength to (near) 0
+-- makes the existing camera sit right at the pivot socket instead of spawning anything new, so
+-- normal mouselook/movement keeps working exactly as it already does. Caches the ORIGINAL
+-- TargetArmLength (read once, on first 'on' this session) so 'off' can restore the exact prior
+-- third-person distance rather than a guessed default.
+function Spawner.SetFirstPerson(mode, say)
+    say = say or function(m) print("[LivingBase] [firstperson] " .. tostring(m) .. "\n") end
+    local pawn
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if not (pawn and pawn:IsValid()) then
+        say("no pawn possessed.")
+        return false
+    end
+    local springArmClass
+    pcall(function() springArmClass = StaticFindObject("/Script/Engine.SpringArmComponent") end)
+    if not (springArmClass and springArmClass:IsValid()) then
+        say("SpringArmComponent class not found.")
+        return false
+    end
+    local comps
+    pcall(function() comps = pawn:GetComponentsByClass(springArmClass) end)
+    local n = 0
+    pcall(function() n = comps and (comps.GetArrayNum and comps:GetArrayNum() or #comps) or 0 end)
+    if n == 0 then
+        say("no SpringArmComponent found on the pawn.")
+        return false
+    end
+    local arm = comps[1]
+    pcall(function() if arm ~= nil and type(arm) == "userdata" and arm.get then arm = arm:get() end end)
+    if not (arm and arm:IsValid()) then
+        say("could not resolve the SpringArmComponent instance.")
+        return false
+    end
+    if mode == "on" then
+        if Spawner._firstPersonOriginalArmLength == nil then
+            pcall(function() Spawner._firstPersonOriginalArmLength = arm.TargetArmLength end)
+        end
+        local ok = pcall(function() arm.TargetArmLength = 0.0 end)
+        say(string.format("first-person ON (TargetArmLength=0): %s. Original length cached: %s",
+            tostring(ok), tostring(Spawner._firstPersonOriginalArmLength)))
+    else
+        local restoreTo = Spawner._firstPersonOriginalArmLength or 300.0
+        local ok = pcall(function() arm.TargetArmLength = restoreTo end)
+        say(string.format("first-person OFF -- restored TargetArmLength=%.1f: %s", restoreTo, tostring(ok)))
+    end
+    return true
+end
+
+-- Spawner.MoveTripodCamera(axis, amount, say) -- "lbcameramove <x|y|z> <amount>" (2026-09-08).
+-- RedFalcon's request for exact, repeatable positioning of the lbphototripod camera: nudge it
+-- along one WORLD axis by a specific signed amount, so exact coordinates can be dialed in over a
+-- few calls rather than guessing distance/heightOffset up front. Only affects the currently-active
+-- Spawner._photoTripodActor (from lbphototripod on) -- no-ops with a clear message if none is
+-- active. Uses K2_GetActorLocation/K2_SetActorLocation, the same proven pattern as
+-- Spawner.WarpNear/lbnudge.
+function Spawner.MoveTripodCamera(axis, amount, say)
+    say = say or function(m) print("[LivingBase] [cameramove] " .. tostring(m) .. "\n") end
+    local cam = Spawner._photoTripodActor
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- run lbphototripod on first.")
+        return false
+    end
+    local loc
+    pcall(function() loc = cam:K2_GetActorLocation() end)
+    if not loc then
+        say("could not read tripod camera location.")
+        return false
+    end
+    local newLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
+    if axis == "x" then newLoc.X = loc.X + amount
+    elseif axis == "y" then newLoc.Y = loc.Y + amount
+    elseif axis == "z" then newLoc.Z = loc.Z + amount
+    else
+        say(string.format("unknown axis '%s' -- use x, y, or z.", tostring(axis)))
+        return false
+    end
+    local ok = pcall(function() cam:K2_SetActorLocation(newLoc, false, {}, false) end)
+    say(string.format("moved %s by %.2f -- now at (%.1f, %.1f, %.1f): %s", axis, amount, newLoc.X, newLoc.Y, newLoc.Z, tostring(ok)))
+    return ok
+end
+
 function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
     say = say or function(m) print("[LivingBase] [phototripod] " .. tostring(m) .. "\n") end
     local pc, pawn

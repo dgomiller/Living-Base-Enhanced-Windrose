@@ -7355,6 +7355,18 @@ end
 -- unchanged) or a bad double-spawn (count increases).
 ------------------------------------------------------------
 local pendingEnableToggle = false
+-- Top-level (not nested in an if-block) so both lbtestenabletoggle and lbtestenabletoggle2 can
+-- share it -- Lua locals declared inside an if-block don't leak out to a later, separate if-block.
+local function countLiveDebugCams()
+    local n = 0
+    for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
+        for _, c in ipairs(FindAllOf(className) or {}) do
+            local okName, name = pcall(function() return c:GetFullName() end)
+            if okName and name and not name:find("Default__") then n = n + 1 end
+        end
+    end
+    return n
+end
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestenabletoggle", function(FullCommand, Parameters, Ar)
@@ -7369,16 +7381,6 @@ else
     log("lbtestenabletoggle unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 if ExecuteWithDelay then
-    local function countLiveDebugCams()
-        local n = 0
-        for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
-            for _, c in ipairs(FindAllOf(className) or {}) do
-                local okName, name = pcall(function() return c:GetFullName() end)
-                if okName and name and not name:find("Default__") then n = n + 1 end
-            end
-        end
-        return n
-    end
     local function enableTogglePollLoop()
         ExecuteWithDelay(200, function()
             if pendingEnableToggle then
@@ -7400,4 +7402,72 @@ if ExecuteWithDelay then
         end)
     end
     enableTogglePollLoop()
+end
+
+------------------------------------------------------------
+-- lbtestenabletoggle2 -- (2026-09-08) Same zero-new-risk EnableDebugCamera()-again test as
+-- lbtestenabletoggle, but re-finds the ORIGINAL controller's CheatManager fresh instead of relying
+-- on cachedFreeCamCheatManager -- RedFalcon confirmed lbreload wiped that Lua-side cache (a script
+-- reload resets all Lua state) even though the actual debug-cam controller is still alive in the
+-- game world. The ORIGINAL controller's CheatManager should still exist (a UObject persists
+-- independent of our Lua reference to it) -- this scans every live PlayerController for the one
+-- with a valid, non-nil CheatManager (the debug-cam controller itself won't have one, matching
+-- lbtestdisablecam4's finding) and uses that.
+------------------------------------------------------------
+local pendingEnableToggle2 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestenabletoggle2", function(FullCommand, Parameters, Ar)
+            pendingEnableToggle2 = true
+            print("[LivingBase] [lbtestenabletoggle2] queued -- re-finding the original CheatManager fresh, then calling EnableDebugCamera() again.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestenabletoggle2")
+    registerCmdInfo("lbtestenabletoggle2", "lbtestenabletoggle2", "Same as lbtestenabletoggle but re-finds the original controller's CheatManager fresh (survives an lbreload, unlike the cached reference) before calling EnableDebugCamera() again.")
+else
+    log("lbtestenabletoggle2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function enableToggle2PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingEnableToggle2 then
+                pendingEnableToggle2 = false
+                ExecuteInGameThread(function()
+                    local ok, err = pcall(function()
+                        local foundCM, foundName = nil, nil
+                        for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+                            local okName, n = pcall(function() return pc:GetFullName() end)
+                            if okName and n and not n:find("Default__") then
+                                local cm = nil
+                                pcall(function() cm = pc.CheatManager end)
+                                if cm and cm:IsValid() then
+                                    foundCM = cm
+                                    foundName = n
+                                    break
+                                end
+                            end
+                        end
+                        if not foundCM then
+                            print("[LivingBase] [lbtestenabletoggle2] no PlayerController with a valid CheatManager found -- cannot proceed.\n")
+                            return
+                        end
+                        print(string.format("[LivingBase] [lbtestenabletoggle2] found CheatManager on: %s\n", foundName))
+                        cachedFreeCamCheatManager = foundCM -- refresh the cache for lbfreecam off too
+                        local before = countLiveDebugCams()
+                        local okCall, errCall = pcall(function() foundCM:EnableDebugCamera() end)
+                        local after = countLiveDebugCams()
+                        print(string.format("[LivingBase] [lbtestenabletoggle2] EnableDebugCamera() again: %s%s -- live debug-cam count before=%d after=%d (%s)\n",
+                            tostring(okCall), okCall and "" or (" (" .. tostring(errCall) .. ")"), before, after,
+                            after < before and "DROPPED -- looks like a toggle-off!" or (after > before and "INCREASED -- spawned another, not a toggle" or "unchanged -- likely a no-op")))
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestenabletoggle2] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            enableToggle2PollLoop()
+        end)
+    end
+    enableToggle2PollLoop()
 end

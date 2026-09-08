@@ -5025,161 +5025,168 @@ else
 end
 
 ------------------------------------------------------------
--- lbphotoscene [hour] -- (2026-09-08, RedFalcon: "pause the day, set it to a specific time and
--- ensure the weather is clear so i can do consistent pictures" -- for the Barbie body-type/origin
--- thumbnail captures, but generally useful any time a consistent, reproducible lighting/weather
--- reference shot is needed). Combines the exact mechanisms of two standalone reference mods found
--- in Other/ (both plain UE4SS Lua, read directly rather than guessed):
---   "WeatherControl Mod v2" -- finds the live (non-CDO) R5N_WeatherComponent and sets its
---   CheatWeatherID (0 = Sunny, per that mod's own WEATHERS table).
---   "Windrose Eternal Day" -- finds the live (non-CDO) R5N_DayCycleTimeComponent and sets
---   DayCycleSpeedInv = 0 (freezes the cycle -- 0 means "advance at 1/0 speed", i.e. never) plus
---   WorldDayTime (a 0-24 float hour-of-day).
--- This folds both into ONE call: freeze time at a CHOSEN hour (not just that mod's own fixed
--- noon) AND force clear weather, so a whole capture session (many spawns, many shots) never needs
--- separate weather/time upkeep once run. Pure world-singleton-component writes, no actor
--- targeting involved at all -- unlike almost everything else in this file -- so there's no
--- target-lock/restore-lock gating to worry about either.
+-- lbphotoscene / lbfreecam -- BOTH DISABLED (2026-09-08), CONFIRMED to crash the game natively.
+-- RedFalcon confirmed live: `lbfreecam on` crashed, and separately `lbphotoscene 14` also
+-- crashed. Parsed all 3 crash dumps directly (a minimal from-scratch minidump parser -- no
+-- debugger installed on this machine -- reading the MINIDUMP_EXCEPTION_STREAM +
+-- MINIDUMP_MODULE_LIST to find which module contains the faulting instruction pointer): all 3 are
+-- EXCEPTION_ACCESS_VIOLATION (0xC0000005), and all 3 land inside UE4SS.dll itself at nearly
+-- IDENTICAL offsets (0x3a9114 for both lbphotoscene attempts, 0x3a9139 for lbfreecam -- 37 bytes
+-- apart, same code region) -- NOT inside the game's own Windrose-Win64-Shipping.exe. This means
+-- the crash is in UE4SS's own generic Lua<->native reflection bridge, triggered by touching a
+-- property/function shape it's never been asked to touch before in this project -- not a logic
+-- bug in the Lua written here.
+--
+-- Confirmed NOT stale/wrong names: R5N_DayCycleTimeComponent/R5N_WeatherComponent and their
+-- WorldDayTime/DayCycleSpeedInv/CheatWeatherID properties, plus UCheatManager::
+-- EnableDebugCamera()/DisableDebugCamera(), all genuinely exist in this exact build's own SDK
+-- header dump -- this isn't a version-drift problem the way a stale class path usually is here.
+--
+-- One real, structural difference worth following up when this is picked back up: CheatWeatherID
+-- (and its siblings CurrentWeatherID/NextWeatherID/SeasonID) are declared `int8` and only
+-- `EditAnywhere` (NOT `BlueprintReadWrite`) -- unlike WorldDayTime/DayCycleSpeedInv, which are
+-- ordinary `float`+`BlueprintReadWrite`, the exact shape this project writes constantly elsewhere
+-- without incident. A narrow, non-Blueprint-exposed int8 property is a genuinely different,
+-- untested shape for this project's own property-write code -- plausible trigger for the weather
+-- write specifically, though it doesn't obviously explain EnableDebugCamera's crash landing at a
+-- near-identical offset (a totally different operation: a UFUNCTION CALL, not a property SET).
+--
+-- NEXT STEP, not yet done: isolate which SPECIFIC one of the 3 writes/calls
+-- (DayCycleTimeComponent's floats / WeatherComponent's int8 / CheatManager's EnableDebugCamera)
+-- is the actual trigger, one at a time, rather than re-testing the combined crash-confirmed
+-- commands again. Do NOT re-enable either command above as originally written until that's done.
 ------------------------------------------------------------
-local function applyPhotoScene(hour)
-    hour = tonumber(hour)
-    if hour == nil then hour = 12.0 end
-    -- Clamp into the sane 0-24 range rather than handing the day-cycle component a value it was
-    -- never designed for (negative, or past 24) -- neither reference mod bothered clamping since
-    -- both only ever wrote their own single hardcoded value.
-    if hour < 0 then hour = 0 end
-    if hour > 24 then hour = 24 end
 
-    local dayCount = 0
-    for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
-        local ok, name = pcall(function() return comp:GetFullName() end)
-        if ok and name and not name:find("Default__") then
-            local setOk = pcall(function()
-                comp.DayCycleSpeedInv = 0
-                comp.WorldDayTime = hour
-            end)
-            if setOk then dayCount = dayCount + 1 end
-        end
-    end
-
-    local weatherCount = 0
-    for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
-        local ok, name = pcall(function() return comp:GetFullName() end)
-        if ok and name and not name:find("Default__") then
-            local setOk = pcall(function() comp.CheatWeatherID = 0 end) -- 0 = Sunny
-            if setOk then weatherCount = weatherCount + 1 end
-        end
-    end
-
-    return hour, dayCount, weatherCount
-end
-
+------------------------------------------------------------
+-- lbtestdaytime [hour] / lbtestweather / lbtestenablecam -- (2026-09-08) the 3 isolated pieces of
+-- the crash-confirmed lbphotoscene/lbfreecam above, split apart so each can be tried ONE AT A
+-- TIME rather than risking the combined crash again. Each logs a "starting attempt" line BEFORE
+-- the risky call, not just after -- if it crashes, a native access violation leaves NO further log
+-- output at all (confirmed 3 times already), so the LAST line printed is the only evidence of
+-- which specific operation was running at the moment of the crash. Try lbtestdaytime FIRST (a
+-- plain float write, the same property shape this project already writes constantly elsewhere
+-- without incident -- most likely to be safe), then lbtestweather (the int8, non-
+-- BlueprintReadWrite property -- prime suspect), then lbtestenablecam (the protected UFUNCTION
+-- call) only once the first two are known-safe or known-bad. Report back after EACH one, in order,
+-- rather than running all three before reporting -- a crash means the game needs restarting before
+-- the next test anyway.
+------------------------------------------------------------
 if RegisterConsoleCommandHandler then
     pcall(function()
-        RegisterConsoleCommandHandler("lbphotoscene", function(FullCommand, Parameters, Ar)
+        RegisterConsoleCommandHandler("lbtestdaytime", function(FullCommand, Parameters, Ar)
             local function say(msg)
-                print("[LivingBase] [lbphotoscene] " .. msg .. "\n")
+                print("[LivingBase] [lbtestdaytime] " .. msg .. "\n")
                 pcall(function()
                     if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
                         Ar:Log(msg)
                     end
                 end)
             end
-            local hourArg = Parameters and Parameters[1]
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
             ExecuteInGameThread(function()
-                local ok, hour, dayCount, weatherCount = pcall(applyPhotoScene, hourArg)
-                if not ok then
-                    say("FAILED: " .. tostring(hour))
+                say(string.format("starting attempt -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f/DayCycleSpeedInv=0 (float-only, ISOLATED from the weather int8 write and the CheatManager call).", hour))
+                local count = 0
+                local ok, err = pcall(function()
+                    for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                        local okName, name = pcall(function() return comp:GetFullName() end)
+                        if okName and name and not name:find("Default__") then
+                            comp.DayCycleSpeedInv = 0
+                            comp.WorldDayTime = hour
+                            count = count + 1
+                        end
+                    end
+                end)
+                if ok then
+                    say(string.format("done, no crash -- %d component(s) written.", count))
+                else
+                    say("Lua-level error (not a crash): " .. tostring(err))
+                end
+            end)
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime [hour]")
+    registerCmdInfo("lbtestdaytime", "lbtestdaytime [hour]", "ISOLATED crash-diagnostic (2026-09-08): freezes JUST the day/night cycle at the given hour, no weather write, no camera call. See lbphotoscene's own disabled comment for why this was split apart.")
+else
+    log("lbtestdaytime unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestweather", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestweather] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            ExecuteInGameThread(function()
+                say("starting attempt -- FindAllOf('R5N_WeatherComponent') then write CheatWeatherID=0 (an int8, EditAnywhere-only property, NOT BlueprintReadWrite -- the prime suspect; ISOLATED from the day-cycle write and the CheatManager call).")
+                local count = 0
+                local ok, err = pcall(function()
+                    for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
+                        local okName, name = pcall(function() return comp:GetFullName() end)
+                        if okName and name and not name:find("Default__") then
+                            comp.CheatWeatherID = 0
+                            count = count + 1
+                        end
+                    end
+                end)
+                if ok then
+                    say(string.format("done, no crash -- %d component(s) written.", count))
+                else
+                    say("Lua-level error (not a crash): " .. tostring(err))
+                end
+            end)
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestweather")
+    registerCmdInfo("lbtestweather", "lbtestweather", "ISOLATED crash-diagnostic (2026-09-08): forces JUST clear/Sunny weather, no day-cycle write, no camera call. See lbphotoscene's own disabled comment for why this was split apart.")
+else
+    log("lbtestweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestenablecam", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestenablecam] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            ExecuteInGameThread(function()
+                say("starting attempt -- PlayerController.CheatManager:EnableDebugCamera() (the protected, non-Exec UFUNCTION call; ISOLATED from both component writes above).")
+                local pc = UEHelpers.GetPlayerController()
+                if not (pc and pc:IsValid()) then
+                    say("no player controller -- nothing attempted.")
                     return
                 end
-                if dayCount == 0 then
-                    say("WARNING: no live R5N_DayCycleTimeComponent found -- time not frozen/set.")
+                local cheatManager = nil
+                pcall(function() cheatManager = pc.CheatManager end)
+                if not (cheatManager and cheatManager:IsValid()) then
+                    say("no CheatManager on player controller -- nothing attempted.")
+                    return
                 end
-                if weatherCount == 0 then
-                    say("WARNING: no live R5N_WeatherComponent found -- weather not forced clear.")
-                end
-                say(string.format("day frozen at %.2f (%d component(s)), weather forced Sunny (%d component(s)).",
-                    hour, dayCount, weatherCount))
-            end)
-            return true
-        end)
-    end)
-    log("Console command registered: lbphotoscene [hour]")
-    registerCmdInfo("lbphotoscene", "lbphotoscene [hour]", "Freezes the day/night cycle at the given hour (0-24, default 12=noon) and forces clear/Sunny weather -- for consistent reference/thumbnail screenshots. No target needed, affects the whole world. One-shot; run again with a different hour to change it, there's no separate 'undo'.")
-else
-    log("lbphotoscene unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
-
-------------------------------------------------------------
--- lbfreecam <on|off> -- (2026-09-08, RedFalcon: "can we unhook the camera from the player and make
--- a free cam?"). Windrose ships its own AR5DebugCameraController -- a real, Blueprintable subclass
--- of the base engine's ADebugCameraController, confirmed via the UE4SS SDK header dump, not
--- guessed -- so the native `ToggleDebugCamera` console command genuinely activates a proper free-
--- flying camera fully detached from the player (RedFalcon confirmed this live: typing it once
--- turns it on). BUT typing it again to turn back off does nothing -- confirmed live too (console
--- stays responsive, behavior never changes no matter how many times it's typed) -- a real bug/
--- reassertion issue in Windrose's own toggle state tracking, not an input-routing problem.
---
--- The fix: `ToggleDebugCamera` almost certainly just flips a bool and calls one of
--- `UCheatManager::EnableDebugCamera()`/`DisableDebugCamera()` -- both confirmed to exist in the SDK
--- dump, no-argument, void-returning (about as low-risk a call shape as this project ever
--- encounters). Both are PROTECTED and NOT Exec-tagged, so neither can be typed into the console
--- directly -- but UE4SS's own Lua reflection calls a UFUNCTION by name regardless of its C++
--- access level, so this bypasses whatever's broken in the toggle wrapper entirely by calling
--- Enable/Disable directly instead of relying on it.
-------------------------------------------------------------
-local function setFreeCam(wantOn)
-    local pc = UEHelpers.GetPlayerController()
-    if not (pc and pc:IsValid()) then return false, "no player controller" end
-    local cheatManager = nil
-    pcall(function() cheatManager = pc.CheatManager end)
-    if not (cheatManager and cheatManager:IsValid()) then return false, "no CheatManager on player controller" end
-    local ok, err = pcall(function()
-        if wantOn then
-            cheatManager:EnableDebugCamera()
-        else
-            cheatManager:DisableDebugCamera()
-        end
-    end)
-    if not ok then return false, tostring(err) end
-    return true
-end
-
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbfreecam", function(FullCommand, Parameters, Ar)
-            local function say(msg)
-                print("[LivingBase] [lbfreecam] " .. msg .. "\n")
-                pcall(function()
-                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
-                        Ar:Log(msg)
-                    end
-                end)
-            end
-            local arg = Parameters and Parameters[1]
-            local argLower = arg and tostring(arg):lower()
-            local wantOn
-            if argLower == "off" then
-                wantOn = false
-            elseif argLower == "on" then
-                wantOn = true
-            else
-                say("usage: lbfreecam <on|off>")
-                return true
-            end
-            ExecuteInGameThread(function()
-                local ok, err = setFreeCam(wantOn)
+                local ok, err = pcall(function() cheatManager:EnableDebugCamera() end)
                 if ok then
-                    say(wantOn and "free camera ON (EnableDebugCamera)" or "free camera OFF (DisableDebugCamera)")
+                    say("done, no crash -- EnableDebugCamera() returned normally.")
                 else
-                    say("FAILED: " .. tostring(err))
+                    say("Lua-level error (not a crash): " .. tostring(err))
                 end
             end)
             return true
         end)
     end)
-    log("Console command registered: lbfreecam <on|off>")
-    registerCmdInfo("lbfreecam", "lbfreecam <on|off>", "Calls Windrose's own UCheatManager:EnableDebugCamera()/DisableDebugCamera() directly, bypassing the native ToggleDebugCamera console command (its off-branch doesn't reliably work). A free-flying camera fully detached from the player, for consistent reference/thumbnail screenshots.")
+    log("Console command registered: lbtestenablecam")
+    registerCmdInfo("lbtestenablecam", "lbtestenablecam", "ISOLATED crash-diagnostic (2026-09-08): calls JUST CheatManager:EnableDebugCamera(), no component writes. See lbfreecam's own disabled comment for why this was split apart. Only try this AFTER lbtestdaytime/lbtestweather are known-safe or known-bad.")
 else
-    log("lbfreecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+    log("lbtestenablecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

@@ -5109,3 +5109,77 @@ if RegisterConsoleCommandHandler then
 else
     log("lbphotoscene unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
+
+------------------------------------------------------------
+-- lbfreecam <on|off> -- (2026-09-08, RedFalcon: "can we unhook the camera from the player and make
+-- a free cam?"). Windrose ships its own AR5DebugCameraController -- a real, Blueprintable subclass
+-- of the base engine's ADebugCameraController, confirmed via the UE4SS SDK header dump, not
+-- guessed -- so the native `ToggleDebugCamera` console command genuinely activates a proper free-
+-- flying camera fully detached from the player (RedFalcon confirmed this live: typing it once
+-- turns it on). BUT typing it again to turn back off does nothing -- confirmed live too (console
+-- stays responsive, behavior never changes no matter how many times it's typed) -- a real bug/
+-- reassertion issue in Windrose's own toggle state tracking, not an input-routing problem.
+--
+-- The fix: `ToggleDebugCamera` almost certainly just flips a bool and calls one of
+-- `UCheatManager::EnableDebugCamera()`/`DisableDebugCamera()` -- both confirmed to exist in the SDK
+-- dump, no-argument, void-returning (about as low-risk a call shape as this project ever
+-- encounters). Both are PROTECTED and NOT Exec-tagged, so neither can be typed into the console
+-- directly -- but UE4SS's own Lua reflection calls a UFUNCTION by name regardless of its C++
+-- access level, so this bypasses whatever's broken in the toggle wrapper entirely by calling
+-- Enable/Disable directly instead of relying on it.
+------------------------------------------------------------
+local function setFreeCam(wantOn)
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then return false, "no player controller" end
+    local cheatManager = nil
+    pcall(function() cheatManager = pc.CheatManager end)
+    if not (cheatManager and cheatManager:IsValid()) then return false, "no CheatManager on player controller" end
+    local ok, err = pcall(function()
+        if wantOn then
+            cheatManager:EnableDebugCamera()
+        else
+            cheatManager:DisableDebugCamera()
+        end
+    end)
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfreecam", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbfreecam] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local arg = Parameters and Parameters[1]
+            local argLower = arg and tostring(arg):lower()
+            local wantOn
+            if argLower == "off" then
+                wantOn = false
+            elseif argLower == "on" then
+                wantOn = true
+            else
+                say("usage: lbfreecam <on|off>")
+                return true
+            end
+            ExecuteInGameThread(function()
+                local ok, err = setFreeCam(wantOn)
+                if ok then
+                    say(wantOn and "free camera ON (EnableDebugCamera)" or "free camera OFF (DisableDebugCamera)")
+                else
+                    say("FAILED: " .. tostring(err))
+                end
+            end)
+            return true
+        end)
+    end)
+    log("Console command registered: lbfreecam <on|off>")
+    registerCmdInfo("lbfreecam", "lbfreecam <on|off>", "Calls Windrose's own UCheatManager:EnableDebugCamera()/DisableDebugCamera() directly, bypassing the native ToggleDebugCamera console command (its off-branch doesn't reliably work). A free-flying camera fully detached from the player, for consistent reference/thumbnail screenshots.")
+else
+    log("lbfreecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end

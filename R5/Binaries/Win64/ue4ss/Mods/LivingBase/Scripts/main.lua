@@ -6388,7 +6388,7 @@ if ExecuteWithDelay then
                                     pcall(function() entry = list[i] end)
                                     if entry then
                                         local entryName = nil
-                                        pcall(function() entryName = entry.Name end)
+                                        pcall(function() entryName = entry.Name:ToString() end)
                                         local intervals = nil
                                         pcall(function() intervals = entry.HourIntervals end)
                                         local intervalCount = 0
@@ -7005,7 +7005,7 @@ if ExecuteWithDelay then
                                         pcall(function() preset = presets[i] end)
                                         if preset then
                                             local pName = nil
-                                            pcall(function() pName = preset.PresetName end)
+                                            pcall(function() pName = preset.PresetName:ToString() end)
                                             print(string.format("[LivingBase] [lbphotoweatherlist]     CheatWeatherID=%d -> PresetName=%s\n", i - 1, tostring(pName)))
                                         end
                                     end

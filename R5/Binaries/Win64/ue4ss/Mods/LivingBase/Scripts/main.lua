@@ -6758,3 +6758,236 @@ if RegisterConsoleCommandHandler then
 else
     log("lbtestenablecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
+
+----------------------------------------------------------------------------------------------------
+-- FINAL PRODUCTION COMMANDS (2026-09-08) -- lbphototime / lbphotoweather / lbfreecam
+--
+-- Everything above this point (lbtestdaytime through lbtestdaytime17, lbtestweather/2,
+-- lbtestenablecam/2, lbtestdisablecam2) was the diagnostic trail that got here -- see the big
+-- disabled-command writeup near the top of this section for the original crash and the full
+-- isolation process. Kept in place for the historical record; these three are the real,
+-- confirmed-working replacements RedFalcon actually uses. Deliberately kept as THREE INDEPENDENT
+-- commands rather than one combined "lbphotoscene" -- RedFalcon's own call: weather can change
+-- mid-session and needs to be reset without waiting through a whole day-cycle convergence again,
+-- and the free camera needs to toggle independently too.
+--
+-- Root causes fixed, for reference:
+--   1. All three native touches (day-cycle property writes, weather property write, camera
+--      UFUNCTION call) crash UE4SS.dll itself if done SYNCHRONOUSLY inside a
+--      RegisterConsoleCommandHandler callback, even wrapped in ExecuteInGameThread. Fix: the
+--      console handler only ever queues a request; a separate, independently-recurring
+--      ExecuteWithDelay poll loop performs the actual native work.
+--   2. WorldDayTime is a one-time BeginPlay seed the visible clock never reads back after --
+--      writing it directly has zero effect. The only property with real, lasting effect is
+--      DayCycleSpeedInv, but changing it a SECOND time causes an unpredictable jump (no reliable
+--      formula found) -- so it must be set ONCE and never touched again while converging.
+--   3. The true, exact freeze (no residual drift) is comp:SetComponentTickEnabled(false) -- an
+--      engine-level UActorComponent method, not a custom property. It must be re-enabled
+--      (SetComponentTickEnabled(true)) at the START of the next run, or nothing (including further
+--      DayCycleSpeedInv writes) will have any effect since Tick() never runs again to consume them.
+--   4. GetCurrentTimeInHours()'s own raw 0-24 scale does not match a real 24-hour clock 1:1 (this
+--      level's day is far longer than its night -- DayDuration=3300/NightDuration=800). Converted
+--      via realHourToRawHour(), a linear fit from two visually-confirmed anchors (midnight=raw 0,
+--      noon=raw 11).
+--   5. EnableDebugCamera() spawns a NEW ADebugCameraController that becomes what
+--      UEHelpers.GetPlayerController() returns afterward -- it has no CheatManager of its own, so
+--      DisableDebugCamera() must be called on the ORIGINAL CheatManager, cached at enable-time.
+----------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------
+-- lbphototime [realHour] [speedInv] -- sets the day/night cycle to a specific hour on a REAL
+-- 24-hour clock (e.g. 14 for 2pm) and freezes it there exactly, for repeatable photo lighting.
+-- speedInv (default 0.0125, ~51s worst-case wait) controls how fast it fast-forwards to get there
+-- -- lower is faster. Safe to re-run any number of times, including after a previous freeze.
+------------------------------------------------------------
+local pendingPhotoTime = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbphototime", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.0125
+            local rawHour = realHourToRawHour(realHour)
+            pendingPhotoTime = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbphototime] setting time to %.2f -- fast-forwarding then freezing exactly (progress prints every ~2s).\n", realHour))
+            return true
+        end)
+    end)
+    log("Console command registered: lbphototime [realHour] [speedInv]")
+    registerCmdInfo("lbphototime", "lbphototime [realHour] [speedInv]", "Sets the day/night cycle to a specific hour on a real 24-hour clock (e.g. 14 for 2pm) and freezes it there EXACTLY (comp:SetComponentTickEnabled(false)) for repeatable photo lighting. Safe to re-run any number of times. speedInv (default 0.0125) controls fast-forward speed -- lower is faster.")
+else
+    log("lbphototime unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function findPhotoTimeComp()
+        for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+            local okName, n = pcall(function() return c:GetFullName() end)
+            if okName and n and not n:find("Default__") then return c, n end
+        end
+        return nil, nil
+    end
+    local function photoTimePollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingPhotoTime ~= false then
+                local req = pendingPhotoTime
+                local comp, name = findPhotoTimeComp()
+                if not comp then
+                    print("[LivingBase] [lbphototime] day-cycle component not found -- aborting.\n")
+                    pendingPhotoTime = false
+                elseif req.stage == "start" then
+                    -- Re-enable tick first -- a previous run may have frozen it, and while
+                    -- disabled, nothing (including DayCycleSpeedInv writes) has any effect.
+                    pcall(function() comp:SetComponentTickEnabled(true) end)
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbphototime] could not read current hour -- aborting.\n")
+                        pendingPhotoTime = false
+                    else
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbphototime] current hour~%.2f, heading to real %.2f (raw %.4f) at speedInv=%.4f...\n", h0, req.realHour, req.rawHour, req.speedInv))
+                        pendingPhotoTime = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
+                    end
+                elseif req.stage == "waiting" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        local ok = pcall(function() comp:SetComponentTickEnabled(false) end)
+                        print(string.format("[LivingBase] [lbphototime] ARRIVED at real %.2f (%d ticks) -- %s. Ready for your photo.\n", req.realHour, req.ticks, ok and "frozen exactly" or "freeze call failed, time will keep drifting"))
+                        pendingPhotoTime = false
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbphototime] safety cutoff (~220s) -- last hour=%s, still heading to real %.2f.\n", tostring(h), req.realHour))
+                        pendingPhotoTime = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbphototime] ...en route: hour~%s, remaining~%s (%ds elapsed)\n", tostring(h), tostring(remaining), math.floor(req.ticks * 0.2)))
+                        end
+                        pendingPhotoTime = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = req.ticks + 1 }
+                    end
+                end
+            end
+            photoTimePollLoop()
+        end)
+    end
+    photoTimePollLoop()
+end
+
+------------------------------------------------------------
+-- lbphotoweather -- forces clear/Sunny weather immediately, independent of lbphototime. Safe to
+-- run any time, as often as needed (e.g. weather changed mid-session while composing a shot).
+------------------------------------------------------------
+local pendingPhotoWeather = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbphotoweather", function(FullCommand, Parameters, Ar)
+            pendingPhotoWeather = true
+            print("[LivingBase] [lbphotoweather] clearing weather...\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbphotoweather")
+    registerCmdInfo("lbphotoweather", "lbphotoweather", "Forces clear/Sunny weather immediately, independent of lbphototime/lbfreecam. Safe to re-run any time weather changes mid-session.")
+else
+    log("lbphotoweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function photoWeatherPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingPhotoWeather then
+                pendingPhotoWeather = false
+                ExecuteInGameThread(function()
+                    local count = 0
+                    local ok, err = pcall(function()
+                        for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
+                            local okName, n = pcall(function() return comp:GetFullName() end)
+                            if okName and n and not n:find("Default__") then
+                                comp.CheatWeatherID = 0
+                                count = count + 1
+                            end
+                        end
+                    end)
+                    if ok then
+                        print(string.format("[LivingBase] [lbphotoweather] done -- %d weather component(s) set to clear/Sunny.\n", count))
+                    else
+                        print("[LivingBase] [lbphotoweather] Lua-level error: " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            photoWeatherPollLoop()
+        end)
+    end
+    photoWeatherPollLoop()
+end
+
+------------------------------------------------------------
+-- lbfreecam <on|off> -- toggles a free/debug camera detached from the player, for consistent
+-- photo composition. Independent of lbphototime/lbphotoweather.
+------------------------------------------------------------
+local pendingFreeCam = nil
+local cachedFreeCamCheatManager = nil
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbfreecam", function(FullCommand, Parameters, Ar)
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
+            if mode ~= "on" and mode ~= "off" then
+                print(string.format("[LivingBase] [lbfreecam] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
+                return true
+            end
+            pendingFreeCam = mode
+            print(string.format("[LivingBase] [lbfreecam] turning %s...\n", mode))
+            return true
+        end)
+    end)
+    log("Console command registered: lbfreecam <on|off>")
+    registerCmdInfo("lbfreecam", "lbfreecam <on|off>", "Toggles a free/debug camera detached from the player, for consistent photo composition. Independent of lbphototime/lbphotoweather.")
+else
+    log("lbfreecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function freeCamPollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingFreeCam ~= nil then
+                local mode = pendingFreeCam
+                pendingFreeCam = nil
+                ExecuteInGameThread(function()
+                    if mode == "on" then
+                        local pc = UEHelpers.GetPlayerController()
+                        if not (pc and pc:IsValid()) then
+                            print("[LivingBase] [lbfreecam] no player controller -- nothing attempted.\n")
+                            return
+                        end
+                        local cheatManager = nil
+                        pcall(function() cheatManager = pc.CheatManager end)
+                        if not (cheatManager and cheatManager:IsValid()) then
+                            print("[LivingBase] [lbfreecam] no CheatManager on player controller -- nothing attempted (already on?).\n")
+                            return
+                        end
+                        local ok, err = pcall(function() cheatManager:EnableDebugCamera() end)
+                        if ok then
+                            cachedFreeCamCheatManager = cheatManager
+                            print("[LivingBase] [lbfreecam] free camera ON.\n")
+                        else
+                            print("[LivingBase] [lbfreecam] error enabling: " .. tostring(err) .. "\n")
+                        end
+                    else
+                        local cheatManager = cachedFreeCamCheatManager
+                        if not (cheatManager and cheatManager:IsValid()) then
+                            print("[LivingBase] [lbfreecam] no cached CheatManager -- was 'lbfreecam on' run this session? nothing attempted.\n")
+                            return
+                        end
+                        local ok, err = pcall(function() cheatManager:DisableDebugCamera() end)
+                        if ok then
+                            print("[LivingBase] [lbfreecam] free camera OFF.\n")
+                        else
+                            print("[LivingBase] [lbfreecam] error disabling: " .. tostring(err) .. "\n")
+                        end
+                    end
+                end)
+            end
+            freeCamPollLoop()
+        end)
+    end
+    freeCamPollLoop()
+end

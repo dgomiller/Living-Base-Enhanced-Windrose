@@ -6149,6 +6149,77 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime14 [realHour] -- (2026-09-08) DIAGNOSTIC/EXPERIMENT: direct one-shot jump instead
+-- of fast-forwarding at all. lbtestdaytime13's switch data fit a clean formula almost exactly:
+-- hour_new = hour_old * (speedOld/speedNew) -- 9.859*(0.025/1.5)=0.164, matching the observed
+-- 0.165. (The much earlier lbtestdaytime10 case, 0.01->20, did NOT fit this -- that may only hold
+-- for more moderate ratios, or that data point was noisier -- untested at this ratio range.) If
+-- this formula holds in general, we don't need to fast-forward through the whole cycle at all --
+-- just read whatever the CURRENT hour and speedInv happen to be, and directly solve for the
+-- speedNew that makes hour_new equal the target: speedNew = speedOld * (hour_old/hour_target).
+-- One write, one tick to verify. If this works reliably it replaces lbtestdaytime9/11/12/13
+-- entirely with something far simpler and instant.
+------------------------------------------------------------
+local pendingDayTime14 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime14", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local rawTarget = realHourToRawHour(realHour)
+            pendingDayTime14 = { stage = 1, realHour = realHour, rawTarget = rawTarget }
+            print(string.format("[LivingBase] [lbtestdaytime14] queued realHour=%.2f -> rawTarget=%.4f -- will compute speedNew = speedOld*(hourOld/rawTarget) and write it in ONE shot, no fast-forward.\n", realHour, rawTarget))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime14 [realHour]")
+    registerCmdInfo("lbtestdaytime14", "lbtestdaytime14 [realHour]", "Experimental: instead of fast-forwarding, directly solves for the DayCycleSpeedInv that should make the CURRENT hour equal the target hour in one write (hour_new = hour_old*(speedOld/speedNew)), based on a formula that fit lbtestdaytime13's switch data closely. No waiting if it works.")
+else
+    log("lbtestdaytime14 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime14PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime14 ~= false then
+                local req = pendingDayTime14
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime14] component not found -- aborting.\n")
+                    pendingDayTime14 = false
+                elseif req.stage == 1 then
+                    local hOld, speedOld = nil, nil
+                    pcall(function() hOld = comp:GetCurrentTimeInHours() end)
+                    pcall(function() speedOld = comp.DayCycleSpeedInv end)
+                    if hOld == nil or speedOld == nil or hOld < 0.01 or req.rawTarget < 0.01 then
+                        print(string.format("[LivingBase] [lbtestdaytime14] hOld=%s speedOld=%s rawTarget=%.4f -- too close to zero to safely divide, aborting (try again, or nudge realHour slightly).\n", tostring(hOld), tostring(speedOld), req.rawTarget))
+                        pendingDayTime14 = false
+                    else
+                        local speedNew = speedOld * (hOld / req.rawTarget)
+                        comp.DayCycleSpeedInv = speedNew
+                        print(string.format("[LivingBase] [lbtestdaytime14] hOld=%.4f speedOld=%.4f rawTarget=%.4f -> computed speedNew=%.6f, wrote it. Reading back next tick...\n", hOld, speedOld, req.rawTarget, speedNew))
+                        pendingDayTime14 = { stage = 2, realHour = req.realHour, rawTarget = req.rawTarget }
+                    end
+                elseif req.stage == 2 then
+                    local hFinal = nil
+                    pcall(function() hFinal = comp:GetCurrentTimeInHours() end)
+                    print(string.format("[LivingBase] [lbtestdaytime14] FINAL readback: hour=%s (target raw %.4f, real %.2f). %s\n",
+                        tostring(hFinal), req.rawTarget, req.realHour,
+                        (hFinal and math.abs(hFinal - req.rawTarget) < 0.3) and "MATCH -- the formula works!" or "off -- formula doesn't generalize this far, back to the fast-forward approach."))
+                    pendingDayTime14 = false
+                end
+            end
+            dayTime14PollLoop()
+        end)
+    end
+    dayTime14PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

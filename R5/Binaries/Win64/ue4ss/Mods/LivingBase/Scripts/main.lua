@@ -6220,6 +6220,198 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime15 [realHour] [speedInv] -- (2026-09-08) TRUE FREEZE ATTEMPT. RedFalcon's actual
+-- requirement: get the sun to a specific spot and KEEP it there exactly, for repeatable photos --
+-- lbtestdaytime12's small residual drift isn't good enough, and lbtestdaytime13/14 proved
+-- DayCycleSpeedInv changes are fundamentally unpredictable (no reliable formula), so switching
+-- speed again is off the table entirely. Different lever: the Settings sub-object (found directly
+-- via FindAllOf, see lbtestdaytime8) has bDynamicDayTime (currently true) -- its NAME suggests
+-- it's the actual intended "pause the whole day cycle" switch, a completely different property
+-- from DayCycleSpeedInv, so it may not share the same jump-on-write behavior. Plan: converge
+-- normally with ONE fixed speedInv (same safe approach as lbtestdaytime12, no switching), then once
+-- arrived, flip bDynamicDayTime to false on the settings component INSTEAD of touching speedInv
+-- again, and verify across a few ticks that the hour then holds rock-steady (not just slowly, but
+-- EXACTLY).
+------------------------------------------------------------
+local pendingDayTime15 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime15", function(FullCommand, Parameters, Ar)
+            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
+            if realHour < 0 then realHour = 0 end
+            if realHour > 24 then realHour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
+            local rawHour = realHourToRawHour(realHour)
+            pendingDayTime15 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime15] queued realHour=%.2f -> rawHour=%.4f speedInv=%.4f -- converges normally (no speed switch), then flips bDynamicDayTime=false to try a TRUE freeze.\n", realHour, rawHour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime15 [realHour] [speedInv]")
+    registerCmdInfo("lbtestdaytime15", "lbtestdaytime15 [realHour] [speedInv]", "Same safe single-speed convergence as lbtestdaytime12, but once arrived, flips bDynamicDayTime=false on the settings component (a different property than DayCycleSpeedInv, hopefully without the same jump-on-write behavior) to try for a TRUE exact freeze instead of accepting slow residual drift -- for repeatable photo lighting.")
+else
+    log("lbtestdaytime15 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function findSettingsComp()
+        for _, sc in ipairs(FindAllOf("R5N_DayCycleTimeSettingsComponent") or {}) do
+            local okName, n = pcall(function() return sc:GetFullName() end)
+            if okName and n and not n:find("Default__") then return sc, n end
+        end
+        return nil, nil
+    end
+    local function dayTime15PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime15 ~= false then
+                local req = pendingDayTime15
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime15] component not found -- aborting.\n")
+                    pendingDayTime15 = false
+                elseif req.stage == "start" then
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbtestdaytime15] could not read current hour -- aborting.\n")
+                        pendingDayTime15 = false
+                    else
+                        local distance = (req.rawHour - h0) % 24
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbtestdaytime15] current raw hour=%.4f, target raw=%.4f (real %.2f), distance=%.4f -- set DayCycleSpeedInv=%.4f ONCE and converging...\n", h0, req.rawHour, req.realHour, distance, req.speedInv))
+                        pendingDayTime15 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
+                    end
+                elseif req.stage == "waiting" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.rawHour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        local sc, scName = findSettingsComp()
+                        if not sc then
+                            print(string.format("[LivingBase] [lbtestdaytime15] ARRIVED at hour=%.4f, but no settings component found to freeze -- leaving DayCycleSpeedInv=%.4f as-is (will keep slowly drifting).\n", h, req.speedInv))
+                            pendingDayTime15 = false
+                        else
+                            sc.bDynamicDayTime = false
+                            print(string.format("[LivingBase] [lbtestdaytime15] ARRIVED -- hour=%.4f (target raw %.4f, real %.2f) after %d ticks. Set bDynamicDayTime=false on %s. Verifying it holds across the next few ticks...\n", h, req.rawHour, req.realHour, req.ticks, scName))
+                            pendingDayTime15 = { stage = "verify", rawHour = req.rawHour, realHour = req.realHour, verifyTicks = 0, hAtFreeze = h }
+                        end
+                    elseif req.ticks >= 1100 then
+                        print(string.format("[LivingBase] [lbtestdaytime15] safety cutoff (1100 ticks) -- last hour=%s, target=%.4f.\n", tostring(h), req.rawHour))
+                        pendingDayTime15 = false
+                    else
+                        if req.ticks % 10 == 0 then
+                            print(string.format("[LivingBase] [lbtestdaytime15] ...still en route: hour=%s, target raw=%.4f (real %.2f), remaining=%s (%d ticks / ~%ds elapsed)\n",
+                                tostring(h), req.rawHour, req.realHour, tostring(remaining), req.ticks, math.floor(req.ticks * 0.2)))
+                        end
+                        pendingDayTime15 = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = req.ticks + 1 }
+                    end
+                elseif req.stage == "verify" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    print(string.format("[LivingBase] [lbtestdaytime15] verify tick %d/5: hour=%s (was %.4f at freeze moment)\n", req.verifyTicks + 1, tostring(h), req.hAtFreeze))
+                    if req.verifyTicks >= 4 then
+                        print(string.format("[LivingBase] [lbtestdaytime15] verify complete -- if the hour above stayed the same across all 5 ticks, bDynamicDayTime=false is a genuine, exact freeze. If it kept drifting, it's not the right lever either.\n"))
+                        pendingDayTime15 = false
+                    else
+                        pendingDayTime15 = { stage = "verify", rawHour = req.rawHour, realHour = req.realHour, verifyTicks = req.verifyTicks + 1, hAtFreeze = req.hAtFreeze }
+                    end
+                end
+            end
+            dayTime15PollLoop()
+        end)
+    end
+    dayTime15PollLoop()
+end
+
+------------------------------------------------------------
+-- lbtestdaytime16 -- (2026-09-08) DIAGNOSTIC, GROUND TRUTH. RedFalcon's own observation: sleeping
+-- in a bed reliably fast-forwards to dawn/dusk every time -- meaning the game has a REAL, working,
+-- native mechanism for this that we should be reading, not reverse-engineering. Found it in the
+-- SDK header dump: UR5SleepParams (the sleep ability's data asset) has DayCycleSpeed (note: NOT
+-- ...Inv, a different property) + DayCycleTimesToStopSleep (a set of FR5NamedDayCycleTime, just a
+-- Name like "Dawn"/"Dusk"). The actual Name->hour-range mapping lives in UR5NatureSettings
+-- (R5Nature module, a UDeveloperSettings/Config=Game singleton) as
+-- PredefinedNamedDayCycleTimes: TArray<{Name, HourIntervals: TArray<{Min,Max}>}> -- this is the
+-- REAL, authored ground truth for what hour range counts as "Dawn"/"Noon"/"Dusk"/"Midnight" etc.,
+-- baked into the packaged game (not a loose .ini we can read from disk). UDeveloperSettings
+-- singletons live on their OWN class default object -- unlike everywhere else in this file, do NOT
+-- filter out Default__ here, that IS the live settings instance for this class.
+------------------------------------------------------------
+local pendingDayTime16 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime16", function(FullCommand, Parameters, Ar)
+            pendingDayTime16 = true
+            print("[LivingBase] [lbtestdaytime16] queued -- dumping UR5NatureSettings.PredefinedNamedDayCycleTimes (ground truth for Dawn/Dusk/Noon/etc hour ranges) on the next poll tick. Writes nothing.\n")
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime16")
+    registerCmdInfo("lbtestdaytime16", "lbtestdaytime16", "Diagnostic only -- dumps UR5NatureSettings.PredefinedNamedDayCycleTimes, the REAL authored Name->hour-range mapping (Dawn/Dusk/Noon/Midnight/etc) that the sleep system itself uses to reliably land on dawn/dusk, found via the SDK header dump after RedFalcon noted sleeping always works reliably.")
+else
+    log("lbtestdaytime16 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime16PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime16 then
+                pendingDayTime16 = false
+                ExecuteInGameThread(function()
+                    print("[LivingBase] [lbtestdaytime16] starting dump (from poll loop) -- FindAllOf('R5NatureSettings') (including Default__, that's the live singleton for this class).\n")
+                    local ok, err = pcall(function()
+                        local found = FindAllOf("R5NatureSettings") or {}
+                        print(string.format("[LivingBase] [lbtestdaytime16] found %d R5NatureSettings instance(s).\n", #found))
+                        for _, settings in ipairs(found) do
+                            local okName, name = pcall(function() return settings:GetFullName() end)
+                            print(string.format("[LivingBase] [lbtestdaytime16] instance: %s\n", tostring(okName and name or "?")))
+                            local list = nil
+                            local okList = pcall(function() list = settings.PredefinedNamedDayCycleTimes end)
+                            if not okList or list == nil then
+                                print("[LivingBase] [lbtestdaytime16]   could not read PredefinedNamedDayCycleTimes.\n")
+                            else
+                                local count = 0
+                                pcall(function() count = #list end)
+                                print(string.format("[LivingBase] [lbtestdaytime16]   PredefinedNamedDayCycleTimes has %d entries:\n", count))
+                                for i = 1, count do
+                                    local entry = nil
+                                    pcall(function() entry = list[i] end)
+                                    if entry then
+                                        local entryName = nil
+                                        pcall(function() entryName = entry.Name end)
+                                        local intervals = nil
+                                        pcall(function() intervals = entry.HourIntervals end)
+                                        local intervalCount = 0
+                                        pcall(function() intervalCount = #intervals end)
+                                        local parts = {}
+                                        for j = 1, intervalCount do
+                                            local iv = nil
+                                            pcall(function() iv = intervals[j] end)
+                                            local mn, mx = nil, nil
+                                            pcall(function() mn = iv.Min end)
+                                            pcall(function() mx = iv.Max end)
+                                            table.insert(parts, string.format("[%s,%s]", tostring(mn), tostring(mx)))
+                                        end
+                                        print(string.format("[LivingBase] [lbtestdaytime16]     %d: Name=%s  HourIntervals=%s\n", i, tostring(entryName), table.concat(parts, " ")))
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                    if not ok then
+                        print("[LivingBase] [lbtestdaytime16] Lua-level error (not a crash): " .. tostring(err) .. "\n")
+                    end
+                end)
+            end
+            dayTime16PollLoop()
+        end)
+    end
+    dayTime16PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

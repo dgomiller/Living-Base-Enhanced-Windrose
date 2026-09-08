@@ -11499,17 +11499,48 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     Spawner._bodySwapActor = nil
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
-    say(string.format("spawning %s with bodyTypes=%s sex=%s at %s",
-        classPath, tostring(bodyTypesPath), tostring(sexArg or "native"),
+    say(string.format("spawning %s with bodyTypes=%s (native sex) at %s",
+        classPath, tostring(bodyTypesPath),
         atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+    -- sex is deliberately NOT passed to Spawner.Spawn here (2026-09-08, RedFalcon: "the
+    -- genderswaping isnt working") -- compositeLook.sex at spawn time is NOT the mechanism this
+    -- project's own confirmed-working gender-swap technique uses (see Spawner.TestSwapBodySex's
+    -- own comment/lbtestswapbodysex, 2026-08-19): that's a POST-spawn comp:SwapBodySex() call on
+    -- the already-built CompositeMeshComponent, deliberately bypassing the native
+    -- IsBodySexChangeAvailable() gate -- a completely different lever from anything passed into
+    -- Spawner.Spawn's compositeLook table. Always spawn at native sex first, then swap after.
     local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false,
-        { bodyTypes = bodyTypesPath, sex = sex }, nil, false)
+        { bodyTypes = bodyTypesPath }, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")
         return false
     end
     pcall(function() Spawner.SetAILogic(actor, false) end)
     Spawner._bodySwapActor = actor
+
+    if sex then
+        local comp = nil
+        pcall(function() comp = actor.CompositeMeshComponent end)
+        if not (comp and comp:IsValid()) then
+            say("sex swap requested but no CompositeMeshComponent found -- spawned at native sex.")
+        else
+            local before = nil
+            pcall(function() before = comp:GetBodySex() end)
+            if before == sex then
+                say(string.format("already the requested sex (GetBodySex=%s) -- no swap needed.", tostring(before)))
+            else
+                local okSwap, errSwap = pcall(function() comp:SwapBodySex() end)
+                local after = nil
+                pcall(function() after = comp:GetBodySex() end)
+                if okSwap and after == sex then
+                    say(string.format("sex swap OK -- GetBodySex before=%s after=%s.", tostring(before), tostring(after)))
+                else
+                    say(string.format("sex swap did not land as requested -- before=%s after=%s ok=%s%s (spawned at native sex regardless).",
+                        tostring(before), tostring(after), tostring(okSwap), okSwap and "" or (" err=" .. tostring(errSwap))))
+                end
+            end
+        end
+    end
 
     -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after
     -- a reset).

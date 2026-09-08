@@ -7146,15 +7146,18 @@ if ExecuteWithDelay then
             if pendingDisableCam3 then
                 pendingDisableCam3 = false
                 ExecuteInGameThread(function()
-                    print("[LivingBase] [lbtestdisablecam3] starting manual restoration attempt -- searching for a live R5DebugCameraController.\n")
+                    print("[LivingBase] [lbtestdisablecam3] starting manual restoration attempt -- searching for a live debug camera controller (tries R5DebugCameraController, then the base DebugCameraController).\n")
                     local ok, err = pcall(function()
                         local dcc, dccName = nil, nil
-                        for _, c in ipairs(FindAllOf("R5DebugCameraController") or {}) do
-                            local okName, n = pcall(function() return c:GetFullName() end)
-                            if okName and n and not n:find("Default__") then dcc = c; dccName = n; break end
+                        for _, className in ipairs({ "R5DebugCameraController", "DebugCameraController" }) do
+                            for _, c in ipairs(FindAllOf(className) or {}) do
+                                local okName, n = pcall(function() return c:GetFullName() end)
+                                if okName and n and not n:find("Default__") then dcc = c; dccName = n; break end
+                            end
+                            if dcc then break end
                         end
                         if not dcc then
-                            print("[LivingBase] [lbtestdisablecam3] no live R5DebugCameraController found -- is the free camera actually on?\n")
+                            print("[LivingBase] [lbtestdisablecam3] no live debug camera controller found under either class name -- is the free camera actually on?\n")
                             return
                         end
                         print(string.format("[LivingBase] [lbtestdisablecam3] found %s\n", dccName))

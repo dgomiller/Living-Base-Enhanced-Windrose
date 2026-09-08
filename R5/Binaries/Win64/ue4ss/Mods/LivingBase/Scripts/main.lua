@@ -5872,6 +5872,83 @@ if ExecuteWithDelay then
 end
 
 ------------------------------------------------------------
+-- lbtestdaytime11 [hour] [speedInv] -- (2026-09-08) THE ACTUAL FIX. lbtestdaytime10 disproved the
+-- clean multiplicative rescale theory (predicted 0.0061, actual jumped to 3.138 when switching
+-- 0.01 -> 20) -- so SOMETHING unpredictable happens specifically DURING a DayCycleSpeedInv change,
+-- not a tidy proportional formula. But the SAME test also proved the fix: holding the SAME
+-- speedInv (20 -> 20, no change at all) gave 3.1393 -> 3.1394 -- rock steady, only the tiny
+-- expected natural drift. The lesson: don't ever CHANGE DayCycleSpeedInv after arriving -- pick
+-- ONE moderate (not extreme) value, set it ONCE, and use that same rate for both the approach AND
+-- the hold. No second "freeze" step at all (that step is exactly what was breaking lbtestdaytime9).
+-- Default speedInv=0.15 -> full cycle ~615 real seconds (~10 min) worst-case wait to reach any
+-- target hour, and slow enough (~7 min of sim-time per 3 real seconds) to look effectively still
+-- for a quick photo.
+------------------------------------------------------------
+local pendingDayTime11 = false
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdaytime11", function(FullCommand, Parameters, Ar)
+            local hour = tonumber(Parameters and Parameters[1]) or 12.0
+            if hour < 0 then hour = 0 end
+            if hour > 24 then hour = 24 end
+            local speedInv = tonumber(Parameters and Parameters[2]) or 0.15
+            pendingDayTime11 = { stage = "start", hour = hour, speedInv = speedInv, ticks = 0 }
+            print(string.format("[LivingBase] [lbtestdaytime11] queued hour=%.2f speedInv=%.4f -- will set DayCycleSpeedInv ONCE and hold it there the whole time (approach AND hold at the same rate -- no second freeze switch, which is what broke lbtestdaytime9).\n", hour, speedInv))
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdaytime11 [hour] [speedInv]")
+    registerCmdInfo("lbtestdaytime11", "lbtestdaytime11 [hour] [speedInv]", "The actual fix: lbtestdaytime10 proved holding DayCycleSpeedInv steady (no change) keeps the hour rock-solid, while ANY change to it (even a modest one) causes an unpredictable jump -- not a clean rescale. So this sets DayCycleSpeedInv ONCE (default 0.15) and never touches it again, using the same moderate rate for both fast-forwarding to the target hour and holding there afterward.")
+else
+    log("lbtestdaytime11 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+if ExecuteWithDelay then
+    local function dayTime11PollLoop()
+        ExecuteWithDelay(200, function()
+            if pendingDayTime11 ~= false then
+                local req = pendingDayTime11
+                local comp, name = nil, nil
+                for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                    local okName, n = pcall(function() return c:GetFullName() end)
+                    if okName and n and not n:find("Default__") then comp = c; name = n; break end
+                end
+                if not comp then
+                    print("[LivingBase] [lbtestdaytime11] component not found -- aborting.\n")
+                    pendingDayTime11 = false
+                elseif req.stage == "start" then
+                    local h0 = nil
+                    pcall(function() h0 = comp:GetCurrentTimeInHours() end)
+                    if h0 == nil then
+                        print("[LivingBase] [lbtestdaytime11] could not read current hour -- aborting.\n")
+                        pendingDayTime11 = false
+                    else
+                        local distance = (req.hour - h0) % 24
+                        comp.DayCycleSpeedInv = req.speedInv
+                        print(string.format("[LivingBase] [lbtestdaytime11] current hour=%.4f, target=%.2f, distance=%.4f hours -- set DayCycleSpeedInv=%.4f ONCE (will not be changed again) and polling until arrival...\n", h0, req.hour, distance, req.speedInv))
+                        pendingDayTime11 = { stage = "waiting", hour = req.hour, speedInv = req.speedInv, ticks = 0 }
+                    end
+                elseif req.stage == "waiting" then
+                    local h = nil
+                    pcall(function() h = comp:GetCurrentTimeInHours() end)
+                    local remaining = h and ((req.hour - h) % 24) or nil
+                    if h ~= nil and (remaining <= 0.05 or remaining >= 23.95) then
+                        print(string.format("[LivingBase] [lbtestdaytime11] ARRIVED -- hour=%.4f (target %.2f) after %d ticks. DayCycleSpeedInv stays at %.4f (untouched from here) -- take your screenshot.\n", h, req.hour, req.ticks, req.speedInv))
+                        pendingDayTime11 = false
+                    elseif req.ticks >= 300 then
+                        print(string.format("[LivingBase] [lbtestdaytime11] safety cutoff hit (300 ticks, ~60s) -- last hour=%s, target=%.2f, speedInv still %.4f (left running, will keep approaching on its own).\n", tostring(h), req.hour, req.speedInv))
+                        pendingDayTime11 = false
+                    else
+                        pendingDayTime11 = { stage = "waiting", hour = req.hour, speedInv = req.speedInv, ticks = req.ticks + 1 }
+                    end
+                end
+            end
+            dayTime11PollLoop()
+        end)
+    end
+    dayTime11PollLoop()
+end
+
+------------------------------------------------------------
 -- lbtestweather2 -- (2026-09-08) SAME queue-then-poll pattern that fixed the day-cycle crash
 -- (lbtestdaytime2/3/4, all confirmed crash-free by RedFalcon), applied to the weather write.
 -- lbtestweather (the original, synchronous, direct-from-console-handler version) is CONFIRMED to

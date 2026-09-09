@@ -12323,12 +12323,88 @@ function Spawner.TestListAssetsByClass(classModule, className, nameFilter, say)
         local assetNameStr = readField("AssetName")
         local joined = string.format("PackageName=%s, PackagePath=%s, AssetName=%s",
             tostring(packageNameStr), tostring(packagePathStr), tostring(assetNameStr))
-        if not nameFilter or joined:lower():find(nameFilter:lower(), 1, true) then
+        -- 2026-09-08 FIX: nameFilter used to match against `joined`, which includes the LABELS
+        -- ("PackageName=", "PackagePath=", "AssetName=") -- both "PackageName" and "PackagePath"
+        -- contain "age" as a substring ("Pack-age-Name"), so a filter like "Age" matched almost
+        -- every asset in the game regardless of its actual name. Match against the real VALUES
+        -- only, never the field labels.
+        local valuesOnly = string.format("%s %s %s", tostring(packageNameStr), tostring(packagePathStr), tostring(assetNameStr))
+        if not nameFilter or valuesOnly:lower():find(nameFilter:lower(), 1, true) then
             say(string.format("  [%s] %s", tostring(i), joined))
         end
     end
     say(string.format("Total entries: %d%s", count, nameFilter and (" (filtered to those matching '" .. nameFilter .. "')") or ""))
     return results
+end
+
+-- Spawner.TestDumpDataTable(assetPath, say) -- "lbdumpdatatable <assetPath>" (2026-09-08,
+-- RedFalcon: "theres an age feature as well as the skin size. i'd like to figure that out" --
+-- found /Game/UI/META/CharacterCustomization/Data/ST_CustomizationControl_AgeData via
+-- pakcontents.xlsx, a real native DataTable presumably mapping age tiers to GameplayTags/assets
+-- the same way skin size does). PURE READ. `UDataTable::GetTableAsJSON` is a stock, heavily-used
+-- ENGINE function (every UE project's own Editor "Export as JSON" button calls exactly this) --
+-- a fundamentally lower crash-risk category than this project's own R5CompositeMeshComponent
+-- setters (§3h/§3l-class crashes are specific to heavily-customized native classes, not stock
+-- DataTable), so this tries the call directly rather than costing a round-trip on lbinspectfn
+-- first. Handles both possible call shapes defensively (this UE4SS build has repeatedly required
+-- an enum-default argument to be passed explicitly rather than omitted, e.g.
+-- ConstructVisualFromParams this same session) -- tries zero args first, falls back to a single
+-- `0` (EDataTableExportFlags::None) if that throws "expected N parameters, received 0". Writes
+-- the full JSON to a timestamped file (same candidate-path convention as every other dump file in
+-- this mod) since a real DataTable's JSON can be large, and also prints a short preview inline.
+function Spawner.TestDumpDataTable(assetPath, say)
+    say = say or function(m) print("[LivingBase] [dump-datatable] " .. tostring(m) .. "\n") end
+    if not assetPath or assetPath == "" then
+        say("usage: lbdumpdatatable <assetPath> -- e.g. /Game/UI/META/CharacterCustomization/Data/ST_CustomizationControl_AgeData")
+        return false
+    end
+    local function ensureFullPath(p)
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            return last and (p .. "." .. last) or p
+        end
+        return p
+    end
+    local fullPath = ensureFullPath(assetPath)
+    local table_ = resolveAsset(fullPath)
+    if not table_ then
+        say("could not resolve DataTable at " .. fullPath)
+        return false
+    end
+    say("resolved DataTable OK: " .. fullPath)
+
+    local ok, json = pcall(function() return table_:GetTableAsJSON() end)
+    if not ok then
+        say("GetTableAsJSON() with 0 args failed (" .. tostring(json) .. ") -- retrying with explicit 0 (EDataTableExportFlags::None)...")
+        ok, json = pcall(function() return table_:GetTableAsJSON(0) end)
+    end
+    if not (ok and json) then
+        say("GetTableAsJSON FAILED both ways: " .. tostring(json))
+        return false
+    end
+    local jsonStr = tostring(json)
+    say(string.format("GetTableAsJSON OK -- %d characters.", #jsonStr))
+
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local candidatePaths = {
+        "ue4ss/Mods/LivingBase/datatabledump_" .. ts .. ".txt",
+        "Mods/LivingBase/datatabledump_" .. ts .. ".txt",
+        "datatabledump_" .. ts .. ".txt",
+    }
+    local wrote = nil
+    for _, p in ipairs(candidatePaths) do
+        local f = io.open(p, "w")
+        if f then f:write(jsonStr); f:close(); wrote = p; break end
+    end
+    if wrote then
+        say("full JSON written to " .. wrote)
+    else
+        say("could not open any candidate path for writing -- printing full JSON inline instead:")
+        say(jsonStr)
+        return true
+    end
+    say("preview (first 2000 chars): " .. jsonStr:sub(1, 2000))
+    return true
 end
 
 -- Spawner.ToggleClothesUnlock() -- "lbunlockclothes" (2026-08-28). Flips Config.CLOTHES_UNLOCK_ALL

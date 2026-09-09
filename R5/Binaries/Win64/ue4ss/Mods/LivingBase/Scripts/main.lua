@@ -4459,6 +4459,27 @@ else
     log("lbtestlistclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdumpdatatable <assetPath>" (2026-09-08) -- dumps a real native DataTable's
+-- full row content as JSON via the stock UDataTable::GetTableAsJSON(). See
+-- Spawner.TestDumpDataTable's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpdatatable", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbdumpdatatable] " .. msg .. "\n")
+            end
+            local pathArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestDumpDataTable(pathArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpdatatable <assetPath>")
+    registerCmdInfo("lbdumpdatatable", "lbdumpdatatable <assetPath>", "PURE READ: dumps a real native DataTable's full row content as JSON (GetTableAsJSON) to a timestamped file, plus a console preview.")
+else
+    log("lbdumpdatatable unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the
 -- off-by-default escape hatch that bypasses every women's-clothing fit rule in
 -- Spawner.TestApplyClothingPiece/TestRemoveClothingPiece. See Spawner.ToggleClothesUnlock's own

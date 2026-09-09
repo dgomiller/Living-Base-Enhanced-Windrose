@@ -101,6 +101,7 @@ Companion to `CLAUDE.md` (which is older and partly stale — trust THIS file wh
   - [19t. `fillall`/`aps`/`lbsockets` grow sub-filters and a player-targeting mode; two more curated sockets; the real Belt/Sling/Strap linkage rule finished; and a random belt-layout roller (2026-09-05/07)](#19t-fillallapslbsockets-grow-sub-filters-and-a-player-targeting-mode-two-more-curated-sockets-the-real-beltslingstrap-linkage-rule-finished-and-a-random-belt-layout-roller-2026-09-0507)
   - [19u. `lbtestsocketitems` -- a full item/weapon randomizer driven entirely by a hand-authored spreadsheet (2026-09-07)](#19u-lbtestsocketitems----a-full-itemweapon-randomizer-driven-entirely-by-a-hand-authored-spreadsheet-2026-09-07)
   - [19v. The Barbie gender-swap saga -- six real bugs stacked on top of each other, the actual reassertion wall finally isolated (2026-09-08)](#19v-the-barbie-gender-swap-saga----six-real-bugs-stacked-on-top-of-each-other-the-actual-reassertion-wall-finally-isolated-2026-09-08)
+  - [19w. A second crash saga, then a real pivot: authoring a genuinely new native NPC class from scratch, CONFIRMED WORKING LIVE (2026-09-08/09)](#19w-a-second-crash-saga-then-a-real-pivot-authoring-a-genuinely-new-native-npc-class-from-scratch-confirmed-working-live-2026-09-0809)
 
 ---
 
@@ -4558,3 +4559,172 @@ change its own backing property, while the real composite population stayed gove
 alone -- a `BuildedCompositeMeshes` count of 0 after any post-build attempt is now this project's
 own standing signal to stop chasing rebuild triggers and go straight to "does the archetype itself
 need to change," not a reason to try yet another setter function.
+
+### 19w. A second crash saga, then a real pivot: authoring a genuinely new native NPC class from scratch, CONFIRMED WORKING LIVE (2026-09-08/09)
+
+§19v's "CONFIRMED WORKING LIVE" turned out not to be the end of the crash chasing -- the very same
+night, `lbtestbodyswap` started crashing the game again, repeatedly, in several genuinely different
+ways. Three timing-based fixes were tried in sequence and each one was disproven by the NEXT crash
+landing at a suspiciously exact offset FROM the delay just added (750ms, then 20s, then a 1.5s
+settle delay) -- the tell that a "fix" is only relocating a deterministic bug, not preventing it.
+The REAL fix turned out to be structural, not timing: `pollForBuildThenApplyBodySwap`'s phase 2 was
+calling `Spawner.TestSetBaseBodyMesh` (a raw `SetSkeletalMeshAsset`) UNCONDITIONALLY for every family,
+including Adventurer -- but for Adventurer specifically, the archetype+`SwapBodySex()` path (§19v's
+own fix) ALREADY correctly rebuilds the mesh/sex, making that raw call a genuinely redundant second
+skeleton swap on an actor whose followers had just been rebuilt moments earlier. Skipping it
+specifically when `compositeLook.archetype` was set (a new `familyHandledByArchetype` flag) resolved
+it. Along the way, Woodman was wrongly suspected as donor-specific (he crashed 2/2 on a female swap)
+until BlackAxel -- rock-solid all night -- crashed identically, proving the instability was in the
+mechanism, not any one donor's own gear.
+
+**RedFalcon's own reaction to the whole chase, verbatim: "maybe we are approaching this from the
+wrong direction... would it be feasible to make a new NPC with specific morphs etc without having to
+use the preexisting."** Correct call -- every crash chased that night shared one root cause: fighting
+`BeginPlay`'s own composite-mesh construction after the fact via runtime property pokes on a donor's
+own hijacked Blueprint. This section is the record of pursuing that alternative to an actual, live,
+confirmed conclusion, not just a plan.
+
+**First attempt, a real and permanent dead end -- do not retry**: duplicate a donor's own Blueprint in
+the SDK-stub project and override its `CompositeMeshComponent` defaults (Sex/`ArchetypePreset`/
+`DefaultParams`) at author time, leaving `BodyMorph` inherited. Failed immediately: this SDK-stub
+project has NEVER had the base game's own Blueprint content mounted as loadable source -- only C++
+header STUBS exist for reflection, never the real `.uasset` files (`/Game/Gameplay` has zero entries
+in this project's own `EditorAssetLibrary.list_assets`). `duplicate_asset` on any donor's Blueprint
+fails outright; there is nothing to duplicate FROM.
+
+**RedFalcon's own follow-up cracked the SECOND, deeper wall for good**: "are we not able to export
+the data from the unencrypted paks and recreate it?" -- exactly this project's own established,
+proven pattern (every successful DataAsset here was built by reading an existing asset's structure via
+`retoc` extraction and RECREATING an equivalent fresh in the Editor, never by copying the raw file).
+Applying that same instinct here meant reading the REAL `R5CompositeMeshComponent.h`/`R5AICharacter.h`
+directly from this project's own existing 2026-08-29 `UHTHeaderDump` (35,204 files, sitting on disk
+the whole time, never previously copied into the project's own `Source/R5/`), which settled something
+this whole project has wondered about since its earliest sessions:
+
+- **`UR5CompositeMeshComponent::ArchetypePreset` is declared `Transient`.** This is the actual,
+  source-level reason for the archetype-reassertion wall documented all the way back in §2/§19c --
+  not `BeginPlay` "fighting" a cleaner override, but a `Transient` property being structurally
+  incapable of surviving a cook AT ALL, by any authoring route, Blueprint or otherwise. Confirms the
+  runtime pre-`BeginPlay` write (`Spawner.SetCompositeParams`'s own `effPreFinish` hook) is the ONLY
+  mechanism this specific property can ever be set through -- necessary, not a hack. `DefaultParams`
+  (the outfit), `MorphParams`, `ColorParams`, `BodyDecorParams`, `BodyTypeParams` are NOT transient --
+  those genuinely could be baked as real class defaults if the rest of the pipeline existed for them.
+- **`AR5AICharacter` is `UCLASS(Blueprintable, NoExport)` implementing 26 interfaces.** Confirms the
+  earlier "~26-interface compile requirement" note was accurate in scope, not overstated in the way
+  the actual WORK turned out to be (see below) -- deriving a genuinely new, concrete C++ class from
+  this base in a fresh module requires satisfying all 26.
+
+**Pursued anyway, given how close this now looked, and it worked.** Read all 26 real interface
+headers directly from the same `UHTHeaderDump` before writing a line of code: 25 of them
+(`IR5DeathComponentInterface`, `IR5FactionComponentInterface`, etc.) are COMPLETELY EMPTY --
+15-line files, zero declared methods, native-only marker interfaces whose real methods (if any) never
+reached UHT's reflection dump at all. The 26th, `IAbilitySystemInterface`, is a standard, well-known
+engine interface needing exactly one trivial accessor (`GetAbilitySystemComponent()`). The
+"26-interface" fear from three weeks earlier was real in scope but wildly overstated in DIFFICULTY --
+it's boilerplate, not game-logic reverse-engineering.
+
+Built `ABarbieNPCBase` deriving from a from-scratch `AR5AICharacter` reimplementation (own module,
+`NoExport` removed, a deliberately minimal constructor -- none of the ~25 real component subobjects
+created, all left null, which compiles fine since nothing requires them non-null just to exist).
+Three real build/link/load issues found and fixed by iterating actual build attempts, not by
+guessing further:
+1. **UHT requires a real, resolvable `UCLASS()` for every UPROPERTY pointer's pointee, even ones
+   never read or written.** A bare C++ forward declaration is NOT enough -- confirmed empirically:
+   ~38 types in `AR5AICharacter`'s own member list needed this. Fixed with a
+   `R5AICharacterPlaceholderTypes.h` file: minimal empty stub `UCLASS()`es for all 38, each deriving
+   from the most plausible real base (`UActorComponent`/`UAttributeSet`/`UAbilitySystemComponent`/
+   `UDataAsset`/`AActor`) -- correctness of the exact base doesn't matter for this purpose, since
+   nothing here is ever instantiated or has its members touched.
+2. Three of the copied interface headers (`R5FactionComponentInterface`, `R5OwnershipComponentInterface`,
+   `R5MercunaNavigationInterface`) still carried their ORIGINAL module's API export macro
+   (`R5RELATIONSHIP_API`/`R5MERCUNA_API`) after being consolidated into this project's own `R5`
+   module, which only defines `R5_API` -- real compile errors, cascading into confusing "PCH heap
+   limit reached" errors on unrelated translation units until fixed.
+3. `GameplayAbilities` (for the real `IAbilitySystemInterface`) and its own `GameplayTasks`
+   dependency needed BOTH a `PublicDependencyModuleNames` entry in `R5.Build.cs` AND enabling as an
+   actual PLUGIN in `LivingBaseExtended.uproject` -- linking succeeded with just the Build.cs change,
+   but the Editor still failed to LOAD the compiled DLL at runtime (`GetLastError=126`, the classic
+   "a dependent DLL couldn't be found" signature) until the plugin itself was enabled.
+
+**Pushed the full pipeline through, live, and it FAILED on the first real attempt -- correctly
+diagnosed as a parent-class mistake, not a dead end.** Created `BP_BarbieR5Char_Test`... actually, the
+FIRST attempt (`BP_BarbieNPCBase_Test`) was parented to `/Script/LivingBaseExtended.BarbieNPCBase` --
+our OWN module's class. Spawning it live gave `SPAWN FAILED (class unresolved)`. RedFalcon's own
+diagnostic instinct found the bug in one step: "in the 'other' folder are several mods with pak
+files. do any of those have blueprints in them?" -- yes. Pirate Signals ships
+`/Game/Mods/WindroseChatTransport/ModActor`, a genuine Blueprint (string-dumped: `BPTYPE_Normal`,
+`SimpleConstructionScript`, `ModActor_C`, `Default__ModActor_C`, real UberGraph internals) that
+resolves fine live -- proving shipping a new Blueprint class in a pak works for this game in general.
+Diffing its imports against ours found the actual mistake: Pirate Signals imports `/Script/Engine`
+(its parent, `AActor`, EXISTS in the shipped game); ours imported `/Script/LivingBaseExtended.*` -- a
+class that exists ONLY in this SDK-stub project's own compiled DLL. **A pak ships CONTENT, never
+compiled code** -- the shipped game has no `LivingBaseExtended` module and never will, so it can never
+resolve that parent, and the whole Blueprint silently fails to load. Fix, and the entire point of the
+SDK-stub approach: reparent to `/Script/R5.R5AICharacter` -- our stub compiles under module name `R5`
+with class `AR5AICharacter`, so its script path is IDENTICAL to the real game's own class. The
+Blueprint stores only that path string; at runtime the REAL, fully-implemented game class answers to
+it. **Rule going forward: any Blueprint intended for the live game must parent to a `/Script/R5.*`
+class (or another class the shipped game actually has), never a `/Script/LivingBaseExtended.*` one.**
+
+**Reparented, retested, and it STILL failed identically -- which turned out to rule out the parent
+class entirely, not confirm it as the culprit.** `BP_BarbieR5Char_Test` (parented to the real
+`/Script/R5.R5AICharacter` path) gave the exact same "SPAWN FAILED (class unresolved)". Built a
+plain-`/Script/Engine.Actor` control Blueprint (`BP_PlainActor_Control`) -- deliberately matching
+Pirate Signals' known-working shape exactly -- to isolate the one remaining variable. It ALSO failed
+identically. Two Blueprints, two completely different parents, the exact same failure: the parent
+class was never the problem. Directly comparing containers against Pirate Signals' own working pak
+(`retoc info`) ruled out packaging too -- `container_header_version`
+(`SoftPackageReferencesOffset`) and TOC version (`ReplaceIoChunkHashWithIoHash`) matched
+byte-for-byte; only compression and mount point differed, neither of which affects package
+resolution. A real gap was found in the one supporting data point for "this should already work,"
+though: the project's own earlier note that Pirate Signals' ModActor "resolved cleanly via the same
+API" had only ever been checked via `resolveAsset` on the NO-`_C` path -- confirming the BLUEPRINT
+ASSET resolves, never its GENERATED CLASS, a different object reached by a different load path
+entirely.
+
+**Built a new pure-read diagnostic, `lbdiagresolve <path>`, that tries every resolution strategy
+independently instead of stopping at the first success** (`StaticFindObject` on the `_C`/asset/
+package forms, `LoadAsset` followed by each, `resolveViaAssetRegistry` on both forms, plus which
+loader globals this UE4SS build even exposes). Ran it side by side on the failing Blueprint class path
+and a KNOWN-WORKING DataAsset path, and found the actual bug in one direct comparison:
+```
+BP_PlainActor_Control.BP_PlainActor_Control_C:
+  resolveViaAssetRegistry(path WITH "_C")        -> OK, valid BlueprintGeneratedClass
+  resolveViaAssetRegistry(path with "_C" stripped) -> nil
+DA_Custom_BarbieDefaultParams_Regular_Female (a plain DataAsset, no "_C" to strip):
+  both forms -> OK, identical result (nothing was actually being stripped in this case)
+```
+**The AssetRegistry DOES index a Blueprint's generated class -- but only under its own
+`_C`-suffixed name, not the bare Blueprint asset name.** `resolveClass`'s own AssetRegistry fallback
+(added earlier the same night, to let `Spawner.Spawn` find a genuinely new class path the same way
+`resolveAsset` already found new DataAssets) always STRIPPED "_C" before calling
+`resolveViaAssetRegistry` -- backwards, and it had been silently correct-by-accident for every single
+prior test because those were all DataAsset paths with no "_C" to strip in the first place. This is
+exactly why it took an actual Blueprint CLASS path to ever surface. **Fixed**: pass the original path
+straight through to `resolveViaAssetRegistry` first; only fall back to the stripped/asset-name form
+if that misses.
+
+**CONFIRMED LIVE**: both Blueprints spawn successfully via `lbspawn` after the fix. Better than a
+clean spawn, `BP_BarbieR5Char_Test`'s own spawn log showed something decisive: it found and destroyed
+a real `R5ScenarioComponent_ForIslandActor` component -- a component our own minimal stub constructor
+NEVER creates (left null on purpose, to keep the experiment lean). That component can only exist if
+the REAL game's own `AR5AICharacter` implementation constructed it at runtime. Direct, unambiguous
+proof the whole mechanism works exactly as designed: a Blueprint authored against a local stub
+(existing purely so the Editor has something to compile against) correctly resolves to and runs the
+REAL, fully-featured game class once loaded live -- not the stub's own empty logic.
+
+**Status, plainly**: every risk flagged about this approach since it was first scoped weeks earlier is
+now empirically resolved, not theorized. The 26-interface cost was real but trivial in practice. A
+Blueprint on a class with zero real compiled behavior behind it DOES survive cook, package, and live
+load -- confirmed, not assumed. The actual blocker the whole way through was never the C++ scope; it
+was two one-line bugs (a wrong parent-class path, then a wrong string transform before an AssetRegistry
+call) that only a REAL live class-path test -- not another DataAsset test -- could ever have surfaced.
+**What this unlocks, concretely**: a genuinely new, donor-independent native NPC class is now a real,
+proven, repeatable capability. Author a minimal Blueprint parented to `/Script/R5.<RealClassName>`;
+apply everything else (`AIPawnParams`, `AIControllerClass`, `CompositeMeshComponent`'s Sex/
+`ArchetypePreset`/`DefaultParams`/`MorphParams`) at spawn time via the exact same proven pre-`BeginPlay`
+mechanism `Spawner.SetCompositeParams` already uses today for donor-Blueprint hijacking (`ArchetypePreset`
+still can't be baked -- it's `Transient`, see above -- so this stays a runtime-applied field regardless
+of authoring route). The real payoff isn't eliminating the runtime mechanism; it's spawning a class
+that's genuinely OURS, carrying no donor-specific native gear or hidden quirks along for the ride --
+the exact class of problem behind this whole section's own opening crash chase.

@@ -11675,13 +11675,25 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             -- BuildedCompositeMeshes stayed at 0 forever -- SwapBodySex() does NOT automatically
             -- trigger a rebuild against the new DefaultParams/sex; the ONE real build already ran
             -- at spawn time (against the donor's own native params) and nothing re-runs it
-            -- afterward. R5CompositeMeshComponent's own function list (28 functions, confirmed via
-            -- lbprobedump) includes ConstructVisualFromParams -- explicitly force the rebuild here,
-            -- now that DefaultParams+sex are both set correctly.
+            -- afterward. FIRST attempt (ConstructVisualFromParams) was wrong -- lbinspectfn showed
+            -- its one parameter is `PredefinedArchetypeIndex` (an int into some predefined-archetype
+            -- list, not a general "rebuild from current params" trigger) -- crashed with "expected 1
+            -- parameters, received 0" when called bare, and its real semantics are unknown/risky to
+            -- guess at. SetBody(InBodyType: GameplayTag, InBodySex: enum, bForceLoad: bool) -- also
+            -- confirmed via lbinspectfn -- looks like the actual right lever: reuse the actor's OWN
+            -- already-valid BodyType tag from GetBodyType() (sidesteps the well-known "can't
+            -- construct a GameplayTag from a string" limitation entirely -- no need to build a new
+            -- one), pass the NEW target sex, and bForceLoad=true to force a real synchronous rebuild.
             if comp and comp:IsValid() then
-                local okBuild, errBuild = pcall(function() comp:ConstructVisualFromParams() end)
-                say(string.format("ConstructVisualFromParams %s%s", okBuild and "OK" or "FAILED",
-                    okBuild and "" or (" err=" .. tostring(errBuild))))
+                local bodyTypeTag = nil
+                pcall(function() bodyTypeTag = comp:GetBodyType() end)
+                if bodyTypeTag then
+                    local okBody, errBody = pcall(function() comp:SetBody(bodyTypeTag, targetSex, true) end)
+                    say(string.format("SetBody(sameBodyType, sex=%s, forceLoad=true) %s%s", tostring(targetSex),
+                        okBody and "OK" or "FAILED", okBody and "" or (" err=" .. tostring(errBody))))
+                else
+                    say("SetBody skipped -- could not read comp:GetBodyType() first.")
+                end
             end
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.

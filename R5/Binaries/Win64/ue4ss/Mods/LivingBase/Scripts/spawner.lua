@@ -1251,14 +1251,22 @@ end
 -- cooked by a separate SDK-stub Unreal project (see LivingBaseExtended) and packaged the same
 -- retoc/repak way as every other content pak here, resolved via GetAsset at
 -- /Game/Mods/LivingBaseExtended/DA_Test_Group2 when StaticFindObject/LoadAsset both missed it.
--- Cached module-scope (never re-resolved once found, same pattern as every other CDO cache in
--- this file) since it never changes across a session.
+-- Cached module-scope once a SUCCESSFUL resolution is found (never re-resolved after that, same
+-- pattern as every other CDO cache in this file) since it never changes across a session. 2026-09-08
+-- FIX: this used to cache a FAILED lookup too (`... or false`), permanently -- if the very first
+-- call happens early enough in boot that the AssetRegistry subsystem isn't ready yet (exactly what
+-- running lbtestbodytypes/lbtestbodyswap right after a fresh restart does), _assetRegistryHelpers
+-- locked in as `false` for the rest of the session and EVERY subsequent bodyTypesPath/morphParams
+-- resolution silently MISSed forever after -- confirmed live: even DA_Custom_BodyTypeList_
+-- JasperAsAfrican (untouched, "confirmed live" since 2026-09-01) showed bodies=MISS in the same
+-- session. Only cache success now; a transient early-boot miss just retries next call instead of
+-- being permanent.
 local _assetRegistryHelpers = nil
 local function resolveViaAssetRegistry(path)
     local packageName, assetName = path:match("^(.+)%.([^%.]+)$")
     if not (packageName and assetName) then return nil end
-    if _assetRegistryHelpers == nil then
-        _assetRegistryHelpers = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryHelpers") or false
+    if not _assetRegistryHelpers then
+        _assetRegistryHelpers = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryHelpers")
     end
     if not _assetRegistryHelpers then return nil end
     local ok, result = pcall(function()
@@ -11434,6 +11442,64 @@ function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classP
     return true
 end
 
+-- pollForBuildThenSwapSex(actor, sex, name, say, attemptsLeft) -- (2026-09-08, RedFalcon: "no luck"
+-- on the gender-swap, then "we will be needing to summon and swap at the sane time and we DID have
+-- it working"). Root cause found: comp:SwapBodySex() was being called IMMEDIATELY after
+-- Spawner.Spawn returns, but (same fact pollForBuildThenUndress above already had to work around for
+-- the underwear feature) the composite mesh build hasn't actually finished yet at that point --
+-- comp.BuildedCompositeMeshes is still empty for the first several ticks. SwapBodySex on an
+-- unbuilt/still-building CompositeMeshComponent silently no-ops (GetBodySex after == before, no
+-- error thrown). Fix: reuse the EXACT SAME poll idiom (300ms, up to 12 attempts, ~3.6s) to wait for
+-- BuildedCompositeMeshes to actually populate before calling SwapBodySex -- this is what makes
+-- summon+swap work as ONE combined command instead of needing a separate manual lbtestswapbodysex
+-- call typed after the build has had real-world time to finish.
+local function pollForBuildThenSwapSex(actor, sex, name, say, attemptsLeft)
+    attemptsLeft = attemptsLeft or 12
+    if not (actor and actor:IsValid()) then return end
+    local built = 0
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            local list = comp.BuildedCompositeMeshes
+            if list then
+                pcall(function() built = list:GetArrayNum() end)
+                if built == 0 then pcall(function() built = #list end) end
+            end
+        end
+    end)
+    if built == 0 then
+        if attemptsLeft <= 1 then
+            say("sex swap gave up waiting for composite build (still 0 BuildedCompositeMeshes after ~3.6s) -- spawned at native sex.")
+            return
+        end
+        if ExecuteWithDelay then
+            ExecuteWithDelay(300, function() pollForBuildThenSwapSex(actor, sex, name, say, attemptsLeft - 1) end)
+        end
+        return
+    end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("sex swap requested but no CompositeMeshComponent found -- spawned at native sex.")
+        return
+    end
+    local before = nil
+    pcall(function() before = comp:GetBodySex() end)
+    if before == sex then
+        say(string.format("already the requested sex (GetBodySex=%s) -- no swap needed.", tostring(before)))
+        return
+    end
+    local okSwap, errSwap = pcall(function() comp:SwapBodySex() end)
+    local after = nil
+    pcall(function() after = comp:GetBodySex() end)
+    if okSwap and after == sex then
+        say(string.format("sex swap OK -- GetBodySex before=%s after=%s (build was ready after %d poll(s)).", tostring(before), tostring(after), 12 - attemptsLeft + 1))
+    else
+        say(string.format("sex swap did not land as requested -- before=%s after=%s ok=%s%s (spawned at native sex regardless).",
+            tostring(before), tostring(after), tostring(okSwap), okSwap and "" or (" err=" .. tostring(errSwap))))
+    end
+end
+
 -- Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say) -- "lbtestbodyswap <bodyTypesPath>
 -- [classPath|-] [sex: M/F|-]" (2026-09-08). RedFalcon's request for the Barbie capture session:
 -- lbtestbodytypes always spawns fresh "in front of the player" (Spawner.Spawn's own default when
@@ -11519,27 +11585,13 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     Spawner._bodySwapActor = actor
 
     if sex then
-        local comp = nil
-        pcall(function() comp = actor.CompositeMeshComponent end)
-        if not (comp and comp:IsValid()) then
-            say("sex swap requested but no CompositeMeshComponent found -- spawned at native sex.")
-        else
-            local before = nil
-            pcall(function() before = comp:GetBodySex() end)
-            if before == sex then
-                say(string.format("already the requested sex (GetBodySex=%s) -- no swap needed.", tostring(before)))
-            else
-                local okSwap, errSwap = pcall(function() comp:SwapBodySex() end)
-                local after = nil
-                pcall(function() after = comp:GetBodySex() end)
-                if okSwap and after == sex then
-                    say(string.format("sex swap OK -- GetBodySex before=%s after=%s.", tostring(before), tostring(after)))
-                else
-                    say(string.format("sex swap did not land as requested -- before=%s after=%s ok=%s%s (spawned at native sex regardless).",
-                        tostring(before), tostring(after), tostring(okSwap), okSwap and "" or (" err=" .. tostring(errSwap))))
-                end
-            end
-        end
+        -- (2026-09-08) Calling comp:SwapBodySex() immediately here (synchronously, right after
+        -- Spawn returns) was the actual bug -- the composite mesh build hasn't finished yet at this
+        -- point (comp.BuildedCompositeMeshes still empty), so the swap silently no-ops. Poll for the
+        -- build to finish first (same idiom pollForBuildThenUndress already uses for the underwear
+        -- feature), THEN swap -- this is what makes summon+swap work as one combined command.
+        say("waiting for composite build to finish before swapping sex...")
+        pollForBuildThenSwapSex(actor, sex, "BodyTypeSwap", say)
     end
 
     -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after

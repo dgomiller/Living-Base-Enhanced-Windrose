@@ -125,6 +125,14 @@ Config.WARRIOR_SHIELD_ROTATION = { Pitch = 90.0, Yaw = 165.0, Roll = -15.0 }
 -- re-assert the attachment + tuned rotation when he LEAVES combat, checked on this slow tick.
 Config.SHIELD_REASSERT_MS = 2000
 
+-- 2026-09-09: gap between despawning the PREVIOUS lbtestbodyswap actor and spawning+rebuilding the
+-- next one on top of it. Was zero (same tick) until a no-dump crash traced to R5.log (not a
+-- minidump) showed every other swap that session had 20s-3m+ between tests, and the one that
+-- crashed had only ~7s -- destroying an actor doesn't synchronously tear down its clothing/physics
+-- actors, so chaining a fresh composite build onto the same frame is a race. See
+-- Spawner.SwapBodyType's own doSpawnNow comment for the full investigation.
+Config.BODY_SWAP_RESPAWN_DELAY_MS = 750
+
 -- LIVE EDIT: raise/lower + rotate the placed object in front of you, in place and persistently, to
 -- fine-tune sitters and decorations in the base. Rotate step + height step per keypress. The log
 -- prints the running yaw offset (bake into a sitter's `yaw`) and height.

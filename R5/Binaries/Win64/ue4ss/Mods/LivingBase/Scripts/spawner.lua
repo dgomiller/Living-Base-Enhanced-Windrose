@@ -12000,6 +12000,7 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     -- another tool, a manual nudge, etc.), not stay frozen at whatever the FIRST spawn happened to
     -- land at. Only falls back to the previously-stored lock if this read fails for some reason
     -- (actor already gone, etc.) -- never silently loses the lock entirely.
+    local justDespawnedPrevious = false
     if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
         local liveLoc, liveRot = nil, nil
         pcall(function() liveLoc = Spawner._bodySwapActor:K2_GetActorLocation() end)
@@ -12013,6 +12014,7 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         -- above for the full story. Spawner.DespawnActor removes the persist.txt entry too, not
         -- just the live actor -- a raw K2_DestroyActor() left one orphaned line per swap all day.
         pcall(function() Spawner.DespawnActor(Spawner._bodySwapActor) end)
+        justDespawnedPrevious = true
     end
     Spawner._bodySwapActor = nil
 
@@ -12036,42 +12038,70 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     end
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
-    say(string.format("spawning %s (archetype=%s params=%s sex=%s), family=%s, at %s",
-        classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
-        atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
-    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, compositeLook, nil, false)
-    if not (actor and actor:IsValid()) then
-        say("Spawn FAILED.")
-        return false
-    end
-    pcall(function() Spawner.SetAILogic(actor, false) end)
-    Spawner._bodySwapActor = actor
 
-    if sex or family or underwear then
-        local currentSex = nil
-        pcall(function()
-            local comp = actor.CompositeMeshComponent
-            if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
-        end)
-        say(string.format("waiting for composite build to finish before applying sex/mesh/underwear (native sex read as %s)...", tostring(currentSex)))
-        pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say)
-    end
-
-    -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after
-    -- a reset).
-    if not Spawner._bodySwapLoc then
-        local loc, rot = nil, nil
-        pcall(function() loc = actor:K2_GetActorLocation() end)
-        pcall(function() rot = actor:K2_GetActorRotation() end)
-        if loc and rot then
-            Spawner._bodySwapLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
-            Spawner._bodySwapYaw = rot.Yaw
-            say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot (updated to match any repositioning of the current subject) until 'lbtestbodyswap reset'.",
-                loc.X, loc.Y, loc.Z, rot.Yaw))
+    -- 2026-09-09 FIX (RedFalcon: "when done, i just crashed again swapping" / "no dump this time" --
+    -- a SECOND, different crash from the SetBody one, no minidump produced at all this time).
+    -- Investigated via R5.log (the game's own native log, not UE4SS's) rather than a dump: the
+    -- "AddDefaultCompositeMesh...already contains mesh type Strap" warning and the back-to-back
+    -- Male+Female "Recreating Clothing Actors" pair both turned out to be RED HERRINGS -- both fire
+    -- on EVERY lbtestbodyswap call, crash or not (confirmed by grepping every donor's own swap this
+    -- session: BlackAxel/Herbalist/Farmer x2 all show the identical warning+pair and never crashed).
+    -- The one real outlier: every OTHER swap this session had 20s-3m+ between the previous swap
+    -- finishing and the next one starting; the crashing Woodman call was issued only ~7s after the
+    -- previous donor's own build. This function despawns the previous actor and immediately (same
+    -- tick, zero delay) spawns+rebuilds the next one right on top of it -- destroying an actor in UE
+    -- doesn't synchronously tear down its clothing/physics actors, some of that is deferred, so
+    -- tearing one down and immediately building a brand new composite mesh (with its own clothing
+    -- actor creation) in the same frame is a plausible race: a deferred teardown callback from the
+    -- JUST-destroyed actor firing later into memory the new build has since reused. Cheap, safe
+    -- mitigation that doesn't require proving the exact mechanism: give the engine a real beat
+    -- between the despawn and the next build instead of chaining them same-frame, same idiom as
+    -- every other ExecuteWithDelay use in this file.
+    local function doSpawnNow()
+        say(string.format("spawning %s (archetype=%s params=%s sex=%s), family=%s, at %s",
+            classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
+            atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, compositeLook, nil, false)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED.")
+            return false
         end
+        pcall(function() Spawner.SetAILogic(actor, false) end)
+        Spawner._bodySwapActor = actor
+
+        if sex or family or underwear then
+            local currentSex = nil
+            pcall(function()
+                local comp = actor.CompositeMeshComponent
+                if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
+            end)
+            say(string.format("waiting for composite build to finish before applying sex/mesh/underwear (native sex read as %s)...", tostring(currentSex)))
+            pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say)
+        end
+
+        -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right
+        -- after a reset).
+        if not Spawner._bodySwapLoc then
+            local loc, rot = nil, nil
+            pcall(function() loc = actor:K2_GetActorLocation() end)
+            pcall(function() rot = actor:K2_GetActorRotation() end)
+            if loc and rot then
+                Spawner._bodySwapLoc = { X = loc.X, Y = loc.Y, Z = loc.Z }
+                Spawner._bodySwapYaw = rot.Yaw
+                say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot (updated to match any repositioning of the current subject) until 'lbtestbodyswap reset'.",
+                    loc.X, loc.Y, loc.Z, rot.Yaw))
+            end
+        end
+        say("Spawn call returned an actor (AI frozen).")
+        return true
     end
-    say("Spawn call returned an actor (AI frozen).")
-    return true
+
+    if justDespawnedPrevious and ExecuteWithDelay then
+        say("giving the just-despawned previous actor a beat to fully tear down before building the next one...")
+        ExecuteWithDelay(Config.BODY_SWAP_RESPAWN_DELAY_MS or 750, doSpawnNow)
+        return true
+    end
+    return doSpawnNow()
 end
 
 -- Spawner.TestMorphShapeOnTargetClass(presetName, say) -- "lbtestmorphshape <presetName>"

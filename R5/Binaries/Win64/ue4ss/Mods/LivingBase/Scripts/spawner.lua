@@ -13216,8 +13216,20 @@ function Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
     pcall(function() body:SetVisibility(false, false) end)
     local ok = pcall(function() body:SetSkeletalMeshAsset(mesh) end)
     if not ok then ok = pcall(function() body:SetSkeletalMesh(mesh, false) end) end
+    -- 2026-09-08 FIX (RedFalcon: "the mesh IS changing... but the skin tone isnt following"):
+    -- SetSkeletalMeshAsset only swaps geometry -- it does NOT clear per-component override
+    -- materials that got explicitly set during the DONOR's own native composite build (e.g. an
+    -- individually-named class like Hunter/BlackAxel setting its own ethnicity's skin material on
+    -- the leader mesh's material slot). That override survives the mesh swap and keeps showing the
+    -- OLD family's skin tone on the NEW mesh's shape. This never showed up in the original
+    -- 2026-08-31 proof (Gatherer -> African) because Gatherer apparently never had an explicit
+    -- override on that slot to begin with -- a class-dependent difference, same theme as the
+    -- BodyTypeParams hijack wall above. Fix: explicitly clear overrides so the new mesh's own baked
+    -- default material actually shows, matching the ORIGINAL (correct) 2026-08-31 finding instead
+    -- of fighting a leftover override.
+    pcall(function() body:EmptyOverrideMaterials() end)
     pcall(function() body:SetVisibility(true, false) end)
-    say(string.format("base body mesh swap %s (%s)", ok and "OK" or "FAILED", meshPath))
+    say(string.format("base body mesh swap %s (%s), override materials cleared", ok and "OK" or "FAILED", meshPath))
     return ok
 end
 

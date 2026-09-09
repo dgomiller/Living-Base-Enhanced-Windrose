@@ -12379,7 +12379,24 @@ function Spawner.TestDumpDataTable(assetPath, say)
         ok, json = pcall(function() return table_:GetTableAsJSON(0) end)
     end
     if not (ok and json) then
-        say("GetTableAsJSON FAILED both ways: " .. tostring(json))
+        say("GetTableAsJSON unavailable on this binding (" .. tostring(json) .. ") -- listing every function this object's own class actually exposes instead of guessing more names.")
+        local cls = nil
+        pcall(function() cls = table_:GetClass() end)
+        if cls and cls:IsValid() then
+            local names = {}
+            pcall(function()
+                cls:ForEachFunction(function(fn)
+                    local n = "?"
+                    pcall(function() n = fn:GetFName():ToString() end)
+                    names[#names + 1] = n
+                end)
+            end)
+            table.sort(names)
+            say(string.format("%d function(s) on this object's class:", #names))
+            say(table.concat(names, ", "))
+        else
+            say("could not resolve this object's own class either.")
+        end
         return false
     end
     local jsonStr = tostring(json)

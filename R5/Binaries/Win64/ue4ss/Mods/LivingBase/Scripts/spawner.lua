@@ -11403,8 +11403,18 @@ end
 -- (e.g. a Female-tagged entry on a native-male class).
 function Spawner.TestSpawnCustomBodyTypes(bodyTypesPath, morphParamsPath, classPath, sexArg, say)
     say = say or function(m) print("[LivingBase] [test-bodytypes] " .. tostring(m) .. "\n") end
+    -- 2026-09-08 FIX: a bare filename (no "/" at all, e.g. typed as just
+    -- "DA_Custom_BodyTypeList_JasperAsAfrican") used to only get the ".AssetName" suffix appended,
+    -- never the required "/Game/Mods/LivingBaseExtended/" folder -- resolveAsset was then asked to
+    -- resolve a nonsense relative package name that could never succeed via StaticFindObject/
+    -- LoadAsset/AssetRegistry GetAsset (confirmed live: lbtestassetreg resolves the SAME asset fine
+    -- when given its real full path). Every one of this session's "bodies=MISS" reports turned out
+    -- to be this, not a pak/cache/priority issue at all.
     local function ensureFullPath(p)
         if not p then return nil end
+        if not p:find("/") then
+            p = "/Game/Mods/LivingBaseExtended/" .. p
+        end
         if not p:match("%.[%w_]+$") then
             local last = p:match("([^/]+)$")
             return last and (p .. "." .. last) or p
@@ -11529,8 +11539,17 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     -- at all), matching the SAME "-" convention lbtestbodytypes already uses for its own optional
     -- morphParamsPath/classPath slots.
     if bodyTypesPath == "-" or bodyTypesPath == "" then bodyTypesPath = nil end
+    -- 2026-09-08 FIX: same bug as Spawner.TestSpawnCustomBodyTypes's own ensureFullPath -- a bare
+    -- filename (no "/" at all) never got "/Game/Mods/LivingBaseExtended/" prepended, only the
+    -- ".AssetName" suffix, producing a nonsense relative package name resolveAsset could never
+    -- resolve. This, not a pak/cache/priority issue, was the actual cause of every "bodies=MISS"
+    -- report this session (confirmed via lbtestassetreg resolving the same asset fine when given
+    -- its real full path).
     local function ensureFullPath(p)
         if not p then return nil end
+        if not p:find("/") then
+            p = "/Game/Mods/LivingBaseExtended/" .. p
+        end
         if not p:match("%.[%w_]+$") then
             local last = p:match("([^/]+)$")
             return last and (p .. "." .. last) or p

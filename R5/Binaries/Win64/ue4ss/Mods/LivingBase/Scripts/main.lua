@@ -3754,12 +3754,16 @@ else
 end
 
 ------------------------------------------------------------
--- lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-] -- (2026-09-08) for the Barbie
--- capture session: same idea as lbtestbodytypes, but locks the spawn position/rotation on the
--- FIRST call and reuses that EXACT transform for every subsequent call, destroying the previous
--- spawn first -- only the body type changes, the subject stays in the same spot/facing so
--- lbphototripod/lbfirstperson framing doesn't need to be redone between shots. "lbtestbodyswap
--- reset" clears the locked position (next call picks a fresh in-front-of-player spot).
+-- lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] -- (2026-09-08, rewritten same day --
+-- see Spawner.SwapBodyType's own header comment) for the Barbie capture session: spawns classPath
+-- (or Config.SENKA_FEMALE_BASE_CLASS if omitted) at its native shape/sex, then applies a direct
+-- post-build body-mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/
+-- Scum/Senkamati, or "-" to keep the donor's own native mesh) and/or a sex swap (M/F) -- both
+-- combined into ONE command. Also locks the spawn position/rotation on the FIRST call and reuses
+-- that EXACT transform for every subsequent call, destroying the previous spawn first -- only the
+-- body changes, the subject stays in the same spot/facing so lbphototripod/lbfirstperson framing
+-- doesn't need to be redone between shots. "lbtestbodyswap reset" clears the locked position (next
+-- call picks a fresh in-front-of-player spot).
 ------------------------------------------------------------
 if RegisterConsoleCommandHandler then
     pcall(function()
@@ -3776,8 +3780,8 @@ if RegisterConsoleCommandHandler then
             return true
         end)
     end)
-    log("Console command registered: lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-]")
-    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <bodyTypesPath|reset> [classPath|-] [sex: M/F|-]", "Like lbtestbodytypes, but locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body type changes -- ideal for cycling through origins without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
+    log("Console command registered: lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-]")
+    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-]", "Spawns classPath at its native shape, then applies a direct post-build mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/Scum/Senkamati) and/or a sex swap (M/F), combined in one command. Also locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body changes -- ideal for cycling through Barbie variants without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
 else
     log("lbtestbodyswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

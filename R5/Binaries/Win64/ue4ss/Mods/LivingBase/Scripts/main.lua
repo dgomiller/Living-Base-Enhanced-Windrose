@@ -4480,6 +4480,26 @@ else
     log("lbdumpdatatable unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdumpmorphctrl" (2026-09-08) -- dumps the PLAYER pawn's own
+-- GetCurrentMorphControllers() list (values, not just the function name) -- see
+-- Spawner.TestDumpMorphControllers's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpmorphctrl", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbdumpmorphctrl] " .. msg .. "\n")
+            end
+            local ok, err = pcall(function() Spawner.TestDumpMorphControllers(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpmorphctrl")
+    registerCmdInfo("lbdumpmorphctrl", "lbdumpmorphctrl", "PURE READ: dumps the player pawn's own GetCurrentMorphControllers() list -- every body-morph zone tag + current blend value.")
+else
+    log("lbdumpmorphctrl unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the
 -- off-by-default escape hatch that bypasses every women's-clothing fit rule in
 -- Spawner.TestApplyClothingPiece/TestRemoveClothingPiece. See Spawner.ToggleClothesUnlock's own

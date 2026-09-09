@@ -4930,6 +4930,57 @@ local function dumpCustomizationMeshControllers(actor)
     print(string.format("[LivingBase] [probe-meshctrl] %d customization mesh controller(s) total.\n", n))
 end
 
+-- Spawner.TestDumpMorphControllers(say) -- "lbdumpmorphctrl" (2026-09-08, RedFalcon: "theres an
+-- age feature as well as the skin size. i'd like to figure that out"). The DataTable behind the
+-- Age selector UI (ST_CustomizationControl_AgeData, read offline via retoc+UAssetAPI since
+-- GetTableAsJSON isn't exposed to this binding at all) turned out to be a plain UI-state struct
+-- (AllAgeNum/CurrentAge/a Handler interface reference), not actual per-age-tier data -- so Age is
+-- most likely driven the same way body PROPORTIONS are, through the already-established
+-- MorphControllers blend system (comp:GetCurrentMorphControllers(), one per body-part GameplayTag
+-- like Morph.Zone.Body/Head/Nose/Ears/Brows, each an Axis3 barycentric blend), not a discrete
+-- tag-keyed asset swap the way Skin Type is. This is the exact same dump recipe
+-- dumpCustomizationMeshControllers (just above) already established for the sibling mesh-
+-- controller list -- reused here for the morph-controller list instead, targeting the PLAYER's
+-- own pawn (Age is a player character-creator concept first) since no existing probe has ever
+-- dumped this list's actual VALUES before, only confirmed the function exists.
+function Spawner.TestDumpMorphControllers(say)
+    say = say or function(m) print("[LivingBase] [dump-morphctrl] " .. tostring(m) .. "\n") end
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then say("no PlayerController"); return false end
+    local pawn = pc.Pawn
+    if not (pawn and pawn:IsValid()) then say("no player Pawn"); return false end
+    local comp = nil
+    pcall(function() comp = pawn.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on the player pawn.")
+        return false
+    end
+    local list = nil
+    local okCall, err = pcall(function() list = comp:GetCurrentMorphControllers() end)
+    if not okCall then
+        say("GetCurrentMorphControllers() call FAILED: " .. tostring(err))
+        return false
+    end
+    if not list then
+        say("GetCurrentMorphControllers() returned nothing.")
+        return false
+    end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    for i = 1, n do
+        local ctrl = nil
+        pcall(function() ctrl = list[i] end)
+        if ctrl == nil then pcall(function() ctrl = list:Get(i) end) end
+        pcall(function() if ctrl ~= nil and type(ctrl) == "userdata" and ctrl.get then ctrl = ctrl:get() end end)
+        if ctrl then
+            dumpUnknownStruct(ctrl, string.format("morphController[%d]", i))
+        end
+    end
+    say(string.format("%d morph controller(s) total.", n))
+    return true
+end
+
 -- dumpBuildedCompositeMeshes(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked how the
 -- Gatherer/Herbalist render visible clothes at all when Spawner.ScanNearbyCustomization proved
 -- they have ZERO Armor.* controllers -- GetCustomizationMeshControllers only lists slots with

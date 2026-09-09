@@ -11654,7 +11654,15 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
-            pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
+            -- 2026-09-08 FIX (RedFalcon: "delete the previous npc when swapping, otherwise when i
+            -- load back in it explodes with a ton of people") -- a raw K2_DestroyActor() only
+            -- removes the actor from the CURRENT session; it leaves the persist.txt line
+            -- Spawner.Spawn already wrote behind, orphaned, so every restart re-restores it. Every
+            -- swap this whole session left one of these behind. Spawner.DespawnActor destroys the
+            -- actor AND removes its persist.txt entry, the same way Spawner.CancelPlacement's own
+            -- NEW-mode cancel already does -- use it everywhere this function destroys the previous
+            -- swap actor, not just here.
+            pcall(function() Spawner.DespawnActor(Spawner._bodySwapActor) end)
         end
         Spawner._bodySwapActor = nil
         Spawner._bodySwapLoc = nil
@@ -11701,7 +11709,11 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
             Spawner._bodySwapLoc = { X = liveLoc.X, Y = liveLoc.Y, Z = liveLoc.Z }
             Spawner._bodySwapYaw = liveRot.Yaw
         end
-        pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
+        -- 2026-09-08 FIX (RedFalcon: "delete the previous npc when swapping, otherwise when i load
+        -- back in it explodes with a ton of people") -- see this function's own "reset" branch
+        -- above for the full story. Spawner.DespawnActor removes the persist.txt entry too, not
+        -- just the live actor -- a raw K2_DestroyActor() left one orphaned line per swap all day.
+        pcall(function() Spawner.DespawnActor(Spawner._bodySwapActor) end)
     end
     Spawner._bodySwapActor = nil
 

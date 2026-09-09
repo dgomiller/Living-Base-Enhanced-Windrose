@@ -131,7 +131,18 @@ Config.SHIELD_REASSERT_MS = 2000
 -- crashed had only ~7s -- destroying an actor doesn't synchronously tear down its clothing/physics
 -- actors, so chaining a fresh composite build onto the same frame is a race. See
 -- Spawner.SwapBodyType's own doSpawnNow comment for the full investigation.
-Config.BODY_SWAP_RESPAWN_DELAY_MS = 750
+-- Raised 750ms -> 20000ms same night (RedFalcon: "i need to be able to do them all at once for
+-- consistency... can we spread it out") after two MORE real crashes (Woodman again, then BlackAxel
+-- -- a donor that had been rock-solid all night) despite the 750ms version already being live.
+-- 20s matches the shortest gap ever seen between two donor swaps that did NOT crash this whole
+-- project -- every successful swap logged had a 20s-3m+ gap before it; the only sub-10s gap ever
+-- recorded crashed. NOT a proven fix -- one of the two later crashes (BlackAxel) was the very FIRST
+-- lbtestbodyswap call of its game session, so this delay's own code path never even ran for it
+-- (nothing had just been despawned) -- there is a separate, still-unexplained probabilistic
+-- instability in the sex-swap composite-rebuild mechanism itself that no amount of pacing between
+-- calls can promise to prevent. This is the cheapest real lever available with no downside beyond
+-- throughput -- tune down if it proves unnecessary, tune up if crashes keep recurring even with it.
+Config.BODY_SWAP_RESPAWN_DELAY_MS = 20000
 
 -- LIVE EDIT: raise/lower + rotate the placed object in front of you, in place and persistently, to
 -- fine-tune sitters and decorations in the base. Rotate step + height step per keypress. The log

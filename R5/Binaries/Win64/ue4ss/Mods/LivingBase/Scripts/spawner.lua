@@ -12108,8 +12108,9 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     end
 
     if justDespawnedPrevious and ExecuteWithDelay then
-        say("giving the just-despawned previous actor a beat to fully tear down before building the next one...")
-        ExecuteWithDelay(Config.BODY_SWAP_RESPAWN_DELAY_MS or 750, doSpawnNow)
+        local delayMs = Config.BODY_SWAP_RESPAWN_DELAY_MS or 750
+        say(string.format("waiting %.0fs for the just-despawned previous actor to fully tear down before building the next one -- this is deliberate, not stuck.", delayMs / 1000))
+        ExecuteWithDelay(delayMs, doSpawnNow)
         return true
     end
     return doSpawnNow()

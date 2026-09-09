@@ -11669,6 +11669,20 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             say(string.format("sex swap %s -- GetBodySex before=%s after=%s.",
                 (okSwap and after == targetSex) and "OK" or ("did not land as requested" .. (okSwap and "" or (" err=" .. tostring(errSwap)))),
                 tostring(currentSex), tostring(after)))
+            -- 2026-09-08 FIX (RedFalcon: "fully nude. says it has nothing to swap") -- a probedump
+            -- confirmed comp.DefaultParams DID correctly swap to the Barbie outfit (unlike
+            -- BodyTypeParams's instant-rejection bug above, this write genuinely stuck), yet
+            -- BuildedCompositeMeshes stayed at 0 forever -- SwapBodySex() does NOT automatically
+            -- trigger a rebuild against the new DefaultParams/sex; the ONE real build already ran
+            -- at spawn time (against the donor's own native params) and nothing re-runs it
+            -- afterward. R5CompositeMeshComponent's own function list (28 functions, confirmed via
+            -- lbprobedump) includes ConstructVisualFromParams -- explicitly force the rebuild here,
+            -- now that DefaultParams+sex are both set correctly.
+            if comp and comp:IsValid() then
+                local okBuild, errBuild = pcall(function() comp:ConstructVisualFromParams() end)
+                say(string.format("ConstructVisualFromParams %s%s", okBuild and "OK" or "FAILED",
+                    okBuild and "" or (" err=" .. tostring(errBuild))))
+            end
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
         pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2)

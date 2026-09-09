@@ -11547,6 +11547,34 @@ local FAMILY_BODY_MESH = {
     Senkamati  = { male = "SK_SenkamatiCorrupted_Male_Medium", female = "SK_Senkamati_Witch_01_Female" },
 }
 
+-- FAMILY_SKIN_MATERIAL / SKIN_MATERIAL_SLOT -- 2026-09-08, RedFalcon: "skin tones dont follow
+-- still" after the direct mesh swap. A probedump confirmed comp[CharacterMesh0]'s material list is
+-- fixed-order [MI_Eye, MI_Pirate_Mouth, <skin>, MI_Hair] (slot index 2 = skin) on every donor
+-- checked so far (Axel, Hunter) -- and that `body:EmptyOverrideMaterials()` does NOT actually clear
+-- a pre-existing per-instance override on that slot (Hunter kept MI_African_Male_Medium at slot 2
+-- even after his mesh correctly swapped to SK_Adventurer_Male_01). Real fix: explicitly SET slot 2
+-- to the target family's own skin material instead of hoping a default reasserts -- "Medium" picked
+-- as a single reasonable default (matches this whole project's established convention of defaulting
+-- to Medium wherever a single skin-size choice is needed, e.g. JasperAsSenkamati/HunterAsSenkamati).
+local FAMILY_SKIN_MATERIAL = {
+    Adventurer = { male = "MI_Adventurer_Male_Medium", female = "MI_Adventurer_Female_Medium" },
+    African    = { male = "MI_African_Male_Medium",    female = "MI_African_Female_Medium" },
+    Albion     = { male = "MI_Albion_Male_Medium",     female = "MI_Albion_Female_Medium" },
+    Fable      = { male = "MI_Fable_Male_Medium",      female = "MI_Fable_Female_Medium" },
+    Native     = { male = "MI_Native_Male_Medium",     female = "MI_Native_Female_Medium" },
+    Orient     = { male = "MI_Orient_Male_Medium",     female = "MI_Orient_Female_Medium" },
+    Scum       = { male = "MI_Scum_Male_Medium",       female = "MI_Scum_Female_Medium" },
+    Senkamati  = { male = "MI_Senkamati_Feather_Male_Medium", female = "MI_Senkamati_Female_Medium" },
+}
+local SKIN_MATERIAL_SLOT = 2
+
+local function familySkinMaterialPath(family, sex)
+    local entry = FAMILY_SKIN_MATERIAL[family]
+    if not entry then return nil end
+    local matName = (sex == 2) and entry.female or entry.male
+    return string.format("/Game/Character/Skeletal_Meshes/Human/Regular/%s/Materials/%s.%s", family, matName, matName), matName
+end
+
 local function familyMeshPath(family, sex)
     local entry = FAMILY_BODY_MESH[family]
     if not entry then return nil end
@@ -11622,9 +11650,27 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
 
     -- phase 2: build is settled, safe to apply the direct mesh override now.
     if family then
-        local meshPath, meshName = familyMeshPath(family, targetSex or currentSex)
+        local finalSex = targetSex or currentSex
+        local meshPath, meshName = familyMeshPath(family, finalSex)
         if meshPath then
             Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
+            -- 2026-09-08 FIX: EmptyOverrideMaterials() (inside TestSetBaseBodyMesh) does NOT
+            -- actually clear a pre-existing per-instance skin material override -- confirmed via
+            -- probedump, Hunter kept MI_African_Male_Medium at slot 2 even after his mesh correctly
+            -- swapped to SK_Adventurer_Male_01. Explicitly SET the target family's own skin
+            -- material on that slot instead of hoping a default reasserts.
+            local matPath, matName = familySkinMaterialPath(family, finalSex)
+            if matPath then
+                local mat = resolveAsset(matPath)
+                local body = nil
+                pcall(function() body = actor.Mesh end)
+                if mat and body and body:IsValid() then
+                    local okMat = pcall(function() body:SetMaterial(SKIN_MATERIAL_SLOT, mat) end)
+                    say(string.format("skin material swap %s (slot %d -> %s)", okMat and "OK" or "FAILED", SKIN_MATERIAL_SLOT, tostring(matName)))
+                else
+                    say("skin material unresolved or actor.Mesh invalid -- slot " .. SKIN_MATERIAL_SLOT .. " left as-is (" .. tostring(matPath) .. ")")
+                end
+            end
         else
             say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
         end

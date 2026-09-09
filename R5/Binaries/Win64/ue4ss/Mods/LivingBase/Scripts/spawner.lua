@@ -299,19 +299,31 @@ local function resolveClass(path)
         if cls and cls:IsValid() then return cls end
     end
     if resolveViaAssetRegistry then
+        -- 2026-09-09 FIX, found via lbdiagresolve on a live test Blueprint: this used to STRIP the
+        -- "_C" suffix before calling resolveViaAssetRegistry, on the theory that the AssetRegistry
+        -- indexes the Blueprint's own bare asset name, not its generated class. Backwards -- the
+        -- diagnostic proved the exact opposite: `resolveViaAssetRegistry(path WITH _C)` returned a
+        -- valid BlueprintGeneratedClass directly; the STRIPPED form returned nil. The registry
+        -- entry this project has always been calling "the Blueprint's own asset" for a plain
+        -- DataAsset (no "_C" to strip, so stripping was a no-op there, which is why this bug never
+        -- showed up until testing an actual Blueprint class path) IS actually keyed by the exact
+        -- object name being resolved -- pass the ORIGINAL path straight through.
+        local direct = resolveViaAssetRegistry(path)
+        if direct and direct:IsValid() then return direct end
+        -- Kept as a fallback, not the primary path: if a caller ever hands resolveClass a bare
+        -- Blueprint ASSET path (no "_C") for some reason, stripping does nothing useful (there's
+        -- nothing to strip), but if it hands a class path whose direct lookup somehow misses, this
+        -- at least tries the asset-name form before giving up entirely.
         local packagePath, objectName = path:match("^(.+)%.([^%.]+)$")
         if packagePath and objectName then
-            local blueprintName = objectName:match("^(.+)_C$") or objectName
-            local bp = resolveViaAssetRegistry(packagePath .. "." .. blueprintName)
-            if bp and bp:IsValid() then
-                -- Loading the Blueprint package should have brought its generated class into memory
-                -- too -- prefer a fresh StaticFindObject on the ORIGINAL "_C" path if that worked,
-                -- but fall back to whatever GetAsset itself returned (it may have handed back the
-                -- generated class directly, depending on how this UE4SS build's binding surfaces a
-                -- Blueprint's AssetRegistry entry) rather than insisting on the retry succeeding.
-                cls = StaticFindObject(path)
-                if cls and cls:IsValid() then return cls end
-                return bp
+            local blueprintName = objectName:match("^(.+)_C$")
+            if blueprintName then
+                local bp = resolveViaAssetRegistry(packagePath .. "." .. blueprintName)
+                if bp and bp:IsValid() then
+                    cls = StaticFindObject(path)
+                    if cls and cls:IsValid() then return cls end
+                    return bp
+                end
             end
         end
     end

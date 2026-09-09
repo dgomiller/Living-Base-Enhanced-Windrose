@@ -11568,6 +11568,27 @@ local FAMILY_SKIN_MATERIAL = {
 }
 local SKIN_MATERIAL_SLOT = 2
 
+-- ADVENTURER_ARCHETYPE_BY_SEX -- 2026-09-08, RedFalcon: "can we use the barbie process to summon
+-- a mesh and body type. i thought that was part of what it was for." Correct instinct: the real
+-- blocker turned out to be ArchetypePreset -- not BodyTypeParams, not DefaultParams, not
+-- SwapBodySex/SetBody/ConstructVisualFromParams (all tried post-build, all left
+-- BuildedCompositeMeshes at 0 forever) -- it's the ONE thing that decides which sex+family a
+-- build actually resolves against, fixed per-class, reasserted at construction, impossible to
+-- change post-build. The fix is to override it AT SPAWN TIME with a genuinely native,
+-- already-Adventurer-tagged archetype for the TARGET sex -- Gatherer's own (Female) or
+-- JasperCrowe's own (Male), both confirmed via live probedump -- while still spawning the DONOR's
+-- own class so BodyMorph/shape stays theirs (shape is baked per-Blueprint at compile time, not
+-- archetype-driven -- already confirmed: two classes referencing the IDENTICAL MorphParams asset
+-- produced different BodyMorph results). Paired with compositeLook.params (the Barbie outfit) and
+-- compositeLook.sex, this lets the FIRST and ONLY build resolve correctly from the start, instead
+-- of trying to force a second build after the fact. Scoped to Adventurer only -- the one target
+-- family this whole roster needs; a different family would need its own equivalent native
+-- archetype pair found the same way (probedump a real native NPC of that family+sex).
+local ADVENTURER_ARCHETYPE_BY_SEX = {
+    [1] = "/R5BusinessRules/Character/Customization/NPC/Employee/JasperCrowe/Preset/DA_Customization_JasperCrowe_PresetArchetype.DA_Customization_JasperCrowe_PresetArchetype",
+    [2] = "/R5BusinessRules/Character/Customization/NPC/Handyman/Gatherer/DA_Customization_Handyman_Gatherer_PresetArchetype1.DA_Customization_Handyman_Gatherer_PresetArchetype1",
+}
+
 local function familySkinMaterialPath(family, sex)
     local entry = FAMILY_SKIN_MATERIAL[family]
     if not entry then return nil end
@@ -11633,6 +11654,12 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
     end
 
     if phase == 1 then
+        -- 2026-09-08: this whole block is now a FALLBACK, not the primary mechanism -- since
+        -- Spawner.SwapBodyType builds compositeLook (archetype+params+sex) BEFORE spawning
+        -- whenever a sex swap is requested, currentSex (read right after spawn) should already
+        -- equal targetSex in the normal/Adventurer-family case, so this never even runs. It still
+        -- fires for a family with no known native archetype pair (ADVENTURER_ARCHETYPE_BY_SEX only
+        -- covers Adventurer) -- best-effort only, likely won't populate real clothes for that case.
         if targetSex and targetSex ~= currentSex then
             local comp = nil
             pcall(function() comp = actor.CompositeMeshComponent end)
@@ -11829,14 +11856,30 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     end
     Spawner._bodySwapActor = nil
 
+    -- 2026-09-08 REWRITE (RedFalcon: "can we use the barbie process to summon a mesh and body
+    -- type") -- build the FULL compositeLook (archetype + Barbie outfit + sex) BEFORE spawning,
+    -- instead of trying to force any of this post-build (confirmed dead end -- see
+    -- ADVENTURER_ARCHETYPE_BY_SEX's own header comment). Only kicks in when a sex swap is actually
+    -- being forced (native spawns keep their own donor archetype/outfit -- nothing needs
+    -- overriding when sex isn't changing). Only "Adventurer" has a known native archetype pair
+    -- right now -- an unsupported family still gets the sex+outfit override (better than nothing)
+    -- but no archetype override, so its build will still resolve against the DONOR's own native
+    -- family/sex, same as before this fix.
+    local compositeLook = nil
+    if sex then
+        local barbieParamsName = (sex == 2) and "DA_Custom_BarbieDefaultParams_Regular_Female" or "DA_Custom_BarbieDefaultParams_Regular_Male"
+        compositeLook = {
+            sex = sex,
+            params = "/Game/Mods/LivingBaseExtended/" .. barbieParamsName .. "." .. barbieParamsName,
+            archetype = (family == "Adventurer") and ADVENTURER_ARCHETYPE_BY_SEX[sex] or nil,
+        }
+    end
+
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
-    say(string.format("spawning %s natively (no bodyTypes override -- see this function's own 2026-09-08 rewrite comment), family=%s sex=%s, at %s",
-        classPath, tostring(family), tostring(sexArg or "native"),
+    say(string.format("spawning %s (archetype=%s params=%s sex=%s), family=%s, at %s",
+        classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
         atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
-    -- compositeLook deliberately stays nil at SPAWN time -- see pollForBuildThenApplyBodySwap's own
-    -- comment for why the Barbie outfit swap (when a sex change is forced) has to happen AFTER the
-    -- donor's own native-sex build settles, not before.
-    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, nil, nil, false)
+    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, compositeLook, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")
         return false

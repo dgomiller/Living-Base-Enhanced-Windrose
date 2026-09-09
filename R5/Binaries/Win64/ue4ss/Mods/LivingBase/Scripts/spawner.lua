@@ -268,9 +268,27 @@ local function getGameplayStatics()
     return nil
 end
 
--- Resolve a BP class by full path; try StaticFindObject first, then
--- LoadAsset for classes not yet in memory (e.g. faction actors far
--- from town).
+-- Forward-declared here (2026-09-09), assigned further down at its own original location (search
+-- "local _assetRegistryHelpers = nil") -- resolveClass below needs to call it, but the AssetRegistry
+-- fallback machinery is declared much later in this (huge) file. This is exactly the standing rule
+-- this project already has against forward-reference bugs (see [[feedback_lua_forward_reference_check]])
+-- -- resolveClass calling a not-yet-declared local would have silently done nothing (a stale nil
+-- upvalue), not errored, which is likely WHY a genuinely new class path was never actually tried
+-- before now: resolveAsset (used for DataAssets) got the AssetRegistry fallback fix on 2026-08-31,
+-- but resolveClass (used for SPAWNING an actor class) sits earlier in the file and never did, purely
+-- as an oversight of file layout, not a deliberate decision that classes don't need it.
+local resolveViaAssetRegistry
+
+-- Resolve a BP class by full path; try StaticFindObject first, then LoadAsset for classes not yet in
+-- memory (e.g. faction actors far from town), then the SAME AssetRegistry fallback resolveAsset uses
+-- for a genuinely NEW package (2026-09-09, RedFalcon: "i think the reason why we didnt go down this
+-- road before was because we hadnt discovered the correct place for these to live in the pak trees"
+-- -- confirmed: this function just never got the fix its sibling did). A Blueprint class path's
+-- registered AssetRegistry entry is the BLUEPRINT object itself (no "_C" suffix), not its generated
+-- class -- GetAsset on the "_C" name will miss even for a real package. Strip it, resolve/force-load
+-- the underlying Blueprint via the registry, then retry StaticFindObject on the ORIGINAL "_C" path --
+-- loading the package brings the generated class into memory too, the same way LoadAsset already
+-- does above for a class that merely hasn't been touched yet this session.
 local function resolveClass(path)
     local cls = StaticFindObject(path)
     if cls and cls:IsValid() then return cls end
@@ -279,6 +297,23 @@ local function resolveClass(path)
     if okLoad then
         cls = StaticFindObject(path)
         if cls and cls:IsValid() then return cls end
+    end
+    if resolveViaAssetRegistry then
+        local packagePath, objectName = path:match("^(.+)%.([^%.]+)$")
+        if packagePath and objectName then
+            local blueprintName = objectName:match("^(.+)_C$") or objectName
+            local bp = resolveViaAssetRegistry(packagePath .. "." .. blueprintName)
+            if bp and bp:IsValid() then
+                -- Loading the Blueprint package should have brought its generated class into memory
+                -- too -- prefer a fresh StaticFindObject on the ORIGINAL "_C" path if that worked,
+                -- but fall back to whatever GetAsset itself returned (it may have handed back the
+                -- generated class directly, depending on how this UE4SS build's binding surfaces a
+                -- Blueprint's AssetRegistry entry) rather than insisting on the retry succeeding.
+                cls = StaticFindObject(path)
+                if cls and cls:IsValid() then return cls end
+                return bp
+            end
+        end
     end
     return nil
 end
@@ -1262,7 +1297,17 @@ end
 -- session. Only cache success now; a transient early-boot miss just retries next call instead of
 -- being permanent.
 local _assetRegistryHelpers = nil
-local function resolveViaAssetRegistry(path)
+-- NOT `local function` here -- this was forward-declared as `local resolveViaAssetRegistry` much
+-- earlier in this file (search "Forward-declared here (2026-09-09)") so resolveClass can call it
+-- despite sitting far above this point. `local function resolveViaAssetRegistry(...)` here would
+-- declare a BRAND NEW local that shadows the earlier forward declaration instead of filling it in,
+-- leaving resolveClass's own upvalue permanently nil -- confirmed the fix by testing in isolation
+-- (a lupa Lua runtime) before shipping it: plain `function resolveViaAssetRegistry(path) ... end`
+-- (no `local`) is ordinary Lua "function name(...) = name = function(...)" sugar, which correctly
+-- assigns to whatever `resolveViaAssetRegistry` already resolves to via normal scoping -- the
+-- existing local, here -- exactly like writing out `resolveViaAssetRegistry = function(path) ... end`
+-- explicitly. Only the `local function` spelling is the trap.
+function resolveViaAssetRegistry(path)
     local packageName, assetName = path:match("^(.+)%.([^%.]+)$")
     if not (packageName and assetName) then return nil end
     if not _assetRegistryHelpers then

@@ -11565,6 +11565,39 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
         elseif s == "m" or s == "male" then sex = 1 end
     end
 
+    -- 2026-09-08 FIX: the combined "...Both" BodyTypeList assets (2 entries, Male+Female, built
+    -- earlier today to fix the single-sex hijack gap) do NOT work the way a plain "pool" was assumed
+    -- to -- confirmed live: spawning with a "Both" list picked the SAME (first/Male) entry
+    -- regardless of the actor's actual sex (RedFalcon: "now they are adventurer men wearing the
+    -- gatherer's clothes" -- Gatherer is native FEMALE, yet got the Male Adventurer mesh). The
+    -- native BodyTypeParams pool lookup apparently does NOT discriminate multiple entries in one
+    -- list by sex the way the single-entry hijack technique's own tag-matching implied it might.
+    -- Real fix: never point bodyTypesPath at a "Both" list at all -- resolve the FINAL requested sex
+    -- ourselves in Lua (right here, before spawning) and pick the correct SINGLE-sex sibling list
+    -- instead, exactly like every other confirmed-working hijack entry in this project. This makes
+    -- the "Both" lists themselves dead weight (kept on disk/committed, just unused by this function
+    -- from now on) -- the real combined-command behavior comes from picking the right single list
+    -- here PLUS the post-spawn comp:SwapBodySex() call below, not from a multi-entry list asset.
+    local BOTH_LIST_SIBLINGS = {
+        AxelAsAdventurerBoth     = { male = "AxelAsAdventurer",     female = "AlbionAsAdventurer" },
+        ScumMaleAsAdventurerBoth = { male = "ScumMaleAsAdventurer", female = "ScumAsAdventurer" },
+        MortarAsAdventurerBoth   = { male = "MortarAsAdventurer",   female = "NativeAsAdventurer" },
+    }
+    if bodyTypesPath then
+        for bothName, siblings in pairs(BOTH_LIST_SIBLINGS) do
+            if bodyTypesPath:find(bothName, 1, true) then
+                -- All 3 current "Both" donors are Male-native -- default to the Male sibling
+                -- whenever sex isn't explicitly forced to Female.
+                local siblingName = (sex == 2) and siblings.female or siblings.male
+                local newPath = ensureFullPath(siblingName)
+                say(string.format("translated combined list '%s' -> single-sex sibling '%s' (target sex=%s) -- see this function's own 2026-09-08 fix comment.",
+                    bothName, siblingName, sex == 2 and "Female" or "Male"))
+                bodyTypesPath = newPath
+                break
+            end
+        end
+    end
+
     -- RE-READ the CURRENT actor's live transform before destroying it (2026-09-08, RedFalcon:
     -- "what if i decide to adjust the angle of the subject and then swap") -- the locked
     -- position/rotation must track whatever the actor was last actually posed at (via any means --

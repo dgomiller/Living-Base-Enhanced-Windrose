@@ -7987,6 +7987,40 @@ end
 -- gravity/collision-through-flying) for repositioning during a photo session: nudge up/down by
 -- typing the command repeatedly rather than holding a key.
 ------------------------------------------------------------
+-- Console command "lbwhereami" (2026-09-09) -- PURE READ. Prints the player pawn's own current
+-- world X/Y/Z/yaw, plain and simple -- there's no built-in way to see this otherwise, and it's the
+-- fastest way to tell whether a spawn actually landed near you (compare against the coordinates
+-- lbtestbodyswap's own "locked swap position at (...)" log line already prints) versus somewhere far
+-- off, or whether something spawned with no visible mesh at all right where you're standing.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbwhereami", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [whereami] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function()
+                local pc = UEHelpers.GetPlayerController()
+                local pawn = pc and pc:IsValid() and pc.Pawn
+                if not (pawn and pawn:IsValid()) then
+                    say("no player pawn found")
+                    return
+                end
+                local loc = pawn:K2_GetActorLocation()
+                local rot = pawn:K2_GetActorRotation()
+                say(string.format("(%.1f, %.1f, %.1f) yaw=%.1f", loc.X, loc.Y, loc.Z, rot.Yaw))
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbwhereami")
+    registerCmdInfo("lbwhereami", "lbwhereami", "PURE READ: prints the player pawn's own current world X/Y/Z/yaw.")
+else
+    log("lbwhereami unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+------------------------------------------------------------
 local pendingNudge = nil
 if RegisterConsoleCommandHandler then
     pcall(function()

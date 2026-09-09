@@ -11954,9 +11954,32 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
     -- by this fix, only the specific redundant-call case is.
     local function applyPhase2()
         if not (actor and actor:IsValid()) then return end
-        if family and familyHandledByArchetype then
-            say("skipping redundant base-mesh/skin override -- the archetype+sex-swap path already built the correct Adventurer mesh (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton).")
+        -- 2026-09-09 FIX (RedFalcon: "nothing visibly appeared" spawning a genuinely new, donor-
+        -- independent native class -- probedump showed CompositeMeshComponent's OWN pieces built
+        -- fine, but `Mesh`/CharacterMesh0 itself, the LEADER every piece leader-poses off of, had
+        -- NO SkeletalMeshAsset at all). The skip below assumed "archetype handled it" always means
+        -- "the base mesh is already correctly set" -- true for every real donor (their own class
+        -- already has a base mesh baked into its own defaults) but NOT true for a from-scratch
+        -- Blueprint with nothing ever set there. Checking for an ACTUAL existing mesh first, rather
+        -- than trusting familyHandledByArchetype alone, keeps the original fix's real benefit
+        -- (never redundantly re-swap a donor's own already-correct skeleton -- still the confirmed
+        -- crash site) while no longer leaving a donor-independent class with an empty leader mesh.
+        local hasBaseMesh = false
+        pcall(function()
+            local body = actor.Mesh
+            if body and body:IsValid() then
+                local sk = nil
+                pcall(function() sk = body:GetSkeletalMeshAsset() end)
+                if not (sk and sk:IsValid()) then pcall(function() sk = body.SkeletalMesh end) end
+                hasBaseMesh = sk ~= nil and sk:IsValid()
+            end
+        end)
+        if family and familyHandledByArchetype and hasBaseMesh then
+            say("skipping redundant base-mesh/skin override -- the archetype+sex-swap path already built the correct Adventurer mesh AND a real base mesh is already present (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton).")
         elseif family then
+            if familyHandledByArchetype then
+                say("base mesh is EMPTY despite the archetype+sex-swap path -- applying the direct mesh override anyway (donor-independent class, nothing to be redundant against).")
+            end
             local finalSex = targetSex or currentSex
             local meshPath, meshName = familyMeshPath(family, finalSex)
             if meshPath then

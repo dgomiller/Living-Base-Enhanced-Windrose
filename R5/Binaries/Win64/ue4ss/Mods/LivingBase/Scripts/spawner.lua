@@ -1281,11 +1281,17 @@ end
 
 local function resolveAsset(path)
     if not path then return nil end
-    local o = StaticFindObject(path)
-    if o and o:IsValid() then return o end
+    -- 2026-09-08 FIX: StaticFindObject can throw an UNCAUGHT error on a malformed path (a bare
+    -- package path missing its ".AssetName" suffix throws "GetPackageNameFromLongName: Name wasn't
+    -- long") -- confirmed live, it killed the whole calling chain (SwapBodyType's poll callback)
+    -- with no pcall anywhere above it to catch it. Both StaticFindObject calls are now pcall'd,
+    -- matching the LoadAsset call already wrapped just below -- a malformed path should return nil
+    -- like any other failed resolution, never propagate a hard error to the caller.
+    local ok, o = pcall(StaticFindObject, path)
+    if ok and o and o:IsValid() then return o end
     pcall(function() LoadAsset(path) end)
-    o = StaticFindObject(path)
-    if o and o:IsValid() then return o end
+    ok, o = pcall(StaticFindObject, path)
+    if ok and o and o:IsValid() then return o end
     -- Last resort, only reached when both calls above already failed (a normal existing-asset
     -- path never gets here) -- see the comment above resolveViaAssetRegistry for why this exists.
     o = resolveViaAssetRegistry(path)
@@ -11545,7 +11551,12 @@ local function familyMeshPath(family, sex)
     local entry = FAMILY_BODY_MESH[family]
     if not entry then return nil end
     local meshName = (sex == 2) and entry.female or entry.male
-    return string.format("/Game/Character/Skeletal_Meshes/Human/Regular/%s/Meshes/%s", family, meshName), meshName
+    local packagePath = string.format("/Game/Character/Skeletal_Meshes/Human/Regular/%s/Meshes/%s", family, meshName)
+    -- 2026-09-08 FIX: resolveAsset/StaticFindObject needs the full "Package.AssetName" form (a bare
+    -- package path throws "GetPackageNameFromLongName: Name wasn't long", an UNCAUGHT error --
+    -- resolveAsset's own first StaticFindObject call isn't wrapped in pcall) -- forgot to append the
+    -- ".AssetName" suffix here originally.
+    return packagePath .. "." .. meshName, meshName
 end
 
 -- pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft, phase)

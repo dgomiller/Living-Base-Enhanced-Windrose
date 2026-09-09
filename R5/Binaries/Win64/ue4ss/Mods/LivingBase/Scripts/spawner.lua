@@ -11977,6 +11977,25 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         if s == "f" or s == "female" then sex = 2
         elseif s == "m" or s == "male" then sex = 1 end
     end
+    -- KNOWN-CRASH GUARD (2026-09-09): Woodman -> Female has crashed 2 for 2 across two separate
+    -- game sessions doing this exact operation (once no-dump, once a real EXCEPTION_ACCESS_VIOLATION
+    -- in VCRUNTIME140.dll -- confirmed via parse_minidump.py). Ruled out both suspicious log signals
+    -- as red herrings first -- the "AddDefaultCompositeMesh...already contains mesh type Strap"
+    -- warning and the R5Check "CompositeMeshData.SexVariations.Contains(ER5BLCharacterSex::Any)"
+    -- soft-assert BOTH fire on every donor's swap (BlackAxel/Herbalist/Farmer all succeeded despite
+    -- them) -- Woodman specifically is the only reproducible differentiator, very likely his own
+    -- native gear (axe/tool piece, unconfirmed exactly which) genuinely incompatible with a
+    -- cross-sex composite rebuild at the engine level. No symbols/PDBs for either UE4SS.dll or
+    -- Windrose-Win64-Shipping.exe (every crash callstack is UnknownFunction), so this can't be fixed
+    -- from Lua -- same category as the SetBody crash below, block outright rather than let it recur.
+    -- Same-sex Woodman calls (native male, no sex override) are untouched and still fine.
+    if sexArg and classPath and classPath:lower():find("handyman_woodman") then
+        local s = sexArg:lower()
+        if s == "f" or s == "female" then
+            say("REFUSED: Woodman -> Female has crashed the game 2/2 times this project (see WINDROSE_MODDING_NOTES.md/memory) -- likely his own native gear is incompatible with a cross-sex composite rebuild. Not safe to retry blind.")
+            return false
+        end
+    end
     -- underwearArg (2026-09-08, RedFalcon: "can we spawn with underwear") -- reuses the SAME
     -- Spawner.RemoveClothingOnActor(actor, "all", name) call TestSpawnCustomLook's own
     -- pollForBuildThenUndress already uses, applied as the LAST step once body/skin are settled.

@@ -305,6 +305,15 @@ local function custom_clothes_remove_path_and_label(row)
     return {"Custom", "Clothes", "Remove"}, row.slot
 end
 
+-- Custom > Hair > Remove > <Slot|All> (2026-09-09). Config.HAIR_REMOVE rows carry just `slot`
+-- ("Hair"/"Whiskers"/"Beard"/"Mustache"/"All") -- same flat one-level-under-its-own-"Remove"-branch
+-- shape as Clothes > Remove above, but sibling to Hair's own Default/Hat/Headband/Bandana
+-- hairstyle-picker subcategories instead of Clothes' per-family branches. Deliberately a SEPARATE
+-- roster from CLOTHES_REMOVE -- see Spawner.RemoveHairOnActor's own comment for why.
+local function custom_hair_remove_path_and_label(row)
+    return {"Custom", "Hair", "Remove"}, row.slot
+end
+
 -- Custom > Face > <Family> > <Slot> > <Name> (2026-08-28). Same three-level nest as Clothes,
 -- since facial pieces genuinely have both a family (style) AND a slot (Eyebrows/Beard/Mustache/
 -- Whiskers) axis.
@@ -323,6 +332,7 @@ local function roster_descriptors(Config)
         {name = "HAIR", rows = Config.CUSTOM_HAIR, path_and_label = custom_hair_path_and_label},
         {name = "CLOTHES", rows = Config.CUSTOM_CLOTHES, path_and_label = custom_clothes_path_and_label},
         {name = "CLOTHES_REMOVE", rows = Config.CLOTHES_REMOVE, path_and_label = custom_clothes_remove_path_and_label},
+        {name = "HAIR_REMOVE", rows = Config.HAIR_REMOVE, path_and_label = custom_hair_remove_path_and_label},
         {name = "FACIAL", rows = Config.CUSTOM_FACIAL, path_and_label = custom_facial_path_and_label},
         {name = "SENKAMATI_LOOKS", rows = Config.SENKAMATI_LOOKS, path_and_label = senkamati_path_and_label},
         {name = "STANDING_STATUES", rows = Config.STANDING_STATUES, path_and_label = statue_path_and_label("Standing")},

@@ -1959,16 +1959,18 @@ Config.SENKAMATI_WITCH_REGULAR_CLOTHES_SCALE = { X = 1.5, Y = 1.1, Z = 1.0 }
 -- (SetVisibility(false)), not swaps to nil -- clearing a component's mesh entirely would make
 -- clothingSlotOf unable to re-identify that slot afterward (it matches by the CURRENT mesh name),
 -- breaking the ability to dress that slot again later.
--- "Hair" added 2026-09-08 (RedFalcon: "in remove i'd like a remove all hair option") -- NOT part of
--- CLOTHING_SLOT_TOKENS/clothingSlotOf's name-token vocabulary (hair mesh names don't reliably carry
--- a "Hair" token at all -- see the Undercut naming bug documented on Spawner.TestApplyHairStyle);
--- Spawner.RemoveClothingOnActor matches it separately, by the mesh's FULL ASSET PATH containing
--- "/Hair/" instead. Listed here anyway so the GUI's Remove dropdown picks it up the same way as
--- every other slot, and now included by "All" too (it previously excluded hair/eyebrows/base body
--- by construction, since none of those matched any clothing token).
+-- "Hair" was added here 2026-09-08 (RedFalcon: "in remove i'd like a remove all hair option"), then
+-- REVERTED 2026-09-09 (RedFalcon: "i think the remove for hair you made got messed up... clothes
+-- should be put back to how they were, no hair added") -- Clothes > Remove > All had started
+-- stripping hair along with clothing, which was never the ask. Hair/Whiskers/Beard/Mustache now
+-- live in their own Config.HAIR_REMOVABLE_SLOTS/Config.HAIR_REMOVE, under Custom > Hair > Remove,
+-- entirely separate from this list -- see Spawner.RemoveHairOnActor. Removing "Hair" from here also
+-- fixes the stale spawn_menu.ini index this had introduced (see
+-- [[project_spawn_menu_ini_stale_indices]]): "All"/"All Sockets" shift back to the position the
+-- live ini already expects.
 Config.CLOTHING_REMOVABLE_SLOTS = {
   "Headgear", "Torso", "TorsoCloth", "Legs", "Hands", "Feet", "Head", "Neck",
-  "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap", "Hair",
+  "Waist", "Cape", "Scarf", "Belt", "Frog", "Sling", "Strap",
 }
 
 -- Config.KNOWN_ATTACHMENT_SOCKETS_BY_BODYPART -- (2026-09-04) real socket names, deduplicated,
@@ -2189,6 +2191,23 @@ table.insert(Config.CLOTHES_REMOVE, { slot = "All" })
 -- Appended at the END, after "All", so every already-generated spawn_menu.ini index for the rows
 -- above it stays valid -- only this one new section needs generating on the next lbreload.
 table.insert(Config.CLOTHES_REMOVE, { slot = "All Sockets" })
+
+-- Config.HAIR_REMOVABLE_SLOTS / Config.HAIR_REMOVE -- "Custom > Hair > Remove" (2026-09-09,
+-- RedFalcon: "under the custom > hair category there should be all, and it should hide hair,
+-- whiskers, beard, and moustache so they can be put back if needed"). A sibling "Remove" branch
+-- under the EXISTING Custom > Hair category (which already holds the Default/Hat/Headband/Bandana
+-- hairstyle-picker subcategories) -- same flat-roster-plus-All shape as Config.CLOTHES_REMOVE, but
+-- entirely separate from it and from CLOTHING_REMOVABLE_SLOTS: this was originally folded into
+-- Clothes > Remove > All, which turned out wrong (see that table's own comment) -- clothes and
+-- head/facial hair are now two independent, individually-reversible remove groups. "Mustache",
+-- not "Moustache" -- matches the spelling already used everywhere else (Config.CUSTOM_FACIAL rows,
+-- FACIAL_SLOT_TOKENS). Consumed by Spawner.RemoveHairOnActor via SPAWN_MENU_HANDLERS.HAIR_REMOVE.
+Config.HAIR_REMOVABLE_SLOTS = { "Hair", "Whiskers", "Beard", "Mustache" }
+Config.HAIR_REMOVE = {}
+for _, slotName in ipairs(Config.HAIR_REMOVABLE_SLOTS) do
+  table.insert(Config.HAIR_REMOVE, { slot = slotName })
+end
+table.insert(Config.HAIR_REMOVE, { slot = "All" })
 
 -- Women's-clothing fit rules (2026-08-28) -- see Spawner.TestApplyClothingPiece's own comment for
 -- the full mechanism. "Senkamati women just can't wear regular torso or legs. Others slots seem

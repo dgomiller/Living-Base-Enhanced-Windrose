@@ -579,11 +579,22 @@ local SPAWN_MENU_HANDLERS = {
         if not ok then return false, tostring(err) end
         return false
     end,
+    -- Custom > Hair > Remove (2026-09-09) -- Config.HAIR_REMOVE rows carry just `slot` ("Hair",
+    -- "Whiskers", "Beard", "Mustache", or "All"); Spawner.RemoveHairOnActor hides rather than
+    -- swaps, same as CLOTHES_REMOVE above but a deliberately separate group/function (see that
+    -- function's own header comment for why this isn't just folded into CLOTHES_REMOVE).
+    HAIR_REMOVE = function(index)
+        local row = Config.HAIR_REMOVE and Config.HAIR_REMOVE[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        local ok, err = pcall(function() Spawner.TestRemoveHairPiece(row.slot) end)
+        if not ok then return false, tostring(err) end
+        return false
+    end,
 }
 
 -- Rosters whose handler modifies an EXISTING target rather than spawning a new one -- see the
 -- REPLACE-safety guard in pollSpawnMenuRequest below for why this list exists.
-local NON_SPAWNING_ROSTERS = { CUSTOM_POSES = true, SKIN_TONES = true, HAIR = true, CLOTHES = true, CLOTHES_REMOVE = true, FACIAL = true }
+local NON_SPAWNING_ROSTERS = { CUSTOM_POSES = true, SKIN_TONES = true, HAIR = true, CLOTHES = true, CLOTHES_REMOVE = true, FACIAL = true, HAIR_REMOVE = true }
 
 -- Statue rosters (STANDING/SEATED/CHAIR/INTERACTIVE): each row is {faction, path}, and the
 -- by-name entry points (Testbed.SpawnStandingByName/etc.) match on the SHORT CLASS NAME parsed
@@ -3482,6 +3493,26 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbremoveclothes", "lbremoveclothes <slot|all>", "Hides a clothing/armor piece in the given slot (or every recognized slot, with 'all') on the nearest actor -- see Config.CLOTHING_REMOVABLE_SLOTS.")
 else
     log("lbremoveclothes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbremovehair <slot|all>" (2026-09-09, RedFalcon: "under the custom > hair
+-- category there should be all, and it should hide hair, whiskers, beard, and moustache") -- hides
+-- a hair/facial-hair piece by slot (or all four) on the nearest actor. Deliberately separate from
+-- lbremoveclothes/Config.CLOTHING_REMOVABLE_SLOTS -- see Spawner.RemoveHairOnActor's own comment
+-- for why folding this into Clothes > Remove was the bug being fixed.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbremovehair", function(FullCommand, Parameters, Ar)
+            local slotArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestRemoveHairPiece(slotArg) end)
+            if not ok then print("[LivingBase] [lbremovehair] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbremovehair <slot|all>")
+    registerCmdInfo("lbremovehair", "lbremovehair <slot|all>", "Hides Hair/Whiskers/Beard/Mustache (or all four, with 'all') on the nearest actor -- see Config.HAIR_REMOVABLE_SLOTS. Also available as Custom > Hair > Remove.")
+else
+    log("lbremovehair unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbremoveallsockets" (2026-09-04) -- hides everything attached via a socket

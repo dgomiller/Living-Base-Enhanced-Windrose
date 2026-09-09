@@ -10624,10 +10624,10 @@ end
 -- canonical slot via clothingSlotOf -- naturally excludes the base body mesh and eyebrows, since
 -- neither's mesh name contains a recognized clothing-slot token. A specific slot name (from
 -- Config.CLOTHING_REMOVABLE_SLOTS) hides only components resolving to that one slot.
--- HAIR (2026-09-08, RedFalcon: "in remove i'd like a remove all hair option"): matched separately
--- by full asset PATH containing "/Hair/" (not a clothingSlotOf name-token match -- hair mesh names
--- don't reliably carry one, see the Undercut naming bug on Spawner.TestApplyHairStyle) -- "all" now
--- includes hair too, and "hair" works as its own explicit slotArg.
+-- Hair/Whiskers/Beard/Mustache are NOT part of this mechanism (a 2026-09-08 attempt to fold Hair
+-- in here made "all" strip hair too, which RedFalcon caught as wrong the next day -- "clothes
+-- should be put back to how they were, no hair added") -- see Spawner.RemoveHairOnActor instead,
+-- a separate function/GUI branch (Custom > Hair > Remove) for exactly that group.
 -- RedFalcon separately asked for a clear notice when a slot has nothing to act on -- both branches
 -- toast an explicit "nothing found" message rather than silently no-op'ing, same as the equivalent
 -- notice just added to Spawner.TestApplyClothingPiece's own empty-slot case.
@@ -10743,14 +10743,6 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                     end)
                 end
                 local slotHere = clothingSlotOf(curName)
-                -- Hair (2026-09-08, RedFalcon: "in remove i'd like a remove all hair option") --
-                -- clothingSlotOf matches by NAME TOKEN, but hair mesh names don't reliably carry a
-                -- "Hair" token at all (see Spawner.TestApplyHairStyle's own Undercut bug writeup:
-                -- SK_Undercut_01_..._Female has none). Match by the FULL ASSET PATH containing
-                -- "/Hair/" instead, the same technique TestApplyHairStyle already uses to find the
-                -- hair component reliably regardless of naming irregularities. Only ever applies to
-                -- the SkeletalMeshComponent sweep (curFullPath is only ever populated there).
-                if not slotHere and curFullPath:find("/Hair/") then slotHere = "Hair" end
                 -- SM_Drop_* fallback (2026-09-04, RedFalcon: "i think sm_drop also needs to be
                 -- added to removeall") -- decorative weapon-replica props (muskets/pistols worn as
                 -- belt/sling decoration) share none of clothingSlotOf's clothing-family tokens in
@@ -12644,6 +12636,98 @@ local function facialSlotOf(meshName)
         if meshName:find(pair[1], 1, true) then return pair[2] end
     end
     return nil
+end
+
+-- Spawner.RemoveHairOnActor(actor, slotArg, name) / Spawner.TestRemoveHairPiece(slotArg) --
+-- "Custom > Hair > Remove" / "lbremovehair <slot|all>" (2026-09-09, RedFalcon: "under the custom >
+-- hair category there should be all, and it should hide hair, whiskers, beard, and moustache so
+-- they can be put back if needed. clothes should be put back to how they were, no hair added").
+-- Split out as its OWN function/GUI branch rather than folding back into
+-- Spawner.RemoveClothingOnActor -- that's exactly what caused this bug in the first place (a
+-- 2026-09-08 attempt made Clothes > Remove > All strip hair too). Declared HERE, right after
+-- facialSlotOf, specifically so it can use that local helper directly -- Lua locals are only
+-- visible from their declaration point onward, and this function genuinely needs it (see the
+-- forward-reference mistake this avoided: [[feedback_lua_forward_reference_check]]).
+-- Same hide-not-clear-mesh discipline as clothing removal (SetVisibility(false), never touches the
+-- mesh reference) so everything stays re-dressable afterward via lbtesthair/lbtestfacial/the GUI.
+-- Only sweeps SkeletalMeshComponent -- unlike clothing, none of Hair/Whiskers/Beard/Mustache have
+-- ever shown up as a StaticMeshComponent attachment, so there's no second sweepClass pass needed.
+-- No modesty-guard/underwear substitution either -- that mechanism is Torso/Legs-specific and has
+-- no equivalent concept for hair.
+-- Matching: "Hair" by full asset PATH containing "/Hair/" (mesh names don't reliably carry a "Hair"
+-- token -- see the Undercut naming bug on Spawner.TestApplyHairStyle); Whiskers/Beard/Mustache via
+-- facialSlotOf. Deliberately excludes Eyebrows -- RedFalcon's own list was "hair, whiskers, beard,
+-- and moustache" only.
+function Spawner.RemoveHairOnActor(actor, slotArg, name)
+    if not (actor and actor:IsValid()) then return false end
+    if not slotArg or slotArg == "" then return false end
+    name = tostring(name or "actor")
+    local wantAll = slotArg:lower() == "all"
+    local wantSlot = slotArg
+
+    local hidden = 0
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then
+        print("[LivingBase] [remove-hair] /Script/Engine.SkeletalMeshComponent did not resolve.\n")
+        return false
+    end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName, curFullPath = "", ""
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then
+                    curName = sk:GetFName():ToString()
+                    pcall(function() curFullPath = sk:GetFullName() end)
+                end
+            end)
+            local slotHere = nil
+            if curFullPath:find("/Hair/") then slotHere = "Hair" end
+            if not slotHere then slotHere = facialSlotOf(curName) end
+            if slotHere and (wantAll or slotHere:lower() == wantSlot:lower()) then
+                pcall(function() c:SetVisibility(false, false) end)
+                pcall(function() c:SetHiddenInGame(true, false) end)
+                pcall(function() c:SetCollisionResponseToAllChannels(0) end)
+                hidden = hidden + 1
+                print(string.format("[LivingBase] [remove-hair] hid slot=%s mesh=%s on %s\n", slotHere, curName, name))
+            end
+        end
+    end
+
+    if hidden == 0 then
+        local label = wantAll and "hair/whiskers/beard/mustache" or ("the " .. slotArg .. " slot")
+        print(string.format("[LivingBase] [remove-hair] %s has nothing in %s to remove.\n", name, label))
+        pcall(function() Spawner.Toast(name .. " has nothing in " .. label .. " to remove", 2.5) end)
+        return false
+    end
+    pcall(function() Spawner.Toast(string.format("Removed %d piece(s) (%s) on %s", hidden, wantAll and "all" or slotArg, name), 2.5) end)
+    return true
+end
+
+function Spawner.TestRemoveHairPiece(slotArg)
+    if not slotArg or slotArg == "" then
+        print("[LivingBase] [remove-hair] usage: lbremovehair <slot|all> (see Config.HAIR_REMOVABLE_SLOTS)\n")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        print(string.format(
+            "[LivingBase] [remove-hair] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
+            maxDist))
+        return false
+    end
+    return Spawner.RemoveHairOnActor(e.actor, slotArg, e.label)
 end
 
 -- Spawner.TestApplyFacialPiece(family, slot, pieceName, sexOverride) -- "Custom > Face"

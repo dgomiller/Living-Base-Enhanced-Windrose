@@ -4500,6 +4500,26 @@ else
     log("lbdumpmorphctrl unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdumpdecordata" (2026-09-08) -- dumps the PLAYER pawn's own
+-- GetSkinDecorData()/GetAvailableBodyDecorData() -- see Spawner.TestDumpBodyDecorData's own
+-- header comment (RedFalcon: "more of an overlay than a morph").
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpdecordata", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbdumpdecordata] " .. msg .. "\n")
+            end
+            local ok, err = pcall(function() Spawner.TestDumpBodyDecorData(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpdecordata")
+    registerCmdInfo("lbdumpdecordata", "lbdumpdecordata", "PURE READ: dumps the player pawn's own GetSkinDecorData()/GetAvailableBodyDecorData() -- the current + every available body/skin decoration overlay.")
+else
+    log("lbdumpdecordata unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbunlockclothes" (2026-08-28) -- toggles Config.CLOTHES_UNLOCK_ALL, the
 -- off-by-default escape hatch that bypasses every women's-clothing fit rule in
 -- Spawner.TestApplyClothingPiece/TestRemoveClothingPiece. See Spawner.ToggleClothesUnlock's own

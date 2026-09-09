@@ -4993,6 +4993,74 @@ function Spawner.TestDumpMorphControllers(say)
     return true
 end
 
+-- Spawner.TestDumpBodyDecorData(say) -- "lbdumpdecordata" (2026-09-08, same investigation as
+-- TestDumpMorphControllers just above -- RedFalcon's follow-up correction: "more of an overlay
+-- than a morph," ruling out the MorphControllers zone list (confirmed live: only the 5 known
+-- Body/Head/Nose/Ears/Brows zones, no Age among them) and pointing instead at
+-- GetSkinDecorData()/GetAvailableBodyDecorData() -- two more R5CompositeMeshComponent functions
+-- that have sat in every function listing all session, never investigated. The naming pairs up
+-- exactly like GetBodyType()/GetAvailableBodyTypes() (current vs. every available option) --
+-- "SkinDecorData" (singular, presumably the CURRENTLY applied overlay) and "AvailableBodyDecorData"
+-- (plural, presumably the full option list) fit a discrete, small-option-count OVERLAY system
+-- (tattoos/scars/age-wrinkles-style texture layers) much better than a continuous morph blend,
+-- matching RedFalcon's own "similar to skin size... only a couple options" description. Dumps
+-- both in one call on the PLAYER's own pawn (same target as TestDumpMorphControllers).
+function Spawner.TestDumpBodyDecorData(say)
+    say = say or function(m) print("[LivingBase] [dump-decordata] " .. tostring(m) .. "\n") end
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then say("no PlayerController"); return false end
+    local pawn = pc.Pawn
+    if not (pawn and pawn:IsValid()) then say("no player Pawn"); return false end
+    local comp = nil
+    pcall(function() comp = pawn.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("no CompositeMeshComponent on the player pawn.")
+        return false
+    end
+
+    -- GetSkinDecorData() -- presumably singular, the CURRENTLY applied overlay.
+    local okCur, cur = pcall(function() return comp:GetSkinDecorData() end)
+    if not okCur then
+        say("GetSkinDecorData() call FAILED: " .. tostring(cur))
+    elseif cur == nil then
+        say("GetSkinDecorData() returned nothing.")
+    else
+        dumpUnknownStruct(cur, "GetSkinDecorData()")
+    end
+
+    -- GetAvailableBodyDecorData() -- presumably plural, every available option (array-shaped, same
+    -- pattern as GetAvailableBodyTypes()/GetCustomizationMeshControllers() -- try array access,
+    -- fall back to treating it as a single struct if that fails).
+    local okAvail, avail = pcall(function() return comp:GetAvailableBodyDecorData() end)
+    if not okAvail then
+        say("GetAvailableBodyDecorData() call FAILED: " .. tostring(avail))
+        return true
+    end
+    if avail == nil then
+        say("GetAvailableBodyDecorData() returned nothing.")
+        return true
+    end
+    local n = 0
+    pcall(function() n = avail:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #avail end) end
+    if n == 0 then
+        say("GetAvailableBodyDecorData() doesn't look like an array -- dumping it directly as one struct instead.")
+        dumpUnknownStruct(avail, "GetAvailableBodyDecorData()")
+        return true
+    end
+    for i = 1, n do
+        local entry = nil
+        pcall(function() entry = avail[i] end)
+        if entry == nil then pcall(function() entry = avail:Get(i) end) end
+        pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
+        if entry then
+            dumpUnknownStruct(entry, string.format("availableBodyDecor[%d]", i))
+        end
+    end
+    say(string.format("%d available body decor entr(y/ies) total.", n))
+    return true
+end
+
 -- dumpBuildedCompositeMeshes(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked how the
 -- Gatherer/Herbalist render visible clothes at all when Spawner.ScanNearbyCustomization proved
 -- they have ZERO Armor.* controllers -- GetCustomizationMeshControllers only lists slots with

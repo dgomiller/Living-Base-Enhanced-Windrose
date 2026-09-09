@@ -11871,45 +11871,66 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
         return
     end
 
-    -- phase 2: build is settled, safe to apply the direct mesh override now.
-    if family then
-        local finalSex = targetSex or currentSex
-        local meshPath, meshName = familyMeshPath(family, finalSex)
-        if meshPath then
-            Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
-            -- 2026-09-08 FIX: EmptyOverrideMaterials() (inside TestSetBaseBodyMesh) does NOT
-            -- actually clear a pre-existing per-instance skin material override -- confirmed via
-            -- probedump, Hunter kept MI_African_Male_Medium at slot 2 even after his mesh correctly
-            -- swapped to SK_Adventurer_Male_01. Explicitly SET the target family's own skin
-            -- material on that slot instead of hoping a default reasserts.
-            local matPath, matName = familySkinMaterialPath(family, finalSex)
-            if matPath then
-                local mat = resolveAsset(matPath)
-                local body = nil
-                pcall(function() body = actor.Mesh end)
-                if mat and body and body:IsValid() then
-                    local okMat = pcall(function() body:SetMaterial(SKIN_MATERIAL_SLOT, mat) end)
-                    say(string.format("skin material swap %s (slot %d -> %s)", okMat and "OK" or "FAILED", SKIN_MATERIAL_SLOT, tostring(matName)))
-                else
-                    say("skin material unresolved or actor.Mesh invalid -- slot " .. SKIN_MATERIAL_SLOT .. " left as-is (" .. tostring(matPath) .. ")")
+    -- phase 2: build is settled (BuildedCompositeMeshes is non-empty), but "the piece LIST is
+    -- populated" is not the same event as "the engine has finished recreating each piece's own
+    -- clothing/cloth-sim actor" -- the "Recreating Clothing Actors" log lines we keep seeing land
+    -- right at/after this exact point, on the same frame. TestSetBaseBodyMesh swaps the LEADER
+    -- mesh's skeleton out from under every leader-posed follower piece (Torso/Cape/Hair/etc.) --
+    -- doing that while the engine is still mid-recreation of THOSE pieces' own clothing actors is a
+    -- plausible race the 300ms poll interval above doesn't rule out. 2026-09-09 (RedFalcon: "now it
+    -- crashed going from female axel to male axel" -- a plain native re-mesh, no sex override at
+    -- all, right after a fresh 20s between-command delay -- proving the between-COMMAND delay alone
+    -- doesn't cover this): add one more short settle delay HERE, specifically between "build
+    -- detected" and "swap the base mesh", separate from and in addition to
+    -- Config.BODY_SWAP_RESPAWN_DELAY_MS (which only covers the gap between destroying the PREVIOUS
+    -- actor and spawning the next one -- a different concern).
+    local function applyPhase2()
+        if not (actor and actor:IsValid()) then return end
+        if family then
+            local finalSex = targetSex or currentSex
+            local meshPath, meshName = familyMeshPath(family, finalSex)
+            if meshPath then
+                Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
+                -- 2026-09-08 FIX: EmptyOverrideMaterials() (inside TestSetBaseBodyMesh) does NOT
+                -- actually clear a pre-existing per-instance skin material override -- confirmed via
+                -- probedump, Hunter kept MI_African_Male_Medium at slot 2 even after his mesh correctly
+                -- swapped to SK_Adventurer_Male_01. Explicitly SET the target family's own skin
+                -- material on that slot instead of hoping a default reasserts.
+                local matPath, matName = familySkinMaterialPath(family, finalSex)
+                if matPath then
+                    local mat = resolveAsset(matPath)
+                    local body = nil
+                    pcall(function() body = actor.Mesh end)
+                    if mat and body and body:IsValid() then
+                        local okMat = pcall(function() body:SetMaterial(SKIN_MATERIAL_SLOT, mat) end)
+                        say(string.format("skin material swap %s (slot %d -> %s)", okMat and "OK" or "FAILED", SKIN_MATERIAL_SLOT, tostring(matName)))
+                    else
+                        say("skin material unresolved or actor.Mesh invalid -- slot " .. SKIN_MATERIAL_SLOT .. " left as-is (" .. tostring(matPath) .. ")")
+                    end
+                end
+            else
+                say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
+            end
+        end
+
+        if underwear then
+            -- 2026-09-08 FIX (RedFalcon: "the underwear call seems to remove their hair. I want to
+            -- keep the hair on their head") -- "all" includes Hair (added 2026-09-08 as its own
+            -- deliberate feature for the general Remove UI/lbremoveclothes command, see
+            -- Config.CLOTHING_REMOVABLE_SLOTS's own comment) -- don't touch THAT behavior globally,
+            -- just don't request Hair here: loop every OTHER removable slot instead of passing "all".
+            for _, slot in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
+                if slot ~= "Hair" then
+                    Spawner.RemoveClothingOnActor(actor, slot, name)
                 end
             end
-        else
-            say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
         end
     end
 
-    if underwear then
-        -- 2026-09-08 FIX (RedFalcon: "the underwear call seems to remove their hair. I want to
-        -- keep the hair on their head") -- "all" includes Hair (added 2026-09-08 as its own
-        -- deliberate feature for the general Remove UI/lbremoveclothes command, see
-        -- Config.CLOTHING_REMOVABLE_SLOTS's own comment) -- don't touch THAT behavior globally,
-        -- just don't request Hair here: loop every OTHER removable slot instead of passing "all".
-        for _, slot in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
-            if slot ~= "Hair" then
-                Spawner.RemoveClothingOnActor(actor, slot, name)
-            end
-        end
+    if ExecuteWithDelay then
+        ExecuteWithDelay(Config.BODY_SWAP_MESH_SETTLE_MS or 1500, applyPhase2)
+    else
+        applyPhase2()
     end
 end
 

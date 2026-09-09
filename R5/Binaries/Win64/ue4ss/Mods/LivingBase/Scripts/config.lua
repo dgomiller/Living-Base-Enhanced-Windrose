@@ -144,6 +144,17 @@ Config.SHIELD_REASSERT_MS = 2000
 -- throughput -- tune down if it proves unnecessary, tune up if crashes keep recurring even with it.
 Config.BODY_SWAP_RESPAWN_DELAY_MS = 20000
 
+-- 2026-09-09: SEPARATE settle delay, inside pollForBuildThenApplyBodySwap's own phase 2, between
+-- "BuildedCompositeMeshes is non-empty" (the piece LIST got populated) and actually calling
+-- Spawner.TestSetBaseBodyMesh (which swaps the leader mesh's skeleton out from under every leader-
+-- posed follower piece -- Torso/Cape/Hair/etc.). Added after a crash going Female Axel -> Male Axel
+-- (a plain native re-mesh, no sex override) happened right after a fresh 20s
+-- BODY_SWAP_RESPAWN_DELAY_MS wait -- proving that delay (which only covers destroy-previous-actor ->
+-- spawn-next-actor) doesn't cover THIS race: the engine's own "Recreating Clothing Actors" work for
+-- the just-built pieces can still be in flight at the exact moment "build detected" fires, since
+-- that log line lands right at/after this same point on the same frame every time we've checked.
+Config.BODY_SWAP_MESH_SETTLE_MS = 1500
+
 -- LIVE EDIT: raise/lower + rotate the placed object in front of you, in place and persistently, to
 -- fine-tune sitters and decorations in the base. Rotate step + height step per keypress. The log
 -- prints the running yaw offset (bake into a sitter's `yaw`) and height.

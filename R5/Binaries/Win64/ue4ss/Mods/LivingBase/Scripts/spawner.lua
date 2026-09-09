@@ -11770,7 +11770,7 @@ end
 --            down via the SAME Spawner.RemoveClothingOnActor(actor, "all", name) call
 --            pollForBuildThenUndress already uses for this -- last step, after the body/skin are
 --            fully settled (2026-09-08, RedFalcon: "can we spawn with underwear").
-local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft, phase)
+local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft, phase, familyHandledByArchetype)
     attemptsLeft = attemptsLeft or 12
     phase = phase or 1
     if not (actor and actor:IsValid()) then return end
@@ -11791,7 +11791,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             return
         end
         if ExecuteWithDelay then
-            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft - 1, phase) end)
+            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft - 1, phase, familyHandledByArchetype) end)
         end
         return
     end
@@ -11867,26 +11867,39 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             -- clothes just won't populate correctly for the new sex -- no silent crash risk.
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
-        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2)
+        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2, familyHandledByArchetype)
         return
     end
 
-    -- phase 2: build is settled (BuildedCompositeMeshes is non-empty), but "the piece LIST is
-    -- populated" is not the same event as "the engine has finished recreating each piece's own
-    -- clothing/cloth-sim actor" -- the "Recreating Clothing Actors" log lines we keep seeing land
-    -- right at/after this exact point, on the same frame. TestSetBaseBodyMesh swaps the LEADER
-    -- mesh's skeleton out from under every leader-posed follower piece (Torso/Cape/Hair/etc.) --
-    -- doing that while the engine is still mid-recreation of THOSE pieces' own clothing actors is a
-    -- plausible race the 300ms poll interval above doesn't rule out. 2026-09-09 (RedFalcon: "now it
-    -- crashed going from female axel to male axel" -- a plain native re-mesh, no sex override at
-    -- all, right after a fresh 20s between-command delay -- proving the between-COMMAND delay alone
-    -- doesn't cover this): add one more short settle delay HERE, specifically between "build
-    -- detected" and "swap the base mesh", separate from and in addition to
-    -- Config.BODY_SWAP_RESPAWN_DELAY_MS (which only covers the gap between destroying the PREVIOUS
-    -- actor and spawning the next one -- a different concern).
+    -- phase 2: build is settled (BuildedCompositeMeshes is non-empty). A short settle delay was
+    -- added here 2026-09-09 on the theory that "list populated" isn't the same event as "engine
+    -- finished recreating each piece's own clothing actor" -- DISPROVEN minutes later by a crash
+    -- that landed 1.544s after the last successful log line, i.e. essentially exactly
+    -- Config.BODY_SWAP_MESH_SETTLE_MS later: the delay didn't prevent the crash, it just postponed
+    -- it by its own duration, landing on the SAME TestSetBaseBodyMesh call every time regardless of
+    -- how long we wait first. Not a timing race at all -- the delay is kept (harmless, still gives
+    -- the engine a beat) but is not relied on as a fix any more.
+    -- The REAL fix, same investigation: that crash's own log showed phase 1's SwapBodySex()
+    -- fallback had ALREADY run moments earlier (the archetype's own at-spawn sex override hadn't
+    -- taken on the first build, so the fallback kicked in, reported "sex swap OK") -- meaning
+    -- TestSetBaseBodyMesh here was about to do a SECOND, genuinely redundant raw skeleton swap on
+    -- an actor whose leader-posed followers had JUST been rebuilt for the new sex moments before.
+    -- For the Adventurer family specifically, the archetype+SwapBodySex() path is ALREADY
+    -- responsible for getting the mesh/sex right end to end (that's the whole point of
+    -- ADVENTURER_ARCHETYPE_BY_SEX) -- this raw override was only ever meant for families with no
+    -- archetype coverage, but ran unconditionally for every family. `familyHandledByArchetype`
+    -- (set by Spawner.SwapBodyType exactly when family=="Adventurer" and a sex was requested) skips
+    -- this whole block in that case -- trust the archetype/SwapBodySex result, don't redundantly
+    -- re-swap a skeleton that was just correctly rebuilt. Still runs normally for every OTHER
+    -- family (no archetype coverage exists for them, so this remains the only mechanism providing
+    -- their mesh/skin override) and for a same-sex/native family-only refresh (no SwapBodySex() call
+    -- happened at all in that case, so no redundancy to remove) -- neither of those is proven safe
+    -- by this fix, only the specific redundant-call case is.
     local function applyPhase2()
         if not (actor and actor:IsValid()) then return end
-        if family then
+        if family and familyHandledByArchetype then
+            say("skipping redundant base-mesh/skin override -- the archetype+sex-swap path already built the correct Adventurer mesh (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton).")
+        elseif family then
             local finalSex = targetSex or currentSex
             local meshPath, meshName = familyMeshPath(family, finalSex)
             if meshPath then
@@ -12108,7 +12121,12 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
                 if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
             end)
             say(string.format("waiting for composite build to finish before applying sex/mesh/underwear (native sex read as %s)...", tostring(currentSex)))
-            pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say)
+            -- familyHandledByArchetype: true exactly when compositeLook.archetype was set above --
+            -- the archetype+SwapBodySex() path already owns getting this actor's mesh/sex right end
+            -- to end, so phase 2's own raw TestSetBaseBodyMesh override would be redundant (and is
+            -- the confirmed crash site -- see pollForBuildThenApplyBodySwap's own phase-2 comment).
+            local familyHandledByArchetype = compositeLook and compositeLook.archetype ~= nil
+            pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say, nil, nil, familyHandledByArchetype)
         end
 
         -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right

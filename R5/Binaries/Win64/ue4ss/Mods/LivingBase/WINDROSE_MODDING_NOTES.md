@@ -100,6 +100,7 @@ Companion to `CLAUDE.md` (which is older and partly stale — trust THIS file wh
   - [19s. Belt is standalone; Sling/Strap are not -- a real dependency rule found by watching native NPCs (2026-09-07)](#19s-belt-is-standalone-slingstrap-are-not----a-real-dependency-rule-found-by-watching-native-npcs-2026-09-07)
   - [19t. `fillall`/`aps`/`lbsockets` grow sub-filters and a player-targeting mode; two more curated sockets; the real Belt/Sling/Strap linkage rule finished; and a random belt-layout roller (2026-09-05/07)](#19t-fillallapslbsockets-grow-sub-filters-and-a-player-targeting-mode-two-more-curated-sockets-the-real-beltslingstrap-linkage-rule-finished-and-a-random-belt-layout-roller-2026-09-0507)
   - [19u. `lbtestsocketitems` -- a full item/weapon randomizer driven entirely by a hand-authored spreadsheet (2026-09-07)](#19u-lbtestsocketitems----a-full-itemweapon-randomizer-driven-entirely-by-a-hand-authored-spreadsheet-2026-09-07)
+  - [19v. The Barbie gender-swap saga -- six real bugs stacked on top of each other, the actual reassertion wall finally isolated (2026-09-08)](#19v-the-barbie-gender-swap-saga----six-real-bugs-stacked-on-top-of-each-other-the-actual-reassertion-wall-finally-isolated-2026-09-08)
 
 ---
 
@@ -4402,3 +4403,158 @@ always walking `Config.SOCKETITEMS_RATIOS` in its fixed Belt/Sling/Strap table o
 Belt (always listed first) would always claim a capped side's remaining room first, and Strap would
 always be the one squeezed out on every single roll. Shuffling means any of the three can end up
 favored, not always the same one.
+
+### 19v. The Barbie gender-swap saga -- six real bugs stacked on top of each other, the actual reassertion wall finally isolated (2026-09-08)
+
+RedFalcon's requirement, stated plainly and non-negotiably from the start: `lbtestbodyswap` must
+summon a donor NPC (to preserve their unique `BodyMorph` shape) AND swap their sex, in ONE combined
+command -- not two separate manual console calls. "we will be needing to summon and swap at the
+sane time and we DID have it working" -- disputing an earlier characterization that the previously-
+confirmed `SwapBodySex` technique was inherently a two-step, target-an-already-spawned-actor
+process. Getting this fully working took the rest of the day and surfaced six genuinely separate
+bugs, several of them completely unrelated to each other -- worth reading in order, since each one
+looked at first like it explained everything, until the next test proved it didn't.
+
+**Bug 1 -- `resolveViaAssetRegistry` permanently caches a FAILED lookup.** `_assetRegistryHelpers`
+was cached module-scope via `_assetRegistryHelpers = StaticFindObject(...) or false` -- if the very
+first call happens before the AssetRegistry subsystem is ready (exactly what running
+`lbtestbodyswap` right after a fresh restart does), it locks in as `false` for the rest of the
+session and every subsequent `bodyTypesPath`/`morphParams` resolution silently MISSes forever,
+including previously-confirmed-working packages untouched that session. Real bug, genuinely fixed
+(only cache success now), but turned out NOT to be the cause of the symptom being chased at the
+time -- a real lesson in not declaring victory on the first plausible-looking fix.
+
+**Bug 2 -- `ensureFullPath` never prepended the required `/Game/Mods/LivingBaseExtended/` folder.**
+The actual, much simpler cause of the `bodies=MISS` symptom above: typing a bare filename (e.g.
+`DA_Custom_BodyTypeList_JasperAsAfrican`, no leading `/Game/...`) only got the `.AssetName` suffix
+appended, never the folder -- `resolveAsset` was asked to resolve a nonsense relative package name
+that could never succeed via any mechanism, regardless of pak content, mount order, or caching (both
+investigated and ruled out first via `lbtestassetreg`, `retoc list --all --path` against every
+installed container, and the game's own `Saved/Logs/R5.log` pak-mount sequence). Confirmed via
+`lbtestassetreg` resolving the exact same asset fine when given its real, full path. **General
+lesson: when a resolution call mysteriously MISSes for content independently verified byte-correct,
+check the actual STRING being resolved before chasing pak/cache/mount-order theories** -- the
+malformed path was sitting in plain sight in every failing log line the whole time.
+
+**Bug 3 -- the `BodyTypeParams` hijack technique (19m) never actually generalizes to an
+individually-named donor's OWN class.** Every genuinely-confirmed success for this technique in
+this project's history spawned **Gatherer** (or another Handyman-family class whose own native tag
+matches the override) -- re-confirmed live this same day (`AdventurerAsAfrican` on Gatherer still
+works perfectly). But the Barbie roster's real requirement is spawning the DONOR's own class
+(BlackAxel, MortarMan, etc.) to preserve their shape. A live probedump on Axel proved the write is
+REJECTED INSTANTLY, not reasserted later (`comp.BodyTypeParams` read back the native
+`DA_NPC_BodyTypesParams_Common` immediately after the write, same call, same synchronous block --
+not a later BeginPlay reassertion, a genuinely different failure mode from the well-known
+`ArchetypePreset` wall). Earlier "confirmed working" claims for Axel/Jasper/Mortar/Hunter's own
+classes (2026-09-08 morning, same day) were almost certainly Bug 2 in disguise -- a silent MISS
+that visually looked like "spawned fine, no failure" without anyone checking the skin tone
+specifically.
+
+**Bug 4 -- the "combined Male+Female" `BodyTypeList` doesn't sex-discriminate at all.** Built to
+work around Bug 3 by wrapping BOTH single-sex hijack entries in one list
+(`DA_Custom_BodyTypeList_AxelAsAdventurerBoth` etc., `BodyTypeData = [MaleEntry, FemaleEntry]`) --
+confirmed live it always resolves to the FIRST (Male) entry regardless of the actor's actual sex:
+Gatherer (native Female) got a MALE Adventurer mesh when given this list. The native
+`BodyTypeParams` pool lookup, when handed a multi-entry override list, does not filter by sex the
+way the single-entry hijack's own tag-matching implied it might -- an untested assumption from the
+start, now disproven. Real fix: resolve the FINAL target sex in Lua and point `bodyTypesPath` at
+the correct SINGLE-sex sibling list instead of the combined one -- the "Both" lists stay committed
+on disk as historical record but are dead weight, unused by `SwapBodyType` from here on.
+
+**Bug 5 -- `EmptyOverrideMaterials()` does not clear a pre-existing per-instance skin material
+override.** Once the `BodyTypeParams` wall (Bug 3) made it clear the hijack technique can't be used
+for a donor's own class at all, the whole approach pivoted to the ALREADY-proven-working (2026-08-
+31) post-build direct swap: hide the leader mesh, `SetSkeletalMeshAsset` to the target family's real
+mesh, show again. This correctly changes the SHAPE, but a probedump showed the material list still
+carrying the DONOR's own native skin material at a FIXED slot index (`[MI_Eye, MI_Pirate_Mouth,
+<skin>, MI_Hair]`, skin always at index 2, confirmed across every donor checked) -- calling
+`EmptyOverrideMaterials()` right after the mesh swap (a reasonable-sounding fix) does NOT actually
+clear that override, contrary to what the function name implies. Real fix: explicitly
+`SetMaterial(2, <target family's own MI_<Family>_<Sex>_Medium>)`. This also surfaced a genuinely
+new, previously-unknown gap: the whole female-origin column of the Origin-grid matrix
+(`AdventurerAsAfrican`/`Albion`/`Fable`/`Native`/`Orient`/`Scum`/`Senkamati`) had SkinMaterials
+correctly SHAPED (3 keys, inherited for free via `duplicate_asset()`) but never actually
+RETARGETED past placeholders -- no female-source equivalent of
+`rollout_skinmaterials_male_batch.py` was ever written. Fixed in one pass alongside re-fixing 3
+male-source entries a same-day re-cook had regressed (cooking a package that depends on an
+already-retargeted package re-cooks the dependency FRESH FROM SOURCE -- a known gotcha, hit again).
+Real per-family gotcha confirmed via a fresh `pakcontents.xlsx` listing rather than assumed: the
+Adventurer family's own skeletal MESH is misspelled `SK_Adventure_Female_01` (no "r"), but its
+MATERIALS are spelled correctly (`MI_Adventurer_Female_*`) -- two different conventions inside the
+same family. Senkamati's Female side has exactly ONE skin material at all
+(`MI_Senkamati_Female_Medium`, no Small/Large) -- mirrors the already-known Male-side sparseness.
+
+**Bug 6 (the real headline finding) -- `ArchetypePreset`, not anything else, is what actually
+decides which sex+family a build resolves against, and nothing post-build can change it.** After
+Bugs 1-5 were all fixed, sex-swapping a donor still produced a FULLY NUDE actor --
+`BuildedCompositeMeshes` stuck at 0 forever, even though `comp.DefaultParams` was confirmed (via
+probedump) to have correctly swapped to a genuinely dual-sex-safe outfit
+(`DA_Custom_BarbieDefaultParams_Regular_Female`/`_Regular_Male`, the actual outfit this whole Barbie
+sub-project built for exactly this purpose -- RedFalcon's own insight: "does this mix and match
+with the barbie tool we made"), and `comp:GetBodySex()` correctly read the new value. Three
+different native rebuild triggers were tried and ruled out, each via `lbinspectfn` (pure-read
+parameter inspection, zero crash risk) before ever risking a live call:
+- `ConstructVisualFromParams()` -- crashed calling it bare ("expected 1 parameters, received 0");
+  `lbinspectfn` revealed its one parameter is `PredefinedArchetypeIndex`, an int into an unrelated
+  predefined-archetype list, not a general "rebuild from current state" trigger. Semantics unknown,
+  too risky to guess a value for.
+- `SetBody(InBodyType, InBodySex, bForceLoad)` -- `lbinspectfn` found a much more promising 3-param
+  signature. **This function is separately documented (item 64/CLAUDE.md, 2026-08-15) as having
+  CRASHED THE GAME TWICE IN A ROW** when given a freshly-constructed `{ TagName = tagName }` Lua
+  table as the body-type argument (zero Lua output either time -- execution never returned at all).
+  Reusing the actor's OWN already-valid tag object from `comp:GetBodyType()` (instead of
+  constructing a new one) avoided the crash this time -- call returned `OK` -- but still left
+  `BuildedCompositeMeshes` at 0. So the crash risk is specifically about constructing a fresh
+  GameplayTag struct via Lua, not the function itself; and even a clean, non-crashing call doesn't
+  force a rebuild.
+- Neither call raised `BuildedCompositeMeshes` off 0. **Conclusion: the ONE real composite build
+  already happens exactly once, at spawn/construction time, resolved entirely from
+  `ArchetypePreset` (which is fixed per-class and reasserted at construction, the same wall already
+  known from 19c/§2's own archetype-reassertion findings) -- nothing discovered so far, including
+  every function `R5CompositeMeshComponent` exposes for body/sex, can force a second one after the
+  fact.** `SwapBodySex`/`SetBody`/`ConstructVisualFromParams` can all report success or even
+  genuinely change their own backing property (confirmed for `DefaultParams` and `GetBodySex`) while
+  the actual composite population stays permanently governed by whatever `ArchetypePreset` requested
+  at the one real build.
+
+**The actual, working fix**: build the FULL `compositeLook` (archetype + Barbie outfit + sex)
+BEFORE spawning, whenever a sex swap is being requested -- never try to force a second build
+afterward at all. Uses a genuinely NATIVE, already-Adventurer-tagged archetype for the target sex,
+reusing the exact same "keep an archetype real, just point it at a different resolved family"
+philosophy 19c/19m's own hijack technique was built on, just one level up (swapping the WHOLE
+archetype reference, not hijacking one entry inside the pool it reads from): Gatherer's own
+(`/R5BusinessRules/Character/Customization/NPC/Handyman/Gatherer/
+DA_Customization_Handyman_Gatherer_PresetArchetype1`) for Female, JasperCrowe's own
+(`/R5BusinessRules/Character/Customization/NPC/Employee/JasperCrowe/Preset/
+DA_Customization_JasperCrowe_PresetArchetype`) for Male -- both found via live probedump, not
+guessed. Still spawns the DONOR's own class throughout, so `BodyMorph`/shape stays theirs -- shape
+is baked per-Blueprint at COMPILE time, never archetype-driven (already independently confirmed:
+two classes referencing the IDENTICAL `MorphParams` asset produced different `BodyMorph` results),
+so swapping which archetype OBJECT is referenced can't touch it. **CONFIRMED WORKING LIVE**
+end-to-end: donor's own shape, correct sex, Adventurer skin/mesh (via the still-needed Bug-5 direct
+mesh+material post-build swap, since the archetype only fixes sex+outfit population, not which
+specific ethnicity mesh gets used), and real populated Barbie clothing, all from one command.
+Scoped to Adventurer only (the one target family this roster needs) -- a different target family
+would need its own equivalent native archetype pair, found the identical way.
+
+**Two smaller, unrelated fixes bundled into the same command along the way:**
+- `Spawner.DespawnActor` instead of a raw `K2_DestroyActor()` when replacing the previous swap
+  actor -- the raw destroy call only removes the LIVE actor, leaving the `persist.txt` line
+  `Spawner.Spawn` unconditionally writes for every spawn orphaned, so every subsequent world load
+  re-restored every prior test's leftover NPC ("it explodes with a ton of people"). `DespawnActor`
+  also calls `PersistRemoveMatching`, the same pattern `Spawner.CancelPlacement`'s own NEW-mode
+  cancel already used.
+- An optional underwear toggle (`Spawner.RemoveClothingOnActor`, the same call the existing
+  underwear-on-spawn feature already uses) -- initially passed `"all"`, which also strips Hair (a
+  separate, deliberate feature added earlier the same day for the general Remove UI) -- fixed by
+  looping every removable slot except Hair individually instead.
+
+**General lesson for this whole project, worth remembering before the next composite-mesh
+investigation**: when a property write reports success (or even reads back correctly) but nothing
+visibly changes, check whether `ArchetypePreset` is the actual gate BEFORE trying more post-build
+setter/rebuild functions. Every other lever this session (`BodyTypeParams`, `DefaultParams`,
+`SwapBodySex`, `SetBody`, `ConstructVisualFromParams`) could report success, or even correctly
+change its own backing property, while the real composite population stayed governed by archetype
+alone -- a `BuildedCompositeMeshes` count of 0 after any post-build attempt is now this project's
+own standing signal to stop chasing rebuild triggers and go straight to "does the archetype itself
+need to change," not a reason to try yet another setter function.

@@ -11636,6 +11636,30 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
         if targetSex and targetSex ~= currentSex then
             local comp = nil
             pcall(function() comp = actor.CompositeMeshComponent end)
+            -- 2026-09-08 FIX (RedFalcon: "the female version doesnt have clothes so it doesnt
+            -- populate... does this mix and match with the barbie tool") -- the donor's own native
+            -- DefaultParams only has outfit pieces keyed for ITS OWN native sex (the same "male-only
+            -- content, silently dropped for a female actor, no error" phenomenon already documented
+            -- elsewhere in this project) -- once SwapBodySex() flips the actor, nothing populates
+            -- those slots anymore. Fix: swap comp.DefaultParams to the matching Barbie outfit
+            -- (DA_Custom_BarbieDefaultParams_Regular_Female/Male -- already cooked/packaged/
+            -- installed, built specifically for this project's own custom-body work, confirmed real
+            -- dual-sex-safe) RIGHT BEFORE calling SwapBodySex(), not at spawn time -- setting it at
+            -- spawn time would make the FIRST build (still at native sex) try to resolve the WRONG
+            -- sex's pieces and come back empty, stalling this whole poll chain waiting for a build
+            -- that never populates. SwapBodySex()'s own rebuild re-reads DefaultParams fresh
+            -- alongside the new sex, so ordering it this way lets the rebuild resolve correctly the
+            -- first time.
+            if comp and comp:IsValid() then
+                local barbieParamsName = (targetSex == 2) and "DA_Custom_BarbieDefaultParams_Regular_Female" or "DA_Custom_BarbieDefaultParams_Regular_Male"
+                local barbieParams = resolveAsset("/Game/Mods/LivingBaseExtended/" .. barbieParamsName .. "." .. barbieParamsName)
+                if barbieParams then
+                    pcall(function() comp.DefaultParams = barbieParams end)
+                    say("swapped DefaultParams -> " .. barbieParamsName .. " (donor's own native outfit won't populate for the opposite sex).")
+                else
+                    say("Barbie outfit '" .. barbieParamsName .. "' unresolved -- sex will swap but clothes likely won't populate.")
+                end
+            end
             local okSwap, errSwap = false, nil
             if comp and comp:IsValid() then
                 okSwap, errSwap = pcall(function() comp:SwapBodySex() end)
@@ -11783,6 +11807,9 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     say(string.format("spawning %s natively (no bodyTypes override -- see this function's own 2026-09-08 rewrite comment), family=%s sex=%s, at %s",
         classPath, tostring(family), tostring(sexArg or "native"),
         atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+    -- compositeLook deliberately stays nil at SPAWN time -- see pollForBuildThenApplyBodySwap's own
+    -- comment for why the Barbie outfit swap (when a sex change is forced) has to happen AFTER the
+    -- donor's own native-sex build settles, not before.
     local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, nil, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")

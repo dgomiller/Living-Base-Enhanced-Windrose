@@ -1761,6 +1761,20 @@ function Spawner.SetCompositeParams(actor, paramsPath, archetypePath, sex, bodyT
     if morph  then pcall(function() comp.MorphParams = morph end) end
     -- Optional sex override: 1=Male, 2=Female. The archetype's own sex usually wins.
     if sex and sex ~= 0 then pcall(function() comp:SetCharacterSex(sex) end) end
+    -- 2026-09-08 DIAGNOSTIC (RedFalcon: "skin meshes still arent working" -- probedump confirmed
+    -- comp.BodyTypeParams reads back as the NATIVE DA_NPC_BodyTypesParams_Common well after spawn,
+    -- not our custom list, despite bodies=ok). Immediate read-back right here, still inside the same
+    -- synchronous preFinish call, tells us whether the write is silently REJECTED on the spot (would
+    -- read back native immediately too) or genuinely REASSERTED later (would read back correctly
+    -- HERE, then revert by the time a probedump runs post-spawn) -- the same reassertion class
+    -- already confirmed for ArchetypePreset elsewhere in this project.
+    if bodies then
+        local readBack = nil
+        pcall(function() readBack = comp.BodyTypeParams end)
+        local readBackName = "?"
+        pcall(function() readBackName = readBack and readBack:GetFullName() or "nil" end)
+        say("bodies immediate read-back right after write: " .. tostring(readBackName))
+    end
     say(string.format("preFinish set bodies=%s params=%s archetype=%s color=%s morph=%s sex=%s (pre-build)",
         bodies and "ok" or (bodyTypesPath and "MISS" or "-"),
         params and "ok" or (paramsPath and "MISS" or "-"),
@@ -11510,21 +11524,124 @@ local function pollForBuildThenSwapSex(actor, sex, name, say, attemptsLeft)
     end
 end
 
--- Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say) -- "lbtestbodyswap <bodyTypesPath>
--- [classPath|-] [sex: M/F|-]" (2026-09-08). RedFalcon's request for the Barbie capture session:
--- lbtestbodytypes always spawns fresh "in front of the player" (Spawner.Spawn's own default when
--- atLocation/yaw are nil), so every new body type lands somewhere slightly different depending on
--- exactly where you're standing/facing that moment -- annoying when you've carefully set up
--- lbphototripod/lbfirstperson framing and just want to cycle through origins in the SAME spot.
--- Spawner.Spawn already accepts an explicit atLocation+yaw (just never used by lbtestbodytypes) --
--- this locks one in on the FIRST call (using wherever a normal in-front-of-player spawn lands),
--- then every SUBSEQUENT call destroys the previous swap actor and spawns the new one at that exact
--- same locked transform, so only the body type changes, never the position/facing. Position resets
--- on the next lbreload (module-level state, like every other cached-reference feature this
--- session), or via the "reset" first argument.
-function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
+-- FAMILY_BODY_MESH -- the 8 confirmed real Human/Regular body-family meshes (2026-09-08, gathered
+-- via pakcontents.xlsx while chasing the SkinMaterials gap earlier today). NOTE the real, confirmed
+-- typo: Adventurer's own Female mesh is "SK_Adventure_Female_01" (missing the "r") -- every other
+-- family follows the expected "_Female_01" pattern exactly; don't naively pattern-generate this one.
+-- Senkamati is sparse (one Male mesh shared implicitly, one oddly-named Female mesh) -- matches the
+-- already-established treatment for HunterAsSenkamati/JasperAsSenkamati/AdventurerAsSenkamati.
+local FAMILY_BODY_MESH = {
+    Adventurer = { male = "SK_Adventurer_Male_01",          female = "SK_Adventure_Female_01" },
+    African    = { male = "SK_African_Male_01",             female = "SK_African_Female_01" },
+    Albion     = { male = "SK_Albion_Male_01",              female = "SK_Albion_Female_01" },
+    Fable      = { male = "SK_Fable_Male_01",               female = "SK_Fable_Female_01" },
+    Native     = { male = "SK_Native_Male_01",              female = "SK_Native_Female_01" },
+    Orient     = { male = "SK_Orient_Male_01",              female = "SK_Orient_Female_01" },
+    Scum       = { male = "SK_Scum_Male_01",                female = "SK_Scum_Female_01" },
+    Senkamati  = { male = "SK_SenkamatiCorrupted_Male_Medium", female = "SK_Senkamati_Witch_01_Female" },
+}
+
+local function familyMeshPath(family, sex)
+    local entry = FAMILY_BODY_MESH[family]
+    if not entry then return nil end
+    local meshName = (sex == 2) and entry.female or entry.male
+    return string.format("/Game/Character/Skeletal_Meshes/Human/Regular/%s/Meshes/%s", family, meshName), meshName
+end
+
+-- pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft, phase)
+-- -- the REAL working combined summon+swap mechanism (2026-09-08, replacing the BodyTypeParams
+-- hijack attempt above, which turned out to be class-family-dependent and didn't stick on
+-- individually-named donor classes like BlackAxel -- confirmed via an immediate post-write
+-- read-back showing the native pool, not a later reassertion; see Spawner.SwapBodyType's own
+-- header comment for the full story). Two phases, both needing the SAME "wait for
+-- BuildedCompositeMeshes to populate" poll (comp:SwapBodySex() no-ops on an unbuilt component, same
+-- as before; a fresh comp:SwapBodySex() call may ALSO trigger its own rebuild, so the direct mesh
+-- override must wait for the build to resettle AFTER the swap too, not just once):
+--   phase 1: wait for the FIRST build, then call comp:SwapBodySex() if targetSex ~= currentSex.
+--   phase 2: wait for the build to finish AGAIN (post-swap, or immediately if no swap was needed),
+--            then apply Spawner.TestSetBaseBodyMesh directly to actor.Mesh -- the SAME post-build,
+--            class-agnostic technique confirmed working back on 2026-08-31 ("outfit stayed on, body
+--            correctly changed... the new mesh's own default material, no separate step needed").
+--            This deliberately never touches BodyTypeParams/ArchetypePreset at all, sidestepping
+--            the wall entirely instead of fighting it.
+local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft, phase)
+    attemptsLeft = attemptsLeft or 12
+    phase = phase or 1
+    if not (actor and actor:IsValid()) then return end
+    local built = 0
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            local list = comp.BuildedCompositeMeshes
+            if list then
+                pcall(function() built = list:GetArrayNum() end)
+                if built == 0 then pcall(function() built = #list end) end
+            end
+        end
+    end)
+    if built == 0 then
+        if attemptsLeft <= 1 then
+            say(string.format("gave up waiting for composite build in phase %d (still 0 BuildedCompositeMeshes after ~3.6s).", phase))
+            return
+        end
+        if ExecuteWithDelay then
+            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft - 1, phase) end)
+        end
+        return
+    end
+
+    if phase == 1 then
+        if targetSex and targetSex ~= currentSex then
+            local comp = nil
+            pcall(function() comp = actor.CompositeMeshComponent end)
+            local okSwap, errSwap = false, nil
+            if comp and comp:IsValid() then
+                okSwap, errSwap = pcall(function() comp:SwapBodySex() end)
+            end
+            local after = nil
+            pcall(function() after = comp:GetBodySex() end)
+            say(string.format("sex swap %s -- GetBodySex before=%s after=%s.",
+                (okSwap and after == targetSex) and "OK" or ("did not land as requested" .. (okSwap and "" or (" err=" .. tostring(errSwap)))),
+                tostring(currentSex), tostring(after)))
+        end
+        -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
+        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, 12, 2)
+        return
+    end
+
+    -- phase 2: build is settled, safe to apply the direct mesh override now.
+    if family then
+        local meshPath, meshName = familyMeshPath(family, targetSex or currentSex)
+        if meshPath then
+            Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
+        else
+            say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
+        end
+    end
+end
+
+-- Spawner.SwapBodyType(familyArg, classPath, sexArg, say) -- "lbtestbodyswap <family|-> [classPath|-]
+-- [sex: M/F|-]" (2026-09-08, rewritten same day after the BodyTypeParams hijack was confirmed
+-- class-dependent -- see pollForBuildThenApplyBodySwap's own header comment for the full story).
+-- RedFalcon's request for the Barbie capture session: lbtestbodytypes always spawns fresh "in front
+-- of the player" (Spawner.Spawn's own default when atLocation/yaw are nil), so every new body type
+-- lands somewhere slightly different depending on exactly where you're standing/facing that moment
+-- -- annoying when you've carefully set up lbphototripod/lbfirstperson framing and just want to
+-- cycle through origins in the SAME spot. Spawner.Spawn already accepts an explicit atLocation+yaw
+-- (just never used by lbtestbodytypes) -- this locks one in on the FIRST call (using wherever a
+-- normal in-front-of-player spawn lands), then every SUBSEQUENT call destroys the previous swap
+-- actor and spawns the new one at that exact same locked transform, so only the body type changes,
+-- never the position/facing. Position resets on the next lbreload (module-level state, like every
+-- other cached-reference feature this session), or via the "reset" first argument.
+-- familyArg is now a plain family NAME (Adventurer/African/Albion/Fable/Native/Orient/Scum/
+-- Senkamati -- FAMILY_BODY_MESH's own keys), not a BodyTypeList asset path -- the whole
+-- BodyTypeParams-hijack asset system (DA_Custom_BodyType(List)_*) is no longer used by this
+-- function at all, kept on disk/committed only as a historical record and for the (still-working)
+-- Origin-grid case where the SPAWNED class's own native tag matches the entry (e.g. Gatherer +
+-- AdventurerAsAfrican) -- lbtestbodytypes still uses that path for THAT case.
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
-    if bodyTypesPath and bodyTypesPath:lower() == "reset" then
+    if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
             pcall(function() Spawner._bodySwapActor:K2_DestroyActor() end)
         end
@@ -11534,68 +11651,29 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
         say("swap position reset -- next call will pick a fresh spot in front of you.")
         return true
     end
-    -- "-" skip sentinel (2026-09-08) -- for baseline donors already native to the target family
-    -- (Gatherer/Herbalist/JasperCrowe are all already Adventurer -- no bodyTypes override needed
-    -- at all), matching the SAME "-" convention lbtestbodytypes already uses for its own optional
-    -- morphParamsPath/classPath slots.
-    if bodyTypesPath == "-" or bodyTypesPath == "" then bodyTypesPath = nil end
-    -- 2026-09-08 FIX: same bug as Spawner.TestSpawnCustomBodyTypes's own ensureFullPath -- a bare
-    -- filename (no "/" at all) never got "/Game/Mods/LivingBaseExtended/" prepended, only the
-    -- ".AssetName" suffix, producing a nonsense relative package name resolveAsset could never
-    -- resolve. This, not a pak/cache/priority issue, was the actual cause of every "bodies=MISS"
-    -- report this session (confirmed via lbtestassetreg resolving the same asset fine when given
-    -- its real full path).
-    local function ensureFullPath(p)
-        if not p then return nil end
-        if not p:find("/") then
-            p = "/Game/Mods/LivingBaseExtended/" .. p
+    -- "-" skip sentinel -- for baseline donors already native to the target family (Gatherer/
+    -- Herbalist/JasperCrowe are all already Adventurer -- no mesh override needed at all).
+    if familyArg == "-" or familyArg == "" then familyArg = nil end
+    -- Accept either a bare family name ("Adventurer") or one of the old "XAsFamily"/
+    -- "DA_Custom_BodyType(List)_XAsFamily" style names typed out of habit -- extract just the
+    -- trailing "...AsFamily" family name in that case, otherwise use the whole (trimmed) string.
+    local family = nil
+    if familyArg then
+        local afterAs = familyArg:match("As([A-Za-z]+)$")
+        family = afterAs or familyArg
+        if not FAMILY_BODY_MESH[family] then
+            -- case-insensitive fallback match against the known family keys
+            for k in pairs(FAMILY_BODY_MESH) do
+                if k:lower() == family:lower() then family = k; break end
+            end
         end
-        if not p:match("%.[%w_]+$") then
-            local last = p:match("([^/]+)$")
-            return last and (p .. "." .. last) or p
-        end
-        return p
     end
-    bodyTypesPath = ensureFullPath(bodyTypesPath)
     classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
     local sex = nil
     if type(sexArg) == "string" then
         local s = sexArg:lower()
         if s == "f" or s == "female" then sex = 2
         elseif s == "m" or s == "male" then sex = 1 end
-    end
-
-    -- 2026-09-08 FIX: the combined "...Both" BodyTypeList assets (2 entries, Male+Female, built
-    -- earlier today to fix the single-sex hijack gap) do NOT work the way a plain "pool" was assumed
-    -- to -- confirmed live: spawning with a "Both" list picked the SAME (first/Male) entry
-    -- regardless of the actor's actual sex (RedFalcon: "now they are adventurer men wearing the
-    -- gatherer's clothes" -- Gatherer is native FEMALE, yet got the Male Adventurer mesh). The
-    -- native BodyTypeParams pool lookup apparently does NOT discriminate multiple entries in one
-    -- list by sex the way the single-entry hijack technique's own tag-matching implied it might.
-    -- Real fix: never point bodyTypesPath at a "Both" list at all -- resolve the FINAL requested sex
-    -- ourselves in Lua (right here, before spawning) and pick the correct SINGLE-sex sibling list
-    -- instead, exactly like every other confirmed-working hijack entry in this project. This makes
-    -- the "Both" lists themselves dead weight (kept on disk/committed, just unused by this function
-    -- from now on) -- the real combined-command behavior comes from picking the right single list
-    -- here PLUS the post-spawn comp:SwapBodySex() call below, not from a multi-entry list asset.
-    local BOTH_LIST_SIBLINGS = {
-        AxelAsAdventurerBoth     = { male = "AxelAsAdventurer",     female = "AlbionAsAdventurer" },
-        ScumMaleAsAdventurerBoth = { male = "ScumMaleAsAdventurer", female = "ScumAsAdventurer" },
-        MortarAsAdventurerBoth   = { male = "MortarAsAdventurer",   female = "NativeAsAdventurer" },
-    }
-    if bodyTypesPath then
-        for bothName, siblings in pairs(BOTH_LIST_SIBLINGS) do
-            if bodyTypesPath:find(bothName, 1, true) then
-                -- All 3 current "Both" donors are Male-native -- default to the Male sibling
-                -- whenever sex isn't explicitly forced to Female.
-                local siblingName = (sex == 2) and siblings.female or siblings.male
-                local newPath = ensureFullPath(siblingName)
-                say(string.format("translated combined list '%s' -> single-sex sibling '%s' (target sex=%s) -- see this function's own 2026-09-08 fix comment.",
-                    bothName, siblingName, sex == 2 and "Female" or "Male"))
-                bodyTypesPath = newPath
-                break
-            end
-        end
     end
 
     -- RE-READ the CURRENT actor's live transform before destroying it (2026-09-08, RedFalcon:
@@ -11617,18 +11695,10 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     Spawner._bodySwapActor = nil
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
-    say(string.format("spawning %s with bodyTypes=%s (native sex) at %s",
-        classPath, tostring(bodyTypesPath),
+    say(string.format("spawning %s natively (no bodyTypes override -- see this function's own 2026-09-08 rewrite comment), family=%s sex=%s, at %s",
+        classPath, tostring(family), tostring(sexArg or "native"),
         atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
-    -- sex is deliberately NOT passed to Spawner.Spawn here (2026-09-08, RedFalcon: "the
-    -- genderswaping isnt working") -- compositeLook.sex at spawn time is NOT the mechanism this
-    -- project's own confirmed-working gender-swap technique uses (see Spawner.TestSwapBodySex's
-    -- own comment/lbtestswapbodysex, 2026-08-19): that's a POST-spawn comp:SwapBodySex() call on
-    -- the already-built CompositeMeshComponent, deliberately bypassing the native
-    -- IsBodySexChangeAvailable() gate -- a completely different lever from anything passed into
-    -- Spawner.Spawn's compositeLook table. Always spawn at native sex first, then swap after.
-    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false,
-        { bodyTypes = bodyTypesPath }, nil, false)
+    local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, nil, nil, false)
     if not (actor and actor:IsValid()) then
         say("Spawn FAILED.")
         return false
@@ -11636,14 +11706,14 @@ function Spawner.SwapBodyType(bodyTypesPath, classPath, sexArg, say)
     pcall(function() Spawner.SetAILogic(actor, false) end)
     Spawner._bodySwapActor = actor
 
-    if sex then
-        -- (2026-09-08) Calling comp:SwapBodySex() immediately here (synchronously, right after
-        -- Spawn returns) was the actual bug -- the composite mesh build hasn't finished yet at this
-        -- point (comp.BuildedCompositeMeshes still empty), so the swap silently no-ops. Poll for the
-        -- build to finish first (same idiom pollForBuildThenUndress already uses for the underwear
-        -- feature), THEN swap -- this is what makes summon+swap work as one combined command.
-        say("waiting for composite build to finish before swapping sex...")
-        pollForBuildThenSwapSex(actor, sex, "BodyTypeSwap", say)
+    if sex or family then
+        local currentSex = nil
+        pcall(function()
+            local comp = actor.CompositeMeshComponent
+            if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
+        end)
+        say(string.format("waiting for composite build to finish before applying sex/mesh (native sex read as %s)...", tostring(currentSex)))
+        pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, "BodyTypeSwap", say)
     end
 
     -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after

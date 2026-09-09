@@ -11982,25 +11982,50 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             end
             local finalSex = targetSex or currentSex
             local meshPath, meshName = familyMeshPath(family, finalSex)
+            local matPath, matName = familySkinMaterialPath(family, finalSex)
             if meshPath then
-                Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
-                -- 2026-09-08 FIX: EmptyOverrideMaterials() (inside TestSetBaseBodyMesh) does NOT
-                -- actually clear a pre-existing per-instance skin material override -- confirmed via
-                -- probedump, Hunter kept MI_African_Male_Medium at slot 2 even after his mesh correctly
-                -- swapped to SK_Adventurer_Male_01. Explicitly SET the target family's own skin
-                -- material on that slot instead of hoping a default reasserts.
-                local matPath, matName = familySkinMaterialPath(family, finalSex)
-                if matPath then
-                    local mat = resolveAsset(matPath)
-                    local body = nil
-                    pcall(function() body = actor.Mesh end)
-                    if mat and body and body:IsValid() then
-                        local okMat = pcall(function() body:SetMaterial(SKIN_MATERIAL_SLOT, mat) end)
-                        say(string.format("skin material swap %s (slot %d -> %s)", okMat and "OK" or "FAILED", SKIN_MATERIAL_SLOT, tostring(matName)))
-                    else
-                        say("skin material unresolved or actor.Mesh invalid -- slot " .. SKIN_MATERIAL_SLOT .. " left as-is (" .. tostring(matPath) .. ")")
+                -- 2026-09-09 FIX (RedFalcon: spawning a genuinely new, donor-independent class --
+                -- "mesh unresolved" / "skin material unresolved" on the FIRST attempt, both
+                -- succeeding cleanly on an immediate retry). A real donor's own class construction
+                -- touches/loads a bunch of family-specific content as a side effect (confirmed: a
+                -- donor's own spawn shows "Asset loaded" and non-zero R5CommonInteractionTargetComponent
+                -- counts that a blank class's spawn never does) -- so `resolveAsset`'s StaticFindObject/
+                -- LoadAsset attempts already find these meshes warm in memory for a real donor. For a
+                -- class that never touches ANY family-specific content as a side effect, a TRULY cold
+                -- reference apparently doesn't finish loading synchronously within resolveAsset's own
+                -- immediate LoadAsset-then-retry window, even though LoadAsset itself was called --
+                -- confirmed live: the identical resolveAsset call succeeds instantly on a second
+                -- attempt a few seconds later, with nothing else different. Retry a few times with a
+                -- short delay rather than require the caller to manually re-run the whole command.
+                local function tryApplyMeshAndMaterial(attemptsLeft)
+                    attemptsLeft = attemptsLeft or 4
+                    local meshOk = Spawner.TestSetBaseBodyMesh(actor, meshPath, say)
+                    -- 2026-09-08 FIX: EmptyOverrideMaterials() (inside TestSetBaseBodyMesh) does NOT
+                    -- actually clear a pre-existing per-instance skin material override -- confirmed
+                    -- via probedump, Hunter kept MI_African_Male_Medium at slot 2 even after his mesh
+                    -- correctly swapped to SK_Adventurer_Male_01. Explicitly SET the target family's
+                    -- own skin material on that slot instead of hoping a default reasserts.
+                    local matOk = true -- stays true when nothing was ever requested (matPath nil)
+                    if matPath then
+                        matOk = false
+                        local mat = resolveAsset(matPath)
+                        local body = nil
+                        pcall(function() body = actor.Mesh end)
+                        if mat and body and body:IsValid() then
+                            matOk = pcall(function() body:SetMaterial(SKIN_MATERIAL_SLOT, mat) end)
+                            say(string.format("skin material swap %s (slot %d -> %s)", matOk and "OK" or "FAILED", SKIN_MATERIAL_SLOT, tostring(matName)))
+                        else
+                            say("skin material unresolved or actor.Mesh invalid -- slot " .. SKIN_MATERIAL_SLOT .. " left as-is (" .. tostring(matPath) .. ")")
+                        end
+                    end
+                    if (not meshOk or not matOk) and attemptsLeft > 1 and ExecuteWithDelay then
+                        say(string.format("mesh/material resolution incomplete (mesh=%s material=%s) -- likely a cold asset reference, retrying in 800ms (%d attempt(s) left)...", tostring(meshOk), tostring(matOk), attemptsLeft - 1))
+                        ExecuteWithDelay(800, function() tryApplyMeshAndMaterial(attemptsLeft - 1) end)
+                    elseif not meshOk or not matOk then
+                        say("gave up retrying mesh/material resolution -- still unresolved after repeated attempts, not just a cold-load delay.")
                     end
                 end
+                tryApplyMeshAndMaterial()
             else
                 say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
             end

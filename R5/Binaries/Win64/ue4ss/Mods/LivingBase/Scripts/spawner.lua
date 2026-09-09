@@ -11757,7 +11757,16 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
     end
 
     if underwear then
-        Spawner.RemoveClothingOnActor(actor, "all", name)
+        -- 2026-09-08 FIX (RedFalcon: "the underwear call seems to remove their hair. I want to
+        -- keep the hair on their head") -- "all" includes Hair (added 2026-09-08 as its own
+        -- deliberate feature for the general Remove UI/lbremoveclothes command, see
+        -- Config.CLOTHING_REMOVABLE_SLOTS's own comment) -- don't touch THAT behavior globally,
+        -- just don't request Hair here: loop every OTHER removable slot instead of passing "all".
+        for _, slot in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
+            if slot ~= "Hair" then
+                Spawner.RemoveClothingOnActor(actor, slot, name)
+            end
+        end
     end
 end
 

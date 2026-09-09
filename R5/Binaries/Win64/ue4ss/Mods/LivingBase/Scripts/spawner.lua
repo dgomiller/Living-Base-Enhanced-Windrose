@@ -11847,32 +11847,32 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             say(string.format("sex swap %s -- GetBodySex before=%s after=%s.",
                 (okSwap and after == targetSex) and "OK" or ("did not land as requested" .. (okSwap and "" or (" err=" .. tostring(errSwap)))),
                 tostring(currentSex), tostring(after)))
-            -- 2026-09-08 FIX (RedFalcon: "fully nude. says it has nothing to swap") -- a probedump
-            -- confirmed comp.DefaultParams DID correctly swap to the Barbie outfit (unlike
-            -- BodyTypeParams's instant-rejection bug above, this write genuinely stuck), yet
-            -- BuildedCompositeMeshes stayed at 0 forever -- SwapBodySex() does NOT automatically
-            -- trigger a rebuild against the new DefaultParams/sex; the ONE real build already ran
-            -- at spawn time (against the donor's own native params) and nothing re-runs it
-            -- afterward. FIRST attempt (ConstructVisualFromParams) was wrong -- lbinspectfn showed
-            -- its one parameter is `PredefinedArchetypeIndex` (an int into some predefined-archetype
-            -- list, not a general "rebuild from current params" trigger) -- crashed with "expected 1
-            -- parameters, received 0" when called bare, and its real semantics are unknown/risky to
-            -- guess at. SetBody(InBodyType: GameplayTag, InBodySex: enum, bForceLoad: bool) -- also
-            -- confirmed via lbinspectfn -- looks like the actual right lever: reuse the actor's OWN
-            -- already-valid BodyType tag from GetBodyType() (sidesteps the well-known "can't
-            -- construct a GameplayTag from a string" limitation entirely -- no need to build a new
-            -- one), pass the NEW target sex, and bForceLoad=true to force a real synchronous rebuild.
-            if comp and comp:IsValid() then
-                local bodyTypeTag = nil
-                pcall(function() bodyTypeTag = comp:GetBodyType() end)
-                if bodyTypeTag then
-                    local okBody, errBody = pcall(function() comp:SetBody(bodyTypeTag, targetSex, true) end)
-                    say(string.format("SetBody(sameBodyType, sex=%s, forceLoad=true) %s%s", tostring(targetSex),
-                        okBody and "OK" or "FAILED", okBody and "" or (" err=" .. tostring(errBody))))
-                else
-                    say("SetBody skipped -- could not read comp:GetBodyType() first.")
-                end
-            end
+            -- 2026-09-08 FIX, REMOVED same day (real crash confirmed via minidump analysis, see
+            -- below) -- this used to also call comp:SetBody(bodyTypeTag, targetSex, true) here,
+            -- reasoning that a probedump showed comp.DefaultParams DID correctly swap to the
+            -- Barbie outfit (unlike BodyTypeParams's instant-rejection bug above) yet
+            -- BuildedCompositeMeshes stayed at 0 forever, and SetBody -- confirmed via lbinspectfn
+            -- as taking (InBodyType: GameplayTag, InBodySex: enum, bForceLoad: bool) -- looked like
+            -- the right lever to force a rebuild, reusing the actor's OWN already-valid BodyType
+            -- tag from GetBodyType() to sidestep the known "can't construct a GameplayTag from a
+            -- string" limitation. It reported "OK" (no crash) in that ONE test. **This was wrong on
+            -- two counts, both now confirmed**: (1) even on the run where it didn't crash, it never
+            -- actually forced a rebuild anyway (BuildedCompositeMeshes stayed 0 -- the real fix
+            -- turned out to be setting archetype+outfit+sex together AT SPAWN TIME, see
+            -- ADVENTURER_ARCHETYPE_BY_SEX above, which is what this whole function now does for the
+            -- one family that matters) -- so this call only ever ran here as a no-op fallback for
+            -- families with no native archetype pair, achieving nothing even in the best case; (2)
+            -- `comp:SetBody(...)` is SEPARATELY documented (Spawner.ApplyBodyType's own 2026-08-15
+            -- header comment) as a confirmed, pcall-UNCATCHABLE native crash risk -- and it WAS
+            -- crashing again, intermittently, in exactly this fallback path: 4 of 7 UE4SS.dll
+            -- crashes on 2026-09-08 shared the IDENTICAL offset (0x9347f0) across multiple hours
+            -- and reloads, confirmed via parse_minidump.py, most likely triggered whenever
+            -- lbtestbodyswap was used with a sex swap on a family OTHER than Adventurer (the only
+            -- family ADVENTURER_ARCHETYPE_BY_SEX covers, so the only one that never reaches this
+            -- fallback at all). Removed outright -- pure downside, zero benefit, once both facts
+            -- were established. The fallback for an unsupported family is now just: sex still
+            -- swaps via SwapBodySex() above (safe, confirmed reliable), the family's own donor
+            -- clothes just won't populate correctly for the new sex -- no silent crash risk.
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
         pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2)

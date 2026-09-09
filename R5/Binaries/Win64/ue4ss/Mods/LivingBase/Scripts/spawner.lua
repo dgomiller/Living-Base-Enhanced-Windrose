@@ -4975,6 +4975,18 @@ function Spawner.TestDumpMorphControllers(say)
         pcall(function() if ctrl ~= nil and type(ctrl) == "userdata" and ctrl.get then ctrl = ctrl:get() end end)
         if ctrl then
             dumpUnknownStruct(ctrl, string.format("morphController[%d]", i))
+            -- 2026-09-08 FIX: dumpUnknownStruct does not auto-recurse into nested struct-typed
+            -- fields (confirmed live: MorphTargetKey/MorphValue both printed as a raw, unhelpful
+            -- "UScriptStruct: <hex>") -- same one-explicit-level-deeper pattern
+            -- dumpCustomizationMeshControllers already uses for its own GroupCategoryId field.
+            local okKey, key = pcall(function() return ctrl.MorphTargetKey end)
+            if okKey and key ~= nil then
+                dumpUnknownStruct(key, string.format("morphController[%d].MorphTargetKey", i))
+            end
+            local okVal, val = pcall(function() return ctrl.MorphValue end)
+            if okVal and val ~= nil then
+                dumpUnknownStruct(val, string.format("morphController[%d].MorphValue", i))
+            end
         end
     end
     say(string.format("%d morph controller(s) total.", n))

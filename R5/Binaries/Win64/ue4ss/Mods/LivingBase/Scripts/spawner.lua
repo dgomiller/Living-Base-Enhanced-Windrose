@@ -5018,19 +5018,29 @@ function Spawner.TestDumpBodyDecorData(say)
         return false
     end
 
-    -- GetSkinDecorData() -- presumably singular, the CURRENTLY applied overlay.
+    -- GetSkinDecorData() -- presumably singular, the CURRENTLY applied overlay. CONFIRMED LIVE
+    -- (2026-09-08): returns a PLAIN LUA TABLE, not a UScriptStruct/UObject wrapper at all --
+    -- dumpUnknownStruct doesn't handle this shape ("not a recognized struct shape"). A plain table
+    -- just needs a plain `pairs()` walk, no unwrapping.
     local okCur, cur = pcall(function() return comp:GetSkinDecorData() end)
     if not okCur then
         say("GetSkinDecorData() call FAILED: " .. tostring(cur))
     elseif cur == nil then
         say("GetSkinDecorData() returned nothing.")
+    elseif type(cur) == "table" then
+        local any = false
+        for k, v in pairs(cur) do
+            any = true
+            say(string.format("GetSkinDecorData()[%s] = %s", tostring(k), tostring(v)))
+        end
+        if not any then say("GetSkinDecorData() returned an empty table.") end
     else
         dumpUnknownStruct(cur, "GetSkinDecorData()")
     end
 
-    -- GetAvailableBodyDecorData() -- presumably plural, every available option (array-shaped, same
-    -- pattern as GetAvailableBodyTypes()/GetCustomizationMeshControllers() -- try array access,
-    -- fall back to treating it as a single struct if that fails).
+    -- GetAvailableBodyDecorData() -- CONFIRMED LIVE (2026-09-08): returns a plain UObject
+    -- reference (an asset), not an array or struct at all -- print its real class + full path
+    -- directly instead of struct-walking it.
     local okAvail, avail = pcall(function() return comp:GetAvailableBodyDecorData() end)
     if not okAvail then
         say("GetAvailableBodyDecorData() call FAILED: " .. tostring(avail))
@@ -5040,11 +5050,21 @@ function Spawner.TestDumpBodyDecorData(say)
         say("GetAvailableBodyDecorData() returned nothing.")
         return true
     end
+    if type(avail) == "userdata" and avail.IsValid then
+        local isValid = false
+        pcall(function() isValid = avail:IsValid() end)
+        if isValid then
+            local fullName = "?"
+            pcall(function() fullName = avail:GetFullName() end)
+            say("GetAvailableBodyDecorData() -> " .. fullName)
+            return true
+        end
+    end
     local n = 0
     pcall(function() n = avail:GetArrayNum() end)
     if n == 0 then pcall(function() n = #avail end) end
     if n == 0 then
-        say("GetAvailableBodyDecorData() doesn't look like an array -- dumping it directly as one struct instead.")
+        say("GetAvailableBodyDecorData() doesn't look like an array or a valid UObject -- dumping it directly as one struct instead.")
         dumpUnknownStruct(avail, "GetAvailableBodyDecorData()")
         return true
     end

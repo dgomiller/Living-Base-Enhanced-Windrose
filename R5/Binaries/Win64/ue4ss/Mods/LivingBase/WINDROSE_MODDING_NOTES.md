@@ -102,6 +102,7 @@ Companion to `CLAUDE.md` (which is older and partly stale — trust THIS file wh
   - [19u. `lbtestsocketitems` -- a full item/weapon randomizer driven entirely by a hand-authored spreadsheet (2026-09-07)](#19u-lbtestsocketitems----a-full-itemweapon-randomizer-driven-entirely-by-a-hand-authored-spreadsheet-2026-09-07)
   - [19v. The Barbie gender-swap saga -- six real bugs stacked on top of each other, the actual reassertion wall finally isolated (2026-09-08)](#19v-the-barbie-gender-swap-saga----six-real-bugs-stacked-on-top-of-each-other-the-actual-reassertion-wall-finally-isolated-2026-09-08)
   - [19w. A second crash saga, then a real pivot: authoring a genuinely new native NPC class from scratch, CONFIRMED WORKING LIVE (2026-09-08/09)](#19w-a-second-crash-saga-then-a-real-pivot-authoring-a-genuinely-new-native-npc-class-from-scratch-confirmed-working-live-2026-09-0809)
+  - [19x. Turning the from-scratch class into an actual usable NPC: invisible mesh, a cold-load race, and the still-open sex/animation gap (2026-09-09)](#19x-turning-the-from-scratch-class-into-an-actual-usable-npc-invisible-mesh-a-cold-load-race-and-the-still-open-sexanimation-gap-2026-09-09)
 
 ---
 
@@ -4728,3 +4729,88 @@ still can't be baked -- it's `Transient`, see above -- so this stays a runtime-a
 of authoring route). The real payoff isn't eliminating the runtime mechanism; it's spawning a class
 that's genuinely OURS, carrying no donor-specific native gear or hidden quirks along for the ride --
 the exact class of problem behind this whole section's own opening crash chase.
+
+### 19x. Turning the from-scratch class into an actual usable NPC: invisible mesh, a cold-load race, and the still-open sex/animation gap (2026-09-09)
+
+§19w proved the mechanism; this section is the record of actually running `BP_BarbieR5Char_Test`
+through the real `lbtestbodyswap` workflow (the actual Barbie-roster use case, not just a bare
+`lbspawn`) and fixing what broke. Each failure here traces back to the SAME root cause: a real donor's
+own class provides a pile of "free" native setup (base mesh, body-type pool, animation, movement
+tuning) as class defaults; a from-scratch class provides none of it, so anything that isn't
+EXPLICITLY set at runtime is simply absent, not defaulted.
+
+**Failure 1 -- invisible NPC (empty base mesh).** First live `lbtestbodyswap` test against the new
+class: no crash, but nothing visibly appeared. `lbwhereami` (new pure-read console command, prints the
+player pawn's own location/yaw) confirmed the actor spawned right next to the player, ruling out
+position -- a live `lbprobedump` confirmed the real problem: `CharacterMesh0`/`actor.Mesh` had no
+skeletal mesh assigned at all. Root cause: `pollForBuildThenApplyBodySwap`'s `familyHandledByArchetype`
+skip (the §19w-era fix that avoided a redundant, crash-prone mesh re-swap) assumed "archetype handled
+it" always implies "the base mesh is already set" -- true for every real donor (which bakes a base mesh
+into its own class defaults) but false here, since nothing ever sets `Mesh`'s skeletal mesh on a blank
+class. **Fixed**: added a `hasBaseMesh` check (reads `actor.Mesh:GetSkeletalMeshAsset()`/`.SkeletalMesh`)
+before deciding to skip -- if the archetype path claims to have handled it but the mesh is still empty,
+apply the direct mesh override anyway.
+
+**Failure 2 -- "mesh unresolved" on retry, a genuinely different bug.** After the fix above, a retest
+hit a NEW error: `SK_Adventure_Female_01` failed to resolve. A BlackAxel (real donor) control test in
+between confirmed this wasn't session-wide breakage. The actual cause, confirmed via a direct A/B
+test (the user ran the identical failing command twice back to back): it failed on the FIRST call and
+succeeded instantly on an IMMEDIATE second call. This class never touches any family-specific content
+as a side effect of spawning (no "Asset loaded" log line, `R5CommonInteractionTargetComponent` always
+finds 0 matches, unlike a real donor which finds 1) -- so a mesh/skin-material reference that has never
+been touched anywhere else this session can miss `resolveAsset`'s single `LoadAsset`-then-retry window,
+purely a cold-cache timing race, not a real resolution failure. **Fixed**: wrapped the mesh+skin-material
+application in `tryApplyMeshAndMaterial(attemptsLeft)`, an internal retry loop (4 attempts, 800ms apart
+via `ExecuteWithDelay`) inside `pollForBuildThenApplyBodySwap`'s `applyPhase2`. Confirmed working
+cleanly on a single command afterward -- both mesh and skin material resolved OK on the first try, no
+retry needed that time (the race doesn't reproduce every time, which is exactly what a cold-cache
+timing issue looks like).
+
+**Visibility is now solid.** With both of the above fixed, the class spawns visibly, wearing the
+requested body mesh and skin material, with no crash -- confirmed across repeated tests.
+
+**Still open at this point -- two more real gaps, same root cause, both being worked now:**
+
+1. **Sex resolution never lands.** `GetBodySex` reads `before=1 after=1` (stuck Male) on this class
+   even when a Female swap is explicitly requested, vs. `before=1 after=2` (correct) for every real
+   donor. Working theory: `CompositeMeshComponent.BodyTypeParams` -- the pool a sex/family request
+   resolves body meshes against -- is genuinely empty/invalid on a blank class, since nothing ever sets
+   it (a real donor gets it from its own class defaults). Confirmed the theory's missing piece live via
+   `lbtestlistclass /Script/R5 R5CompositeMeshBodyTypeListParams Common` (the exact same AssetRegistry
+   enumeration technique `lbdiagresolve`/§19w used, applied to a new class type): the real, native pool
+   asset is `/Game/Gameplay/Character/AI/NPC/Base/Params/Customization/DA_NPC_BodyTypesParams_Common`
+   -- never previously recorded anywhere in this project as a literal path string, only ever seen by
+   name via live probedumps. **Fix applied (not yet retested)**: `Spawner.SwapBodyType`'s
+   `compositeLook` now explicitly sets `bodyTypes` to this path whenever a sex is requested, threading
+   through the existing (already-wired, never previously populated for this call site)
+   `compositeLook.bodyTypes` -> `Spawner.SetCompositeParams`'s `bodyTypesPath` parameter -> resolved
+   and written to `comp.BodyTypeParams` pre-`BeginPlay`, the same mechanism already used for
+   `DefaultParams`/`ArchetypePreset`/etc. This is a no-op for real donors (it's the exact same asset
+   their own class defaults already point at) and should be the actual fix for the blank class.
+2. **Visible but floating, T-posing with no animation.** Once the mesh/material race above was fixed,
+   the actor appeared for the first time -- but floating (not settled to the ground) and holding a raw
+   T-pose (no animation playing at all). Same root-cause family as failure 1: nothing ever assigns
+   `Mesh.AnimClass` (the AnimBlueprint that drives the skeleton) on a blank class, so there is no
+   AnimInstance running -- a real donor's own class defaults already point `Mesh.AnimClass` at one.
+   `Spawner.SetAnimClass(actor, animClassPath)` (built back in the pose-porting investigation, §19w-era
+   predecessor work from 2026-08-14) is the existing, already-proven mechanism for this
+   (`mesh:SetAnimInstanceClass(cls)`, falling back to a plain `mesh.AnimClass = cls` write) -- it was
+   built and tested against a STATUE (a non-AI decorative actor), where it correctly ported
+   `ABP_StandingNPC_Regular_AI_C`'s pose onto a mismatched skeleton and T-posed for THAT unrelated
+   reason (see the pose-porting closure write-up, 2026-08-14/15) -- irrelevant here, since our class
+   uses a real, matching humanoid skeleton (`SK_Adventure_Female_01`), the same skeleton family
+   `ABP_StandingNPC_Regular_AI_C` already natively drives for real living AI pawns (confirmed via the
+   same 2026-08-14 probe: a real crew NPC runs the same BlueprintMode/AnimClass pattern). The exact
+   package path was never recorded as a literal string (only the class name and a partial folder hint,
+   `.../Human/Regular/Share_HumanAI/...`) -- `Config.SENKA_STATUE_STANDING_ANIM_CLASS`, which once held
+   it, was deliberately deleted when the statue pose-porting work was closed out as dead for THAT use
+   case. Next step (not yet run): `lbtestlistclass /Script/Engine AnimBlueprint StandingNPC` to
+   re-derive the real path live via the AssetRegistry, then call `Spawner.SetAnimClass` on the swap
+   actor with it. The floating (not T-pose) half of this symptom is suspected to be a related but
+   separate gap -- likely `CharacterMovement` settling/ground-detection tuning a real donor's own
+   Blueprint provides as an override that a blank native class doesn't -- not yet investigated.
+
+**Status**: the core mechanism (§19w) remains fully confirmed and closed. This section's own scope --
+making a from-scratch class actually usable for the real Barbie-roster workflow, not just spawnable --
+is IN PROGRESS, not closed: visibility is solid, sex resolution has a fix applied pending retest, and
+animation/grounding are diagnosed but not yet fixed.

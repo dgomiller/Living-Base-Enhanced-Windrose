@@ -12184,6 +12184,18 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
             sex = sex,
             params = "/Game/Mods/LivingBaseExtended/" .. barbieParamsName .. "." .. barbieParamsName,
             archetype = (family == "Adventurer") and ADVENTURER_ARCHETYPE_BY_SEX[sex] or nil,
+            -- 2026-09-09 FIX (blank/donor-independent classes, e.g. BP_BarbieR5Char_Test): a real
+            -- donor's own class defaults already point CompositeMeshComponent.BodyTypeParams at this
+            -- exact native asset, so SetCompositeParams's bodies=resolveAsset(bodyTypesPath) was
+            -- historically left nil here and the donor's own default carried it -- fine for every
+            -- donor tested so far. A from-scratch class has no such default (confirmed via probedump:
+            -- GetBodySex before=1 after=1, never lands), so the sex swap silently has no female pool
+            -- to resolve against. Found the real path live via lbtestlistclass
+            -- (/Script/R5.R5CompositeMeshBodyTypeListParams, filtered "Common"):
+            -- DA_NPC_BodyTypesParams_Common under Content/Gameplay/Character/AI/NPC/Base/Params/
+            -- Customization. Passing it explicitly here is a no-op for real donors (same asset they
+            -- already default to) and the actual fix for blank classes.
+            bodyTypes = "/Game/Gameplay/Character/AI/NPC/Base/Params/Customization/DA_NPC_BodyTypesParams_Common.DA_NPC_BodyTypesParams_Common",
         }
     end
 

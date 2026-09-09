@@ -11602,8 +11602,11 @@ end
 --            class-agnostic technique confirmed working back on 2026-08-31 ("outfit stayed on, body
 --            correctly changed... the new mesh's own default material, no separate step needed").
 --            This deliberately never touches BodyTypeParams/ArchetypePreset at all, sidestepping
---            the wall entirely instead of fighting it.
-local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft, phase)
+--            the wall entirely instead of fighting it. Finally, if underwear was requested, strips
+--            down via the SAME Spawner.RemoveClothingOnActor(actor, "all", name) call
+--            pollForBuildThenUndress already uses for this -- last step, after the body/skin are
+--            fully settled (2026-09-08, RedFalcon: "can we spawn with underwear").
+local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft, phase)
     attemptsLeft = attemptsLeft or 12
     phase = phase or 1
     if not (actor and actor:IsValid()) then return end
@@ -11624,7 +11627,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             return
         end
         if ExecuteWithDelay then
-            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, attemptsLeft - 1, phase) end)
+            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft - 1, phase) end)
         end
         return
     end
@@ -11644,7 +11647,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
                 tostring(currentSex), tostring(after)))
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
-        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, name, say, 12, 2)
+        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2)
         return
     end
 
@@ -11675,11 +11678,16 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             say("unknown family '" .. tostring(family) .. "' -- no mesh override applied (donor's native mesh kept).")
         end
     end
+
+    if underwear then
+        Spawner.RemoveClothingOnActor(actor, "all", name)
+    end
 end
 
--- Spawner.SwapBodyType(familyArg, classPath, sexArg, say) -- "lbtestbodyswap <family|-> [classPath|-]
--- [sex: M/F|-]" (2026-09-08, rewritten same day after the BodyTypeParams hijack was confirmed
--- class-dependent -- see pollForBuildThenApplyBodySwap's own header comment for the full story).
+-- Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say) -- "lbtestbodyswap
+-- <family|-> [classPath|-] [sex: M/F|-] [underwear: on|-]" (2026-09-08, rewritten same day after
+-- the BodyTypeParams hijack was confirmed class-dependent -- see pollForBuildThenApplyBodySwap's
+-- own header comment for the full story).
 -- RedFalcon's request for the Barbie capture session: lbtestbodytypes always spawns fresh "in front
 -- of the player" (Spawner.Spawn's own default when atLocation/yaw are nil), so every new body type
 -- lands somewhere slightly different depending on exactly where you're standing/facing that moment
@@ -11696,7 +11704,7 @@ end
 -- function at all, kept on disk/committed only as a historical record and for the (still-working)
 -- Origin-grid case where the SPAWNED class's own native tag matches the entry (e.g. Gatherer +
 -- AdventurerAsAfrican) -- lbtestbodytypes still uses that path for THAT case.
-function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
@@ -11740,6 +11748,14 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
         if s == "f" or s == "female" then sex = 2
         elseif s == "m" or s == "male" then sex = 1 end
     end
+    -- underwearArg (2026-09-08, RedFalcon: "can we spawn with underwear") -- reuses the SAME
+    -- Spawner.RemoveClothingOnActor(actor, "all", name) call TestSpawnCustomLook's own
+    -- pollForBuildThenUndress already uses, applied as the LAST step once body/skin are settled.
+    local underwear = false
+    if type(underwearArg) == "string" then
+        local u = underwearArg:lower()
+        if u == "underwear" or u == "u" or u == "on" or u == "true" or u == "1" then underwear = true end
+    end
 
     -- RE-READ the CURRENT actor's live transform before destroying it (2026-09-08, RedFalcon:
     -- "what if i decide to adjust the angle of the subject and then swap") -- the locked
@@ -11775,14 +11791,14 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, say)
     pcall(function() Spawner.SetAILogic(actor, false) end)
     Spawner._bodySwapActor = actor
 
-    if sex or family then
+    if sex or family or underwear then
         local currentSex = nil
         pcall(function()
             local comp = actor.CompositeMeshComponent
             if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
         end)
-        say(string.format("waiting for composite build to finish before applying sex/mesh (native sex read as %s)...", tostring(currentSex)))
-        pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, "BodyTypeSwap", say)
+        say(string.format("waiting for composite build to finish before applying sex/mesh/underwear (native sex read as %s)...", tostring(currentSex)))
+        pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say)
     end
 
     -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right after

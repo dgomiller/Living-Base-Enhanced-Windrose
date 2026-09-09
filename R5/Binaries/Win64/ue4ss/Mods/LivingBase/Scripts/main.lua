@@ -3775,13 +3775,14 @@ if RegisterConsoleCommandHandler then
             local classArg = Parameters and Parameters[2]
             if classArg == "-" or classArg == "" then classArg = nil end
             local sexArg = Parameters and Parameters[3]
-            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, say) end)
+            local underwearArg = Parameters and Parameters[4]
+            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, underwearArg, say) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-]")
-    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-]", "Spawns classPath at its native shape, then applies a direct post-build mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/Scum/Senkamati) and/or a sex swap (M/F), combined in one command. Also locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body changes -- ideal for cycling through Barbie variants without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
+    log("Console command registered: lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] [underwear: on|-]")
+    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] [underwear: on|-]", "Spawns classPath at its native shape, then applies a direct post-build mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/Scum/Senkamati), a sex swap (M/F), and/or strips to underwear (pass 'on'/'u' as the 4th arg) -- all combined in one command. Also locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body changes -- ideal for cycling through Barbie variants without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
 else
     log("lbtestbodyswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

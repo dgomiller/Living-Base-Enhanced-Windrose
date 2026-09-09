@@ -3495,6 +3495,29 @@ else
     log("lbremoveclothes unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdiagresolve <path>" (2026-09-09) -- PURE READ. Reports which of every available
+-- object-resolution strategy can reach a given path (class form, asset form, package form, via
+-- LoadAsset, via the AssetRegistry). Built to disentangle "our SDK-authored Blueprint pak is broken"
+-- from "a mod-pak Blueprint's generated CLASS was never resolvable in this build by these APIs" --
+-- see Spawner.TestDiagResolve's own header comment for the full context.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdiagresolve", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [diagresolve] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDiagResolve(Parameters and Parameters[1], say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdiagresolve <path>")
+    registerCmdInfo("lbdiagresolve", "lbdiagresolve <path>", "PURE READ: reports which resolution strategy (StaticFindObject/LoadAsset/AssetRegistry, _C vs asset vs package form) can reach a given object path. Diagnostic for unresolvable mod-pak classes.")
+else
+    log("lbdiagresolve unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbremovehair <slot|all>" (2026-09-09, RedFalcon: "under the custom > hair
 -- category there should be all, and it should hide hair, whiskers, beard, and moustache") -- hides
 -- a hair/facial-hair piece by slot (or all four) on the nearest actor. Deliberately separate from

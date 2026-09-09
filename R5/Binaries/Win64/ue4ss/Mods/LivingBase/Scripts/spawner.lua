@@ -12531,6 +12531,72 @@ end
 -- enumerates every registered asset of a given class, regardless of whether it's currently loaded
 -- -- the real fix for "static extraction can't find it," matching this whole project's own
 -- long-standing preference for a live probe over static archaeology once one dead end is hit.
+-- Spawner.TestDiagResolve(path, say) -- "lbdiagresolve <path>" (2026-09-09). PURE READ diagnostic,
+-- built after a genuinely new Blueprint class cooked+packaged by this project's own SDK-stub pipeline
+-- failed to resolve live ("SPAWN FAILED (class unresolved)") even though its pak demonstrably MOUNTED
+-- (R5.log: "Mounted IoStore container", correct chunk count) and its container header/TOC versions
+-- matched a known-working third-party mod's byte-for-byte. Two separate Blueprints failed identically
+-- -- one parented to /Script/R5.R5AICharacter, one to plain /Script/Engine.Actor -- which rules the
+-- PARENT CLASS out entirely and points at the pipeline or at the resolution API itself.
+--
+-- The specific thing this exists to disentangle: resolving a Blueprint's generated CLASS
+-- ("Pkg.Name_C") and resolving the underlying ASSET ("Pkg.Name") are DIFFERENT objects reached by
+-- DIFFERENT engine paths. The one prior "a third-party mod's new Blueprint resolves fine" data point
+-- in this project's own notes (Pirate Signals' ModActor) was only ever verified via resolveAsset on
+-- the NO-"_C" path -- i.e. it confirmed the ASSET resolves, never the CLASS. So it is entirely
+-- possible nobody has ever actually resolved a mod-pak Blueprint's generated class in this game, and
+-- that the real wall is the class-loading path rather than anything about our packaging.
+--
+-- Tries every strategy independently and reports each, rather than stopping at the first success the
+-- way resolveClass/resolveAsset do -- the point is a complete picture of what IS and ISN'T reachable
+-- for a given package, not just "did it work."
+function Spawner.TestDiagResolve(path, say)
+    say = say or function(m) print("[LivingBase] [diagresolve] " .. tostring(m) .. "\n") end
+    if not path or path == "" then
+        say("usage: lbdiagresolve <FullPath>  e.g. lbdiagresolve /Game/Mods/LivingBaseExtended/BP_PlainActor_Control.BP_PlainActor_Control_C")
+        return false
+    end
+    local pkgPath, objName = path:match("^(.+)%.([^%.]+)$")
+    local bareName = objName and (objName:match("^(.+)_C$") or objName) or nil
+    local noC = (pkgPath and bareName) and (pkgPath .. "." .. bareName) or nil
+    say("input      : " .. tostring(path))
+    say("package    : " .. tostring(pkgPath))
+    say("no-_C form : " .. tostring(noC))
+
+    local function describe(o)
+        if o == nil then return "nil" end
+        local ok, valid = pcall(function() return o:IsValid() end)
+        if not ok then return "<non-object>" end
+        if not valid then return "INVALID" end
+        local full = "?"
+        pcall(function() full = o:GetFullName() end)
+        return "OK -> " .. tostring(full)
+    end
+    local function try(label, fn)
+        local ok, res = pcall(fn)
+        if not ok then say(string.format("%-34s THREW: %s", label, tostring(res)))
+        else say(string.format("%-34s %s", label, describe(res))) end
+    end
+
+    try("StaticFindObject(_C)",        function() return StaticFindObject(path) end)
+    try("StaticFindObject(no _C)",     function() return noC and StaticFindObject(noC) or nil end)
+    try("StaticFindObject(package)",   function() return pkgPath and StaticFindObject(pkgPath) or nil end)
+    -- LoadAsset returns nothing useful itself; the real test is what StaticFindObject sees AFTER it.
+    try("LoadAsset(_C) then find",     function() pcall(function() LoadAsset(path) end); return StaticFindObject(path) end)
+    try("LoadAsset(no _C) then find",  function() if not noC then return nil end; pcall(function() LoadAsset(noC) end); return StaticFindObject(noC) end)
+    try("LoadAsset(no _C) then find _C", function() if not noC then return nil end; pcall(function() LoadAsset(noC) end); return StaticFindObject(path) end)
+    try("resolveViaAssetRegistry(_C)", function() return resolveViaAssetRegistry and resolveViaAssetRegistry(path) or nil end)
+    try("resolveViaAssetRegistry(noC)",function() return (resolveViaAssetRegistry and noC) and resolveViaAssetRegistry(noC) or nil end)
+    -- LoadObject/StaticLoadObject-family names vary by UE4SS build; probe whichever exist rather than
+    -- assuming. A CLASS specifically may need a class-aware loader, not a plain object loader.
+    for _, fname in ipairs({ "StaticLoadObject", "LoadObject", "StaticLoadClass", "LoadClass", "FindObject" }) do
+        local g = _G[fname]
+        say(string.format("global %-22s %s", fname, g and ("present (" .. type(g) .. ")") or "ABSENT"))
+    end
+    say("done -- any line reading OK -> ... is a reachable object.")
+    return true
+end
+
 function Spawner.TestListAssetsByClass(classModule, className, nameFilter, say)
     say = say or function(m) print("[LivingBase] [test-listclass] " .. tostring(m) .. "\n") end
     if not (classModule and className) then

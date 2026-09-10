@@ -3725,20 +3725,34 @@ local function dumpObjectProperties(obj, tag)
     end
 end
 
+-- resolveTestDiagActor() -- shared by lbtestmovement/lbtestaicontroller/lbtestblackboard (2026-09-09).
+-- These originally hardcoded Spawner._bodySwapActor specifically -- but RedFalcon pointed out every
+-- lbreload resets that Lua-side reference to nil (the actual in-game actor survives, just the module-
+-- level variable pointing at it doesn't survive a module reload), and other tools in this file
+-- (lbprobedump etc.) already track "the current target" via the more general Spawner._lastProbedActor
+-- instead, which Spawner.Spawn itself keeps current on every spawn (see "AUTO-TARGET ON SPAWN"). Fall
+-- back to that whenever the swap-specific reference is stale, rather than forcing a fresh respawn
+-- after every single reload just to re-arm these diagnostics.
+local function resolveTestDiagActor()
+    if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then return Spawner._bodySwapActor end
+    if Spawner._lastProbedActor and Spawner._lastProbedActor:IsValid() then return Spawner._lastProbedActor end
+    return nil
+end
+
 -- Spawner.TestDumpMovement(say) -- "lbtestmovement" (2026-09-09), PURE READ. Built specifically to
 -- chase the from-scratch class's own "floating" symptom: animation is now fixed (baked AnimClass, see
--- WINDROSE_MODDING_NOTES.md 19x), leaving floating as the one remaining gap. Dumps
--- Spawner._bodySwapActor's own CharacterMovement component's full property list via the existing
--- dumpObjectProperties walk -- same mechanism already proven safe for Mesh/AnimInstance dumps.
--- Specifically want GravityScale (0 would explain never falling), MovementMode/
--- DefaultLandMovementMode (a non-Walking/Falling mode would explain it too), and
--- bRunPhysicsWithNoController (movement/gravity ticking could depend on this once the AIController's
--- own StopLogic() -- called by Spawner.SetAILogic(actor,false) on every test spawn -- takes effect).
+-- WINDROSE_MODDING_NOTES.md 19x), leaving floating as the one remaining gap. Dumps the current test
+-- actor's own CharacterMovement component's full property list via the existing dumpObjectProperties
+-- walk -- same mechanism already proven safe for Mesh/AnimInstance dumps. Specifically want
+-- GravityScale (0 would explain never falling), MovementMode/DefaultLandMovementMode (a non-Walking/
+-- Falling mode would explain it too), and bRunPhysicsWithNoController (movement/gravity ticking could
+-- depend on this once the AIController's own StopLogic() -- called by
+-- Spawner.SetAILogic(actor,false) on every test spawn -- takes effect).
 function Spawner.TestDumpMovement(say)
     say = say or function(m) print("[LivingBase] [test-movement] " .. tostring(m) .. "\n") end
-    local actor = Spawner._bodySwapActor
+    local actor = resolveTestDiagActor()
     if not (actor and actor:IsValid()) then
-        say("no current lbtestbodyswap actor (Spawner._bodySwapActor) -- spawn one first.")
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
         return false
     end
     local move = nil
@@ -3778,6 +3792,304 @@ function Spawner.TestDumpMovement(say)
         end
     end
     dumpObjectProperties(move, "MOVEMENT")
+    return true
+end
+
+-- Spawner.TestDumpBlackboard(say) -- "lbtestblackboard" (2026-09-09), PURE READ. Follow-up to
+-- lbtestaicontroller: she has a real, non-nil Blackboard AND StateTreeComponent (confirmed via
+-- probedump) -- the AI infrastructure itself looks genuinely complete, which points away from
+-- "missing setup" and toward "the StateTree's own logic checks a Blackboard key that's false/unset
+-- for this pawn specifically" (a real donor citizen presumably has it set via the normal spawn flow
+-- this manual test spawn never goes through). Dumps the Blackboard's own declared key DEFINITIONS
+-- (name + type, from its BlackboardAsset) first -- reusing the exact TArray-of-struct walk pattern
+-- dumpBuildedCompositeMeshes already uses -- as the first step toward reading actual current values
+-- once the real key names are known.
+function Spawner.TestDumpBlackboard(say)
+    say = say or function(m) print("[LivingBase] [test-blackboard] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
+        return false
+    end
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not (ctrl and ctrl:IsValid()) then
+        say("actor.Controller missing or invalid.")
+        return false
+    end
+    -- 2026-09-09 FIX: this originally gated on bb:IsValid(), same as everywhere else in this file --
+    -- but dumpObjectProperties' own read of this exact property printed it as a generic, untyped
+    -- "UObject: <address>" (unlike almost every other property here, which comes back as a properly
+    -- named class), and dumpObjectProperties itself NEVER calls :IsValid() on a generic property
+    -- value, only :GetFullName() -- strongly suggesting :IsValid() genuinely isn't reliable on
+    -- whatever minimal wrapper this UE4SS binding hands back for a property it can't fully type.
+    -- Confirmed live: bb:IsValid() reported false/threw here even though the SAME reference read
+    -- back fine (real address, real GetFullName()) via the properties dump. Just check for nil now.
+    local bb = nil
+    pcall(function() bb = ctrl.Blackboard end)
+    if not bb then
+        say("Controller.Blackboard is nil.")
+        return false
+    end
+    local bbFullName = "?"
+    local okName = pcall(function() bbFullName = bb:GetFullName() end)
+    say("Blackboard component: " .. bbFullName .. (okName and "" or " (GetFullName() itself failed -- proceeding anyway)"))
+    local bbAsset = nil
+    pcall(function() bbAsset = bb:GetBlackboardAsset() end)
+    if not bbAsset then
+        say("GetBlackboardAsset() failed or returned nil -- trying the plain BlackboardAsset property instead.")
+        pcall(function() bbAsset = bb.BlackboardAsset end)
+    end
+    if not bbAsset then
+        say("could not resolve a BlackboardAsset at all.")
+        return false
+    end
+    local bbAssetFullName = "?"
+    pcall(function() bbAssetFullName = bbAsset:GetFullName() end)
+    say("BlackboardAsset: " .. bbAssetFullName)
+    local keys = nil
+    pcall(function() keys = bbAsset.Keys end)
+    if not keys then
+        say("BlackboardAsset.Keys not readable.")
+        return false
+    end
+    local n = 0
+    pcall(function() n = keys:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #keys end) end
+    say(string.format("BlackboardAsset has %d declared key(s):", n))
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = keys[i] end)
+        if el == nil then pcall(function() el = keys:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local entryName, keyTypeFull = "?", "?"
+            pcall(function() entryName = tostring(el.EntryName) end)
+            pcall(function()
+                local kt = el.KeyType
+                if kt then pcall(function() keyTypeFull = kt:GetFullName() end) end
+            end)
+            say(string.format("  [%d] EntryName=%s KeyType=%s", i, entryName, keyTypeFull))
+            -- Try every plausible typed getter on the CURRENT component instance for this key name --
+            -- exactly one should succeed depending on the key's real type, giving us its CURRENT
+            -- value (not just its declared existence) with no need to hand-map KeyType class names
+            -- to getter names ourselves. Explicit colon calls (this codebase's established binding
+            -- convention) rather than dynamic obj[name] indexing, which isn't used anywhere else here.
+            local function tryGetter(label, fn)
+                local okg, val = pcall(fn)
+                if okg and val ~= nil then
+                    local valStr = tostring(val)
+                    if type(val) == "userdata" then
+                        local okn, full = pcall(function() return val:GetFullName() end)
+                        if okn then valStr = full end
+                    end
+                    say(string.format("      %s(%s) = %s", label, entryName, valStr))
+                end
+            end
+            tryGetter("GetValueAsBool", function() return bb:GetValueAsBool(entryName) end)
+            tryGetter("GetValueAsFloat", function() return bb:GetValueAsFloat(entryName) end)
+            tryGetter("GetValueAsInt", function() return bb:GetValueAsInt(entryName) end)
+            tryGetter("GetValueAsVector", function() return bb:GetValueAsVector(entryName) end)
+            tryGetter("GetValueAsRotator", function() return bb:GetValueAsRotator(entryName) end)
+            tryGetter("GetValueAsString", function() return bb:GetValueAsString(entryName) end)
+            tryGetter("GetValueAsName", function() return bb:GetValueAsName(entryName) end)
+            tryGetter("GetValueAsObject", function() return bb:GetValueAsObject(entryName) end)
+            tryGetter("GetValueAsClass", function() return bb:GetValueAsClass(entryName) end)
+            tryGetter("GetValueAsEnum", function() return bb:GetValueAsEnum(entryName) end)
+        end
+    end
+    return true
+end
+
+-- Spawner.TestDumpCrewComponents(say) -- "lbtestcrewcomponents" (2026-09-09), PURE READ. Follow-up
+-- to lbteststatetree: the controller side (AIControllerClass, StateTreeComponent.Params, AIPawnParams
+-- identity) is now confirmed byte-identical between our blank class and a real, actively-wandering
+-- Gatherer. The remaining candidate is something on the PAWN itself the StateTree checks before
+-- deciding to wander -- ScenarioCrewActorComponent's own name strongly suggests exactly a
+-- job/schedule/home assignment a real citizen has and a manually-spawned one might not. Dumps
+-- ScenarioCrewActorComponent, FactionComponent, and OwnershipComponent's own full property lists
+-- (only their EXISTENCE as references has ever been shown before, never their own internal data) --
+-- run on the real Gatherer for a baseline, then on our test class, and diff.
+function Spawner.TestDumpCrewComponents(say)
+    say = say or function(m) print("[LivingBase] [test-crewcomp] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
+        return false
+    end
+    local actorFullName = "?"
+    pcall(function() actorFullName = actor:GetFullName() end)
+    say("actor: " .. actorFullName)
+    for _, compName in ipairs({ "ScenarioCrewActorComponent", "FactionComponent", "OwnershipComponent", "R5AgentComponent", "MemoryComponent" }) do
+        local comp = nil
+        pcall(function() comp = actor[compName] end)
+        if comp then
+            dumpObjectProperties(comp, compName:upper())
+        else
+            say(compName .. " is nil on this actor.")
+        end
+    end
+    -- 2026-09-09 FOLLOW-UP: dumpObjectProperties only ever shows a struct-typed field's TYPE (e.g.
+    -- "ScriptStruct /Script/GameplayTags.GameplayTag"), never its actual VALUE -- CrewmemberType/
+    -- SpawnCrewState (both GameplayTag) and OwnerId (R5BLRecordId) were confirmed identical in TYPE
+    -- between a real Gatherer and this class, but their real VALUES were never actually compared.
+    -- Read directly here rather than via the file's own dumpNamedStruct helper (defined much later in
+    -- this file -- calling it from here would be exactly the forward-reference bug this project has a
+    -- standing rule against) -- both GameplayTag.TagName and R5BLRecordId.ID are plain fields, safe to
+    -- read via a direct dot-access pcall same as CustomizationRecordID.ID already does elsewhere.
+    local scac, fc, oc = nil, nil, nil
+    pcall(function() scac = actor.ScenarioCrewActorComponent end)
+    pcall(function() fc = actor.FactionComponent end)
+    pcall(function() oc = actor.OwnershipComponent end)
+    -- 2026-09-09 FIX: tostring() on these doesn't resolve them -- FNameUserdata/FString both need
+    -- their own :ToString() called explicitly (confirmed live: the first attempt printed raw
+    -- "FNameUserdata: 0x..."/"FString: 0x..." addresses instead of the actual value, same class of
+    -- thing NetDriverName shows unresolved elsewhere in a plain dumpObjectProperties walk -- only a
+    -- dedicated :ToString() call actually resolves it, matching how every other GameplayTag.TagName
+    -- read in this file's own probedump routine already does it).
+    local function readNameField(getter)
+        local v = nil
+        local ok = pcall(function() v = getter() end)
+        if not (ok and v) then return "<unreadable>" end
+        local ok2, s = pcall(function() return v:ToString() end)
+        return ok2 and s or tostring(v)
+    end
+    if scac then
+        say("ScenarioCrewActorComponent.CrewmemberType.TagName = " .. readNameField(function() return scac.CrewmemberType.TagName end))
+        say("ScenarioCrewActorComponent.SpawnCrewState.TagName = " .. readNameField(function() return scac.SpawnCrewState.TagName end))
+    end
+    if oc then
+        say("OwnershipComponent.OwnerId.ID = " .. readNameField(function() return oc.OwnerId.ID end))
+    end
+    return true
+end
+
+-- Spawner.TestDumpStateTree(say) -- "lbteststatetree" (2026-09-09), PURE READ. Pivot away from
+-- Blackboard: RedFalcon targeted a REAL, actively-wandering default Gatherer and got the identical
+-- "Blackboard missing" result lbtestblackboard already gave our blank class -- meaning Blackboard was
+-- never the right thing to look at for THIS controller at all. Its real brain is
+-- `BrainComponent = R5AIStateTreeComponent`, a modern Unreal State Tree -- a completely separate
+-- runtime data system from the classic Blackboard+BehaviorTree combo (State Trees generally don't use
+-- Blackboard; the property is just inherited dead weight from the base AIController class). Dumps the
+-- StateTreeComponent's own full property list instead, on whichever actor is currently targeted --
+-- run this on the REAL Gatherer FIRST for a known-working baseline, then on our test class, and diff.
+function Spawner.TestDumpStateTree(say)
+    say = say or function(m) print("[LivingBase] [test-statetree] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
+        return false
+    end
+    local actorFullName = "?"
+    pcall(function() actorFullName = actor:GetFullName() end)
+    say("actor: " .. actorFullName)
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not ctrl then
+        say("actor.Controller is nil.")
+        return false
+    end
+    local st = nil
+    pcall(function() st = ctrl.StateTreeComponent end)
+    if not st then pcall(function() st = ctrl.BrainComponent end) end
+    if not st then
+        say("Controller.StateTreeComponent/BrainComponent both nil.")
+        return false
+    end
+    dumpObjectProperties(st, "STATETREE")
+    -- 2026-09-09 FOLLOW-UP: StateTreeComponent.Params/SchemaClass were already confirmed identical to
+    -- a real Gatherer's -- but StateTreeRef (the struct actually holding the COMPILED tree asset
+    -- reference, distinct from the Params DataAsset) was only ever shown as a bare struct TYPE, never
+    -- its actual VALUE. Read StateTreeRef.StateTree directly -- if this is nil/None here but a real
+    -- asset on a working Gatherer, that's the actual missing link.
+    local stateTreeAsset = nil
+    local okRef = pcall(function() stateTreeAsset = st.StateTreeRef.StateTree end)
+    local stName = "<unreadable>"
+    if okRef and stateTreeAsset then
+        local okName, full = pcall(function() return stateTreeAsset:GetFullName() end)
+        -- 2026-09-09 FIX: a plain "pcall succeeded" check isn't enough -- GetFullName() can succeed
+        -- with no error AND still return nil, which the earlier version assigned straight into stName
+        -- unguarded, crashing this whole diagnostic on "attempt to concatenate a nil value" the
+        -- moment it happened live. Fall back explicitly when the returned value itself is falsy.
+        stName = (okName and full) or "<GetFullName returned nil>"
+    elseif okRef then
+        stName = "nil/None"
+    end
+    say("StateTreeRef.StateTree = " .. stName)
+    -- Also check whether the tree is actually RUNNING right now (not just configured) -- distinct
+    -- questions: "does it have the right asset" vs "did anything ever actually start it ticking".
+    for _, fname in ipairs({ "GetStateTreeRunStatus", "IsRunning", "GetRunStatus" }) do
+        local ok, res = pcall(function()
+            if fname == "GetStateTreeRunStatus" then return st:GetStateTreeRunStatus() end
+            if fname == "IsRunning" then return st:IsRunning() end
+            if fname == "GetRunStatus" then return st:GetRunStatus() end
+        end)
+        if ok then say(string.format("%s() = %s", fname, tostring(res))) end
+    end
+    return true
+end
+
+-- Spawner.TestDumpAIController(filterSubstring, say) -- "lbtestaicontroller [filterSubstring]"
+-- (2026-09-09), PURE READ. Built to chase "she's possessed by the real Handyman AIController with
+-- real AIPawnParams data, confirmed via readback, but still just stands idle" -- the exact same
+-- "lacks the worker data it needs" failure mode this project already hit once before (2026-07-07,
+-- re-skinned crew, never actually root-caused, only worked around). Dumps the CURRENT lbtestbodyswap
+-- actor's own Controller's full property list (looking for anything like a running/current
+-- behavior/state field that would reveal whether the StateTree/BT ever actually STARTED, as opposed
+-- to having data but never being activated) plus every declared function name on the controller AND
+-- on R5ArComponent (R5ActorRegistratorComponentDec2024 -- its name suggests a registration step real
+-- citizens might go through that a manually-spawned actor never gets), optionally filtered by a
+-- substring (e.g. "run"/"start"/"behavior"/"register"/"assign"/"home"/"work"/"job") to narrow a huge
+-- function list down to plausible candidates.
+function Spawner.TestDumpAIController(filterSubstring, say)
+    say = say or function(m) print("[LivingBase] [test-aicontroller] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
+        return false
+    end
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not (ctrl and ctrl:IsValid()) then
+        say("actor.Controller missing or invalid.")
+        return false
+    end
+    say("=== Controller properties ===")
+    dumpObjectProperties(ctrl, "AICONTROLLER")
+
+    local function dumpFunctions(obj, tag)
+        local cls
+        pcall(function() cls = obj:GetClass() end)
+        local names = {}
+        while cls and cls:IsValid() do
+            local className = "?"
+            pcall(function() className = cls:GetFName():ToString() end)
+            pcall(function()
+                cls:ForEachFunction(function(fn)
+                    local n = "?"
+                    pcall(function() n = fn:GetFName():ToString() end)
+                    if (not filterSubstring) or filterSubstring == "" or n:lower():find(filterSubstring:lower(), 1, true) then
+                        names[#names + 1] = string.format("%s (from %s)", n, className)
+                    end
+                end)
+            end)
+            local nextCls
+            pcall(function() nextCls = cls:GetSuperStruct() end)
+            cls = nextCls
+        end
+        table.sort(names)
+        say(string.format("=== %s functions (%d match%s) ===", tag, #names, filterSubstring and filterSubstring ~= "" and (" for '" .. filterSubstring .. "'") or ""))
+        for _, n in ipairs(names) do say("  " .. n) end
+    end
+    dumpFunctions(ctrl, "Controller")
+
+    local arComp = nil
+    pcall(function() arComp = actor.R5ArComponent end)
+    if arComp and arComp:IsValid() then
+        dumpFunctions(arComp, "R5ArComponent")
+    else
+        say("actor.R5ArComponent missing or invalid -- skipping its own function dump.")
+    end
     return true
 end
 
@@ -12279,6 +12591,26 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         end
     end
     classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
+    -- 2026-09-09 PRE-WARM: DONOR_INDEPENDENT_AI_PAWN_PARAMS's own asset gets resolved synchronously
+    -- inside the deferred pre-BeginPlay window (preFinishAIPawnParams, below) -- the exact same
+    -- single-LoadAsset-then-nothing-else window that already confirmed-cold-loaded twice tonight for
+    -- the mesh/skin-material references (this class never touches ANY family-specific content as a
+    -- side effect of spawning, so nothing else in the session has ever warmed this reference either).
+    -- Firing a throwaway resolveAsset here, well before the deferred window (which runs after AT
+    -- LEAST a 750ms despawn-settle delay on every swap after the first), gives LoadAsset a real
+    -- window to actually finish before the synchronous read that matters needs it.
+    local prewarmAIPP = DONOR_INDEPENDENT_AI_PAWN_PARAMS[classPath]
+    if prewarmAIPP then pcall(function() resolveAsset(prewarmAIPP) end) end
+    -- 2026-09-09 FIX (found via lbteststatetree diffed against a real Gatherer): her controller's own
+    -- StateTreeRef.StateTree -- a soft reference baked as a class default on the REAL, shared
+    -- BP_NPC_AIController_Handyman_C, not something we set ourselves -- came back with GetFullName()
+    -- returning nil and IsRunning()=false/GetStateTreeRunStatus()=4, vs. a real Gatherer's valid asset
+    -- reference and IsRunning()=true/status=0. Same cold-reference pattern as the mesh/skin-material
+    -- fix earlier tonight: this class never touches ANY Handyman-family content as a side effect of
+    -- spawning, so a soft reference nothing else in the session has warmed can still be unresolved by
+    -- the time the StateTreeComponent's own initialization needs it, even though it's a real, valid,
+    -- always-shipped asset. Pre-warm it the same way.
+    pcall(function() resolveAsset("/Game/Gameplay/Character/AI/NPC/Handyman/Base/Behavior/ST_Mob_Handyman_Worker_Calm_Unagressive.ST_Mob_Handyman_Worker_Calm_Unagressive") end)
     local sex = nil
     if type(sexArg) == "string" then
         local s = sexArg:lower()
@@ -12404,18 +12736,97 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         -- Handyman controller) -- setting AIPawnParams THERE means it's already in place before
         -- possession happens at all, the same timing guarantee that made the controller override work.
         local function preFinishAIPawnParams(a)
+            -- 2026-09-09 FIX (RedFalcon: "no change" after trying makeFriendly=true): lbtestcrewcomponents
+            -- diffed against a live, actively-wandering Gatherer found a REAL confirmed difference --
+            -- makeFriendly=true assigns FactionComponent.FactionsParams = DA_Player_Crew_Faction (the
+            -- PLAYER'S OWN crew faction), while a real citizen's own FactionsParams is DA_NPC_Faction
+            -- -- a completely different asset. makeFriendly was designed for the combat-crew "don't
+            -- attack me" use case, not citizen identity -- wrong tool for this. Assign the REAL
+            -- citizen faction directly instead, same pre-BeginPlay window (Master/OwnerId/
+            -- SpawnCrewState* on ScenarioCrewActorComponent were already confirmed IDENTICAL between
+            -- the two via the same diagnostic, so FactionsParams is the one real difference found so
+            -- far worth fixing).
+            local factionAsset = resolveAsset("/Game/Gameplay/Character/Common/Relationship/Params/DA_NPC_Faction.DA_NPC_Faction")
+            if factionAsset then
+                pcall(function()
+                    local fc = a.FactionComponent
+                    if fc and fc:IsValid() then fc.FactionsParams = factionAsset end
+                end)
+            end
+            -- 2026-09-09 FIX: lbtestcrewcomponents (extended to also dump R5AgentComponent/
+            -- MemoryComponent) found a real, confirmed difference beyond FactionsParams -- a real
+            -- Gatherer's R5AgentComponent.Params and MemoryComponent.Params both resolve to real,
+            -- properly-typed assets (R5AS_AgentParams/R5AS_MemoryParams respectively), while this
+            -- class's own read back as generic, unresolved "UObject:" wrappers -- same broken-
+            -- reference symptom already seen for StateTreeRef.StateTree. Both real assets live under
+            -- generic/shared paths (DA_Mob_DodoF_AgentParams, DA_AI_Memory under .../AIBaseLogic/) --
+            -- not Handyman-specific naming at all, strongly suggesting they're universal fallback
+            -- defaults any AI character uses rather than something donor-specific, safe to wire in
+            -- here the same way as AIPawnParams. This is the strongest remaining candidate for what
+            -- the StateTree actually needs before it can initialize/run at all.
+            local agentParamsAsset = resolveAsset("/Game/Gameplay/Character/AI/Mob/DodoF/Behavior/DA_Mob_DodoF_AgentParams.DA_Mob_DodoF_AgentParams")
+            if agentParamsAsset then
+                pcall(function()
+                    local agc = a.R5AgentComponent
+                    if agc and agc:IsValid() then agc.Params = agentParamsAsset end
+                end)
+            end
+            local memoryParamsAsset = resolveAsset("/Game/Gameplay/Character/AI/AIBaseLogic/Behavior/DA_AI_Memory.DA_AI_Memory")
+            if memoryParamsAsset then
+                pcall(function()
+                    local mc = a.MemoryComponent
+                    if mc and mc:IsValid() then mc.Params = memoryParamsAsset end
+                end)
+            end
             if not aiPawnParamsPath then return end
+            -- 2026-09-09 FIX: this had NO logging at all -- a silent resolveAsset failure here (the
+            -- same cold-load-race class of bug already confirmed twice tonight for the mesh/skin
+            -- material references, on a class that never touches ANY family-specific content as a
+            -- side effect of spawning) would look IDENTICAL to "wired correctly but the controller
+            -- just ignores it," and there'd be no way to tell them apart from the log. Making this
+            -- loud so the very next test settles which one it actually is.
             local asset = resolveAsset(aiPawnParamsPath)
+            always(string.format("preFinish AIPawnParams resolve: %s (%s)", asset and "ok" or "MISS", tostring(aiPawnParamsPath)))
             if asset then
-                pcall(function() a.AIPawnParams = asset end)
-                pcall(function() a.OverriddenAIPawnParams = asset end)
+                local ok1 = pcall(function() a.AIPawnParams = asset end)
+                local ok2 = pcall(function() a.OverriddenAIPawnParams = asset end)
+                -- 2026-09-09 FIX: a native "[push_weakobjectproperty] Operation::Set is not supported"
+                -- warning fired live during this exact write -- pcall reports "ok" regardless, since
+                -- nothing actually threw a Lua-level error; this UE4SS build's generic property
+                -- setter silently no-ops on a WeakObjectProperty instead of raising one.
+                -- OverriddenAIPawnParams' own naming strongly suggests it's declared as exactly that
+                -- (TWeakObjectPtr, a common convention for an optional non-owning override field) --
+                -- reading BOTH properties back immediately, same "don't trust ok, verify" discipline
+                -- already used for BodyTypeParams above, to find out which write (if either) actually
+                -- survived rather than trusting the pcall result.
+                local backAI, backOverr = nil, nil
+                pcall(function() backAI = a.AIPawnParams end)
+                pcall(function() backOverr = a.OverriddenAIPawnParams end)
+                local function shortName(o)
+                    if not o then return "nil" end
+                    local ok, full = pcall(function() return o:GetFullName() end)
+                    return ok and full or "<unreadable>"
+                end
+                always(string.format("preFinish AIPawnParams write: AIPawnParams=%s OverriddenAIPawnParams=%s -- READBACK AIPawnParams=%s OverriddenAIPawnParams=%s",
+                    ok1 and "ok" or "FAILED", ok2 and "ok" or "FAILED", shortName(backAI), shortName(backOverr)))
             end
         end
+        -- 2026-09-09: makeFriendly=true (tried above this comment in an earlier pass) made NO
+        -- difference and, per lbtestcrewcomponents, was actively wrong -- it assigns the PLAYER'S OWN
+        -- crew faction, not a citizen's. Reverted to false (matches every other donor swap); the real
+        -- faction fix now happens directly in preFinishAIPawnParams above instead.
         local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, preFinishAIPawnParams, aiControllerOverride, yaw, false, compositeLook, nil, false)
         if not (actor and actor:IsValid()) then
             say("Spawn FAILED.")
             return false
         end
+        -- 2026-09-09 TRIED AND REVERTED: delaying SetAILogic(false) by 2000ms (to test whether
+        -- StopLogic() interrupts the StateTree's own first-time init) crashed live -- a NEW, THIRD
+        -- crash signature this session, inside UE4SS.dll itself (not the game engine, unlike the
+        -- earlier two SetAnimInstanceClass crashes), most likely the `actor` reference held across the
+        -- async delay window, or the StateTree genuinely running unfrozen for the first time on this
+        -- class hitting something else broken. NOT SAFE TO RETRY -- back to the original immediate
+        -- freeze. The "does StopLogic() interrupt init" theory remains untested, not disproven.
         pcall(function() Spawner.SetAILogic(actor, false) end)
         if aiPawnParamsPath then
             -- Also re-apply post-spawn as a harmless belt-and-suspenders write, in case the

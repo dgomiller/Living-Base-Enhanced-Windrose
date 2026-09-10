@@ -8076,6 +8076,93 @@ else
     log("lbtoggleswapai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestaicontroller [filterSubstring]" (2026-09-09) -- PURE READ. Dumps the current
+-- lbtestbodyswap actor's Controller properties + function list, plus R5ArComponent's own function
+-- list, built to chase the "possessed correctly, real AIPawnParams, still just stands idle" mystery.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestaicontroller", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-aicontroller] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function()
+                local filter = Parameters and Parameters[1]
+                Spawner.TestDumpAIController(filter, say)
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestaicontroller [filterSubstring]")
+    registerCmdInfo("lbtestaicontroller", "lbtestaicontroller [filterSubstring]", "PURE READ: dumps the current lbtestbodyswap actor's Controller properties + functions (and R5ArComponent's functions), optionally filtered by substring.")
+else
+    log("lbtestaicontroller unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestblackboard" (2026-09-09) -- PURE READ. Dumps the current lbtestbodyswap
+-- actor's Blackboard declared keys + their current values -- built to chase the "possessed
+-- correctly, real AIPawnParams, still just stands idle" mystery one level deeper than
+-- lbtestaicontroller (which confirmed the AI infrastructure itself is genuinely present and valid).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestblackboard", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-blackboard] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDumpBlackboard(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestblackboard")
+    registerCmdInfo("lbtestblackboard", "lbtestblackboard", "PURE READ: dumps the current lbtestbodyswap actor's Blackboard declared keys and their current values.")
+else
+    log("lbtestblackboard unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbteststatetree" (2026-09-09) -- PURE READ. Dumps the current target's own
+-- StateTreeComponent properties -- the real brain for this AIController, not the leftover Blackboard.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbteststatetree", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-statetree] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDumpStateTree(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbteststatetree")
+    registerCmdInfo("lbteststatetree", "lbteststatetree", "PURE READ: dumps the current target's own StateTreeComponent properties.")
+else
+    log("lbteststatetree unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcrewcomponents" (2026-09-09) -- PURE READ. Dumps the current target's own
+-- ScenarioCrewActorComponent/FactionComponent/OwnershipComponent properties -- run on a real Gatherer
+-- for a baseline, then on our test class, and diff.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcrewcomponents", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-crewcomp] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDumpCrewComponents(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcrewcomponents")
+    registerCmdInfo("lbtestcrewcomponents", "lbtestcrewcomponents", "PURE READ: dumps the current target's ScenarioCrewActorComponent/FactionComponent/OwnershipComponent properties.")
+else
+    log("lbtestcrewcomponents unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 ------------------------------------------------------------
 local pendingNudge = nil
 if RegisterConsoleCommandHandler then

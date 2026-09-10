@@ -4979,29 +4979,85 @@ Baked `(0, 0, -96)` onto the same CDO the exact same way as `AnimClass` (a plain
 this time -- no import-table complexity needed at all, since it's not a reference). **Confirmed LIVE**:
 no longer floating.
 
-**AI/wander behavior, a bonus check beyond the actual goal, remains genuinely unsolved -- explicitly
-NOT required for the actual Barbie photo-capture workflow (which freezes AI on every spawn anyway).**
-RedFalcon asked, out of curiosity once appearance was fully fixed, whether re-enabling AI
-(`Spawner.SetAILogic(actor, true)`, exposed via a new `lbtoggleswapai <on|off>` test command) would
-make her actually walk/wander like a real Handyman-brain citizen. She just stands idle. Two real
-attempts, both plausible, neither worked:
-1. Wiring the real `AIControllerClass` (`Config.HANDYMAN_AI_CLASS`, the same brain that already proves
-   citizens wander+idle-sit elsewhere in this project) alone -- confirmed possessing her correctly
-   (`AIControllerClass override set`, and a probedump showed a real `BP_NPC_AIController_Handyman_C`
-   instance as her `Controller`), but no behavior on its own.
-2. Adding the matching `AIPawnParams` (`DA_NPC_Handyman_AIPawnParams`, found live via
-   `lbtestlistclass` the same way every other real asset path this session was found) -- first applied
-   post-spawn (no effect, and on reflection likely too late: a controller plausibly reads/caches this
-   data once at possession time, which by then had already happened), then moved into the SAME
-   pre-`BeginPlay` deferred window the AIControllerClass override itself uses (proven timing-correct
-   for that write) -- still no effect.
-Not yet investigated: whatever else a real wandering citizen has that this class doesn't (a Blackboard
-asset reference, a NavMesh-proximity or faction/ownership gate the controller's own StateTree checks
-before deciding to wander, something on the `R5AS_AgentComponent`/`MemoryComponent` pair that's part of
-the composite AI/perception stack but was never populated). Given this is explicitly not needed for the
-actual goal, this is a real, open, DEFERRED item -- not a dead end, just not pursued further tonight.
+**AI/wander behavior turned into its own deep sub-investigation, later in the same night -- RedFalcon
+corrected the record: walking is a REQUIRED part of the final product, not a bonus curiosity ("the
+photos are not the final product, just incidental").** Confirmed possessing correctly
+(`AIControllerClass override set`, a real `BP_NPC_AIController_Handyman_C` instance as `Controller`)
+early on, but she just stands idle with AI unfrozen. A long diagnostic chase, each step built as a
+new PURE-READ console command (`lbtestaicontroller`, `lbtestblackboard`, `lbteststatetree`,
+`lbtestcrewcomponents`), diffed live side by side against a real, actively-wandering Gatherer
+(targeted via the existing probe-lock tooling) rather than reasoned about from documentation:
 
-**Overall status: the actual goal, stated plainly at the top of this whole section, is now FULLY MET.**
+1. **Blackboard was a dead end by design, not a bug.** `Controller.Blackboard` read as generic,
+   untyped "UObject:" wrappers whose `:IsValid()` calls were themselves unreliable (this UE4SS
+   binding doesn't support `:IsValid()` on every property-read wrapper shape -- confirmed by checking
+   `dumpObjectProperties`' own read path, which never calls it, only `:GetFullName()`). Fixed the
+   diagnostic (plain nil checks instead), but the deeper finding held on the REAL Gatherer too:
+   Blackboard was never the right thing to look at at all. This controller's actual brain is
+   `BrainComponent = R5AIStateTreeComponent` -- a modern Unreal State Tree, which doesn't use the
+   classic Blackboard+BehaviorTree system Blackboard belongs to; the property is just inherited dead
+   weight from the base `AIController` class.
+2. **StateTreeComponent's own `Params`/`SchemaClass` (a `R5AIStateTreeComponentParams` DataAsset,
+   `DA_NPC_Handyman_StateTreeParams`) were confirmed BYTE-IDENTICAL to the real Gatherer's**, since both
+   use the exact same real, shared `BP_NPC_AIController_Handyman_C` class -- ruling the controller's
+   own class-default configuration out entirely as a source of difference.
+3. **The actual, definitive finding**: `StateTreeComponent.StateTreeRef.StateTree` (the COMPILED tree
+   asset reference itself, a separate struct field from `Params`) read back with `:GetFullName()`
+   returning nil, `GetStateTreeRunStatus() = 4`, `IsRunning() = false` -- versus the real Gatherer's
+   valid asset reference (`ST_Mob_Handyman_Worker_Calm_Unagressive`), status `0`, `IsRunning() = true`.
+   **Her StateTree genuinely never starts running at all** -- this was never a "decides not to wander"
+   problem, it's "the underlying tree literally isn't ticking."
+4. Pre-warming the StateTree asset itself (`resolveAsset`, same cold-load-race fix already used twice
+   tonight for the mesh/skin material) made NO difference -- ruling out a simple cold-package-load
+   explanation.
+5. **A second real, confirmed data gap found via `lbtestcrewcomponents`** (extended to also dump
+   `R5AgentComponent`/`MemoryComponent`, beyond its original `ScenarioCrewActorComponent`/
+   `FactionComponent`/`OwnershipComponent` scope): both `R5AgentComponent.Params` and
+   `MemoryComponent.Params` read as unresolved generic `UObject:` wrappers on this class, versus real,
+   properly-typed assets (`DA_Mob_DodoF_AgentParams`, `DA_AI_Memory`) on the Gatherer -- both living
+   under generic/shared paths, not Handyman-specific naming, strongly suggesting universal AI-agent
+   defaults rather than donor-specific content. Wired both in via the same pre-`BeginPlay` window as
+   `AIPawnParams` -- confirmed via readback that both now correctly resolve, matching the Gatherer.
+   **Did NOT fix `StateTreeRef.StateTree` or `IsRunning()`** -- still nil/false afterward, unchanged.
+   (`FactionComponent.FactionsParams` was ALSO found and fixed the same way earlier in this chase:
+   `makeFriendly=true`, tried as an early guess, assigns `DA_Player_Crew_Faction` -- the PLAYER'S OWN
+   crew faction, wrong tool entirely for citizen identity -- reverted, and `DA_NPC_Faction`, the real
+   citizen faction, assigned directly instead.)
+6. **A fourth crash, a genuinely different signature from the earlier two**: tested whether
+   `Spawner.SetAILogic(actor, false)` -- called within milliseconds of every spawn, to freeze AI for
+   photo capture -- interrupts the StateTree's own first-time initialization before it finishes, by
+   delaying the freeze 2000ms instead of calling it immediately. **Crashed live**, this time inside
+   `UE4SS.dll` itself (not the game engine, unlike the two earlier `SetAnimInstanceClass` crashes) --
+   she spawned in fine, then crashed a few seconds later, right around when the StateTree would have
+   first started actually ticking. Reverted immediately back to the original immediate freeze (safe,
+   confirmed working). The theory (freezing too early corrupts first-time StateTree init) remains
+   UNTESTED, not disproven -- the test itself crashed before it could give a clean answer either way.
+**Current best understanding, not yet confirmed**: `StateTreeRef.StateTree` is a property on the REAL,
+shared `BP_NPC_AIController_Handyman_C` class -- not something this project owns, edits, or sets
+itself. It resolves correctly on a real donor's own controller instance but is persistently broken
+specifically for an actor spawned via `SpawnActor` at runtime, regardless of what other correct data
+surrounds it. Neither asset pre-warming nor fixing sibling component data changed it. Leading theory:
+this may be tied to the engine's own level-load/batch-population process resolving soft references in
+a way an individual runtime `SpawnActor` call never triggers -- a genuinely structural difference, not
+a missing-field bug, and possibly beyond what pure Lua reflection can reach at all (the failure lives
+inside compiled engine code, with no symbols on either binary to trace further).
+**Explicitly reconsidered and rejected as a fallback**: reusing a real donor's own class (the original
+pre-this-whole-section "Barbie" approach) is NOT a clean, safe alternative -- the same donor-Blueprint
+clothes+gender-swap combination already crashed repeatedly earlier the same night (Woodman, then
+BlackAxel; see this section's own opening), which is why the from-scratch class was built in the first
+place, and it constrains body-shape options to whatever a given donor's own archetype allows. Neither
+path is currently both safe AND complete for walking specifically -- explicitly PAUSED (not abandoned)
+at RedFalcon's own call, to resume with fresh eyes.
+**Real, reusable tools now in place for picking this back up**: `lbtestaicontroller [filter]`,
+`lbtestblackboard`, `lbteststatetree`, `lbtestcrewcomponents`, `lbtoggleswapai <on|off>` -- all pure-read
+except the toggle, all built around `resolveTestDiagActor()` (falls back from `Spawner._bodySwapActor`
+to `Spawner._lastProbedActor`, since a `lbreload` resets the former to nil even though the actual actor
+survives) so they work on ANY currently-targeted actor, not just the current body-swap subject --
+already proven useful for direct A/B comparison against a real donor targeted via the existing
+probe-lock tooling.
+
+**Overall status: the STATIC appearance goal, stated plainly at the top of this whole section, is now
+FULLY MET; AI/walking is a real, required, currently-open item, explicitly paused for tonight.**
 A genuinely new, donor-independent NPC class spawns visible, correctly sexed/dressed, animated, and
 grounded -- confirmed live, repeatedly, with no crashes. Every gap chased across this entire section
 (empty mesh, cold-load timing, sex resolution, two separate crash dead ends, and finally animation +

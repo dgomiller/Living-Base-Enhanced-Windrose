@@ -8020,6 +8020,62 @@ else
     log("lbwhereami unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestmovement" (2026-09-09) -- PURE READ. Dumps Spawner._bodySwapActor's own
+-- CharacterMovement properties, built to chase the from-scratch class's remaining "floating" symptom
+-- once animation (baked AnimClass, see WINDROSE_MODDING_NOTES.md 19x) was confirmed fixed.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmovement", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-movement] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDumpMovement(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmovement")
+    registerCmdInfo("lbtestmovement", "lbtestmovement", "PURE READ: dumps the current lbtestbodyswap actor's CharacterMovement properties (GravityScale, MovementMode, etc.) -- built to chase the from-scratch class's floating symptom.")
+else
+    log("lbtestmovement unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtoggleswapai <on|off>" (2026-09-09) -- toggles AI logic on the CURRENT lbtestbodyswap
+-- actor (Spawner._bodySwapActor) without respawning it, via the same Spawner.SetAILogic(actor, on)
+-- mechanism lbtestbodyswap itself already calls with `false` right after every spawn (frozen for
+-- photo capture). Built specifically to check whether the from-scratch class, now that visibility/
+-- sex/animation/grounding are all confirmed fixed, actually WALKS/behaves once its AI is allowed to
+-- run -- the real Handyman AIController wired in via DONOR_INDEPENDENT_AI_CONTROLLER should now have
+-- a fully correct, grounded, animated pawn to actually drive.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtoggleswapai", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [toggle-swap-ai] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function()
+                local arg = Parameters and Parameters[1] and Parameters[1]:lower()
+                local on = (arg == "on" or arg == "true" or arg == "1")
+                local actor = Spawner._bodySwapActor
+                if not (actor and actor:IsValid()) then
+                    say("no current lbtestbodyswap actor -- spawn one first.")
+                    return
+                end
+                local result = Spawner.SetAILogic(actor, on)
+                say(string.format("SetAILogic(%s) -> %s", on and "true" or "false", tostring(result)))
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtoggleswapai <on|off>")
+    registerCmdInfo("lbtoggleswapai", "lbtoggleswapai <on|off>", "Toggles AI logic on the current lbtestbodyswap actor without respawning it -- check whether a from-scratch class actually walks/behaves once unfrozen.")
+else
+    log("lbtoggleswapai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 ------------------------------------------------------------
 local pendingNudge = nil
 if RegisterConsoleCommandHandler then

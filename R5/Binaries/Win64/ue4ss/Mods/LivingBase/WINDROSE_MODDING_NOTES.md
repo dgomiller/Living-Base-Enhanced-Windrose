@@ -4906,3 +4906,109 @@ fixes, safe to build on. The AI-controller wiring itself (`DONOR_INDEPENDENT_AI_
 own merits regardless of the animation dead end. Animation via `SetAnimInstanceClass` is now a
 confirmed-twice dead end, not merely unattempted; the bare-property-write fallback is the one
 concretely untested next idea. Floating/grounding remains completely uninvestigated.
+
+**THE REAL BREAKTHROUGH, same night: both animation and floating fixed for good, via the Editor, not
+runtime Lua at all.** The bare-property-write idea above was tried and also confirmed dead --
+`mesh.AnimClass = cls` (skipping `SetAnimInstanceClass` entirely) doesn't crash, but doesn't build an
+AnimInstance either (`GetAnimInstance()` stayed nil, still T-posing): instance construction only ever
+happens once, during component registration/`BeginPlay`, which already ran with `AnimClass=None` for
+this class. There is no safe RUNTIME mechanism left to try -- the fix had to happen before the object
+is ever constructed, at author time.
+
+**Key discovery that made this cheap instead of requiring a C++ recompile**: `Mesh` is not one of
+`AR5AICharacter`'s own custom components -- it's inherited from Unreal's own `ACharacter` base class,
+which creates it (as `CharacterMesh0`) unconditionally in its OWN constructor, regardless of what a
+subclass's constructor does. Checked directly via a pure-read Python script
+(`diag_check_mesh_cdo.py`) against our from-scratch stub's own compiled CDO in the Editor, with NO
+recompile at all: `Mesh` already existed, fully valid, and `AnimationMode` was already
+`ANIMATION_BLUEPRINT` by default. Only `AnimClass` itself was `None`. This meant the fix was a pure
+content change (bake one property), not a code change.
+
+**Baking `AnimClass` hit a real, structurally different wall than every prior retarget in this
+project**: `TSubclassOf<UAnimInstance>` is a HARD CLASS reference, and our SDK-stub Editor project has
+no access to the actual Windrose AnimBlueprint asset (same fundamental limitation as everything else in
+this doc -- only header stubs, never real `.uasset` content). Every PRIOR retarget in this project's
+history (body meshes, skin materials, DataAsset piece references) only ever touched a
+`SoftObjectPropertyData` value in place -- a single field write, no import-table involvement. A class
+reference has no such simple path: it resolves through the package's own IMPORT TABLE. Fix, proven live
+for the first time:
+1. Add one trivial placeholder `UCLASS() class UR5PlaceholderAnimInstance : public UAnimInstance` to
+   the project's existing placeholder-types file (same file already holding 38 other such stubs) --
+   `UAnimInstance` lives in the `Engine` module, already a dependency, so this compiled in ~10 seconds,
+   no new build config needed.
+2. Bake it as `Mesh.AnimClass` on the Blueprint's own CDO via Python (`get_editor_property`/
+   `set_editor_property` on the component object itself, then `compile_blueprint`+`save_loaded_asset`)
+   -- confirmed the override survives a Blueprint recompile by re-reading it fresh off the generated
+   class immediately after, settling an old open question from earlier in this project (whether a
+   property override on an INHERITED, not Blueprint-added, component genuinely persists as a per-
+   Blueprint default).
+3. Cook the single package as usual.
+4. **New technique**: retarget the CLASS reference on the COOKED output. Inspected the cooked
+   `.uasset`'s own export data directly (via the project's existing UAssetAPI Python helper) and found
+   `AnimClass` serializes as `ObjectPropertyData` whose `Value` is an `FPackageIndex` pointing at an
+   Import table entry for the placeholder class. Rather than editing that import in place (risky --
+   other exports in the same package reference other entries in the same table by position), ADDED two
+   new imports at the end of the table instead: one `Package`-type import for the real destination
+   asset's package path, and one `BlueprintGeneratedClass`-type import for its generated class, parented
+   to that package import (`FPackageIndex.FromImport`, UAssetAPI's own helper for building the right
+   negative index). Repointed the property's own `FPackageIndex` at the new class import, wrote, and
+   verified by reloading the file fresh. **Confirmed structurally valid via `retoc info`, and confirmed
+   LIVE**: after packaging and installing, animation played correctly with ZERO runtime Lua
+   intervention needed at all -- the "no AnimInstance" check-and-fix code path never even fired,
+   because there was nothing left to fix.
+5. Package + install exactly as before (§9). One real gotcha hit: re-cooking a package OVERWRITES the
+   import-table retarget from a previous packaging pass -- if a second bug is found after the first
+   fix and the source Blueprint needs another property change, the class-reference retarget has to be
+   RE-APPLIED to the fresh cook before packaging, every time. (Also hit, unrelated to the technique
+   itself: installing over a pak the game currently has open fails with "Device or resource busy" --
+   close the game fully before overwriting an installed `.utoc`/`.ucas` pair, the same class of gotcha
+   as every other live-file-lock issue in this project.)
+
+**Floating, once animation was confirmed fixed, turned out to be a completely separate, much simpler
+bug of the exact same shape.** A new pure-read diagnostic (`lbtestmovement`, dumps
+`CharacterMovement`'s full property list on the current test actor) showed the movement component's
+own tuning was entirely normal -- `GravityScale=1.0`, `MovementMode=1` (Walking, meaning the CAPSULE
+already believed it was correctly grounded). That pointed away from physics and at the MESH's own
+render offset instead: `Mesh.RelativeLocation` read `(0,0,0)`, with the actor's own world Z and the
+mesh's own world Z confirmed identical (zero offset). The standard `ACharacter` idiom -- used by
+virtually every character Blueprint that has ever shipped, and matching this project's own
+independently-confirmed `CapsuleComponent` half-height of exactly `96.0` -- is
+`Mesh.RelativeLocation.Z = -CapsuleHalfHeight`, moving the mesh's pivot down to the capsule's BASE
+instead of its center, so the character's feet touch the ground the capsule is already resting on.
+Baked `(0, 0, -96)` onto the same CDO the exact same way as `AnimClass` (a plain `FVector` property
+this time -- no import-table complexity needed at all, since it's not a reference). **Confirmed LIVE**:
+no longer floating.
+
+**AI/wander behavior, a bonus check beyond the actual goal, remains genuinely unsolved -- explicitly
+NOT required for the actual Barbie photo-capture workflow (which freezes AI on every spawn anyway).**
+RedFalcon asked, out of curiosity once appearance was fully fixed, whether re-enabling AI
+(`Spawner.SetAILogic(actor, true)`, exposed via a new `lbtoggleswapai <on|off>` test command) would
+make her actually walk/wander like a real Handyman-brain citizen. She just stands idle. Two real
+attempts, both plausible, neither worked:
+1. Wiring the real `AIControllerClass` (`Config.HANDYMAN_AI_CLASS`, the same brain that already proves
+   citizens wander+idle-sit elsewhere in this project) alone -- confirmed possessing her correctly
+   (`AIControllerClass override set`, and a probedump showed a real `BP_NPC_AIController_Handyman_C`
+   instance as her `Controller`), but no behavior on its own.
+2. Adding the matching `AIPawnParams` (`DA_NPC_Handyman_AIPawnParams`, found live via
+   `lbtestlistclass` the same way every other real asset path this session was found) -- first applied
+   post-spawn (no effect, and on reflection likely too late: a controller plausibly reads/caches this
+   data once at possession time, which by then had already happened), then moved into the SAME
+   pre-`BeginPlay` deferred window the AIControllerClass override itself uses (proven timing-correct
+   for that write) -- still no effect.
+Not yet investigated: whatever else a real wandering citizen has that this class doesn't (a Blackboard
+asset reference, a NavMesh-proximity or faction/ownership gate the controller's own StateTree checks
+before deciding to wander, something on the `R5AS_AgentComponent`/`MemoryComponent` pair that's part of
+the composite AI/perception stack but was never populated). Given this is explicitly not needed for the
+actual goal, this is a real, open, DEFERRED item -- not a dead end, just not pursued further tonight.
+
+**Overall status: the actual goal, stated plainly at the top of this whole section, is now FULLY MET.**
+A genuinely new, donor-independent NPC class spawns visible, correctly sexed/dressed, animated, and
+grounded -- confirmed live, repeatedly, with no crashes. Every gap chased across this entire section
+(empty mesh, cold-load timing, sex resolution, two separate crash dead ends, and finally animation +
+floating) traced back to the exact same root cause every time: a real donor's own class defaults supply
+a pile of "free" native setup that a from-scratch class simply doesn't have, and each one needed finding
+and supplying explicitly, either at runtime (mesh, sex, AI-controller class) or, once runtime hit a
+genuine wall, by baking it directly onto the Blueprint's own class defaults in the Editor (AnimClass,
+Mesh offset) -- a technique now proven twice, including for a class reference for the first time ever
+in this project. Wander/AI behavior is the one remaining loose end, explicitly non-blocking for the
+actual use case.

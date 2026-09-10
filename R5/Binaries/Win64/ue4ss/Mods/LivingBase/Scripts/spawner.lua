@@ -3027,7 +3027,19 @@ end
 -- AnimClass property assignment if that call isn't exposed in this UE4SS build -- both classes
 -- probed so far already use AnimationMode=BlueprintMode, so a plain property set should still
 -- take effect for them even without the UFUNCTION rebuilding anything.
-function Spawner.SetAnimClass(actor, animClassPath)
+-- skipForceRebuild (2026-09-09, added after BP_BarbieR5Char_Test's own AnimClass crash): when true,
+-- go straight to the bare `mesh.AnimClass = cls` property write and never call
+-- SetAnimInstanceClass at all. The two live crashes chasing that class's T-pose (identical exception
+-- address both times, under two different AIController states -- see WINDROSE_MODDING_NOTES.md 19x)
+-- happened inside SetAnimInstanceClass itself, before pcall's own fallback to the plain property
+-- write ever got a chance to run (a hard native access violation isn't a catchable Lua error, so the
+-- "if not ok" branch below never actually executes on a crash -- the whole process goes down first).
+-- This flag lets a caller that already knows SetAnimInstanceClass is unsafe for its specific actor
+-- skip straight to the untested, structurally different mechanism, without changing default
+-- behavior for every other existing caller (the statue pose-porting use case, item 54, already
+-- proved the property write alone is sufficient once AnimationMode is BlueprintMode -- the crash
+-- risk is specific to the forced-rebuild call, not to this mechanism ever having failed on its own).
+function Spawner.SetAnimClass(actor, animClassPath, skipForceRebuild)
     if not (actor and actor:IsValid()) then return false end
     local mesh = nil
     pcall(function() mesh = actor.Mesh end)
@@ -3037,11 +3049,29 @@ function Spawner.SetAnimClass(actor, animClassPath)
         print("[LivingBase] SetAnimClass: could not resolve " .. tostring(animClassPath) .. "\n")
         return false
     end
-    local ok = pcall(function() mesh:SetAnimInstanceClass(cls) end)
-    if not ok then
+    local ok
+    if skipForceRebuild then
+        -- 2026-09-09 FOLLOW-UP: a bare AnimClass write alone was confirmed live to NOT actually build
+        -- an AnimInstance (GetAnimInstance() still nil afterward, still T-posing) -- expected, since
+        -- instance creation normally only happens once, during component registration/BeginPlay,
+        -- which already ran with AnimClass=None. Also force AnimationMode to BlueprintMode (0) in
+        -- case the component was never even in the right mode to begin with (another "free" default
+        -- a real donor's class provides that a blank class doesn't) -- cheap, same risk class as the
+        -- property write itself (a plain property set, not a function call), worth trying before a
+        -- much bigger Editor-side fix. Read GetAnimInstance() back immediately after so the log
+        -- settles definitively whether this did anything, rather than needing another visual check.
+        pcall(function() mesh.AnimationMode = 0 end)
         ok = pcall(function() mesh.AnimClass = cls end)
+        local instAfter = nil
+        pcall(function() instAfter = mesh:GetAnimInstance() end)
+        print(string.format("[LivingBase] SetAnimClass: AnimInstance after bare write+AnimationMode=0: %s\n", (instAfter and instAfter:IsValid()) and "PRESENT" or "still nil"))
+    else
+        ok = pcall(function() mesh:SetAnimInstanceClass(cls) end)
+        if not ok then
+            ok = pcall(function() mesh.AnimClass = cls end)
+        end
     end
-    print(string.format("[LivingBase] SetAnimClass: %s -> %s\n", ok and "ok" or "FAILED", tostring(animClassPath)))
+    print(string.format("[LivingBase] SetAnimClass: %s -> %s%s\n", ok and "ok" or "FAILED", tostring(animClassPath), skipForceRebuild and " (bare property write, SetAnimInstanceClass skipped)" or ""))
     return ok
 end
 
@@ -3693,6 +3723,62 @@ local function dumpObjectProperties(obj, tag)
         pcall(function() nextCls = cls:GetSuperStruct() end)
         cls = nextCls
     end
+end
+
+-- Spawner.TestDumpMovement(say) -- "lbtestmovement" (2026-09-09), PURE READ. Built specifically to
+-- chase the from-scratch class's own "floating" symptom: animation is now fixed (baked AnimClass, see
+-- WINDROSE_MODDING_NOTES.md 19x), leaving floating as the one remaining gap. Dumps
+-- Spawner._bodySwapActor's own CharacterMovement component's full property list via the existing
+-- dumpObjectProperties walk -- same mechanism already proven safe for Mesh/AnimInstance dumps.
+-- Specifically want GravityScale (0 would explain never falling), MovementMode/
+-- DefaultLandMovementMode (a non-Walking/Falling mode would explain it too), and
+-- bRunPhysicsWithNoController (movement/gravity ticking could depend on this once the AIController's
+-- own StopLogic() -- called by Spawner.SetAILogic(actor,false) on every test spawn -- takes effect).
+function Spawner.TestDumpMovement(say)
+    say = say or function(m) print("[LivingBase] [test-movement] " .. tostring(m) .. "\n") end
+    local actor = Spawner._bodySwapActor
+    if not (actor and actor:IsValid()) then
+        say("no current lbtestbodyswap actor (Spawner._bodySwapActor) -- spawn one first.")
+        return false
+    end
+    local move = nil
+    pcall(function() move = actor.CharacterMovement end)
+    if not (move and move:IsValid()) then
+        say("actor.CharacterMovement missing or invalid.")
+        return false
+    end
+    local loc = nil
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    say(string.format("actor location: %s", loc and string.format("(%.1f, %.1f, %.1f)", loc.X, loc.Y, loc.Z) or "?"))
+    -- 2026-09-09: MovementMode already reading "Walking" (not "Falling") with normal GravityScale
+    -- suggests the CAPSULE is already correctly grounded -- pointing at the MESH's own relative
+    -- offset instead (the standard ACharacter idiom: Mesh.RelativeLocation.Z is normally a NEGATIVE
+    -- offset, roughly -CapsuleHalfHeight, so the skeleton's feet align with the capsule's bottom; a
+    -- real donor's own Blueprint bakes this as a class default the same way it bakes AnimClass -- a
+    -- blank class defaulting to (0,0,0) would render the mesh floating at the capsule's CENTER
+    -- instead of its base, exactly matching this symptom).
+    local capsule, mesh = nil, nil
+    pcall(function() capsule = actor.CapsuleComponent end)
+    pcall(function() mesh = actor.Mesh end)
+    if capsule and capsule:IsValid() then
+        local halfHeight = nil
+        pcall(function() halfHeight = capsule:GetScaledCapsuleHalfHeight() end)
+        say(string.format("CapsuleComponent half-height: %s", tostring(halfHeight)))
+    end
+    if mesh and mesh:IsValid() then
+        local relLoc = nil
+        local ok1 = pcall(function() relLoc = mesh:GetRelativeLocation() end)
+        if not (ok1 and relLoc) then pcall(function() relLoc = mesh.RelativeLocation end) end
+        say(string.format("Mesh RelativeLocation: %s", relLoc and string.format("(%.2f, %.2f, %.2f)", relLoc.X, relLoc.Y, relLoc.Z) or "still unreadable"))
+        local worldLoc = nil
+        pcall(function() worldLoc = mesh:K2_GetComponentLocation() end)
+        say(string.format("Mesh WORLD location: %s", worldLoc and string.format("(%.2f, %.2f, %.2f)", worldLoc.X, worldLoc.Y, worldLoc.Z) or "?"))
+        if loc and worldLoc then
+            say(string.format("Mesh-vs-actor Z offset (the real 'floating' number, independent of RelativeLocation readability): %.2f", worldLoc.Z - loc.Z))
+        end
+    end
+    dumpObjectProperties(move, "MOVEMENT")
+    return true
 end
 
 -- Spawner.ProbeChestFX() -- TEMP DEV TOOL (2026-08-21). RedFalcon probed a real chest POI
@@ -11826,6 +11912,21 @@ local DONOR_INDEPENDENT_AI_CONTROLLER = {
     ["/Game/Mods/LivingBaseExtended/BP_BarbieR5Char_Test.BP_BarbieR5Char_Test_C"] = Config.HANDYMAN_AI_CLASS,
 }
 
+-- 2026-09-09: unfreezing this class's AI (Spawner.SetAILogic(actor, true), RedFalcon: "is it possible
+-- to turn it back on and check if she walks") showed her standing idle -- the AIControllerClass
+-- override above wires in the real "brain," but a brain with no behavior DATA to act on (wander
+-- radius, patrol points, etc.) has nothing to decide to do. Found the real Handyman AIPawnParams
+-- asset live via lbtestlistclass /Script/R5 R5AIPawnParams Handyman:
+-- DA_NPC_Handyman_AIPawnParams -- the exact data asset already proven (see Config.HANDYMAN_AI_CLASS's
+-- own header comment) to make a citizen wander AND idle-sit on furniture with this same controller.
+-- Applied via the existing, already-proven Spawner.SetAIPawnParams (sets both AIPawnParams and
+-- OverriddenAIPawnParams) -- a plain object-reference write, not a live-rebuild call like the
+-- crash-prone SetAnimInstanceClass, so this is expected to be safe post-spawn with no crash risk.
+local DONOR_INDEPENDENT_AI_PAWN_PARAMS = {
+    ["/Game/Mods/LivingBaseExtended/BP_BarbieR5Char_Test.BP_BarbieR5Char_Test_C"] =
+        "/Game/Gameplay/Character/AI/NPC/Handyman/Base/Behavior/DA_NPC_Handyman_AIPawnParams.DA_NPC_Handyman_AIPawnParams",
+}
+
 local function familySkinMaterialPath(family, sex)
     local entry = FAMILY_SKIN_MATERIAL[family]
     if not entry then return nil end
@@ -12026,22 +12127,20 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             end
         end)
         if not hasAnimInstance then
-            -- 2026-09-09 KNOWN-CRASH GUARD, RE-CONFIRMED, DO NOT RETRY AGAIN WITHOUT A DIFFERENT
-            -- MECHANISM: this call has now crashed live TWICE, at the IDENTICAL exception address
-            -- (EXCEPTION_ACCESS_VIOLATION in VCRUNTIME140.dll, offset 0x1dc1c both times -- confirmed
-            -- via parse_minidump.py) -- once with a generic /Script/AIModule.AIController, and once
-            -- AGAIN after wiring a real Config.HANDYMAN_AI_CLASS controller in pre-possess (confirmed
-            -- via a live debug print: "AIControllerClass override set" DID fire before the crash).
-            -- Two identical crashes under different controller states RULES OUT the AIController/
-            -- blackboard theory entirely -- this is not about what's possessing the pawn.
-            -- Spawner.SetAnimClass tries mesh:SetAnimInstanceClass(cls) first, falling back to a bare
-            -- mesh.AnimClass = cls property write only if that call's pcall returns false -- but a hard
-            -- native access violation isn't a normal Lua error pcall can trap or roll back from, so the
-            -- fallback path has never actually been tested in isolation. NOT SAFE TO RETRY blind a
-            -- third time via this same function. If animation is revisited, try the bare property
-            -- write directly (skip SetAnimInstanceClass's forced live-rebuild entirely) as a genuinely
-            -- different, untested mechanism -- not a third attempt at the one already disproven twice.
-            say("no AnimInstance running on actor.Mesh (raw T-pose) -- NOT applying StandingNPC AnimBlueprint: this exact call has now crashed live twice at the identical address, once with a generic AIController and once with a real one wired in pre-possess -- rules out the AIController theory entirely (see WINDROSE_MODDING_NOTES.md 19x). Left as T-pose (visible, no crash) pending a genuinely different mechanism.")
+            -- 2026-09-09: SetAnimInstanceClass (Spawner.SetAnimClass's own default path) has crashed
+            -- live TWICE at the IDENTICAL exception address (VCRUNTIME140.dll offset 0x1dc1c both
+            -- times, confirmed via parse_minidump.py) -- once with a generic AIController, once with a
+            -- real Config.HANDYMAN_AI_CLASS one confirmed wired in pre-possess. Rules out the
+            -- AIController/blackboard theory entirely; the crash is inside SetAnimInstanceClass's own
+            -- forced AnimInstance rebuild, not about what's possessing the pawn. NOT retrying that call
+            -- again. Trying the genuinely different, previously-untested mechanism instead: a bare
+            -- `mesh.AnimClass = cls` property write with SetAnimInstanceClass skipped entirely
+            -- (skipForceRebuild=true, added to Spawner.SetAnimClass for exactly this). Both crashes hit
+            -- inside SetAnimInstanceClass before pcall's own fallback to this exact write ever got a
+            -- chance to run (a hard native access violation isn't catchable), so this path has never
+            -- actually been exercised -- a real test, not a third attempt at the one already disproven.
+            say("no AnimInstance running on actor.Mesh (raw T-pose) -- SetAnimInstanceClass confirmed unsafe (crashed twice, identical address, see WINDROSE_MODDING_NOTES.md 19x); trying a bare AnimClass property write instead (skipForceRebuild) as a genuinely untested mechanism.")
+            Spawner.SetAnimClass(actor, STANDING_NPC_ANIM_CLASS, true)
         end
 
         if family and familyHandledByArchetype and hasBaseMesh then
@@ -12294,12 +12393,35 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
             classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
             atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
         local aiControllerOverride = DONOR_INDEPENDENT_AI_CONTROLLER[classPath]
-        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, aiControllerOverride, yaw, false, compositeLook, nil, false)
+        local aiPawnParamsPath = DONOR_INDEPENDENT_AI_PAWN_PARAMS[classPath]
+        -- 2026-09-09 FIX (RedFalcon: "no luck" -- unfrozen AI still just stood idle even with
+        -- AIPawnParams set via Spawner.SetAIPawnParams AFTER Spawn() returned). Likely cause: the
+        -- controller reads its pawn's AIPawnParams ONCE, at possession time (OnPossess/BeginPlay) --
+        -- which, by the time Spawn() has already returned the actor, has already happened. A post-hoc
+        -- write updates the property but not whatever the controller already cached from it. Moved
+        -- into the SAME deferred, pre-FinishSpawningActor preFinish window _DoEngineSpawn already uses
+        -- for the AIControllerClass override itself (confirmed working: she IS possessed by the real
+        -- Handyman controller) -- setting AIPawnParams THERE means it's already in place before
+        -- possession happens at all, the same timing guarantee that made the controller override work.
+        local function preFinishAIPawnParams(a)
+            if not aiPawnParamsPath then return end
+            local asset = resolveAsset(aiPawnParamsPath)
+            if asset then
+                pcall(function() a.AIPawnParams = asset end)
+                pcall(function() a.OverriddenAIPawnParams = asset end)
+            end
+        end
+        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, preFinishAIPawnParams, aiControllerOverride, yaw, false, compositeLook, nil, false)
         if not (actor and actor:IsValid()) then
             say("Spawn FAILED.")
             return false
         end
         pcall(function() Spawner.SetAILogic(actor, false) end)
+        if aiPawnParamsPath then
+            -- Also re-apply post-spawn as a harmless belt-and-suspenders write, in case the
+            -- controller actually reads it live rather than caching at possession time.
+            pcall(function() Spawner.SetAIPawnParams(actor, aiPawnParamsPath) end)
+        end
         Spawner._bodySwapActor = actor
 
         if sex or family or underwear then

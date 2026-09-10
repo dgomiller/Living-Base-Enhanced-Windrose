@@ -891,7 +891,12 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     local aiClass = nil
     if aiControllerClassPath then
         aiClass = resolveClass(aiControllerClassPath)
-        if not aiClass then log("AI override class unresolved: " .. aiControllerClassPath) end
+        -- 2026-09-09 FIX: this used gated log() -- silent under Config.VERBOSE=false (the project
+        -- default). A donor-independent class's own AI-controller override silently failing to
+        -- resolve, with ZERO trace anywhere (not even _DoEngineSpawn's own unconditional "override
+        -- set/FAILED" line, since that's gated behind `if aiClass then` and aiClass was nil), is
+        -- exactly the class of bug always() exists to prevent -- see always()'s own header comment.
+        if not aiClass then always("AI override class unresolved: " .. aiControllerClassPath) end
     end
 
     local loc, facingYaw
@@ -11803,6 +11808,24 @@ local ADVENTURER_ARCHETYPE_BY_SEX = {
 -- ITS use case).
 local STANDING_NPC_ANIM_CLASS = "/Game/Character/Animation_Blueprints/Human/Regular/Share_HumanAI/ABP_StandingNPC_Regular_AI.ABP_StandingNPC_Regular_AI_C"
 
+-- 2026-09-09: a from-scratch/donor-independent class's own Controller reads as a plain generic
+-- /Script/AIModule.AIController (confirmed via probedump) -- no real Windrose AIController at all,
+-- which is the prime suspect for the StandingNPC AnimBP crash above (its graph almost certainly
+-- reads AIController/blackboard data only a real AR5AIController provides). This overrides
+-- AIControllerClass PRE-POSSESS via Spawner.Spawn's own existing, already-proven mechanism (the
+-- same one production code already uses to give placed NPCs the Handyman brain -- see
+-- Config.HANDYMAN_AI_CLASS's own callers) -- fundamentally different risk profile from the
+-- crashed AnimClass write: this is a plain property set in the deferred-spawn window, before
+-- BeginPlay/possession ever runs, not a call that forces an already-running AnimInstance to
+-- immediately re-evaluate a Blueprint graph. Reuses Config.HANDYMAN_AI_CLASS itself since it's the
+-- exact brain a real Adventurer-family Handyman/Gatherer donor (the same archetype/body this class
+-- already borrows) uses natively. Keyed by classPath rather than applied unconditionally so this
+-- never touches a real donor's own already-correct controller -- add future donor-independent test
+-- classes here as they're built.
+local DONOR_INDEPENDENT_AI_CONTROLLER = {
+    ["/Game/Mods/LivingBaseExtended/BP_BarbieR5Char_Test.BP_BarbieR5Char_Test_C"] = Config.HANDYMAN_AI_CLASS,
+}
+
 local function familySkinMaterialPath(family, sex)
     local entry = FAMILY_SKIN_MATERIAL[family]
     if not entry then return nil end
@@ -12003,20 +12026,22 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             end
         end)
         if not hasAnimInstance then
-            -- 2026-09-09 KNOWN-CRASH GUARD: tried this live exactly once -- EXCEPTION_ACCESS_VIOLATION
-            -- (VCRUNTIME140.dll, no symbols, same signature class as the Woodman female-swap crash)
-            -- within ~60ms of this call, no further log output at all. "Share_HumanAI"'s folder name
-            -- suggested a generic/reusable AnimBP back in the 2026-08-14 statue investigation, but this
-            -- is specifically the "_AI" variant -- very likely its graph reads AIController/blackboard
-            -- data (movement speed, IsMoving, etc.) that only exists on a real AR5AIController. Our
-            -- blank class's Controller is a plain generic /Script/AIModule.AIController (confirmed via
-            -- probedump), so the AnimBP almost certainly null-derefs on its first tick. Same root-cause
-            -- family as every other gap this class has hit tonight (a real donor provides this for
-            -- free, ours doesn't) -- this one just crashes instead of looking wrong. NOT SAFE TO RETRY
-            -- BLIND: needs a real AIControllerClass/AIPawnParams wired onto this class first (the same
-            -- pre-BeginPlay mechanism already used for BodyTypeParams/DefaultParams/ArchetypePreset),
-            -- then retry the AnimClass swap against a controller the AnimBP can actually query.
-            say("no AnimInstance running on actor.Mesh (raw T-pose) -- NOT applying StandingNPC AnimBlueprint: confirmed crash live 2026-09-09 (see WINDROSE_MODDING_NOTES.md 19x), likely reads AIController/blackboard data our generic controller doesn't have. Left as T-pose (visible, no crash) until AIControllerClass/AIPawnParams are wired in first.")
+            -- 2026-09-09 KNOWN-CRASH GUARD, RE-CONFIRMED, DO NOT RETRY AGAIN WITHOUT A DIFFERENT
+            -- MECHANISM: this call has now crashed live TWICE, at the IDENTICAL exception address
+            -- (EXCEPTION_ACCESS_VIOLATION in VCRUNTIME140.dll, offset 0x1dc1c both times -- confirmed
+            -- via parse_minidump.py) -- once with a generic /Script/AIModule.AIController, and once
+            -- AGAIN after wiring a real Config.HANDYMAN_AI_CLASS controller in pre-possess (confirmed
+            -- via a live debug print: "AIControllerClass override set" DID fire before the crash).
+            -- Two identical crashes under different controller states RULES OUT the AIController/
+            -- blackboard theory entirely -- this is not about what's possessing the pawn.
+            -- Spawner.SetAnimClass tries mesh:SetAnimInstanceClass(cls) first, falling back to a bare
+            -- mesh.AnimClass = cls property write only if that call's pcall returns false -- but a hard
+            -- native access violation isn't a normal Lua error pcall can trap or roll back from, so the
+            -- fallback path has never actually been tested in isolation. NOT SAFE TO RETRY blind a
+            -- third time via this same function. If animation is revisited, try the bare property
+            -- write directly (skip SetAnimInstanceClass's forced live-rebuild entirely) as a genuinely
+            -- different, untested mechanism -- not a third attempt at the one already disproven twice.
+            say("no AnimInstance running on actor.Mesh (raw T-pose) -- NOT applying StandingNPC AnimBlueprint: this exact call has now crashed live twice at the identical address, once with a generic AIController and once with a real one wired in pre-possess -- rules out the AIController theory entirely (see WINDROSE_MODDING_NOTES.md 19x). Left as T-pose (visible, no crash) pending a genuinely different mechanism.")
         end
 
         if family and familyHandledByArchetype and hasBaseMesh then
@@ -12268,7 +12293,8 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         say(string.format("spawning %s (archetype=%s params=%s sex=%s), family=%s, at %s",
             classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
             atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
-        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, nil, yaw, false, compositeLook, nil, false)
+        local aiControllerOverride = DONOR_INDEPENDENT_AI_CONTROLLER[classPath]
+        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, nil, aiControllerOverride, yaw, false, compositeLook, nil, false)
         if not (actor and actor:IsValid()) then
             say("Spawn FAILED.")
             return false

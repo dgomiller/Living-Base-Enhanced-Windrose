@@ -4853,3 +4853,56 @@ actually deployed and `lbreload`'d:
 **Status, updated**: visibility + sex are both CONFIRMED SOLID now. Animation is a confirmed-unsafe
 path pending a real `AIControllerClass`/`AIPawnParams` fix, not yet attempted. Floating/grounding
 remains uninvestigated on its own.
+
+**UPDATE, same night -- the AIController theory was tested directly and DISPROVEN. Two real process
+gotchas found along the way, both worth remembering.**
+
+First, a genuine operational hazard recurred: after the second crash, several `lbreload` calls were
+fired in quick succession while iterating on a diagnostic print. Every SYNCHRONOUS part of a spawn
+(the `preFinish` composite-params write, sex/body resolution, component stripping) kept working
+correctly on every subsequent test -- but the DELAYED part (`applyPhase2`, scheduled via
+`ExecuteWithDelay` ~1.5s after spawn -- the base-mesh override, the AI-controller override, the
+animation check, even a brand-new debug print added specifically to diagnose this) produced **zero
+log output at all** across several consecutive tests, with no error either. This is the exact same
+"double-lbreload scare" hazard already documented earlier in this project (2026-08-14): repeated
+rapid-fire `lbreload` calls can wedge the timer/delay system itself, not the code -- every synchronous
+codepath still runs fine, but anything scheduled via `ExecuteWithDelay` silently stops firing, with no
+error to point at the real cause. **Fixed by a full game restart, not another reload** -- confirmed:
+the very next test after a real restart produced full `applyPhase2` output again, including the new
+debug print. **Lesson, worth remembering going forward: if a delayed/scheduled callback produces zero
+output across multiple tests while everything synchronous keeps working, suspect a wedged timer system
+from reload frequency before suspecting the new code** -- chasing this as a code bug wastes real cycles
+(several iterations were spent here before recognizing the pattern).
+
+Second, a silent failure mode: `Spawner.Spawn`'s own AI-controller-class resolution failure used the
+`Config.VERBOSE`-gated `log()` helper instead of the unconditional `always()` -- meaning if
+`resolveClass` had failed on the override path, NOTHING would have printed anywhere, not even
+`_DoEngineSpawn`'s own always-on "override set/FAILED" line (which is itself gated behind `if aiClass
+then`, so it silently doesn't fire either when resolution fails upstream). Fixed to use `always()` --
+a real instance of the exact failure mode `always()` was created to prevent in the first place (see its
+own header comment), just one level removed (a resolution failure feeding into a conditional whose own
+logging is unconditional, rather than a bare gated log call).
+
+**Once the timer-wedge was cleared with a real restart, the actual test finally ran cleanly and gave a
+definitive answer**: a debug print confirmed `Config.HANDYMAN_AI_CLASS` resolved correctly and
+`AIControllerClass override set for BodyTypeSwap` fired BEFORE the `SetAnimClass` call -- a real
+Windrose `AR5AIController`-family controller was genuinely wired in this time, not a generic engine
+one. **The AnimClass call crashed anyway, at the IDENTICAL exception address as the first crash**
+(`VCRUNTIME140.dll`, offset `0x1dc1c`, confirmed via `parse_minidump.py` both times). Two identical
+crashes under two different controller states rules out the AIController/blackboard-read theory
+entirely -- whatever `mesh:SetAnimInstanceClass()` is doing here, it is NOT about what's possessing the
+pawn. **Re-guarded out for good this time** -- not safe to retry a third time via this same mechanism.
+One genuinely untested alternative worth trying in a future session: `Spawner.SetAnimClass`'s own
+fallback (a bare `mesh.AnimClass = cls` property write, skipping `SetAnimInstanceClass`'s forced
+live-rebuild of the AnimInstance entirely) has never actually been exercised in isolation -- both
+crashes hit the PRIMARY call before `pcall` could ever fail over to it, since a hard native access
+violation isn't a catchable Lua error. Trying the bare property write directly, bypassing
+`SetAnimInstanceClass` altogether, is a genuinely different mechanism, not a third attempt at the one
+now disproven twice.
+
+**Status, final for tonight**: visibility and sex resolution are both CONFIRMED SOLID and durable
+fixes, safe to build on. The AI-controller wiring itself (`DONOR_INDEPENDENT_AI_CONTROLLER`,
+`Config.HANDYMAN_AI_CLASS`) is real, live-confirmed working, and kept -- it's genuinely useful on its
+own merits regardless of the animation dead end. Animation via `SetAnimInstanceClass` is now a
+confirmed-twice dead end, not merely unattempted; the bare-property-write fallback is the one
+concretely untested next idea. Floating/grounding remains completely uninvestigated.

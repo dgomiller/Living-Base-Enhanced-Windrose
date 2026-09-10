@@ -45,12 +45,85 @@ end
 local function log(msg)
     if Config.VERBOSE then print(string.format("%s %s\n", MOD_NAME, tostring(msg))) end
 end
+
+-- Persistent LivingBase log file (2026-09-10, RedFalcon: "the log clears on every launch... you may
+-- want to add its output the livingbase reference log too"). UE4SS's own ue4ss.log is truncated on
+-- every game launch, so a crash's own last-lines-before-death are gone as soon as the game relaunches
+-- -- which made the lbtestbodyspawn crash triage guesswork until a lucky single capture. This appends
+-- every always() line (the unconditional troubleshooting channel) to a file that SURVIVES restarts,
+-- with a wall-clock-ish timestamp from os.time/os.clock. Rotated at ~4 MB so it can't grow forever.
+local LB_LOG_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/livingbase_debug.log",
+    "Mods/LivingBase/livingbase_debug.log",
+    "livingbase_debug.log",
+}
+local _lbLogPath = nil
+local function _lbLogResolvePath()
+    if _lbLogPath ~= nil then return _lbLogPath end
+    for _, p in ipairs(LB_LOG_CANDIDATES) do
+        local f = io.open(p, "a")
+        if f then f:close(); _lbLogPath = p; break end
+    end
+    _lbLogPath = _lbLogPath or false
+    if _lbLogPath then
+        -- rotate if big
+        pcall(function()
+            local f = io.open(_lbLogPath, "r")
+            if f then
+                local sz = f:seek("end"); f:close()
+                if sz and sz > 4 * 1024 * 1024 then
+                    os.remove(_lbLogPath .. ".old")
+                    os.rename(_lbLogPath, _lbLogPath .. ".old")
+                end
+            end
+        end)
+        pcall(function()
+            local f = io.open(_lbLogPath, "a")
+            if f then
+                f:write(string.format("\n===== LivingBase session start (os.time=%s) =====\n", tostring(os.time())))
+                f:close()
+            end
+        end)
+    end
+    return _lbLogPath
+end
+local function lbLogFile(msg)
+    local p = _lbLogResolvePath()
+    if not p then return end
+    local ts = ""
+    pcall(function() ts = "[" .. os.date("%H:%M:%S") .. "] " end)
+    pcall(function()
+        local f = io.open(p, "a")
+        if f then
+            -- open/write/close per line (no buffering) -- a crash must lose nothing, that's the point
+            local s = tostring(msg)
+            f:write(ts, s)
+            if not s:match("\n$") then f:write("\n") end
+            f:close()
+        end
+    end)
+end
+
+-- 2026-09-10: an earlier version here wrapped the mod's global print() to mirror EVERY line to the
+-- file. Backed out -- it correlated with a new UE4SS.dll +0x3a9139 crash on every lbtestbodyspawn
+-- (6/6), and per-line file I/O on the game thread during a composite build is a plausible
+-- timing/reentrancy trigger. The file sink now hangs off always() and Spawner.dbg() only (low
+-- volume, opt-in), not every print.
+
 -- Unconditional — for troubleshooting output that must survive Config.VERBOSE=false (the project
 -- default). A silent Spawn() failure (bad class path, no world, etc.) with zero log trace is exactly
 -- the kind of thing this rule exists for — confirmed live 2026-08-07 when a failed test spawn logged
 -- nothing beyond "FAILED -- nil", because every SPAWN FAILED branch below used the gated log().
+-- Also mirrored to the persistent livingbase_debug.log (survives the ue4ss.log launch-truncation).
 local function always(msg)
     print(string.format("%s %s\n", MOD_NAME, tostring(msg)))
+    lbLogFile(msg)
+end
+-- Explicit file-log sink for callers that want a line in livingbase_debug.log without routing through
+-- always() (e.g. a command handler's own say()). print + file, one line.
+function Spawner.dbg(msg)
+    print(string.format("%s %s\n", MOD_NAME, tostring(msg)))
+    lbLogFile(msg)
 end
 
 -- Everything we spawn, for DEL clean-house: { {actor=..., label=...}, ... }
@@ -1789,7 +1862,7 @@ function Spawner.SetCompositeParams(actor, paramsPath, archetypePath, sex, bodyT
     -- Unconditional -- was gated behind Config.VERBOSE until 2026-08-07, which meant a compositeLook
     -- that silently failed to resolve (e.g. a typo'd archetype path) gave zero trace, same class of
     -- bug already fixed once this session for Spawner.Spawn's own SPAWN FAILED branches.
-    local function say(m) print("[LivingBase:Composite] " .. tostring(m) .. "\n") end
+    local function say(m) print("[LivingBase:Composite] " .. tostring(m) .. "\n"); lbLogFile("[Composite] " .. tostring(m)) end
     if not (actor and actor:IsValid()) then return false end
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
@@ -4026,6 +4099,152 @@ function Spawner.TestDumpStateTree(say)
         end)
         if ok then say(string.format("%s() = %s", fname, tostring(res))) end
     end
+    return true
+end
+
+-- Spawner.WakeAI(say, mode) -- "lbwakeai [status|activate|graft]" (2026-09-10). The active attempt to
+-- get the from-scratch donor-independent class (BP_BarbieR5Char_Test) to actually WALK, after the
+-- long diagnostic chase (§19x) settled the root cause: her controller's own
+-- StateTreeComponent.StateTreeRef.StateTree never resolves and the tree never starts
+-- (GetStateTreeRunStatus()=4, IsRunning()=false) -- vs. a real Gatherer's valid asset / status 0 /
+-- IsRunning()=true. Everything the tree NEEDS was confirmed wired (Params/SchemaClass byte-identical,
+-- AIPawnParams/Faction/Agent/Memory params all set pre-possess) -- the missing piece is the
+-- ACTIVATION step a level-placed NPC gets from the engine's population pass that a runtime SpawnActor
+-- never triggers.
+--
+-- jmap (windrose.jmap, via trumank/jmap) gave the exact native API surface for this, which the old
+-- blind probing never had:
+--   * R5AICharacter:ActivateCharacter()          -- Final/Native/BlueprintCallable, no params.
+--       Name strongly implies "the activation step" -- try this FIRST, it's one call, lowest risk.
+--   * R5AIController.StateTreeComponent           -- real property (offset 968), class
+--       R5AIStateTreeComponent : StateTreeComponent.
+--   * StateTreeComponent:SetStateTree(UStateTree*)         -- Final/Native/BlueprintCallable.
+--   * StateTreeComponent:SetStartLogicAutomatically(bool)  -- CDO has bStartLogicAutomatically=false.
+--   * R5AIController:StartLogic() / StopLogic()   -- already used safely all over this mod (SetAILogic).
+--   * R5AIStateTreeComponentParams.StateTreeMap   -- Map<GameplayTag, {UStateTree* StateTree}>: the
+--       R5 AI system picks its tree from this map by tag. Pull the real tree straight from here rather
+--       than hard-coding an asset path where we can.
+-- The graft sequence is Xenophon's proven native-AI taming recipe (see
+-- project_crew_type_exploration memory): StopLogic() -> SetStateTree(tree) -> StartLogic(), verified
+-- by readback. Never tried in LivingBase before now.
+--
+-- Every step is individually pcall'd with an always() line printed BEFORE and AFTER, so if any native
+-- call hard-crashes (the SetAnimInstanceClass pattern from §19x) the log pins down exactly which one.
+function Spawner.WakeAI(say, mode)
+    say = say or function(m) always("[wake-ai] " .. tostring(m)) end
+    mode = (mode and mode:lower()) or "auto"
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor both stale) -- spawn or target one first.")
+        return false
+    end
+    local actorName = "?"
+    pcall(function() actorName = actor:GetFullName() end)
+    say("actor: " .. actorName .. "  (mode=" .. mode .. ")")
+
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not (ctrl and ctrl:IsValid()) then pcall(function() ctrl = actor:GetR5AIController() end) end
+    if not (ctrl and ctrl:IsValid()) then
+        say("no AIController on actor -- cannot wake.")
+        return false
+    end
+    local st = nil
+    for _, n in ipairs({ "StateTreeComponent", "BrainComponent", "StateTree" }) do
+        if not st then
+            pcall(function()
+                local c = ctrl[n]
+                if c and c:IsValid() then st = c end
+            end)
+        end
+    end
+    if not (st and st:IsValid()) then
+        say("controller has no StateTreeComponent/BrainComponent/StateTree -- cannot wake.")
+        return false
+    end
+    do
+        local cn = "?"
+        pcall(function() cn = st:GetClass():GetFName():ToString() end)
+        say("brain component class: " .. cn)
+    end
+
+    local function report(tag)
+        local treeName, runStatus, running = "nil", "?", "?"
+        pcall(function()
+            local a = st.StateTreeRef.StateTree
+            if a then
+                local ok, f = pcall(function() return a:GetFullName() end)
+                treeName = (ok and f) or "<GetFullName nil>"
+            end
+        end)
+        pcall(function() runStatus = st:GetStateTreeRunStatus() end)
+        pcall(function() running = st:IsRunning() end)
+        say(string.format("  [%s] StateTreeRef.StateTree=%s  RunStatus=%s  IsRunning=%s",
+            tag, tostring(treeName), tostring(runStatus), tostring(running)))
+    end
+
+    report("before")
+
+    -- Pull the correct tree straight from the component's own Params map when we can; only fall back
+    -- to the hard-coded Handyman calm-worker asset path if the map read fails / is empty.
+    local function findTree()
+        local tree = nil
+        pcall(function()
+            local m = st.Params.StateTreeMap
+            if m then
+                pcall(function()
+                    m:ForEach(function(_, v)
+                        if tree then return end
+                        pcall(function()
+                            local data = v
+                            if type(v) == "userdata" and v.get then data = v:get() end
+                            local t = data.StateTree
+                            if t and t:IsValid() then tree = t end
+                        end)
+                    end)
+                end)
+            end
+        end)
+        if tree then return tree, "Params.StateTreeMap" end
+        local fallback = resolveAsset("/Game/Gameplay/Character/AI/NPC/Handyman/Base/Behavior/ST_Mob_Handyman_Worker_Calm_Unagressive.ST_Mob_Handyman_Worker_Calm_Unagressive")
+        if fallback then return fallback, "hard-coded ST_Mob_Handyman_Worker_Calm_Unagressive" end
+        return nil, "UNRESOLVED"
+    end
+
+    if mode == "status" then return true end
+
+    if mode == "auto" or mode == "activate" then
+        always("[wake-ai] STEP activate: calling R5AICharacter:ActivateCharacter() ...")
+        local ok = pcall(function() actor:ActivateCharacter() end)
+        always("[wake-ai] STEP activate: returned (pcall ok=" .. tostring(ok) .. ")")
+        report("after-activate")
+        if mode == "activate" then return true end
+    end
+
+    if mode == "auto" or mode == "graft" then
+        local tree, src = findTree()
+        say("graft tree source: " .. src .. (tree and "" or " -- ABORTING graft, no tree"))
+        if tree then
+            local tn = "?"
+            pcall(function() tn = tree:GetFullName() end)
+            say("graft tree: " .. tn)
+            always("[wake-ai] STEP graft: StopLogic() ...")
+            pcall(function() ctrl:StopLogic() end)
+            always("[wake-ai] STEP graft: SetStartLogicAutomatically(true) ...")
+            pcall(function() st:SetStartLogicAutomatically(true) end)
+            always("[wake-ai] STEP graft: SetStateTree(tree) ...")
+            local okSet = pcall(function() st:SetStateTree(tree) end)
+            always("[wake-ai] STEP graft: SetStateTree returned (pcall ok=" .. tostring(okSet) .. ")")
+            -- SetStateTreeReference is the struct-taking sibling -- only worth trying if the plain
+            -- object setter silently no-op'd (StateTreeRef.StateTree still nil on readback).
+            always("[wake-ai] STEP graft: StartLogic() ...")
+            pcall(function() ctrl:StartLogic() end)
+            always("[wake-ai] STEP graft: StartLogic returned")
+            report("after-graft")
+        end
+    end
+
+    say("done. If RunStatus=0 / IsRunning=true now, 'lbfreeze off' (if still frozen) and watch her move.")
     return true
 end
 
@@ -11157,6 +11376,7 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
     -- Same dual-sweep idiom socketOccupants already uses for an unrelated reason (see its own
     -- comment above lbsockets).
     local hidden, replaced = 0, 0
+    lbLogFile(string.format("[remove-clothes] RemoveClothingOnActor slot=%s name=%s -- start", tostring(slotArg), name))
     local function sweepClass(classPath)
         local cls = StaticFindObject(classPath)
         if not (cls and cls:IsValid()) then
@@ -11215,6 +11435,9 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                 -- regardless of which structural sub-entry (Belt/Sling/Strap/Sash) they actually
                 -- came from.
                 if not slotHere and curName:find("^SM_Drop_") then slotHere = "Belt" end
+                if curName ~= "" then
+                    lbLogFile(string.format("[remove-clothes]     mesh=%s -> slot=%s (want=%s all=%s sex=%s)", curName, tostring(slotHere), tostring(wantSlot), tostring(wantAll), actorSex))
+                end
                 if slotHere and (wantAll or slotHere:lower() == wantSlot:lower()) then
                     local guarded = (not unlocked) and (
                         (slotHere == "Torso" and actorSex == "Female") or
@@ -11225,6 +11448,8 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                         if slotHere == "Torso" then uwPath = Config.SENKA_UNDERWEAR_TORSO_F
                         else uwPath = (actorSex == "Male") and Config.SENKA_UNDERWEAR_LEGS_M or Config.SENKA_UNDERWEAR_LEGS_F end
                     end
+                    local _uwMeshDbg = uwPath and resolveAsset(uwPath)
+                    lbLogFile(string.format("[remove-clothes]     slot=%s guarded=%s uwPath=%s uwResolved=%s", slotHere, tostring(guarded), tostring(uwPath), tostring(_uwMeshDbg ~= nil)))
                     -- guarded is only ever true for Torso/Legs, both real SkeletalMeshComponent
                     -- slots -- a StaticMeshComponent attachment (Belt's own knife/pouches) can
                     -- never land here, so no special-casing needed for the SetSkeletalMesh* calls
@@ -11245,6 +11470,7 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                         pcall(function() c:SetCollisionResponseToAllChannels(2) end)
                         replaced = replaced + 1
                         print(string.format("[LivingBase] [test-remove-clothes] slot=%s -> underwear (was mesh=%s) on %s\n", slotHere, curName, name))
+                        lbLogFile(string.format("[remove-clothes] slot=%s -> underwear (was %s)", slotHere, curName))
                     else
                         pcall(function() c:SetVisibility(false, false) end)
                         pcall(function() c:SetHiddenInGame(true, false) end)
@@ -11260,6 +11486,7 @@ function Spawner.RemoveClothingOnActor(actor, slotArg, name)
                         pcall(function() c:SetCollisionResponseToAllChannels(0) end)
                         hidden = hidden + 1
                         print(string.format("[LivingBase] [test-remove-clothes] hid slot=%s mesh=%s on %s\n", slotHere, curName, name))
+                        lbLogFile(string.format("[remove-clothes] hid slot=%s mesh=%s", slotHere, curName))
                     end
                 end
             end
@@ -12403,7 +12630,8 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
     -- happened at all in that case, so no redundancy to remove) -- neither of those is proven safe
     -- by this fix, only the specific redundant-call case is.
     local function applyPhase2()
-        if not (actor and actor:IsValid()) then return end
+        lbLogFile("[phase2] applyPhase2 entry")
+        if not (actor and actor:IsValid()) then lbLogFile("[phase2] actor invalid -- return"); return end
         -- 2026-09-09 FIX (RedFalcon: "nothing visibly appeared" spawning a genuinely new, donor-
         -- independent native class -- probedump showed CompositeMeshComponent's OWN pieces built
         -- fine, but `Mesh`/CharacterMesh0 itself, the LEADER every piece leader-poses off of, had
@@ -12429,6 +12657,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
         -- (who already has one from their own class defaults) and only kicks in for a donor-independent
         -- class that has none. GetAnimInstance() returning nil/invalid means BlueprintMode has nothing
         -- driving the skeleton at all -- the raw T-pose symptom.
+        lbLogFile(string.format("[phase2] hasBaseMesh=%s", tostring(hasBaseMesh)))
         local hasAnimInstance = false
         pcall(function()
             local body = actor.Mesh
@@ -12438,6 +12667,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
                 hasAnimInstance = inst ~= nil and inst:IsValid()
             end
         end)
+        lbLogFile(string.format("[phase2] hasAnimInstance=%s", tostring(hasAnimInstance)))
         if not hasAnimInstance then
             -- 2026-09-09: SetAnimInstanceClass (Spawner.SetAnimClass's own default path) has crashed
             -- live TWICE at the IDENTICAL exception address (VCRUNTIME140.dll offset 0x1dc1c both
@@ -12512,6 +12742,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             end
         end
 
+        lbLogFile(string.format("[phase2] family branch done; underwear=%s", tostring(underwear)))
         if underwear then
             -- 2026-09-08 FIX (RedFalcon: "the underwear call seems to remove their hair. I want to
             -- keep the hair on their head") -- "all" includes Hair (added 2026-09-08 as its own
@@ -12520,10 +12751,12 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             -- just don't request Hair here: loop every OTHER removable slot instead of passing "all".
             for _, slot in ipairs(Config.CLOTHING_REMOVABLE_SLOTS) do
                 if slot ~= "Hair" then
+                    lbLogFile("[phase2] strip slot=" .. tostring(slot))
                     Spawner.RemoveClothingOnActor(actor, slot, name)
                 end
             end
         end
+        lbLogFile("[phase2] applyPhase2 DONE")
     end
 
     if ExecuteWithDelay then
@@ -12553,7 +12786,13 @@ end
 -- function at all, kept on disk/committed only as a historical record and for the (still-working)
 -- Origin-grid case where the SPAWNED class's own native tag matches the entry (e.g. Gatherer +
 -- AdventurerAsAfrican) -- lbtestbodytypes still uses that path for THAT case.
-function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
+-- freshSpawn (2026-09-10): run the ENTIRE body-swap process (compositeLook build, archetype/Barbie
+-- params, sex swap, strip, AI-controller + faction/agent/memory wiring, pollForBuildThenApplyBodySwap)
+-- exactly as normal, but NEVER despawn the previous actor and NEVER reuse a locked position -- every
+-- call is a brand-new spawn at a fresh spot in front of the player, previous ones left standing.
+-- Built to isolate the replacement crash: if the full swap is stable this way but crashes when it
+-- replaces, the culprit is the despawn->rebuild race, not the composite rebuild itself.
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
@@ -12591,6 +12830,19 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         end
     end
     classPath = classPath or Config.SENKA_FEMALE_BASE_CLASS
+    -- 2026-09-10 PRE-WARM the SPAWN CLASS ITSELF (RedFalcon: every REPLACEMENT swap fails
+    -- "SPAWN FAILED (class unresolved)" -- the first swap of a session resolves the class fine
+    -- synchronously, but a replacement resolves it from inside the post-despawn
+    -- BODY_SWAP_RESPAWN_DELAY_MS (20s) ExecuteWithDelay window, where resolveClass's LoadAsset
+    -- fallback does NOT reliably bring a not-in-memory game class in -- and a GC pass triggered by
+    -- destroying the previous actor during that wait can unload a class nothing is holding). Resolve
+    -- it HERE, synchronously, BEFORE the despawn+wait, so LoadAsset gets the full 20s+ to finish, and
+    -- stash the resolved UClass in an upvalue doSpawnNow captures so it stays referenced across the
+    -- wait. doSpawnNow re-checks and re-resolves too -- this is the head start, not the only attempt.
+    local prewarmedSpawnClass = resolveClass(classPath)
+    say(prewarmedSpawnClass
+        and ("pre-resolved spawn class ok: " .. classPath)
+        or ("WARN pre-resolve of spawn class MISSED (" .. tostring(classPath) .. ") -- will retry in the spawn window"))
     -- 2026-09-09 PRE-WARM: DONOR_INDEPENDENT_AI_PAWN_PARAMS's own asset gets resolved synchronously
     -- inside the deferred pre-BeginPlay window (preFinishAIPawnParams, below) -- the exact same
     -- single-LoadAsset-then-nothing-else window that already confirmed-cold-loaded twice tonight for
@@ -12611,6 +12863,15 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     -- the time the StateTreeComponent's own initialization needs it, even though it's a real, valid,
     -- always-shipped asset. Pre-warm it the same way.
     pcall(function() resolveAsset("/Game/Gameplay/Character/AI/NPC/Handyman/Base/Behavior/ST_Mob_Handyman_Worker_Calm_Unagressive.ST_Mob_Handyman_Worker_Calm_Unagressive") end)
+    -- 2026-09-10 PRE-WARM the underwear meshes (RedFalcon: first spawn of a fresh session had no
+    -- undies, a reload+respawn fixed it -- classic cold-reference: RemoveClothingOnActor's
+    -- resolveAsset(Config.SENKA_UNDERWEAR_*) inside the phase-2 strip doesn't finish loading in time
+    -- on the very first use of the session, so the guarded Torso/Legs swap silently falls through to
+    -- plain-hide instead. Same fix as the StateTree/AIPawnParams pre-warms above -- fire a throwaway
+    -- resolve here, well before phase 2 needs it).
+    for _, uwPath in ipairs({ Config.SENKA_UNDERWEAR_TORSO_F, Config.SENKA_UNDERWEAR_LEGS_F, Config.SENKA_UNDERWEAR_LEGS_M }) do
+        if uwPath then pcall(function() resolveAsset(uwPath) end) end
+    end
     local sex = nil
     if type(sexArg) == "string" then
         local s = sexArg:lower()
@@ -12652,7 +12913,9 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     -- land at. Only falls back to the previously-stored lock if this read fails for some reason
     -- (actor already gone, etc.) -- never silently loses the lock entirely.
     local justDespawnedPrevious = false
-    if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
+    if freshSpawn then
+        say("freshSpawn mode -- NOT despawning any previous actor, NOT reusing a locked spot; brand-new spawn in front of you.")
+    elseif Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
         local liveLoc, liveRot = nil, nil
         pcall(function() liveLoc = Spawner._bodySwapActor:K2_GetActorLocation() end)
         pcall(function() liveRot = Spawner._bodySwapActor:K2_GetActorRotation() end)
@@ -12667,7 +12930,7 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         pcall(function() Spawner.DespawnActor(Spawner._bodySwapActor) end)
         justDespawnedPrevious = true
     end
-    Spawner._bodySwapActor = nil
+    if not freshSpawn then Spawner._bodySwapActor = nil end
 
     -- 2026-09-08 REWRITE (RedFalcon: "can we use the barbie process to summon a mesh and body
     -- type") -- build the FULL compositeLook (archetype + Barbie outfit + sex) BEFORE spawning,
@@ -12701,6 +12964,7 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
     end
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
+    if freshSpawn then atLocation, yaw = nil, nil end
 
     -- 2026-09-09 FIX (RedFalcon: "when done, i just crashed again swapping" / "no dump this time" --
     -- a SECOND, different crash from the SetBody one, no minidump produced at all this time).
@@ -12724,6 +12988,14 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         say(string.format("spawning %s (archetype=%s params=%s sex=%s), family=%s, at %s",
             classPath, tostring(compositeLook and compositeLook.archetype), tostring(compositeLook and compositeLook.params), tostring(sexArg or "native"), tostring(family),
             atLocation and "the LOCKED swap position (carrying over any manual repositioning since the last swap)" or "a fresh in-front-of-player spot (will lock this for future swaps)"))
+        -- 2026-09-10: re-resolve the class right before spawning (a GC pass during the 20s post-despawn
+        -- wait can unload what the top-of-function pre-warm resolved). Keep prewarmedSpawnClass
+        -- referenced too -- captured as an upvalue, it holds a Lua-side ref across the wait.
+        if not (prewarmedSpawnClass and prewarmedSpawnClass:IsValid()) then
+            prewarmedSpawnClass = resolveClass(classPath)
+            say(prewarmedSpawnClass and ("re-resolved spawn class in the spawn window: " .. classPath)
+                or ("spawn class STILL unresolved at spawn time: " .. tostring(classPath)))
+        end
         local aiControllerOverride = DONOR_INDEPENDENT_AI_CONTROLLER[classPath]
         local aiPawnParamsPath = DONOR_INDEPENDENT_AI_PAWN_PARAMS[classPath]
         -- 2026-09-09 FIX (RedFalcon: "no luck" -- unfrozen AI still just stood idle even with
@@ -12815,7 +13087,19 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         -- difference and, per lbtestcrewcomponents, was actively wrong -- it assigns the PLAYER'S OWN
         -- crew faction, not a citizen's. Reverted to false (matches every other donor swap); the real
         -- faction fix now happens directly in preFinishAIPawnParams above instead.
+        -- 2026-09-10 CRASH FIX (RedFalcon: lbtestbodyspawn "spawns in then crashes with a dump" 4/4,
+        -- UE4SS.dll +0x3a9139). Root cause found in persist_<world>.txt: a LEFTOVER "BodyTypeSwap 1"
+        -- entry (BlackAxel + Barbie female params + Adventurer archetype) from a prior crashed session
+        -- was being RESTORED on every launch -- its own cross-sex composite rebuild racing the new
+        -- test spawn's rebuild+strip ("Restore: starting, 1 saved entries" fired mid-sequence in the
+        -- crash log). freshSpawn mode never despawns (so never cleans its persist entry via
+        -- DespawnActor), and even a normal lbtestbodyswap leaves its LAST actor's entry behind. These
+        -- are dev/diagnostic spawns -- they should NEVER persist. Mark transient around the spawn so
+        -- persistAppend early-returns (same mechanism whistle.lua uses for night raiders).
+        local _prevTransient = Spawner.transient
+        Spawner.transient = true
         local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, preFinishAIPawnParams, aiControllerOverride, yaw, false, compositeLook, nil, false)
+        Spawner.transient = _prevTransient
         if not (actor and actor:IsValid()) then
             say("Spawn FAILED.")
             return false
@@ -12851,8 +13135,8 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say)
         end
 
         -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right
-        -- after a reset).
-        if not Spawner._bodySwapLoc then
+        -- after a reset). Never in freshSpawn mode -- the whole point there is a new spot every call.
+        if not freshSpawn and not Spawner._bodySwapLoc then
             local loc, rot = nil, nil
             pcall(function() loc = actor:K2_GetActorLocation() end)
             pcall(function() rot = actor:K2_GetActorRotation() end)

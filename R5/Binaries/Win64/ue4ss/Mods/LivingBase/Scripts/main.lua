@@ -3823,7 +3823,7 @@ if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestbodyswap", function(FullCommand, Parameters, Ar)
             local function say(msg)
-                print("[LivingBase] [lbtestbodyswap] " .. msg .. "\n")
+                Spawner.dbg("[lbtestbodyswap] " .. tostring(msg))
             end
             local bodyTypesArg = Parameters and Parameters[1]
             local classArg = Parameters and Parameters[2]
@@ -3839,6 +3839,40 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] [underwear: on|-]", "Spawns classPath at its native shape, then applies a direct post-build mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/Scum/Senkamati), a sex swap (M/F), and/or strips to underwear (pass 'on'/'u' as the 4th arg) -- all combined in one command. Also locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body changes -- ideal for cycling through Barbie variants without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
 else
     log("lbtestbodyswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]" (2026-09-10)
+-- -- runs the ENTIRE lbtestbodyswap process (compositeLook build, archetype/Barbie params, sex swap,
+-- strip, AI + faction/agent/memory wiring, pollForBuildThenApplyBodySwap) but NEVER despawns a
+-- previous actor and NEVER reuses a locked spot -- a brand-new spawn in front of you every call,
+-- earlier ones left standing. Isolates the replacement crash: if the full swap is stable this way,
+-- the culprit is the despawn->rebuild race, not the composite rebuild itself.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbodyspawn", function(FullCommand, Parameters, Ar)
+            -- NO Ar:Log here: this say() is threaded through SwapBodyType -> pollForBuildThenApplyBodySwap
+            -- -> applyPhase2, which runs on a ~2s timer LONG after this console command returned and Ar
+            -- (the FOutputDevice) was destroyed. Calling Ar:Log on the freed pointer from the delayed
+            -- callback was an uncatchable UE4SS.dll +0x3a9139 access violation -- the sole cause of every
+            -- "lbtestbodyspawn spawns in then crashes" report (2026-09-10). Spawner.dbg (print + file) only.
+            local function say(msg)
+                Spawner.dbg("[lbtestbodyspawn] " .. tostring(msg))
+            end
+            local familyArg = Parameters and Parameters[1]
+            local classArg = Parameters and Parameters[2]
+            if classArg == "-" or classArg == "" then classArg = nil end
+            local sexArg = Parameters and Parameters[3]
+            local underwearArg = Parameters and Parameters[4]
+            if not classArg then say("usage: lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]"); return true end
+            local ok, err = pcall(function() Spawner.SwapBodyType(familyArg, classArg, sexArg, underwearArg, say, true) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]")
+    registerCmdInfo("lbtestbodyspawn", "lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]", "Same full process as lbtestbodyswap (sex/body/family swap, strip, AI wiring) but a BRAND-NEW spawn every call -- never despawns the previous actor, never reuses a locked spot. Isolates whether the replacement crash is the despawn->rebuild race or the composite rebuild itself.")
+else
+    log("lbtestbodyspawn unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbteststatuebody <bodyMeshPath> <presetName> [classPath]" (2026-09-01) -- the
@@ -8161,6 +8195,30 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestcrewcomponents", "lbtestcrewcomponents", "PURE READ: dumps the current target's ScenarioCrewActorComponent/FactionComponent/OwnershipComponent properties.")
 else
     log("lbtestcrewcomponents unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbwakeai [status|activate|graft]" (2026-09-10) -- the active attempt to make the
+-- from-scratch donor-independent class actually walk. Runs on the current target. Default (no arg)
+-- does status -> ActivateCharacter() -> status -> StateTree graft (StopLogic/SetStateTree/StartLogic)
+-- -> status, one step at a time with before/after log lines so a hard crash pins the exact call.
+-- 'status' = read only; 'activate' = just ActivateCharacter(); 'graft' = just the StateTree graft.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbwakeai", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [wake-ai] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local mode = Parameters and Parameters[1] and tostring(Parameters[1]) or nil
+            local ok, err = pcall(function() Spawner.WakeAI(say, mode) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbwakeai")
+    registerCmdInfo("lbwakeai", "lbwakeai [status|activate|graft]", "Tries to make the current target's AI start walking: ActivateCharacter() then a StateTree graft (StopLogic/SetStateTree/StartLogic). No arg = do both; 'status' = read only.")
+else
+    log("lbwakeai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 ------------------------------------------------------------

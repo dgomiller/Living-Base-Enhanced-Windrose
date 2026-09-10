@@ -5056,6 +5056,12 @@ survives) so they work on ANY currently-targeted actor, not just the current bod
 already proven useful for direct A/B comparison against a real donor targeted via the existing
 probe-lock tooling.
 
+> **UPDATE 2026-09-10 -- walking now works, see §19y.** The "paused" status below was resolved the
+> next day: on a fresh game launch (not an `lbreload`) with the deployed `preFinishAIPawnParams` fixes,
+> the donor-path swap walks and her StateTree reads the real-Gatherer baseline (`RunStatus=0`,
+> `IsRunning=true`). RedFalcon confirmed the donor path is the shipping approach; the from-scratch
+> class is shelved (kept, not deleted).
+
 **Overall status: the STATIC appearance goal, stated plainly at the top of this whole section, is now
 FULLY MET; AI/walking is a real, required, currently-open item, explicitly paused for tonight.**
 A genuinely new, donor-independent NPC class spawns visible, correctly sexed/dressed, animated, and
@@ -5068,3 +5074,121 @@ genuine wall, by baking it directly onto the Blueprint's own class defaults in t
 Mesh offset) -- a technique now proven twice, including for a class reference for the first time ever
 in this project. Wander/AI behavior is the one remaining loose end, explicitly non-blocking for the
 actual use case.
+
+### 19y. Resuming the walking wall with a real API surface: jmap + the `lbwakeai` graft attempt (2026-09-10)
+
+Picked the AI/walking item back up (RedFalcon: this IS a required part of the final product, not
+incidental). The whole §19x chase was done with blind reflection probing -- guessing property names,
+never actually knowing the native function surface. `trumank/jmap` (see the SDK-stub project's
+`Content/DynamicClasses/SUZIE_SETUP.md`; produces a 106 MB JSON reflection dump of the shipped game
+from a Task-Manager full-memory minidump) changes that -- it gives the exact declared classes,
+properties, offsets, and `UFUNCTION` signatures. Reading `windrose.jmap` for the AI classes settled
+several things §19x could only guess at:
+
+- **`R5AIController.StateTreeComponent`** is a real declared `ObjectProperty` at offset 968, class
+  `R5AIStateTreeComponent` (which extends the engine's `UStateTreeComponent`). The old
+  `ctrl.StateTreeComponent` probe was hitting the right thing.
+- **`R5AICharacter:ActivateCharacter()`** -- `FUNC_Final | FUNC_Native | FUNC_Public |
+  FUNC_BlueprintCallable`, **no parameters**. The name is exactly what §19x was theorising about ("an
+  activation step a level-placed NPC gets that a runtime `SpawnActor` never triggers"). Never called
+  before -- prime first thing to try.
+- **`UStateTreeComponent:SetStateTree(UStateTree*)`**, **`:SetStateTreeReference(FStateTreeReference)`**,
+  **`:SetStartLogicAutomatically(bool)`** -- all `BlueprintCallable`. The CDO has
+  `bStartLogicAutomatically = false`, and `Default__R5AIController:StateTree.StateTreeRef.StateTree`
+  is **null even on the real controller CDO** -- so the tree reference is NOT a class default at all;
+  something populates it at runtime for a normally-spawned NPC.
+- **`R5AIStateTreeComponentParams`** (the `Params` DataAsset on the component, confirmed byte-identical
+  to a real Gatherer's in §19x) holds **`StateTreeMap`: `Map<GameplayTag, R5AIStateTreeStateData>`**,
+  where `R5AIStateTreeStateData` is a one-field struct `{ UStateTree* StateTree }`. So the R5 AI system
+  **selects its active tree from this map by GameplayTag** (and `R5AIStateTreeComponent:OnStateChanged(PrevState, CurrentState)`
+  -- both `GameplayTag` -- is the switch hook). The map is the authoritative source of the correct tree
+  for this AI, better than hard-coding `ST_Mob_Handyman_Worker_Calm_Unagressive`.
+- **`R5AIController:StartLogic()` / `StopLogic()`** -- already used safely mod-wide via
+  `Spawner.SetAILogic`. `R5AIPawnParamsStateTreeEvaluator` exists as a StateTree evaluator struct,
+  confirming `AIPawnParams` feeds the tree at tick time (so the §19x work wiring those in was not
+  wasted, it's a real input -- just not the thing that STARTS the tree).
+
+**New command `lbwakeai [status|activate|graft]`** (`Spawner.WakeAI`), runs on the current target:
+1. `status` -- reads `StateTreeRef.StateTree` / `GetStateTreeRunStatus()` / `IsRunning()` and the
+   brain component class.
+2. `activate` -- calls `R5AICharacter:ActivateCharacter()`, re-reads.
+3. `graft` -- Xenophon's native-AI taming recipe (see `project_crew_type_exploration` memory), never
+   tried in LivingBase before: pull the real `UStateTree` from `Params.StateTreeMap` (fallback: resolve
+   the Handyman calm-worker asset), then `StopLogic()` -> `SetStartLogicAutomatically(true)` ->
+   `SetStateTree(tree)` -> `StartLogic()`, verified by readback.
+4. no arg (`auto`) -- does status -> activate -> status -> graft -> status.
+
+Every native call is individually `pcall`'d with an `always()` line printed immediately **before and
+after**, so if any of them hard-crash (the `SetAnimInstanceClass` pattern from §19x -- an access
+violation is not a catchable Lua error) the log pins down the exact call. `ActivateCharacter` and
+`SetStateTree` are the two genuinely-new calls; `Stop/StartLogic` are already-proven-safe.
+
+**Result (2026-09-10): the wall came down on its own -- `lbwakeai` was NOT needed.** On the first
+in-game run after deploying, a normal donor-based swap (a real native NPC donor + composite look +
+`lbfreeze off`) had her **walking** -- and `lbwakeai status` (pure read) confirmed
+`StateTreeRef.StateTree = ST_Mob_Handyman_Worker_Calm_Unagressive`, `GetStateTreeRunStatus() = 0`,
+`IsRunning() = true`: the exact real-Gatherer baseline §19x could never reach. Even the *frozen* state
+was now correct -- her head tracked the player (the look-at behaviour real frozen NPCs have), where
+before she was fully inert.
+
+**Why it works now when §19x said it didn't**: §19x did almost all its testing via `lbreload`, which
+(a) does NOT re-derive scripts from `Working\` -- only a manual copy to the live install does -- and
+(b) wedges `ExecuteWithDelay` after repeated rapid calls, so the deferred pre-warm / pre-possess
+window (`preFinishAIPawnParams`: Faction/Agent/Memory params + the pre-warmed StateTree asset resolve)
+silently never completed. A genuine cold game launch on the deployed code runs that window intact and
+the StateTree initialises normally. The lesson is a process one, already in the deploy-discipline
+memory: **after editing a mod file, copy it to the live install AND validate on a fresh launch, not an
+`lbreload`, before concluding a fix doesn't work.**
+
+**`lbwakeai` / `Spawner.WakeAI` are kept as a fallback** -- if a future from-scratch or exotic class
+spawns with a dead StateTree, the `ActivateCharacter()` + graft path is ready and the jmap-derived API
+notes above stay valid.
+
+**Scope note**: this was verified on the **donor path** (real native NPC as the base class), which
+RedFalcon confirmed (2026-09-10) is the shipping approach for the walking "Barbie" -- the from-scratch
+`BP_BarbieR5Char_Test` class is shelved (not deleted; the SDK-stub authoring work, baked AnimClass /
+Mesh offset all remain).
+
+### 19z. The "the composite rebuild is fundamentally unreliable" crash saga -- it wasn't the rebuild, it was a use-after-free in a say() (2026-09-10)
+
+Building the walking-Barbie roster, a `lbtestbodyspawn` command (a variant of `lbtestbodyswap` that
+never despawns/replaces -- brand-new spawn every call, for testing) crashed **6/6**: "spawns in, then
+crashes with a dump ~2s later." Chased for most of a session as "the cross-sex composite rebuild is
+probabilistically unstable" (which the config comments had long claimed) and nearly pivoted the whole
+project to baking the look into a cooked Blueprint to avoid runtime composite work entirely.
+
+**It was none of that.** `parse_minidump.py` on every dump: `EXCEPTION_ACCESS_VIOLATION` at the
+*identical* `UE4SS.dll +0x3a9139` every time. An A/B against plain `lbtestbodyswap` (which never
+crashed) isolated the one difference: the new command's `say(msg)` did
+`if Ar then pcall(function() Ar:Log(msg) end) end` (copied from other command handlers) -- and that
+`say` is threaded through `SwapBodyType` -> `pollForBuildThenApplyBodySwap` -> a `ExecuteWithDelay`
+callback (`applyPhase2`) that runs **~2 seconds after the console command already returned**. By then
+`Ar` (the `FOutputDevice`) is destroyed; `Ar:Log` on the freed pointer is an uncatchable native AV
+(`pcall` never sees it). Removing the `Ar:Log` line fixed it completely -- Gatherer + Herbalist spawn,
+strip, and walk with zero crashes.
+
+**Rules banked:**
+- **Never capture `Ar` in any closure that can outlive the command handler's synchronous return.** A
+  `say()` passed into deferred/polled/timer code must `print`/file-log only, never touch `Ar`.
+- **UE4SS truncates `ue4ss.log` on every launch** -- a crash's last lines vanish the moment the game
+  relaunches, which is what made this a multi-hour guess. Fix shipped: `spawner.lua`'s `lbLogFile()` /
+  `Spawner.dbg()` append key lines to a PERSISTENT `Mods/LivingBase/livingbase_debug.log` (rotates at
+  4 MB, session banners). Do **not** wrap global `print` to do this -- an attempt to, and its per-line
+  file I/O on the game thread during a composite build, correlated with a fresh crash; keep the sink
+  on `always()`/`dbg()`/explicit calls.
+- A **leftover persisted "BodyTypeSwap" test actor** (from an earlier crashed session) is restored on
+  every launch and its own composite rebuild races a new test spawn -- a real secondary crash cause,
+  now fixed by marking `lbtestbodyswap`/`lbtestbodyspawn` spawns **transient** (no persist entry;
+  same mechanism the night-raider spawns use). Dev/test spawns should never persist.
+- **Underwear (Torso/Legs -> `SK_Armor_Underwear_0*_Female_*`) is a cold reference** -- missed on the
+  first spawn of a fresh session, applied fine after a reload. Pre-warmed near the top of
+  `SwapBodyType` alongside the StateTree/AIPawnParams pre-warms.
+
+**Net**: the runtime donor-swap path (female donor -> composite build with Barbie `DefaultParams` +
+Adventurer archetype -> strip to underwear -> walk) is now confirmed working end to end, no crash. The
+bake / JsonAsAsset-Reflection detour is **not needed** and was stood down (Reflection stays cloned at
+`Other/JsonAsAsset-Reflection` for a possible future use). **Male donors** (BlackAxel/MortarMan/
+Woodman/JasperCrowe) still hit a *separate* `VCRUNTIME140.dll +0x1dc1c` memcpy crash inside
+`SwapBodySex()` -- so the roster is built on the natively-female donors (Gatherer/Herbalist) with the
+male-donor *body shapes* supplied by the already-baked `DA_Custom_BodyType_*AsAdventurer` retargets,
+not a live sex swap.

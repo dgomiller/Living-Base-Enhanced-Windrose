@@ -5622,7 +5622,33 @@ end
 -- controller list -- reused here for the morph-controller list instead, targeting the PLAYER's
 -- own pawn (Age is a player character-creator concept first) since no existing probe has ever
 -- dumped this list's actual VALUES before, only confirmed the function exists.
-function Spawner.TestDumpMorphControllers(say)
+function Spawner.TestDumpMorphControllers(sayIn)
+    -- 2026-09-10: capture the whole dump to morphctrl_<ts>.txt too (feeds the custom-MorphParams
+    -- authoring for the player-creator body types; ue4ss.log truncates on launch).
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local file, filePath = nil, nil
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/morphctrl_" .. ts .. ".txt", "Mods/LivingBase/morphctrl_" .. ts .. ".txt", "morphctrl_" .. ts .. ".txt" }) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+    local realPrint = print
+    if file then
+        print = function(...)
+            realPrint(...)
+            local parts = {}
+            for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+    local ok, err = pcall(function() Spawner._dumpMorphCtrlBody(sayIn) end)
+    print = realPrint
+    if file then pcall(function() file:flush(); file:close() end) end
+    if filePath then print("[LivingBase] [dump-morphctrl] full dump also written to " .. filePath .. "\n") end
+    if not ok then print("[LivingBase] [dump-morphctrl] FAILED: " .. tostring(err) .. "\n") end
+    return ok
+end
+
+function Spawner._dumpMorphCtrlBody(say)
     say = say or function(m) print("[LivingBase] [dump-morphctrl] " .. tostring(m) .. "\n") end
     local pc = UEHelpers.GetPlayerController()
     if not (pc and pc:IsValid()) then say("no PlayerController"); return false end
@@ -5681,7 +5707,35 @@ end
 -- comp.MorphParams.MorphControllers / .MorphControllerParams (the authored source arrays), and (4)
 -- the anim BodyMorph vector for cross-check. Runs on resolveTestDiagActor() -- spawn a NATIVE donor
 -- (no BodyTypeList override, no sex swap needed) and probe it, then repeat per donor.
-function Spawner.DumpMorphForTarget(say)
+-- 2026-09-10 (RedFalcon: "make dumpmorphctrl write to ... its own log to preserve the data"): the
+-- WHOLE dump is also captured to a timestamped morphdump_<ts>.txt (ue4ss.log truncates on launch;
+-- this data feeds the custom-MorphParams authoring and must survive). Same synchronous print-swap
+-- capture ProbeDumpProperties uses -- no ExecuteWithDelay anywhere in this chain.
+function Spawner.DumpMorphForTarget(sayIn)
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local file, filePath = nil, nil
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/morphdump_" .. ts .. ".txt", "Mods/LivingBase/morphdump_" .. ts .. ".txt", "morphdump_" .. ts .. ".txt" }) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+    local realPrint = print
+    if file then
+        print = function(...)
+            realPrint(...)
+            local parts = {}
+            for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+    local ok, err = pcall(function() Spawner._dumpMorphBody(sayIn) end)
+    print = realPrint
+    if file then pcall(function() file:flush(); file:close() end) end
+    if filePath then print("[LivingBase] [dump-morph] full dump also written to " .. filePath .. "\n") end
+    if not ok then print("[LivingBase] [dump-morph] FAILED: " .. tostring(err) .. "\n") end
+    return ok
+end
+
+function Spawner._dumpMorphBody(say)
     say = say or function(m) print("[LivingBase] [dump-morph] " .. tostring(m) .. "\n") end
     local actor = resolveTestDiagActor()
     if not (actor and actor:IsValid()) then

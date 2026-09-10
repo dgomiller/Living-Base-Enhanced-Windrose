@@ -3819,6 +3819,40 @@ end
 -- doesn't need to be redone between shots. "lbtestbodyswap reset" clears the locked position (next
 -- call picks a fresh in-front-of-player spot).
 ------------------------------------------------------------
+
+-- Shared classifier for the trailing lbtestbodyswap/lbtestbodyspawn args (2026-09-10, RedFalcon:
+-- "can we tweak the commands so the M and F are at the end still"). Args 1/2 are always
+-- family/classPath; every arg AFTER that is classified by CONTENT, not position, so
+-- `... F on <List>` and `... on <List> F` and `... <List> F on` are all equivalent:
+--   M/F/male/female              -> sexArg
+--   on/u/underwear/true/1        -> underwearArg = "on"
+--   @X,Y,Z  or  @X,Y,Z,YAW       -> atArg = { X=, Y=, Z=, yaw= } (exact spawn transform, repeatable)
+--   anything with "BodyTypeList" (and no "@")  -> the body-type-list override (expanded to full path)
+--   a plain "/..." path                        -> the body-type-list override, verbatim
+--   "-"                          -> ignored
+local function classifySwapArgs(Parameters, firstIdx)
+    local sexArg, underwearArg, btArg, atArg = nil, nil, nil, nil
+    for i = firstIdx, 12 do
+        local a = Parameters and Parameters[i]
+        if type(a) == "string" and a ~= "" and a ~= "-" then
+            local low = a:lower()
+            if low == "m" or low == "f" or low == "male" or low == "female" then
+                sexArg = a
+            elseif low == "on" or low == "u" or low == "underwear" or low == "true" or low == "1" then
+                underwearArg = "on"
+            elseif a:sub(1, 1) == "@" then
+                local x, y, z, yw = a:sub(2):match("^(-?[%d.]+),(-?[%d.]+),(-?[%d.]+),?(-?[%d.]*)$")
+                if x then atArg = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z), yaw = tonumber(yw) } end
+            elseif a:find("BodyTypeList") then
+                btArg = a:find("/") and a or ("/Game/Mods/LivingBaseExtended/" .. a .. "." .. a)
+            elseif a:find("/") then
+                btArg = a
+            end
+        end
+    end
+    return sexArg, underwearArg, btArg, atArg
+end
+
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestbodyswap", function(FullCommand, Parameters, Ar)
@@ -3828,15 +3862,14 @@ if RegisterConsoleCommandHandler then
             local bodyTypesArg = Parameters and Parameters[1]
             local classArg = Parameters and Parameters[2]
             if classArg == "-" or classArg == "" then classArg = nil end
-            local sexArg = Parameters and Parameters[3]
-            local underwearArg = Parameters and Parameters[4]
-            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, underwearArg, say) end)
+            local sexArg, underwearArg, btArg, atArg = classifySwapArgs(Parameters, 3)
+            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, underwearArg, say, false, btArg, atArg) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] [underwear: on|-]")
-    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [sex: M/F|-] [underwear: on|-]", "Spawns classPath at its native shape, then applies a direct post-build mesh swap to the given family (Adventurer/African/Albion/Fable/Native/Orient/Scum/Senkamati), a sex swap (M/F), and/or strips to underwear (pass 'on'/'u' as the 4th arg) -- all combined in one command. Also locks the spawn position/rotation on the first call and reuses it for every subsequent call (destroying the previous spawn), so only the body changes -- ideal for cycling through Barbie variants without redoing camera framing each time. 'lbtestbodyswap reset' clears the locked position.")
+    log("Console command registered: lbtestbodyswap <family|reset|-> [classPath|-] [on] [BodyTypeList] [M/F] (order-free)")
+    registerCmdInfo("lbtestbodyswap", "lbtestbodyswap <family|reset|-> [classPath|-] [on] [BodyTypeList] [M/F] [@X,Y,Z[,YAW]]", "Spawns classPath, applies family mesh swap + strip + a roster DA_Custom_BodyTypeList_* body-type override + M/F + an exact @X,Y,Z[,YAW] spawn transform -- pass any of those in ANY order after the class. Locks the spawn position on the first call, replaces the previous spawn every call after. 'lbtestbodyswap reset' clears the lock. (Cross-sex rebuilds on male donors carry a known crash risk -- use the @coords the spawn prints to reproduce it crash-free.)")
 else
     log("lbtestbodyswap unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -3861,16 +3894,16 @@ if RegisterConsoleCommandHandler then
             local familyArg = Parameters and Parameters[1]
             local classArg = Parameters and Parameters[2]
             if classArg == "-" or classArg == "" then classArg = nil end
-            local sexArg = Parameters and Parameters[3]
-            local underwearArg = Parameters and Parameters[4]
-            if not classArg then say("usage: lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]"); return true end
-            local ok, err = pcall(function() Spawner.SwapBodyType(familyArg, classArg, sexArg, underwearArg, say, true) end)
+            -- args 3+ classified by content, order-independent (M/F, on, BodyTypeList, @X,Y,Z[,YAW]) -- see classifySwapArgs.
+            local sexArg, underwearArg, btArg, atArg = classifySwapArgs(Parameters, 3)
+            if not classArg then say("usage: lbtestbodyspawn <family|-> <ClassPath> [on] [BodyTypeList] [M/F] [@X,Y,Z[,YAW]]  (order-free)"); return true end
+            local ok, err = pcall(function() Spawner.SwapBodyType(familyArg, classArg, sexArg, underwearArg, say, true, btArg, atArg) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
-    log("Console command registered: lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]")
-    registerCmdInfo("lbtestbodyspawn", "lbtestbodyspawn <family|-> <ClassPath> [sex M/F|-] [underwear on|-]", "Same full process as lbtestbodyswap (sex/body/family swap, strip, AI wiring) but a BRAND-NEW spawn every call -- never despawns the previous actor, never reuses a locked spot. Isolates whether the replacement crash is the despawn->rebuild race or the composite rebuild itself.")
+    log("Console command registered: lbtestbodyspawn <family|-> <ClassPath> [on] [BodyTypeList] [M/F] (order-free)")
+    registerCmdInfo("lbtestbodyspawn", "lbtestbodyspawn <family|-> <ClassPath> [on] [BodyTypeList] [M/F] [@X,Y,Z[,YAW]]", "Brand-new Barbie spawn (never despawns previous): family + Barbie outfit + strip + walking AI. After the class, pass any of (ANY order): 'on' (underwear), a roster DA_Custom_BodyTypeList_* (Origin skin / donor shape), M/F, @X,Y,Z[,YAW] (exact spawn transform). The spawn prints its final @coords -- paste them back to reproduce it exactly (the crash-safe workflow for the male-donor sex-swap).")
 else
     log("lbtestbodyspawn unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -8396,4 +8429,27 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbcamerarotate", "lbcamerarotate <pitch|yaw|roll> <amount>", "Rotates the active lbphototripod camera on one axis (pitch, yaw, or roll) by a signed number of degrees, for exact/repeatable framing. No-ops if no tripod camera is active (run lbphototripod on first).")
 else
     log("lbcamerarotate unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+------------------------------------------------------------
+-- lbcamerapose [X,Y,Z] [Pitch,Yaw,Roll] -- (2026-09-10) ABSOLUTE tripod-camera transform, so a
+-- photo setup is fully reproducible by copy-pasting numbers. No args prints the current pose in the
+-- exact format this command accepts.
+------------------------------------------------------------
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbcamerapose", function(FullCommand, Parameters, Ar)
+            local posStr = Parameters and Parameters[1]
+            local rotStr = Parameters and Parameters[2]
+            if posStr == "-" or posStr == "" then posStr = nil end
+            if rotStr == "-" or rotStr == "" then rotStr = nil end
+            local ok, err = pcall(function() Spawner.TripodPose(nil, posStr, rotStr) end)
+            if not ok then print("[LivingBase] [lbcamerapose] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbcamerapose [X,Y,Z] [Pitch,Yaw,Roll]")
+    registerCmdInfo("lbcamerapose", "lbcamerapose [X,Y,Z] [Pitch,Yaw,Roll]", "Absolute transform for the active lbphototripod camera. No args: prints the current pose (and a copy-paste command to reproduce it). One arg (X,Y,Z): set position. Two args: set position + rotation. Pairs with lbcameramove/lbcamerarotate for fine nudges.")
+else
+    log("lbcamerapose unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

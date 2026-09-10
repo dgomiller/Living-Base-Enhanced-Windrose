@@ -6602,6 +6602,51 @@ function Spawner.RotateTripodCamera(axis, amount, say)
     return ok
 end
 
+-- Spawner.TripodPose(say, posStr, rotStr) -- "lbcamerapose [X,Y,Z] [Pitch,Yaw,Roll]" (2026-09-10,
+-- RedFalcon: "same with the tripodcamera, but all locations and all rotations" -- an ABSOLUTE
+-- transform so a photo setup is fully reproducible by copy-pasting numbers, instead of nudging with
+-- lbcameramove/lbcamerarotate from an unknown start). No args -> print the current pose in exactly
+-- the format the setter accepts. One arg (X,Y,Z) -> set position only. Two -> set both.
+function Spawner.TripodPose(say, posStr, rotStr)
+    say = say or function(m) print("[LivingBase] [camerapose] " .. tostring(m) .. "\n") end
+    local cam = Spawner._photoTripodActor
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- run lbphototripod on first.")
+        return false
+    end
+    local function parse3(s)
+        if not s then return nil end
+        local a, b, c = s:match("^%s*(-?[%d.]+)%s*,%s*(-?[%d.]+)%s*,%s*(-?[%d.]+)%s*$")
+        if not a then return nil end
+        return tonumber(a), tonumber(b), tonumber(c)
+    end
+    if not posStr and not rotStr then
+        local loc, rot
+        pcall(function() loc = cam:K2_GetActorLocation() end)
+        pcall(function() rot = cam:K2_GetActorRotation() end)
+        if loc and rot then
+            say(string.format("current pose:  %.1f,%.1f,%.1f  %.2f,%.2f,%.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll))
+            say(string.format("reproduce with:  lbcamerapose %.1f,%.1f,%.1f %.2f,%.2f,%.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll))
+        else
+            say("could not read tripod camera pose.")
+        end
+        return true
+    end
+    local px, py, pz = parse3(posStr)
+    if posStr and not px then say("bad position -- expected X,Y,Z (e.g. -808407.4,126372.4,300)"); return false end
+    if px then
+        local ok = pcall(function() cam:K2_SetActorLocation({ X = px, Y = py, Z = pz }, false, {}, false) end)
+        say(string.format("position -> %.1f,%.1f,%.1f : %s", px, py, pz, tostring(ok)))
+    end
+    local rp, ry, rr = parse3(rotStr)
+    if rotStr and not rp then say("bad rotation -- expected Pitch,Yaw,Roll (e.g. -10,45,0)"); return false end
+    if rp then
+        local ok = pcall(function() cam:K2_SetActorRotation({ Pitch = rp, Yaw = ry, Roll = rr }, false) end)
+        say(string.format("rotation -> Pitch=%.2f Yaw=%.2f Roll=%.2f : %s", rp, ry, rr, tostring(ok)))
+    end
+    return true
+end
+
 function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
     say = say or function(m) print("[LivingBase] [phototripod] " .. tostring(m) .. "\n") end
     local pc, pawn
@@ -12792,7 +12837,18 @@ end
 -- call is a brand-new spawn at a fresh spot in front of the player, previous ones left standing.
 -- Built to isolate the replacement crash: if the full swap is stable this way but crashes when it
 -- replaces, the culprit is the despawn->rebuild race, not the composite rebuild itself.
-function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn)
+-- bodyTypesOverride (2026-09-10): a full "/Game/Mods/LivingBaseExtended/DA_Custom_BodyTypeList_*"
+-- path -- when given, it REPLACES the default DA_NPC_BodyTypesParams_Common in the compositeLook,
+-- so one command produces a roster cell (chosen Origin skin OR donor shape via the retarget matrix)
+-- WITH the Barbie outfit + strip + walking AI, instead of needing lbtestbodytypes (naked, frozen)
+-- and lbtestbodyspawn (outfit, common body) as two separate spawns.
+-- atOverride (2026-09-10, RedFalcon: "the spawn command includes z rotation and xy position? then I
+-- can despawn the current and manually spawn in the exact same space" -- a crash-safe alternative to
+-- the replace-in-place lbtestbodyswap for the male-donor cross-sex rebuild that can crash: spawn at
+-- explicit coords, and if it crashes, relaunch and re-run with the SAME coords). A
+-- { X=, Y=, Z=, yaw= } table -- when given it's used verbatim as the spawn transform (overrides both
+-- the locked-position mechanism and freshSpawn's nil-forcing). yaw may be nil (keeps current facing).
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn, bodyTypesOverride, atOverride)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
@@ -12959,12 +13015,19 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
             -- DA_NPC_BodyTypesParams_Common under Content/Gameplay/Character/AI/NPC/Base/Params/
             -- Customization. Passing it explicitly here is a no-op for real donors (same asset they
             -- already default to) and the actual fix for blank classes.
-            bodyTypes = "/Game/Gameplay/Character/AI/NPC/Base/Params/Customization/DA_NPC_BodyTypesParams_Common.DA_NPC_BodyTypesParams_Common",
+            -- bodyTypesOverride: a roster BodyTypeList retarget (Origin skin / donor shape) wins over Common.
+            bodyTypes = bodyTypesOverride or "/Game/Gameplay/Character/AI/NPC/Base/Params/Customization/DA_NPC_BodyTypesParams_Common.DA_NPC_BodyTypesParams_Common",
         }
+        if bodyTypesOverride then say("bodyTypes override: " .. bodyTypesOverride) end
     end
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw
     if freshSpawn then atLocation, yaw = nil, nil end
+    if atOverride and atOverride.X then
+        atLocation = { X = atOverride.X, Y = atOverride.Y, Z = atOverride.Z }
+        if atOverride.yaw then yaw = atOverride.yaw end
+        say(string.format("explicit spawn transform: @%.1f,%.1f,%.1f%s", atOverride.X, atOverride.Y, atOverride.Z, atOverride.yaw and (" yaw=" .. string.format("%.1f", atOverride.yaw)) or ""))
+    end
 
     -- 2026-09-09 FIX (RedFalcon: "when done, i just crashed again swapping" / "no dump this time" --
     -- a SECOND, different crash from the SetBody one, no minidump produced at all this time).
@@ -13145,6 +13208,17 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
                 Spawner._bodySwapYaw = rot.Yaw
                 say(string.format("locked swap position at (%.1f, %.1f, %.1f) yaw=%.1f -- every subsequent lbtestbodyswap call will reuse this exact spot (updated to match any repositioning of the current subject) until 'lbtestbodyswap reset'.",
                     loc.X, loc.Y, loc.Z, rot.Yaw))
+            end
+        end
+        -- 2026-09-10: always report the actual final transform, so a spawn can be reproduced exactly
+        -- (paste it back as the @X,Y,Z,YAW arg) -- the crash-safe workflow for the male-donor
+        -- cross-sex rebuild: note the coords, and if it crashes, relaunch and re-run with them.
+        do
+            local loc, rot = nil, nil
+            pcall(function() loc = actor:K2_GetActorLocation() end)
+            pcall(function() rot = actor:K2_GetActorRotation() end)
+            if loc and rot then
+                say(string.format("spawned at  @%.1f,%.1f,%.1f,%.1f  (reproduce: add this as the last arg)", loc.X, loc.Y, loc.Z, rot.Yaw))
             end
         end
         say("Spawn call returned an actor (AI frozen).")

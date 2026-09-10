@@ -4814,3 +4814,42 @@ requested body mesh and skin material, with no crash -- confirmed across repeate
 making a from-scratch class actually usable for the real Barbie-roster workflow, not just spawnable --
 is IN PROGRESS, not closed: visibility is solid, sex resolution has a fix applied pending retest, and
 animation/grounding are diagnosed but not yet fixed.
+
+**UPDATE, same night -- sex resolution CONFIRMED FIXED live; the animation attempt crashed
+instead, guarded out, not yet a working fix.** Also caught a real process mistake along the way: the
+`bodyTypes` fix above was edited in `Working\LivingBaseEnhanced\...` but never actually deployed to the
+live install (`J:\SteamLibrary\...`) -- a full game restart still ran the STALE `spawner.lua`, which is
+why the first retest still showed `bodies=-`/`GetBodySex before=1 after=1` despite the fix already
+being committed. **Lesson: an edit to the `Working` copy is not live until explicitly copied to the
+install path (`diff` the two `spawner.lua`s to confirm), regardless of whether the game was just
+freshly restarted** -- a fresh launch only helps if the deploy step already happened first. Once
+actually deployed and `lbreload`'d:
+- **Sex resolution: CONFIRMED WORKING.** `bodies immediate read-back` now shows the real
+  `DA_NPC_BodyTypesParams_Common` object (not empty), and `GetBodySex` read `2` (Female) immediately
+  after the pre-build composite write -- the sex landed on the FIRST build, no post-build swap step
+  even needed. The theory (blank class has no valid `BodyTypeParams` pool to resolve against) was
+  correct, and explicitly supplying the real pool's path fixed it completely.
+- **Animation: attempted, crashed, guarded out.** Wired `Spawner.SetAnimClass(actor,
+  ".../ABP_StandingNPC_Regular_AI.ABP_StandingNPC_Regular_AI_C")` in behind the same
+  check-before-fix pattern as the base-mesh fix (only fires when `Mesh:GetAnimInstance()` is actually
+  nil, a no-op for real donors). Live result: **crashed within ~60ms of the call, no further log
+  output at all** -- same crash signature as the earlier Woodman female-swap crash
+  (`EXCEPTION_ACCESS_VIOLATION`, bottoms out in `VCRUNTIME140.dll`, no symbols for either
+  `UE4SS.dll` or the game exe, so the real callstack is unrecoverable via `parse_minidump.py`). Timing
+  correlation with the log is unambiguous even without a symbolicated stack. Revised theory:
+  `ABP_StandingNPC_Regular_AI`'s "Share_HumanAI" folder name suggested a generic, reusable AnimBP back
+  in the 2026-08-14 statue investigation, but it's specifically the "_AI" variant -- very likely its
+  graph reads AIController/blackboard data (movement speed, IsMoving, etc.) that only exists on a real
+  `AR5AIController`. This class's own `Controller` is a plain generic `/Script/AIModule.AIController`
+  (confirmed via probedump), so the AnimBP almost certainly null-derefs querying data that isn't there
+  on its first tick. Same root-cause family as every other gap this class has hit tonight -- this one
+  just crashes instead of rendering wrong. **Guarded out** (same "confirmed crash, don't retry blind"
+  rule already applied to Woodman): the check-before-fix logic still runs and still detects the missing
+  AnimInstance, but no longer calls `SetAnimClass` -- logs a clear reason and leaves the actor T-posing
+  (visible, no crash) instead. **Next real step, not yet attempted**: wire a real `AIControllerClass`/
+  `AIPawnParams` onto this class first (the same pre-BeginPlay mechanism already proven for
+  `BodyTypeParams`/`DefaultParams`/`ArchetypePreset`), giving the AnimBP an actual `AR5AIController` to
+  query, then retry the AnimClass swap against that.
+**Status, updated**: visibility + sex are both CONFIRMED SOLID now. Animation is a confirmed-unsafe
+path pending a real `AIControllerClass`/`AIPawnParams` fix, not yet attempted. Floating/grounding
+remains uninvestigated on its own.

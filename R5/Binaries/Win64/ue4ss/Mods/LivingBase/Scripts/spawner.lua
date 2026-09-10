@@ -11789,6 +11789,20 @@ local ADVENTURER_ARCHETYPE_BY_SEX = {
     [2] = "/R5BusinessRules/Character/Customization/NPC/Handyman/Gatherer/DA_Customization_Handyman_Gatherer_PresetArchetype1.DA_Customization_Handyman_Gatherer_PresetArchetype1",
 }
 
+-- 2026-09-09 FIX (donor-independent classes, e.g. BP_BarbieR5Char_Test: "it does appear floating in
+-- the air, tposing with no animation"). A real donor's own class defaults already point Mesh.AnimClass
+-- at a real AnimBlueprint; a from-scratch class has nothing there, so no AnimInstance ever runs and the
+-- skeleton sits in its raw bind pose. This is the SAME generic, reusable AnimBP this project already
+-- found and proved live back on 2026-08-14 for the Senkamati statue pose-porting investigation
+-- (Spawner.SetAnimClass, item 54/55 in the older CLAUDE.md write-up) -- it T-posed THERE for an
+-- unrelated reason (a mismatched skeleton being forced onto it), not relevant here since our class uses
+-- a real, matching humanoid skeleton (SK_Adventure_Female_01) this AnimBP already natively drives for
+-- real living AI pawns (confirmed via the same 2026-08-14 probe). Re-derived the exact path live via
+-- lbtestlistclass /Script/Engine AnimBlueprint StandingNPC (the config constant that once held it,
+-- SENKA_STATUE_STANDING_ANIM_CLASS, was deleted when that older investigation closed out as dead for
+-- ITS use case).
+local STANDING_NPC_ANIM_CLASS = "/Game/Character/Animation_Blueprints/Human/Regular/Share_HumanAI/ABP_StandingNPC_Regular_AI.ABP_StandingNPC_Regular_AI_C"
+
 local function familySkinMaterialPath(family, sex)
     local entry = FAMILY_SKIN_MATERIAL[family]
     if not entry then return nil end
@@ -11974,6 +11988,37 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
                 hasBaseMesh = sk ~= nil and sk:IsValid()
             end
         end)
+        -- 2026-09-09 FIX: same shape as hasBaseMesh above -- check whether an AnimInstance is
+        -- ACTUALLY running before doing anything, so this stays a genuine no-op for every real donor
+        -- (who already has one from their own class defaults) and only kicks in for a donor-independent
+        -- class that has none. GetAnimInstance() returning nil/invalid means BlueprintMode has nothing
+        -- driving the skeleton at all -- the raw T-pose symptom.
+        local hasAnimInstance = false
+        pcall(function()
+            local body = actor.Mesh
+            if body and body:IsValid() then
+                local inst = nil
+                pcall(function() inst = body:GetAnimInstance() end)
+                hasAnimInstance = inst ~= nil and inst:IsValid()
+            end
+        end)
+        if not hasAnimInstance then
+            -- 2026-09-09 KNOWN-CRASH GUARD: tried this live exactly once -- EXCEPTION_ACCESS_VIOLATION
+            -- (VCRUNTIME140.dll, no symbols, same signature class as the Woodman female-swap crash)
+            -- within ~60ms of this call, no further log output at all. "Share_HumanAI"'s folder name
+            -- suggested a generic/reusable AnimBP back in the 2026-08-14 statue investigation, but this
+            -- is specifically the "_AI" variant -- very likely its graph reads AIController/blackboard
+            -- data (movement speed, IsMoving, etc.) that only exists on a real AR5AIController. Our
+            -- blank class's Controller is a plain generic /Script/AIModule.AIController (confirmed via
+            -- probedump), so the AnimBP almost certainly null-derefs on its first tick. Same root-cause
+            -- family as every other gap this class has hit tonight (a real donor provides this for
+            -- free, ours doesn't) -- this one just crashes instead of looking wrong. NOT SAFE TO RETRY
+            -- BLIND: needs a real AIControllerClass/AIPawnParams wired onto this class first (the same
+            -- pre-BeginPlay mechanism already used for BodyTypeParams/DefaultParams/ArchetypePreset),
+            -- then retry the AnimClass swap against a controller the AnimBP can actually query.
+            say("no AnimInstance running on actor.Mesh (raw T-pose) -- NOT applying StandingNPC AnimBlueprint: confirmed crash live 2026-09-09 (see WINDROSE_MODDING_NOTES.md 19x), likely reads AIController/blackboard data our generic controller doesn't have. Left as T-pose (visible, no crash) until AIControllerClass/AIPawnParams are wired in first.")
+        end
+
         if family and familyHandledByArchetype and hasBaseMesh then
             say("skipping redundant base-mesh/skin override -- the archetype+sex-swap path already built the correct Adventurer mesh AND a real base mesh is already present (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton).")
         elseif family then

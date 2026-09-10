@@ -3831,7 +3831,7 @@ end
 --   a plain "/..." path                        -> the body-type-list override, verbatim
 --   "-"                          -> ignored
 local function classifySwapArgs(Parameters, firstIdx)
-    local sexArg, underwearArg, btArg, atArg = nil, nil, nil, nil
+    local sexArg, underwearArg, btArg, atArg, morphArg = nil, nil, nil, nil, nil
     for i = firstIdx, 12 do
         local a = Parameters and Parameters[i]
         if type(a) == "string" and a ~= "" and a ~= "-" then
@@ -3843,6 +3843,8 @@ local function classifySwapArgs(Parameters, firstIdx)
             elseif a:sub(1, 1) == "@" then
                 local x, y, z, yw = a:sub(2):match("^(-?[%d.]+),(-?[%d.]+),(-?[%d.]+),?(-?[%d.]*)$")
                 if x then atArg = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z), yaw = tonumber(yw) } end
+            elseif a:find("MorphParams") then
+                morphArg = a:find("/") and a or ("/Game/Mods/LivingBaseExtended/" .. a .. "." .. a)
             elseif a:find("BodyTypeList") then
                 btArg = a:find("/") and a or ("/Game/Mods/LivingBaseExtended/" .. a .. "." .. a)
             elseif a:find("/") then
@@ -3850,7 +3852,7 @@ local function classifySwapArgs(Parameters, firstIdx)
             end
         end
     end
-    return sexArg, underwearArg, btArg, atArg
+    return sexArg, underwearArg, btArg, atArg, morphArg
 end
 
 if RegisterConsoleCommandHandler then
@@ -3862,8 +3864,8 @@ if RegisterConsoleCommandHandler then
             local bodyTypesArg = Parameters and Parameters[1]
             local classArg = Parameters and Parameters[2]
             if classArg == "-" or classArg == "" then classArg = nil end
-            local sexArg, underwearArg, btArg, atArg = classifySwapArgs(Parameters, 3)
-            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, underwearArg, say, false, btArg, atArg) end)
+            local sexArg, underwearArg, btArg, atArg, morphArg = classifySwapArgs(Parameters, 3)
+            local ok, err = pcall(function() Spawner.SwapBodyType(bodyTypesArg, classArg, sexArg, underwearArg, say, false, btArg, atArg, morphArg) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
@@ -3895,9 +3897,9 @@ if RegisterConsoleCommandHandler then
             local classArg = Parameters and Parameters[2]
             if classArg == "-" or classArg == "" then classArg = nil end
             -- args 3+ classified by content, order-independent (M/F, on, BodyTypeList, @X,Y,Z[,YAW]) -- see classifySwapArgs.
-            local sexArg, underwearArg, btArg, atArg = classifySwapArgs(Parameters, 3)
+            local sexArg, underwearArg, btArg, atArg, morphArg = classifySwapArgs(Parameters, 3)
             if not classArg then say("usage: lbtestbodyspawn <family|-> <ClassPath> [on] [BodyTypeList] [M/F] [@X,Y,Z[,YAW]]  (order-free)"); return true end
-            local ok, err = pcall(function() Spawner.SwapBodyType(familyArg, classArg, sexArg, underwearArg, say, true, btArg, atArg) end)
+            local ok, err = pcall(function() Spawner.SwapBodyType(familyArg, classArg, sexArg, underwearArg, say, true, btArg, atArg, morphArg) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
@@ -4619,6 +4621,28 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbdumpmorphctrl", "lbdumpmorphctrl", "PURE READ: dumps the player pawn's own GetCurrentMorphControllers() list -- every body-morph zone tag + current blend value.")
 else
     log("lbdumpmorphctrl unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbdumpmorph" (2026-09-10) -- dumps everything needed to replicate a native
+-- donor's proportions into a custom MorphParams asset: comp.MorphParams path + its MorphControllers/
+-- MorphControllerParams arrays + live GetCurrentMorphControllers() + anim BodyMorph. Runs on the
+-- current test target (spawn a NATIVE donor, then this).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpmorph", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [dump-morph] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.DumpMorphForTarget(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpmorph")
+    registerCmdInfo("lbdumpmorph", "lbdumpmorph", "PURE READ: on the current test target, dumps comp.MorphParams (+ its MorphControllers/MorphControllerParams), live GetCurrentMorphControllers(), and anim BodyMorph -- everything needed to author a custom per-donor MorphParams. Spawn a NATIVE donor first.")
+else
+    log("lbdumpmorph unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbdumpdecordata" (2026-09-08) -- dumps the PLAYER pawn's own

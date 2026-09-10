@@ -5672,6 +5672,84 @@ function Spawner.TestDumpMorphControllers(say)
     return true
 end
 
+-- Spawner.DumpMorphForTarget(say) -- "lbdumpmorph" (2026-09-10). For the roster morph-pipeline work
+-- (RedFalcon: "Can we create it with custom morph parameters in the pak?"): dump EVERYTHING needed to
+-- replicate a native donor's proportions into a custom R5CompositeMeshComponentMorphParams asset --
+-- (1) comp.MorphParams (the asset path -- a native donor's is usually under /R5BusinessRules/, which
+-- we can't ship, hence the need to author our own), (2) comp:GetCurrentMorphControllers() full
+-- contents (MorphTargetKey tag + Value Vector4 per body zone -- this IS the shape), (3)
+-- comp.MorphParams.MorphControllers / .MorphControllerParams (the authored source arrays), and (4)
+-- the anim BodyMorph vector for cross-check. Runs on resolveTestDiagActor() -- spawn a NATIVE donor
+-- (no BodyTypeList override, no sex swap needed) and probe it, then repeat per donor.
+function Spawner.DumpMorphForTarget(say)
+    say = say or function(m) print("[LivingBase] [dump-morph] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor -- spawn a native donor (e.g. lbspawn <MortarMan class>) or lbprobe one first.")
+        return false
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent."); return false end
+
+    local mp = nil
+    pcall(function() mp = comp.MorphParams end)
+    if mp and mp:IsValid() then
+        local p = "?"; pcall(function() p = mp:GetFullName() end)
+        say("comp.MorphParams = " .. p)
+        for _, arrName in ipairs({ "MorphControllers", "MorphControllerParams" }) do
+            local arr = nil
+            pcall(function() arr = mp[arrName] end)
+            local an = 0
+            if arr then pcall(function() an = arr:GetArrayNum() end); if an == 0 then pcall(function() an = #arr end) end end
+            say(string.format("  MorphParams.%s: %d entrie(s)", arrName, an))
+            for i = 1, an do
+                local e = arr[i]; if e == nil then pcall(function() e = arr:Get(i) end) end
+                pcall(function() if type(e) == "userdata" and e.get then e = e:get() end end)
+                if e then
+                    dumpUnknownStruct(e, string.format("  MorphParams.%s[%d]", arrName, i))
+                    for _, sub in ipairs({ "MorphTargetKey", "ControllerType", "Value", "bRandomizeMorph", "AllowedRange" }) do
+                        local ok, v = pcall(function() return e[sub] end)
+                        if ok and v ~= nil then dumpUnknownStruct(v, string.format("    [%d].%s", i, sub)) end
+                    end
+                end
+            end
+        end
+    else
+        say("comp.MorphParams is nil/invalid.")
+    end
+
+    -- live/current controllers (post-build, the values actually driving the shape)
+    local list = nil
+    pcall(function() list = comp:GetCurrentMorphControllers() end)
+    local ln = 0
+    if list then pcall(function() ln = list:GetArrayNum() end); if ln == 0 then pcall(function() ln = #list end) end end
+    say(string.format("GetCurrentMorphControllers(): %d", ln))
+    for i = 1, ln do
+        local c = list[i]; if c == nil then pcall(function() c = list:Get(i) end) end
+        pcall(function() if type(c) == "userdata" and c.get then c = c:get() end end)
+        if c then
+            dumpUnknownStruct(c, string.format("cur[%d]", i))
+            for _, sub in ipairs({ "MorphTargetKey", "ControllerType", "Value", "MorphValue", "bRandomizeMorph" }) do
+                local ok, v = pcall(function() return c[sub] end)
+                if ok and v ~= nil then dumpUnknownStruct(v, string.format("  cur[%d].%s", i, sub)) end
+            end
+        end
+    end
+
+    -- anim BodyMorph cross-check
+    pcall(function()
+        local body = actor.Mesh
+        local inst = body and body:GetAnimInstance()
+        if inst then
+            local bm = inst.BodyMorph
+            if bm then say(string.format("anim BodyMorph = X=%.4f Y=%.4f Z=%.4f", bm.X or 0, bm.Y or 0, bm.Z or 0)) end
+        end
+    end)
+    return true
+end
+
 -- Spawner.TestDumpBodyDecorData(say) -- "lbdumpdecordata" (2026-09-08, same investigation as
 -- TestDumpMorphControllers just above -- RedFalcon's follow-up correction: "more of an overlay
 -- than a morph," ruling out the MorphControllers zone list (confirmed live: only the 5 known
@@ -12848,7 +12926,11 @@ end
 -- explicit coords, and if it crashes, relaunch and re-run with the SAME coords). A
 -- { X=, Y=, Z=, yaw= } table -- when given it's used verbatim as the spawn transform (overrides both
 -- the locked-position mechanism and freshSpawn's nil-forcing). yaw may be nil (keeps current facing).
-function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn, bodyTypesOverride, atOverride)
+-- morphOverride (2026-09-10): a full "/Game/Mods/LivingBaseExtended/DA_Custom_MorphParams_*" path --
+-- when given it's set as compositeLook.morphParams so the composite build applies that donor's body
+-- proportions to WHATEVER mesh (incl. a retargeted Adventurer one), fixing the "mesh retarget kills
+-- the per-donor shape" problem.
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn, bodyTypesOverride, atOverride, morphOverride)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
@@ -12934,24 +13016,16 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
         if s == "f" or s == "female" then sex = 2
         elseif s == "m" or s == "male" then sex = 1 end
     end
-    -- KNOWN-CRASH GUARD (2026-09-09): Woodman -> Female has crashed 2 for 2 across two separate
-    -- game sessions doing this exact operation (once no-dump, once a real EXCEPTION_ACCESS_VIOLATION
-    -- in VCRUNTIME140.dll -- confirmed via parse_minidump.py). Ruled out both suspicious log signals
-    -- as red herrings first -- the "AddDefaultCompositeMesh...already contains mesh type Strap"
-    -- warning and the R5Check "CompositeMeshData.SexVariations.Contains(ER5BLCharacterSex::Any)"
-    -- soft-assert BOTH fire on every donor's swap (BlackAxel/Herbalist/Farmer all succeeded despite
-    -- them) -- Woodman specifically is the only reproducible differentiator, very likely his own
-    -- native gear (axe/tool piece, unconfirmed exactly which) genuinely incompatible with a
-    -- cross-sex composite rebuild at the engine level. No symbols/PDBs for either UE4SS.dll or
-    -- Windrose-Win64-Shipping.exe (every crash callstack is UnknownFunction), so this can't be fixed
-    -- from Lua -- same category as the SetBody crash below, block outright rather than let it recur.
-    -- Same-sex Woodman calls (native male, no sex override) are untouched and still fine.
-    if sexArg and classPath and classPath:lower():find("handyman_woodman") then
-        local s = sexArg:lower()
-        if s == "f" or s == "female" then
-            say("REFUSED: Woodman -> Female has crashed the game 2/2 times this project (see WINDROSE_MODDING_NOTES.md/memory) -- likely his own native gear is incompatible with a cross-sex composite rebuild. Not safe to retry blind.")
-            return false
-        end
+    -- Woodman -> Female: crashed 2/2 in 2026-09-09 testing (once no-dump, once EXCEPTION_ACCESS_VIOLATION
+    -- in VCRUNTIME140.dll, parse_minidump.py) -- was a hard REFUSE. UNBLOCKED 2026-09-10 (RedFalcon:
+    -- "can you unlock female woodman so i can test again with some of these changes") -- the two
+    -- crashes predate this session's fixes (the Ar-in-a-deferred-callback use-after-free, the
+    -- transient/persist fix, the crash-safe @coords retry workflow), so it's worth re-testing.
+    -- Kept as a loud WARNING, not a block: same probabilistic VCRUNTIME +0x1dc1c cross-sex composite
+    -- rebuild risk every male donor's female cell has, just historically the worst offender.
+    if sexArg and classPath and classPath:lower():find("handyman_woodman")
+        and (sexArg:lower() == "f" or sexArg:lower() == "female") then
+        say("WARN: Woodman -> Female crashed 2/2 in earlier testing (VCRUNTIME +0x1dc1c). Proceeding anyway (unblocked). If it crashes, relaunch and re-run with the same @X,Y,Z,YAW coords the spawn prints.")
     end
     -- underwearArg (2026-09-08, RedFalcon: "can we spawn with underwear") -- reuses the SAME
     -- Spawner.RemoveClothingOnActor(actor, "all", name) call TestSpawnCustomLook's own
@@ -13017,8 +13091,10 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
             -- already default to) and the actual fix for blank classes.
             -- bodyTypesOverride: a roster BodyTypeList retarget (Origin skin / donor shape) wins over Common.
             bodyTypes = bodyTypesOverride or "/Game/Gameplay/Character/AI/NPC/Base/Params/Customization/DA_NPC_BodyTypesParams_Common.DA_NPC_BodyTypesParams_Common",
+            morphParams = morphOverride or nil,
         }
         if bodyTypesOverride then say("bodyTypes override: " .. bodyTypesOverride) end
+        if morphOverride then say("morphParams override: " .. morphOverride) end
     end
 
     local atLocation, yaw = Spawner._bodySwapLoc, Spawner._bodySwapYaw

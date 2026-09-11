@@ -790,6 +790,45 @@ same rebuild-trigger sequence already proven for outfit changes — never actual
 `MorphParams` specifically, only pre-build was), or accepting body-shape variety on statue-type actors
 for now while pursuing outfit/color/hair/eyes variety on the walking-pawn family as already proven.
 
+**CLOSED, 2026-09-10 — the "untested" gap above is now tested, and confirmed dead too.** Built 7
+custom `DA_Custom_MorphParams_*` DataAssets (barycentric extremes/halves/center dumped from the
+player character creator — see the morph-pipeline section further down) and tried every remaining
+lever on a live walking `BP_NPC_Handyman_Gatherer_C`:
+- `comp.MorphParams = <asset>` pre-build (the original lever): asset resolves, sets, reads back OK —
+  no visible change. Same signature as always.
+- The exact "post-build write + rebuild-trigger sequence" flagged above as untested:
+  `comp:StartCharacterEdit()` → `comp:SetMorphControllerValue(controller, value)` ×5 →
+  `comp:EndCharacterEdit(true)` → `comp:ConstructVisualFromParams(-1)`. All calls succeed,
+  `GetCurrentMorphControllers()` reads back the new values (and correctly PERSISTS them across
+  subsequent calls) — **and still zero visible change.** This is the AR5AICharacter-family
+  equivalent trigger the note above speculated about; it does not work either.
+- Raw morph-target route, one level lower: `lbdumpmorphtargets` confirmed `SK_Adventure_Female_01`
+  carries exactly 10 morph targets (`morph_zone_<body|head|nose|ears|brows>_x/_y` — the barycentric
+  X/Y axes per zone, Z = the neutral base with no target). Driving them directly via
+  `SkeletalMeshComponent:SetMorphTarget(name, weight)` on the base mesh: **every call silently
+  failed** (0/10, no crash, no error — same "component present, call rejected" shape).
+- `AnimInstance.BodyMorph` (`lbtestbodymorph`, the ORIGINAL closed investigation from the top of this
+  section) was independently re-confirmed on the same target: this is the exact "write succeeds,
+  changes nothing, traced to a Control Rig graph binding that doesn't re-evaluate after construction"
+  finding from 2026-09-01, still true.
+- **Both crash dumps captured while chasing this were `UE4SS.dll +0x261ae1`** (new address, not the
+  earlier `Ar`-use-after-free `+0x3a9139`) — one from a wider (all-18-components,
+  `K2_SetBodyMorphValue`-included) version of the raw pass, one from an unrelated plain
+  `lbtestbodyspawn` ~37s later with no morph code involved at all, strongly suggesting session state
+  had already gone bad (likely the same `lbreload`-wedge class of issue as §19x/19y) rather than the
+  morph code itself being the direct cause — still, the raw pass was narrowed to one component/one
+  call type as a precaution and left that way.
+
+**Final verdict, walking AI-pawn family**: body SHAPE cannot be changed at runtime by any lever tried
+across two full investigations (2026-09-01 and 2026-09-10) — controller values, the asset reference,
+raw morph targets, and the anim-instance Vector all either get silently ignored or commit-but-don't-
+render, consistent with a Control Rig binding baked once at construction that nothing post-spawn can
+force to re-evaluate. **Body-shape variety on the walking Barbie roster comes ONLY from mesh/family
+selection** (the `DA_Custom_BodyType(List)_<X>As<Y>` retarget grid — already shipping, confirmed
+working: different donor families genuinely render different base proportions). Do not re-open this
+without a fundamentally different technique (e.g. a real Control Rig / anim-blueprint patch, well
+outside Lua's reach) — every remaining "untested" lever in this section has now been tried.
+
 **UPDATE, same overall investigation, one class further tested: explicit body-MESH family and
 explicit MorphParams-shape, TOGETHER on the same statue-family actor, are NOT achievable by any
 technique tried, in either order.** Two combinations tested live:
@@ -5192,3 +5231,82 @@ Woodman/JasperCrowe) still hit a *separate* `VCRUNTIME140.dll +0x1dc1c` memcpy c
 `SwapBodySex()` -- so the roster is built on the natively-female donors (Gatherer/Herbalist) with the
 male-donor *body shapes* supplied by the already-baked `DA_Custom_BodyType_*AsAdventurer` retargets,
 not a live sex swap.
+
+### 19aa. The `SwapBodySex()` crash was a third-party nude mod, not our code -- and the full family×family×sex origin matrix gets finished (2026-09-10/11)
+
+**The male-donor `SwapBodySex()` crash (§19z's closing paragraph) is RESOLVED -- root cause was
+`Female_NUDE_P.pak`/`Alibon_Nude_P.pak`, two Vortex-installed third-party mods sitting in
+`R5/Content/Paks/LivingBase/` (NOT `~mods` -- a separate folder this project's own paks never touch,
+which is why nobody thought to check it sooner) that replace `SK_Adventure_Female_01` /
+`SK_Albion_Female_01` with nude re-exports.** Found while chasing an unrelated report ("the female
+Adventurer body isn't resizing even in the stock character creator, and hasn't in a while") --
+`retoc list` on both paks showed each ships exactly one skeletal mesh package, overriding those two
+family meshes outright. Nude mesh re-exports routinely drop the original's morph targets (confirmed:
+`SK_Adventure_Female_01` under the nude mod had none), which explains the creator symptom directly,
+and very plausibly explains the `SwapBodySex()` memcpy crash too -- that function swaps skeletal
+buffers between the current and target sex, and a topology/vertex-count mismatch between the
+nude-modded mesh and whatever the swap code expects is exactly the shape of bug that produces a raw
+`memcpy` access violation. **Confirmed live**: pulled both nude paks (moved out of the `LivingBase`
+paks folder, `.vortex_backup` copies left in place, real files parked in the session scratchpad --
+not deleted), then ran all 6 sex-change operations the finalized 7-shape roster needs (Herbalist F→M,
+Farmer/Woodman/BlackAxel/MortarMan/JasperCrowe M→F) back to back -- **zero crashes.** The
+`@X,Y,Z,YAW` reproduction workflow (`lbtestbodyswap`/`lbtestbodyspawn` print their landing spot; see
+§19z) stays as cheap insurance but is no longer load-bearing for this crash specifically.
+
+**The morph-shape pipeline this triggered a full re-investigation of (design deliberately distinct
+character-creator bodies, author `DA_Custom_MorphParams_*`, apply at spawn) was fully built --
+R5 stub classes added to the Editor project (`R5CompositeMeshComponentMorphParams`,
+`R5MorphControllerInfo/Data`, `ER5MorphControllerType`, `R5BLCharacterMorphData`/`ER5BLMorphType`),
+7 assets authored/cooked/packaged -- and then CLOSED AS DEAD, again**: this is the exact same
+"Control Rig binds shape once at construction, never re-evaluates" wall from 2026-09-01 (see the
+body-shape section above), now doubly confirmed with every remaining lever tried (`comp.MorphParams=`
+pre-build, the full `StartCharacterEdit`/`SetMorphControllerValue`/`EndCharacterEdit`/
+`ConstructVisualFromParams` session, raw `SetMorphTarget` on the 10 real `morph_zone_<zone>_x/y`
+targets `lbdumpmorphtargets` found on `SK_Adventure_Female_01`, and `AnimInstance.BodyMorph`/
+`lbtestbodymorph` itself). See that section's own "CLOSED, 2026-09-10" entry for the full writeup --
+not repeated here. Roster body-shape variety ships from mesh/family selection only.
+
+**New read-only diagnostic commands, all PURE READ, no state changes:**
+- `lbdumpmorphtargets [test]` -- lists every `UMorphTarget` name on each skeletal mesh component of
+  the player pawn (no arg) or the current test target (`test`). This is what found the 10 real
+  `morph_zone_<body|head|nose|ears|brows>_x/_y` targets on `SK_Adventure_Female_01`.
+- `lbtestmorphlive <DA_Custom_MorphParams_X>` -- applies a custom MorphParams asset's 5-zone values
+  to the current target live (controller session + raw `SetMorphTarget` fallback), dumping
+  `GetCurrentMorphControllers()` before/after. Built to test the morph pipeline in place, no respawn
+  -- superseded by the "CLOSED" verdict above, kept for any future re-investigation.
+- `lbtargetpose` -- `lbwhereami`'s counterpart for the current test target instead of the player pawn:
+  prints X/Y/Z/Pitch/Yaw/Roll and a ready `@X,Y,Z,YAW` token for `lbtestbodyswap`/`lbtestbodyspawn`'s
+  own spawn-position arg.
+
+**The full origin×origin (family×family×sex) retarget matrix is now complete -- 112/112.** Started
+narrow (RedFalcon: "commands to set the gatherer and hunter shapes to every origin mesh") and widened
+once the first fix surfaced a real pattern (RedFalcon: "we should have an originasotherorigin for
+every mesh and sex and bodyshape"). A coverage script against `bodytype_entries.json` (group every
+`DA_Custom_BodyType_<Src>As<Dest>` by its own `BodyType` tag + `BodyTypeSex`, diff against the full
+8-family list) found:
+- **Adventurer/Male was only 1/7** (only `AdventurerMaleAsAfrican` existed, a leftover test entry) --
+  filled the other 6 (`AdventurerMaleAs{Albion,Fable,Native,Orient,Scum,Senkamati}`), packaged as
+  `LivingBaseHunterOriginBatch-Windows`.
+- Re-running the coverage check, **every other family/sex was missing exactly ONE destination:
+  Senkamati** (except African/Male, already covered via the existing `HunterAs*` chain -- Hunter's
+  own native tag is African, not Adventurer, a real mix-up worth remembering: Gatherer=Adventurer/F,
+  Hunter=African/M, they only share the *shape* value, not the family tag). Filled the 11 gaps
+  (`AfricanAsSenkamati`; `Albion`'s `AxelAsSenkamati` F/M via `Axel`; `Fable`'s F + `FableMaleAs*`;
+  `Native`'s F + `MortarAs*`; `Orient`'s F + `OrientMaleAs*`; `Scum`'s F + `ScumMaleAs*`), packaged
+  as `LivingBaseSenkamatiGapBatch-Windows`.
+- Verified twice: once per-family-tag (16 rows: 8 families × 2 sexes, each 7/7), once per **named
+  donor label** (`Axel`, `Jasper`, `Mortar`, `Hunter`, `ScumMale`, `OrientMale`, `FableMale`,
+  `SenkaMale`, plus the plain family names) -- a per-tag pass alone can hide a gap if two different
+  named donors share one tag and only one of them got fixed (this session's own batch script duped
+  from ONE template per (family,sex), so this check mattered); all 16+ named labels independently
+  7/7. **Jasper's own tag is Adventurer, not Albion** (Axel is Albion's male donor) -- easy to
+  confuse, confirmed via `bodytype_entries.json`, not assumed.
+- Recipe used both times: duplicate an already-correctly-tagged sibling entry (same family+sex,
+  different destination) so `BodyType`/`BodyTypeSex` carry over for free, reset `BodyMesh` to a
+  fresh placeholder, run the existing `retarget_canonical_roster.py` (already knows every family's
+  mesh/material naming, including the Adventurer-mesh misspelling and Senkamati's sparse Male/Female
+  asset sets) against a fresh full cook, package the NEW entries only into their own small pak
+  (zero-overlap with the existing canonical pak -- no re-touching already-shipped, already-retargeted
+  output). `~mods` now carries 4 paks total; see `Content/BARBIE_ROSTER.md` for the authoritative
+  list (a 5th, `LivingBaseMorphParams-Windows`, ships the now-dead morph assets and is slated for
+  removal).

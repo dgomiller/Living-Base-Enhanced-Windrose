@@ -5660,6 +5660,37 @@ function Spawner._dumpMorphCtrlBody(say)
         say("no CompositeMeshComponent on the player pawn.")
         return false
     end
+    -- 2026-09-10: also dump comp.MorphParams (= DA_Hero_MorphPrams for the player) and its two arrays
+    -- -- this is the AUTHORED-asset structure we replicate into DA_Custom_MorphParams_*. Shows which
+    -- array (MorphControllers vs MorphControllerParams) actually carries the per-zone values.
+    do
+        local mp = nil
+        pcall(function() mp = comp.MorphParams end)
+        if mp and mp:IsValid() then
+            local pn = "?"; pcall(function() pn = mp:GetFullName() end)
+            say("comp.MorphParams = " .. pn)
+            for _, arrName in ipairs({ "MorphControllers", "MorphControllerParams" }) do
+                local arr = nil
+                pcall(function() arr = mp[arrName] end)
+                local an = 0
+                if arr then pcall(function() an = arr:GetArrayNum() end); if an == 0 then pcall(function() an = #arr end) end end
+                say(string.format("  MorphParams.%s: %d entrie(s)", arrName, an))
+                for i = 1, an do
+                    local e = arr[i]; if e == nil then pcall(function() e = arr:Get(i) end) end
+                    pcall(function() if type(e) == "userdata" and e.get then e = e:get() end end)
+                    if e then
+                        dumpUnknownStruct(e, string.format("  MorphParams.%s[%d]", arrName, i))
+                        for _, sub in ipairs({ "MorphTargetKey", "ControllerType", "Value", "MorphValue", "bRandomizeMorph" }) do
+                            local ok2, v = pcall(function() return e[sub] end)
+                            if ok2 and v ~= nil then dumpUnknownStruct(v, string.format("    [%d].%s", i, sub)) end
+                        end
+                    end
+                end
+            end
+        else
+            say("comp.MorphParams nil/invalid.")
+        end
+    end
     local list = nil
     local okCall, err = pcall(function() list = comp:GetCurrentMorphControllers() end)
     if not okCall then
@@ -5890,6 +5921,271 @@ function Spawner.TestDumpBodyDecorData(say)
     end
     say(string.format("%d available body decor entr(y/ies) total.", n))
     return true
+end
+
+-- Spawner.DumpMeshMorphTargets(sayIn) -- "lbdumpmorphtargets" (2026-09-10). RedFalcon in the PLAYER
+-- character creator: "the female adventurer body is not resizing even in custom creator ... same with
+-- head. its like the morph is locked." That reframes the whole roster morph wall: it may not be
+-- "the mesh retarget kills the morph" generically -- it may be that SK_Adventure_Female_01 (the mesh
+-- the origin grid retargets EVERYTHING onto) simply HAS NO Body/Head morph targets baked into the
+-- FBX, so no MorphParams asset -- ours or the game's -- can reshape it. This lists, per skeletal
+-- mesh on the target actor, every UMorphTarget name on the mesh asset, so we can see which family
+-- meshes actually carry Body_* / Head_* morphs and build the roster on those.
+-- No args -> the player pawn. Arg "test" -> the last spawned/probed test actor.
+-- Whole dump also captured to a timestamped morphtargets_<ts>.txt (ue4ss.log truncates on launch).
+function Spawner.DumpMeshMorphTargets(sayIn, which)
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local file, filePath = nil, nil
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/morphtargets_" .. ts .. ".txt", "Mods/LivingBase/morphtargets_" .. ts .. ".txt", "morphtargets_" .. ts .. ".txt" }) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+    local realPrint = print
+    if file then
+        print = function(...)
+            realPrint(...)
+            local parts = {}
+            for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+    local ok, err = pcall(function() Spawner._dumpMeshMorphTargetsBody(sayIn, which) end)
+    print = realPrint
+    if file then pcall(function() file:flush(); file:close() end) end
+    if filePath then print("[LivingBase] [dump-morphtargets] full dump also written to " .. filePath .. "\n") end
+    if not ok then print("[LivingBase] [dump-morphtargets] FAILED: " .. tostring(err) .. "\n") end
+    return ok
+end
+
+function Spawner._dumpMeshMorphTargetsBody(say, which)
+    say = say or function(m) print("[LivingBase] [dump-morphtargets] " .. tostring(m) .. "\n") end
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    -- collect every skeletal mesh component on the actor
+    local comps = {}
+    pcall(function()
+        local all = actor:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.SkeletalMeshComponent"))
+        if all then
+            local cn = 0
+            pcall(function() cn = all:GetArrayNum() end); if cn == 0 then pcall(function() cn = #all end) end
+            for i = 1, cn do
+                local c = all[i]; if c == nil then pcall(function() c = all:Get(i) end) end
+                pcall(function() if type(c) == "userdata" and c.get then c = c:get() end end)
+                if c then comps[#comps + 1] = c end
+            end
+        end
+    end)
+    -- fall back to the well-known named ones
+    if #comps == 0 then
+        for _, nm in ipairs({ "Mesh", "CompositeMeshComponent" }) do
+            local c = nil; pcall(function() c = actor[nm] end)
+            if c and c:IsValid() then comps[#comps + 1] = c end
+        end
+    end
+    say(string.format("%d skeletal mesh component(s) on the actor", #comps))
+
+    for ci, comp in ipairs(comps) do
+        pcall(function()
+            local cname = "?"; pcall(function() cname = comp:GetFName():ToString() end)
+            local mesh = nil
+            pcall(function() mesh = comp:GetSkeletalMeshAsset() end)
+            local function ok(x) local r = false; pcall(function() r = x ~= nil and x:IsValid() end); return r end
+            if not ok(mesh) then pcall(function() mesh = comp.SkeletalMesh end) end
+            pcall(function() if type(mesh) == "userdata" and mesh.get then mesh = mesh:get() end end)
+            if not ok(mesh) then
+                say(string.format("  [%d] %s -- no skeletal mesh asset", ci, cname))
+                return
+            end
+            local mname = "?"; pcall(function() mname = mesh:GetFullName() end)
+            local mts = nil
+            pcall(function() mts = mesh.MorphTargets end)
+            local mn = 0
+            if mts then pcall(function() mn = mts:GetArrayNum() end); if mn == 0 then pcall(function() mn = #mts end) end end
+            say(string.format("  [%d] %s -> %s : %d morph target(s)", ci, cname, mname, mn))
+            for i = 1, mn do
+                local mt = mts[i]; if mt == nil then pcall(function() mt = mts:Get(i) end) end
+                pcall(function() if type(mt) == "userdata" and mt.get then mt = mt:get() end end)
+                if mt then
+                    local tn = "?"; pcall(function() tn = mt:GetFName():ToString() end)
+                    say(string.format("        %s", tn))
+                end
+            end
+        end)
+    end
+    return true
+end
+
+-- Spawner.ApplyMorphLive(sayIn, morphToken) -- "lbtestmorphlive <DA_Custom_MorphParams_X>" (2026-09-10).
+-- The pre-build `comp.MorphParams = <asset>` route (Spawner.SetCompositeParams) was confirmed a
+-- NO-OP for the Handyman/NPC composite flow -- A/B/C spawns with different DA_Custom_MorphParams_*
+-- all produced the identical shape (livingbase_debug.log 18:03-18:06, all "morph=ok (pre-build)").
+-- The real lever (from windrose.jmap): R5CompositeMeshComponent:SetMorphControllerValue(Controller
+-- R5BLCharacterMorphData, Value FVector) -- a LIVE, post-build setter, one call per body zone. This
+-- reads our authored asset's MorphControllerParams (or MorphControllers Vector4 as fallback), gets
+-- the target's current controllers, and pushes our per-zone Vector into each. Pure in-place, no
+-- respawn -- run it on any already-spawned actor (nearest / lbprobe'd) to prove the lever before
+-- wiring it into the spawn chain. Dumps GetCurrentMorphControllers() before and after.
+function Spawner.ApplyMorphLive(sayIn, morphToken)
+    local say = sayIn or function(m) print("[LivingBase] [morphlive] " .. tostring(m) .. "\n") end
+    if not morphToken or morphToken == "" then say("usage: lbtestmorphlive <DA_Custom_MorphParams_X | full path>"); return false end
+    local path = morphToken
+    if not path:find("/") then path = "/Game/Mods/LivingBaseExtended/" .. path .. "." .. path
+    elseif not path:match("%.[%w_]+$") then local last = path:match("([^/]+)$"); path = last and (path .. "." .. last) or path end
+
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then say("no target -- spawn one / lbprobe one first."); return false end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("target: " .. fn) end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent."); return false end
+
+    local asset = nil
+    pcall(function() asset = resolveAsset(path) end)
+    if not (asset and asset:IsValid()) then say("could not resolve MorphParams asset: " .. path); return false end
+    say("asset: " .. path)
+
+    -- build zone(tagString) -> {X,Y,Z} from the asset. FGameplayTag.TagName is an FName -- tostring()
+    -- on it gives "FNameUserdata: 0x..", so it MUST go through :ToString() (confirmed live 2026-09-10:
+    -- the first cut compared raw userdata handles -> applied 0/5).
+    local function tagStr(t)
+        local s = nil
+        pcall(function() local fn = t.TagName; if fn then s = fn:ToString() end end)
+        if not s or s == "" then pcall(function() s = t:ToString() end) end
+        if not s or s == "" then pcall(function() local fn = t:GetTagName(); if fn then s = fn:ToString() end end) end
+        return s
+    end
+    local want = {}
+    for _, arrName in ipairs({ "MorphControllerParams", "MorphControllers" }) do
+        if next(want) == nil then
+            local arr = nil
+            pcall(function() arr = asset[arrName] end)
+            local n = 0
+            if arr then pcall(function() n = arr:GetArrayNum() end); if n == 0 then pcall(function() n = #arr end) end end
+            for i = 1, n do
+                local e = arr[i]; if e == nil then pcall(function() e = arr:Get(i) end) end
+                pcall(function() if type(e) == "userdata" and e.get then e = e:get() end end)
+                if e then
+                    local key = nil; pcall(function() key = e.MorphTargetKey end)
+                    local ks = key and tagStr(key) or nil
+                    local v = nil
+                    pcall(function() v = e.MorphValue end)                 -- R5MorphControllerData (Vector3)
+                    if not v then pcall(function() v = e.Value end) end     -- R5MorphControllerInfo (Vector4)
+                    if ks and v then
+                        want[ks] = { X = v.X or 0.0, Y = v.Y or 0.0, Z = v.Z or 0.0 }
+                        say(string.format("  asset[%s] %s = (%.4f, %.4f, %.4f)", arrName, ks, want[ks].X, want[ks].Y, want[ks].Z))
+                    end
+                end
+            end
+        end
+    end
+    if next(want) == nil then say("asset carried no readable controller values."); return false end
+
+    local function dumpLive(tag)
+        local list = nil
+        pcall(function() list = comp:GetCurrentMorphControllers() end)
+        local n = 0
+        if list then pcall(function() n = list:GetArrayNum() end); if n == 0 then pcall(function() n = #list end) end end
+        say(tag .. " GetCurrentMorphControllers(): " .. tostring(n))
+        for i = 1, n do
+            local c = list[i]; if c == nil then pcall(function() c = list:Get(i) end) end
+            pcall(function() if type(c) == "userdata" and c.get then c = c:get() end end)
+            if c then
+                local ks = "?"; pcall(function() ks = tagStr(c.MorphTargetKey) end)
+                local v = nil; pcall(function() v = c.MorphValue end)
+                if v then say(string.format("    %s = (%.4f, %.4f, %.4f)", tostring(ks), v.X or 0, v.Y or 0, v.Z or 0)) end
+            end
+        end
+        return list, n
+    end
+
+    -- 2026-09-10: bare SetMorphControllerValue on R5CompositeMeshComponent did NOT stick (AFTER
+    -- dump still all-neutral, no visual change). The character-creator flow from windrose.jmap is
+    -- StartCharacterEdit() -> SetMorphControllerValue(...)xN -> EndCharacterEdit(bApplyCurrentControllers)
+    -- -- the edit session is what commits + rebuilds. Also try ConstructVisualFromParams(-1) and the
+    -- HFSM customization component's own SetMorphControllerValue as fallbacks.
+    do
+        local cz = "?"; pcall(function() cz = tostring(comp:IsCharacterCustomizable()) end)
+        local ez = "?"; pcall(function() ez = tostring(comp:IsCustomizationEditActive()) end)
+        say(string.format("IsCharacterCustomizable=%s  IsCustomizationEditActive=%s", cz, ez))
+    end
+
+    -- also grab the HFSM customization component if present (some pawns route morph through it)
+    local hfsm = nil
+    pcall(function()
+        local all = actor:K2_GetComponentsByClass(StaticFindObject("/Script/R5.R5HFSMCharacterCustomizationComponent"))
+        if all then local m = all[1]; if m == nil then pcall(function() m = all:Get(1) end) end; hfsm = m end
+    end)
+    if hfsm and hfsm:IsValid() then say("found R5HFSMCharacterCustomizationComponent -- will also push to it") end
+
+    dumpLive("BEFORE")
+    pcall(function() comp:StartCharacterEdit() end)
+
+    local list, n = dumpLive("(apply)")
+    local applied = 0
+    for i = 1, n do
+        local c = list[i]; if c == nil then pcall(function() c = list:Get(i) end) end
+        pcall(function() if type(c) == "userdata" and c.get then c = c:get() end end)
+        if c then
+            local ks = nil; pcall(function() ks = tagStr(c.MorphTargetKey) end)
+            local v = ks and want[ks] or nil
+            if v then
+                local vv = { X = v.X, Y = v.Y, Z = v.Z }
+                local ok, err = pcall(function() comp:SetMorphControllerValue(c, vv) end)
+                if hfsm and hfsm:IsValid() then pcall(function() hfsm:SetMorphControllerValue(c, vv) end) end
+                if ok then applied = applied + 1; say(string.format("  SetMorphControllerValue %s <- (%.4f, %.4f, %.4f)", ks, v.X, v.Y, v.Z))
+                else say("  SetMorphControllerValue FAILED for " .. tostring(ks) .. ": " .. tostring(err)) end
+            end
+        end
+    end
+    say(string.format("applied %d/%d zone(s)", applied, n))
+
+    local ok1 = pcall(function() comp:EndCharacterEdit(true) end)
+    say("EndCharacterEdit(true): " .. tostring(ok1))
+    local ok2 = pcall(function() comp:ConstructVisualFromParams(-1) end)
+    say("ConstructVisualFromParams(-1): " .. tostring(ok2))
+
+    -- RAW MORPH TARGET pass (2026-09-10): the controller route commits values but doesn't deform an
+    -- NPC's mesh. lbdumpmorphtargets showed SK_Adventure_Female_01 (CharacterMesh0) carries 10
+    -- targets -- morph_zone_<zone>_x / _y, two per zone = the barycentric X/Y axes (Z = neutral
+    -- base, no target). Drive them DIRECTLY by name on the BASE mesh only, via SetMorphTarget
+    -- (the same component call lbtestmorph already uses safely). The earlier multi-component +
+    -- K2_SetBodyMorphValue version crashed (UE4SS.dll +0x261ae1) -- narrowed to just the one mesh
+    -- and one call type, with a per-call lbLogFile marker so any crash pinpoints the target.
+    local zoneTarget = { ["Morph.Zone.Body"] = "body", ["Morph.Zone.Head"] = "head",
+        ["Morph.Zone.Nose"] = "nose", ["Morph.Zone.Ears"] = "ears", ["Morph.Zone.Brows"] = "brows" }
+    local base = nil
+    pcall(function() base = actor.Mesh end)
+    if base and base:IsValid() then
+        local rawSet = 0
+        for zoneTag, vec in pairs(want) do
+            local z = zoneTarget[zoneTag]
+            if z then
+                for _, ax in ipairs({ { "x", vec.X }, { "y", vec.Y } }) do
+                    local tname = "morph_zone_" .. z .. "_" .. ax[1]
+                    lbLogFile(string.format("[morphlive] SetMorphTarget %s = %.4f -- start", tname, ax[2]))
+                    local ok = pcall(function() base:SetMorphTarget(tname, ax[2]) end)
+                    lbLogFile(string.format("[morphlive] SetMorphTarget %s -- %s", tname, ok and "ok" or "FAILED"))
+                    if ok then rawSet = rawSet + 1 end
+                end
+            end
+        end
+        say(string.format("raw SetMorphTarget pass on base mesh: %d/10", rawSet))
+    else
+        say("no base mesh (actor.Mesh) for the raw pass")
+    end
+
+    dumpLive("AFTER")
+    say("check the target's proportions now.")
+    return applied > 0
 end
 
 -- dumpBuildedCompositeMeshes(actor) -- TEMP DEV/PROBE TOOL (2026-08-19): RedFalcon asked how the
@@ -6776,6 +7072,33 @@ function Spawner.TripodPose(say, posStr, rotStr)
         local ok = pcall(function() cam:K2_SetActorRotation({ Pitch = rp, Yaw = ry, Roll = rr }, false) end)
         say(string.format("rotation -> Pitch=%.2f Yaw=%.2f Roll=%.2f : %s", rp, ry, rr, tostring(ok)))
     end
+    return true
+end
+
+-- Spawner.TargetPose(say) -- "lbtargetpose" (2026-09-11). PURE READ, same idiom as lbcamerapose's
+-- own no-args branch and lbwhereami, but for the current TEST TARGET (resolveTestDiagActor -- the
+-- last spawned/lbprobe'd actor) instead of the tripod camera or the player pawn. Prints X/Y/Z +
+-- Pitch/Yaw/Roll and a ready-to-paste `@X,Y,Z,YAW` token (the exact format classifySwapArgs already
+-- recognises for lbtestbodyswap/lbtestbodyspawn's own atOverride arg) so a placed spawn's spot can
+-- be captured and reproduced later without hand-transcribing numbers.
+function Spawner.TargetPose(say)
+    say = say or function(m) print("[LivingBase] [targetpose] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test target -- spawn one, or lbprobe/lock one first (Numpad +).")
+        return false
+    end
+    local fn = "?"; pcall(function() fn = actor:GetFullName() end)
+    local loc, rot
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    pcall(function() rot = actor:K2_GetActorRotation() end)
+    if not (loc and rot) then
+        say("could not read the target's transform.")
+        return false
+    end
+    say("target: " .. fn)
+    say(string.format("pose:  %.1f,%.1f,%.1f  pitch=%.2f yaw=%.2f roll=%.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll))
+    say(string.format("reproduce (spawn arg):  @%.1f,%.1f,%.1f,%.2f", loc.X, loc.Y, loc.Z, rot.Yaw))
     return true
 end
 
@@ -12681,7 +13004,7 @@ end
 --            down via the SAME Spawner.RemoveClothingOnActor(actor, "all", name) call
 --            pollForBuildThenUndress already uses for this -- last step, after the body/skin are
 --            fully settled (2026-09-08, RedFalcon: "can we spawn with underwear").
-local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft, phase, familyHandledByArchetype)
+local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft, phase, familyHandledByArchetype, bodyTypesOverride)
     attemptsLeft = attemptsLeft or 12
     phase = phase or 1
     if not (actor and actor:IsValid()) then return end
@@ -12702,7 +13025,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             return
         end
         if ExecuteWithDelay then
-            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft - 1, phase, familyHandledByArchetype) end)
+            ExecuteWithDelay(300, function() pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, attemptsLeft - 1, phase, familyHandledByArchetype, bodyTypesOverride) end)
         end
         return
     end
@@ -12778,7 +13101,7 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             -- clothes just won't populate correctly for the new sex -- no silent crash risk.
         end
         -- Move to phase 2: wait for the build to (re)settle before touching the mesh directly.
-        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2, familyHandledByArchetype)
+        pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, family, underwear, name, say, 12, 2, familyHandledByArchetype, bodyTypesOverride)
         return
     end
 
@@ -12862,11 +13185,25 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
             Spawner.SetAnimClass(actor, STANDING_NPC_ANIM_CLASS, true)
         end
 
-        if family and familyHandledByArchetype and hasBaseMesh then
-            say("skipping redundant base-mesh/skin override -- the archetype+sex-swap path already built the correct Adventurer mesh AND a real base mesh is already present (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton).")
+        -- 2026-09-11 FIX (RedFalcon: "hunter spawns with the right bodymesh but ... turns back into
+        -- african" -- confirmed independent of clothes removal, just coincidentally landing in the
+        -- same phase2 pass). This raw fallback below re-applies familyMeshPath(family, sex) using the
+        -- PLAIN family argument ("African" for Hunter) -- it has no idea an origin override
+        -- (bodyTypesOverride, e.g. DA_Custom_BodyTypeList_HunterAsAlbion) was ever requested, so for
+        -- every non-Adventurer family (familyHandledByArchetype only ever true for Adventurer) it
+        -- unconditionally stomped an already-correct origin retarget back to the donor's OWN native
+        -- family right after the composite build had gotten it right. Worked for Gatherer purely
+        -- because Adventurer's archetype path sets familyHandledByArchetype=true and skips this
+        -- whole block -- never actually exercised against a non-Adventurer origin override before.
+        -- Fix: also skip when bodyTypesOverride was given (the composite build already retargeted
+        -- the mesh correctly via that BodyTypeList asset -- trust it, same as the Adventurer case).
+        if family and (familyHandledByArchetype or bodyTypesOverride) and hasBaseMesh then
+            say("skipping redundant base-mesh/skin override -- " .. (bodyTypesOverride and ("an explicit bodyTypesOverride (" .. tostring(bodyTypesOverride) .. ") already retargeted the mesh via the composite build; the plain-family raw override would stomp it back to " .. tostring(family) .. "'s own native mesh.") or "the archetype+sex-swap path already built the correct Adventurer mesh AND a real base mesh is already present (this used to run anyway and is the confirmed crash site: TestSetBaseBodyMesh landing 1.5s after a SwapBodySex() that had just rebuilt the same skeleton)."))
         elseif family then
             if familyHandledByArchetype then
                 say("base mesh is EMPTY despite the archetype+sex-swap path -- applying the direct mesh override anyway (donor-independent class, nothing to be redundant against).")
+            elseif bodyTypesOverride then
+                say("WARNING: bodyTypesOverride (" .. tostring(bodyTypesOverride) .. ") was requested but no base mesh was detected -- falling back to the plain family ('" .. tostring(family) .. "') mesh, which will NOT match the requested origin. The composite build may not have finished; retry the spawn.")
             end
             local finalSex = targetSex or currentSex
             local meshPath, meshName = familyMeshPath(family, finalSex)
@@ -13324,7 +13661,7 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
             -- to end, so phase 2's own raw TestSetBaseBodyMesh override would be redundant (and is
             -- the confirmed crash site -- see pollForBuildThenApplyBodySwap's own phase-2 comment).
             local familyHandledByArchetype = compositeLook and compositeLook.archetype ~= nil
-            pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say, nil, nil, familyHandledByArchetype)
+            pollForBuildThenApplyBodySwap(actor, sex, currentSex, family, underwear, "BodyTypeSwap", say, nil, nil, familyHandledByArchetype, bodyTypesOverride)
         end
 
         -- Lock the position from THIS spawn if nothing was locked yet (first call ever, or right

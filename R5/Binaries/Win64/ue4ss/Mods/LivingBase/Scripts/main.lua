@@ -4645,6 +4645,52 @@ else
     log("lbdumpmorph unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbdumpmorphtargets [test]" (2026-09-10) -- lists every UMorphTarget name on each
+-- skeletal mesh of the target actor. Answers "does SK_Adventure_Female_01 actually carry Body/Head
+-- morphs?" (RedFalcon found the female Adventurer body + head don't resize even in the stock player
+-- creator). No arg -> the player pawn; "test" -> the last spawned/probed test actor.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpmorphtargets", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [dump-morphtargets] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local which = Parameters and Parameters[1] or nil
+            local ok, err = pcall(function() Spawner.DumpMeshMorphTargets(say, which) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpmorphtargets")
+    registerCmdInfo("lbdumpmorphtargets", "lbdumpmorphtargets [test]", "PURE READ: lists every morph-target name on each skeletal mesh of the player pawn (or the test actor with 'test') -- shows which family meshes actually carry Body_/Head_ morphs.")
+else
+    log("lbdumpmorphtargets unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestmorphlive <DA_Custom_MorphParams_X>" (2026-09-10) -- applies a custom
+-- MorphParams asset's per-zone values to the CURRENT target LIVE via
+-- R5CompositeMeshComponent:SetMorphControllerValue (the pre-build comp.MorphParams= route is a
+-- confirmed no-op for the NPC flow). Dumps GetCurrentMorphControllers() before + after.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmorphlive", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [morphlive] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local token = Parameters and Parameters[1] or nil
+            local ok, err = pcall(function() Spawner.ApplyMorphLive(say, token) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmorphlive")
+    registerCmdInfo("lbtestmorphlive", "lbtestmorphlive <DA_Custom_MorphParams_X>", "Applies a custom MorphParams asset's 5-zone values to the current target LIVE via SetMorphControllerValue -- tests the real morph lever in place, no respawn.")
+else
+    log("lbtestmorphlive unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbdumpdecordata" (2026-09-08) -- dumps the PLAYER pawn's own
 -- GetSkinDecorData()/GetAvailableBodyDecorData() -- see Spawner.TestDumpBodyDecorData's own
 -- header comment (RedFalcon: "more of an overlay than a morph").
@@ -8109,6 +8155,26 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbwhereami", "lbwhereami", "PURE READ: prints the player pawn's own current world X/Y/Z/yaw.")
 else
     log("lbwhereami unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtargetpose" (2026-09-11) -- PURE READ, lbwhereami's counterpart for the current
+-- TEST TARGET instead of the player pawn. Prints X/Y/Z/Pitch/Yaw/Roll and a ready `@X,Y,Z,YAW` token.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtargetpose", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [targetpose] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TargetPose(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtargetpose")
+    registerCmdInfo("lbtargetpose", "lbtargetpose", "PURE READ: prints the current test target's world X/Y/Z + Pitch/Yaw/Roll, plus a ready @X,Y,Z,YAW token for lbtestbodyswap/lbtestbodyspawn's spawn-position arg.")
+else
+    log("lbtargetpose unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestmovement" (2026-09-09) -- PURE READ. Dumps Spawner._bodySwapActor's own

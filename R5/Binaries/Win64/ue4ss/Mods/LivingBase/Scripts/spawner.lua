@@ -1414,8 +1414,34 @@ function resolveViaAssetRegistry(path)
     return nil
 end
 
+-- fstrToLua(v) -- (2026-09-11) plain tostring() on an FString return value shows its raw pointer
+-- ("FString: 0000023CB2C75C88"), not the actual text -- confirmed on GetCharacterAgeText().
+-- UE4SS's FString userdata exposes :ToString() for the real content; falls back to plain tostring()
+-- for anything that isn't an FString at all (nil, a plain Lua string already, etc.).
+local function fstrToLua(v)
+    if v == nil then return "nil" end
+    local ok, s = pcall(function() return v:ToString() end)
+    if ok and s then return s end
+    return tostring(v)
+end
+
 local function resolveAsset(path)
     if not path then return nil end
+    -- 2026-09-13 FIX: a bare package path with NO dotted asset-name suffix at all (e.g.
+    -- Config.CUSTOM_POSES' "Regular Idle 2" row, "/Game/.../Shared/Calm/A_Regular_Male_Calm_Idle")
+    -- only ever resolves to the UPackage object itself via StaticFindObject/LoadAsset when that
+    -- asset isn't already loaded by something else this session ("Asset was found but not loaded,
+    -- could be a package" -- confirmed live on a statue actor that had never touched this asset
+    -- before). Confirmed via pakcontents.xlsx that the asset genuinely exists on disk at exactly
+    -- this path -- not a typo. Every authored single-asset package here follows the "same trailing
+    -- name for both package and asset" convention (every CUSTOM_POSES row relies on it), so deriving
+    -- AssetName from the path's own last segment and appending it is safe, and only fires when no
+    -- dot exists already (every caller that already passes a full "Package.AssetName" path is
+    -- unaffected).
+    if not path:match("%.[^/%.]+$") then
+        local base = path:match("([^/]+)$")
+        if base then path = path .. "." .. base end
+    end
     -- 2026-09-08 FIX: StaticFindObject can throw an UNCAUGHT error on a malformed path (a bare
     -- package path missing its ".AssetName" suffix throws "GetPackageNameFromLongName: Name wasn't
     -- long") -- confirmed live, it killed the whole calling chain (SwapBodyType's poll callback)
@@ -5355,6 +5381,32 @@ local function dumpAnimInfo(actor)
     end)
 end
 
+-- Spawner.TestDumpAnimInfo(say) -- "lbdumpanim" (2026-09-13, RedFalcon: "is there a way to see what
+-- the default idle pose is when we place a frozen barbie?") -- lightweight standalone wrapper
+-- around the EXISTING dumpAnimInfo(actor) local function just above (already proven safe, already
+-- folded into the big lbprobedump probe) so a quick idle-pose check doesn't need the whole noisy
+-- full-probe dump (dumpObjectProperties/dumpMeshComponentNames/etc. all firing too) or the
+-- lbprobe-then-lbprobedump two-step lbprobedump itself requires. Targets Spawner.lockedTarget
+-- (Num+), same as the camera/height tools -- a frozen Barbie is exactly the kind of thing you'd
+-- lock before checking. Prints AnimationMode/AnimClass/RuntimeAnimInstanceClass and, if in
+-- SingleNode mode, the exact "CURRENTLY PLAYING" AnimSequence path. IMPORTANT CAVEAT: a Barbie is
+-- virtually always BlueprintMode (it inherits its donor's own AnimBP), so what this will actually
+-- show is WHICH AnimBP class is driving the idle, not one named pose asset to point at -- Blueprint-
+-- Mode computes the pose live from a state machine/blend space every frame, there's no single
+-- static clip to copy the way SingleNode mode has (same limitation dumpAnimInfo's own header
+-- documents from the original Standing/Sitting statue investigation).
+function Spawner.TestDumpAnimInfo(say)
+    say = say or function(m) print("[LivingBase] [dump-anim] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    dumpAnimInfo(actor)
+    return true
+end
+
 -- Spawner.DumpColorControllers(actor) -- TEMP DEV/PROBE TOOL (2026-08-10): list EVERY
 -- ColorController on the target's CompositeMeshComponent (name + AllowedRange). Looking for a
 -- tattoo/body-art/marking selector -- if this game exposes tattoos through the SAME controller
@@ -6022,6 +6074,921 @@ function Spawner._dumpMeshMorphTargetsBody(say, which)
         end)
     end
     return true
+end
+
+-- findCharacterCustomizationComponent(actor) -- shared helper for the Age-axis probe below.
+-- R5HFSMCharacterCustomizationComponent (per windrose.jmap: GetCharacterAge/SetAgeControllerValue/
+-- GetAgeIndexNum/GetCharacterAgeText, plus a big pile of character-CREATOR-only functions --
+-- ApplyCharacterPreset, GetCharacterPresetIcons, IsOpenedInLobby -- an HFSM state component, base
+-- class /Script/GCFSM.HFSMStateComponent) has NO fixed UPROPERTY anywhere in the whole reflection
+-- dump referencing it (confirmed: zero hits scanning every class's own properties) -- unlike
+-- R5CompositeMeshComponent (found via a plain `actor.CompositeMeshComponent` named property
+-- everywhere else in this file), this one is very likely attached dynamically only while the
+-- character-creator/lobby UI is actually open, not a permanent part of the Pawn. Tries the actor
+-- itself, then its Controller, via a live class scan (the ONLY way to find a component with no
+-- known property name) -- returns nil, "not found on <where>" if genuinely absent, which itself
+-- answers the real question ("does this exist on our runtime Barbie/NPC Pawns at all, outside the
+-- player's own live character-creator session").
+local function findCharacterCustomizationComponent(actor)
+    local cls = StaticFindObject("/Script/R5.R5HFSMCharacterCustomizationComponent")
+    if not (cls and cls:IsValid()) then return nil, "class not found (StaticFindObject)" end
+    local function scan(owner, label)
+        if not (owner and owner:IsValid()) then return nil end
+        local found = nil
+        pcall(function()
+            local comps = owner:K2_GetComponentsByClass(cls)
+            local n = 0
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+            for i = 1, n do
+                local c = comps[i]; if c == nil then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() and not found then found = c end
+            end
+        end)
+        return found
+    end
+    local onActor = scan(actor, "actor")
+    if onActor then return onActor, "actor" end
+    local controller = nil
+    pcall(function() controller = actor.Controller end)
+    local onController = scan(controller, "controller")
+    if onController then return onController, "controller" end
+
+    -- Not on the possessed Pawn/Controller at all (confirmed live 2026-09-11: the lobby's own
+    -- possessed Pawn is BP_LobbySpectator_C, a plain camera/spectator actor -- the actual character
+    -- model being edited in the creator is a SEPARATE preview actor). Fall back to a direct
+    -- FindAllOf sweep for the COMPONENT class itself (same global UE4SS API this file already uses
+    -- for whole-world sweeps, e.g. FindAllOf("Actor")/FindAllOf("R5LootActor") elsewhere) -- finds
+    -- it regardless of which actor owns it, no need to guess the preview actor's class name first.
+    local direct = nil
+    local ok, list = pcall(function() return FindAllOf("R5HFSMCharacterCustomizationComponent") end)
+    if ok and list then
+        local n = 0
+        pcall(function() n = #list end)
+        for i = 1, n do
+            local c = list[i]
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() and not direct then direct = c end
+        end
+    end
+    if direct then return direct, "FindAllOf sweep (not on possessed Pawn/Controller)" end
+    return nil, "not found on actor, its Controller, or anywhere in the world (FindAllOf swept 0)"
+end
+
+-- findCharacterCustomizationOwner() -- (2026-09-11) DumpAgeOwnerMesh's own need: `comp:GetOwner()`
+-- on a component found via FindAllOf("R5HFSMCharacterCustomizationComponent") throws "Tried calling
+-- a member function but the UObject instance is nullptr" (confirmed live) -- the SAME stale-handle
+-- class of bug as the cloth-rebind saga (IsValid() passes, a method call on the same handle still
+-- doesn't). Sidesteps it entirely: sweeps FindAllOf("Actor") (the same accepted-cost full-world
+-- sweep Spawner.ProbeNearestActor's own "wild NPCs" comment already uses) and asks EACH actor
+-- directly via K2_GetComponentsByClass whether IT has the component -- the owner falls out for
+-- free, no GetOwner() call on the fragile component handle ever needed.
+local function findCharacterCustomizationOwner()
+    local cls = StaticFindObject("/Script/R5.R5HFSMCharacterCustomizationComponent")
+    if not (cls and cls:IsValid()) then return nil, "class not found (StaticFindObject)" end
+    local ok, actors = pcall(function() return FindAllOf("Actor") end)
+    if not ok or not actors then return nil, "FindAllOf('Actor') failed" end
+    local n = 0
+    pcall(function() n = #actors end)
+    for i = 1, n do
+        local a = actors[i]
+        pcall(function() if a ~= nil and type(a) == "userdata" and a.get then a = a:get() end end)
+        if a and a:IsValid() then
+            local hasIt = false
+            pcall(function()
+                local comps = a:K2_GetComponentsByClass(cls)
+                local cn = 0
+                pcall(function() cn = comps:GetArrayNum() end)
+                if cn == 0 then pcall(function() cn = #comps end) end
+                if cn > 0 then hasIt = true end
+            end)
+            if hasIt then return a, string.format("actor %d of %d swept", i, n) end
+        end
+    end
+    return nil, string.format("swept %d actors, none had the component", n)
+end
+
+-- Spawner.DumpCharacterAge(sayIn, which) -- "lbdumpage [test]" (2026-09-11). BARBIE_ROSTER.md's own
+-- TODO: RedFalcon wants face/age variety across the 7 body-shape donors, and this Age axis
+-- (R5HFSMCharacterCustomizationComponent) is a SEPARATE system from the body/head morphs -- jmap-
+-- confirmed to exist, never actually probed live before now. Unlike the closed body-shape morph
+-- wall (Control Rig bakes shape once at construction, never re-evaluates), Age reads like a real,
+-- simple index-based controller (SetAgeControllerValue(Index), GetAgeIndexNum() for how many
+-- options exist, GetCharacterAgeText() for a human-readable label) -- the SAME shape as the already-
+-- proven-live SetCustomizationMeshControllerValue/SetMorphControllerValue pattern, not a construction-
+-- time-only lever. No arg -> the player pawn; "test" -> the last spawned/probed test actor.
+function Spawner.DumpCharacterAge(sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [dump-age] " .. tostring(m) .. "\n") end
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    local comp, where = findCharacterCustomizationComponent(actor)
+    if not comp then
+        say("R5HFSMCharacterCustomizationComponent NOT FOUND (" .. tostring(where) .. ") -- likely only exists while the character-creator/lobby UI is actually open, not a permanent Pawn component.")
+        return false
+    end
+    say("found via: " .. tostring(where))
+    do
+        local ownerName = "?"
+        pcall(function()
+            local owner = comp:GetOwner()
+            if owner and owner:IsValid() then ownerName = owner:GetFullName() end
+        end)
+        say("component's own actor: " .. ownerName)
+    end
+
+    local num, cur, curText = nil, nil, nil
+    pcall(function() num = comp:GetAgeIndexNum() end)
+    pcall(function() cur = comp:GetCharacterAge() end)
+    pcall(function() curText = comp:GetCharacterAgeText() end)
+    say(string.format("GetAgeIndexNum()=%s  GetCharacterAge()=%s  GetCharacterAgeText()=%s",
+        tostring(num), tostring(cur), fstrToLua(curText)))
+    return true
+end
+
+-- Spawner.ApplyCharacterAge(idxArg, sayIn, which) -- "lbtestage <idx> [test]" (2026-09-11). Live-
+-- applies SetAgeControllerValue(idx) on the same target lbdumpage resolves, then re-reads
+-- GetCharacterAge()/GetCharacterAgeText() to confirm whether it actually stuck (the SAME "confirmed
+-- genuinely stuck" standard every other live-setter test in this file already uses) -- proves or
+-- disproves the "real per-instance lever" theory with a live before/after instead of assuming it
+-- from the function signature alone.
+function Spawner.ApplyCharacterAge(idxArg, sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [test-age] " .. tostring(m) .. "\n") end
+    local idx = tonumber(idxArg)
+    if not idx then say("usage: lbtestage <idx> [test] -- run lbdumpage first to see GetAgeIndexNum()."); return false end
+
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+
+    local comp, where = findCharacterCustomizationComponent(actor)
+    if not comp then
+        say("R5HFSMCharacterCustomizationComponent NOT FOUND (" .. tostring(where) .. ").")
+        return false
+    end
+
+    local before, beforeText = nil, nil
+    pcall(function() before = comp:GetCharacterAge() end)
+    pcall(function() beforeText = comp:GetCharacterAgeText() end)
+
+    local okSet, errSet = pcall(function() comp:SetAgeControllerValue(idx) end)
+    if not okSet then
+        say("SetAgeControllerValue(" .. tostring(idx) .. ") FAILED: " .. tostring(errSet))
+        return false
+    end
+
+    local after, afterText = nil, nil
+    pcall(function() after = comp:GetCharacterAge() end)
+    pcall(function() afterText = comp:GetCharacterAgeText() end)
+    say(string.format("before=%s (%s) -> after=%s (%s), requested=%d (%s)",
+        tostring(before), fstrToLua(beforeText), tostring(after), fstrToLua(afterText), idx,
+        (after == idx) and "CHANGED as requested" or ((after == before) and "NO CHANGE" or "changed to something else")))
+    return true
+end
+
+-- Spawner.DumpAgeOwnerMesh(sayIn) -- "lbdumpageowner" (2026-09-11). Age confirmed real and live
+-- (lbdumpage/lbtestage: 3 named states Young/Mature/Old, RedFalcon's own visual confirmation the
+-- wrinkle effect actually applies) but confirmed CREATOR-ONLY (lbdumpage on a real live NPC,
+-- BP_NPC_Handyman_Farmer_C, found zero R5HFSMCharacterCustomizationComponent instances anywhere in
+-- that level at all -- this component genuinely doesn't exist outside the character-creator
+-- screen). RedFalcon: "its likely similar to skin color [i.e. a material parameter we could apply
+-- directly, the same CPD-write mechanism already proven for cloth/skin/eye color, entirely
+-- independent of this creator-only component] -- let's do it." This dumps the FULL mesh+material
+-- list (reusing dumpMeshComponentNames, the exact same walk `lbprobe`'s own [probe-mesh] output
+-- uses) for whichever actor actually OWNS the Age component in the lobby -- run once at each age
+-- state (lbtestage 0/1/2) and diff the material names/paths by hand to find whatever texture/
+-- material-instance the wrinkle effect actually swaps, so it can potentially be set directly on any
+-- NPC via a normal material parameter write, without needing this creator-only component at all.
+function Spawner.DumpAgeOwnerMesh(sayIn)
+    local say = sayIn or function(m) print("[LivingBase] [dump-age-owner] " .. tostring(m) .. "\n") end
+    local owner, where = findCharacterCustomizationOwner()
+    if not owner then
+        say("Age component's owner NOT FOUND (" .. tostring(where) .. ") -- make sure the character creator is actually open.")
+        return false
+    end
+    local ownerFullName = "?"
+    pcall(function() ownerFullName = owner:GetFullName() end)
+    say("Age component's owning actor (" .. tostring(where) .. "): " .. ownerFullName)
+    say("dumping every mesh component + material on it -- run this once per lbtestage state and diff by hand:")
+    pcall(function() dumpMeshComponentNames(owner) end)
+    return true
+end
+
+-- Spawner.DumpSavedAge(sayIn, which) -- "lbdumpsavedage [test]" (2026-09-11). `lbcustomnpc get` on
+-- two real native NPCs (Buccaneers Trapper, Farmer) confirmed NO Age-related category exists among
+-- GetCustomizationMeshControllers() at all -- Age genuinely has no live setter reachable on the
+-- general-purpose R5CompositeMeshComponent regular NPCs use, only on the creator-only HFSM
+-- component. This is the one remaining cheap check before calling Age a per-NPC dead end the same
+-- way the body-shape morphs were: `R5BLCharacterCustomizationData` (the struct GetCustomizationData
+-- returns on the HFSM component) has a real `CharacterAge` field, and `comp.SavedCustomizationData`
+-- (the SAME struct, already proven readable for SelectedColors elsewhere in this file --
+-- Spawner.TestReadCategoryColors/TestProbeSelectedColors) is readable on ANY actor's
+-- CompositeMeshComponent, not creator-only. Reads it here purely to see whether real native NPCs
+-- already carry a non-default baked CharacterAge value (would at least answer "do the 7 donors
+-- already vary in age" even with no live setter to change it ourselves). No arg -> player pawn;
+-- "test" -> the last spawned/probed test actor (same resolution as lbdumpage).
+function Spawner.DumpSavedAge(sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [dump-saved-age] " .. tostring(m) .. "\n") end
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on this actor"); return false end
+
+    local struct = nil
+    pcall(function() struct = comp.SavedCustomizationData end)
+    if not struct then say("SavedCustomizationData not readable on this actor's CompositeMeshComponent."); return false end
+
+    local ageInt = nil
+    pcall(function() ageInt = tonumber(struct.CharacterAge) end)
+    local AGE_NAMES = { [0] = "Young", [1] = "Mature", [2] = "Old" }
+    say(string.format("SavedCustomizationData.CharacterAge = %s (%s)",
+        tostring(ageInt), (ageInt and AGE_NAMES[ageInt]) or "?"))
+    return true
+end
+
+local AGE_NAMES_BY_INT = { [0] = "Young", [1] = "Mature", [2] = "Old" }
+
+-- Spawner.ApplySavedAge(idxArg, sayIn, which) -- "lbtestsavedage <idx> [test]" (2026-09-11). The one
+-- real remaining question: is SavedCustomizationData.CharacterAge a live-driving value (write it,
+-- the wrinkle texture updates) or a load-time-only snapshot (write it, readback confirms the change
+-- stuck, but nothing visually happens -- the SAME "commits, persists, zero visual change" result
+-- already confirmed for MorphParams earlier this session). Tries THREE escalating write strategies,
+-- reporting which ones the readback confirms actually stuck (a stuck WRITE and a VISUAL update are
+-- two separate questions -- RedFalcon needs to eyeball the target after this runs, this can only
+-- confirm the write itself, not the render):
+--   A. Direct nested field set: comp.SavedCustomizationData.CharacterAge = idx (works only if the
+--      UE4SS struct-property binding returns a live reference into the component's own memory
+--      rather than a value copy -- the common case for USTRUCT nested access, but not guaranteed).
+--   B. Read-modify-reassign: pull the whole struct out, set the field on that copy, write the WHOLE
+--      struct back to comp.SavedCustomizationData (the standard workaround when A is a copy).
+--   C. Bracket B with StartCharacterEdit()/EndCharacterEdit(true) -- the exact same session-commit
+--      sequence already proven a no-op for MorphParams, tried here anyway since Age might route
+--      through different internal logic than the morph system does.
+function Spawner.ApplySavedAge(idxArg, sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [test-saved-age] " .. tostring(m) .. "\n") end
+    local idx = tonumber(idxArg)
+    if not idx then say("usage: lbtestsavedage <idx 0-2> [test] -- 0=Young 1=Mature 2=Old."); return false end
+
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on this actor"); return false end
+
+    local function readAge()
+        local v = nil
+        pcall(function() v = tonumber(comp.SavedCustomizationData.CharacterAge) end)
+        return v
+    end
+
+    local before = readAge()
+    say(string.format("before: CharacterAge=%s (%s)", tostring(before), (before and AGE_NAMES_BY_INT[before]) or "?"))
+
+    -- A. direct nested set
+    pcall(function() comp.SavedCustomizationData.CharacterAge = idx end)
+    local afterA = readAge()
+    say(string.format("[A: direct nested set] after=%s (%s) -- %s",
+        tostring(afterA), (afterA and AGE_NAMES_BY_INT[afterA]) or "?",
+        (afterA == idx) and "STUCK" or "did not stick"))
+    if afterA == idx then
+        say("Write A stuck. Go look at the target NOW -- did the wrinkle texture actually change? (a stuck write and a visual update are different questions)")
+        return true
+    end
+
+    -- B. read-modify-reassign the whole struct
+    local okB = pcall(function()
+        local s = comp.SavedCustomizationData
+        s.CharacterAge = idx
+        comp.SavedCustomizationData = s
+    end)
+    local afterB = readAge()
+    say(string.format("[B: read-modify-reassign] okCall=%s after=%s (%s) -- %s",
+        tostring(okB), tostring(afterB), (afterB and AGE_NAMES_BY_INT[afterB]) or "?",
+        (afterB == idx) and "STUCK" or "did not stick"))
+    if afterB == idx then
+        say("Write B stuck. Go look at the target NOW -- did the wrinkle texture actually change?")
+        return true
+    end
+
+    -- C. bracket B with a character-edit session (the same commit sequence already confirmed a
+    -- no-op for MorphParams -- tried anyway since Age may route through different internal logic).
+    local okStart = pcall(function() comp:StartCharacterEdit() end)
+    local okB2 = pcall(function()
+        local s = comp.SavedCustomizationData
+        s.CharacterAge = idx
+        comp.SavedCustomizationData = s
+    end)
+    local okEnd = pcall(function() comp:EndCharacterEdit(true) end)
+    local afterC = readAge()
+    say(string.format("[C: StartCharacterEdit/write/EndCharacterEdit(true)] okStart=%s okWrite=%s okEnd=%s after=%s (%s) -- %s",
+        tostring(okStart), tostring(okB2), tostring(okEnd), tostring(afterC), (afterC and AGE_NAMES_BY_INT[afterC]) or "?",
+        (afterC == idx) and "STUCK" or "did not stick"))
+    if afterC == idx then
+        say("Write C stuck. Go look at the target NOW -- did the wrinkle texture actually change?")
+    else
+        say("All three write strategies failed to stick. CharacterAge looks read-only/load-time-only on a live actor -- likely the same bake-once wall as the body-shape morphs.")
+    end
+    return afterC == idx
+end
+
+-- BODY_PART_TYPE_NAMES -- ER5BLCharacterBodyPartType (jmap-confirmed, 2026-09-11) -- the DECOR
+-- system's own body-region enum, NOT the same enum as MeshBodyPart's clothing slots (Torso/Waist/
+-- etc.) -- this one is skin regions + makeup slots: Face/Head/Chest/Back/both Shoulders/both
+-- Forearms/both Legs, plus Eyeliner/Lips/Cheecks (makeup), plus a Senkamati-flavored "Cursemark".
+local BODY_PART_TYPE_NAMES = {
+    [0] = "Face", [1] = "Head", [2] = "Chest", [3] = "Back", [4] = "ShoulderRight",
+    [5] = "ForearmRight", [6] = "ShoulderLeft", [7] = "ForearmLeft", [8] = "LegLeft", [9] = "LegRight",
+    [10] = "Eyeliner", [11] = "Lips", [12] = "Cheecks", [13] = "Cursemark", [255] = "None",
+}
+
+-- Spawner.DumpBodyDecor(sayIn, which) -- "lbdumpdecor [test]" (2026-09-11). RedFalcon: "let's
+-- explore the other decor areas we discovered earlier" -- the tattoo/makeup system
+-- (R5CompositeMeshSkinDecorParams/BodyDecorations), deliberately deferred earlier this session
+-- ("put a pin in it, i do wish to explore it") pending a fresh look (a much older, pre-this-
+-- project's-tooling session note says "ruled out color/tattoo customization (crashes)" -- worth
+-- re-verifying, not trusting blindly). UNLIKE Age, both real data-reading functions here
+-- (GetAvailableBodyDecorData/GetSkinDecorData) live on the GENERAL-PURPOSE R5CompositeMeshComponent,
+-- not a creator-only component -- a better sign than Age had from the start. Dumps THREE things per
+-- target: (1) GetAvailableBodyDecorData().BodyDecorations -- which body regions have ANY decor
+-- OPTIONS at all for this archetype, and how many; (2) GetSkinDecorData() -- what's CURRENTLY
+-- applied, live; (3) SavedCustomizationData.SelectedSkinDecor -- the same data via the OTHER known
+-- read path, for cross-checking (matches the CPD-colors precedent of two independent read sources).
+-- No arg -> player pawn; "test" -> the last spawned/probed test actor.
+function Spawner.DumpBodyDecor(sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [dump-decor] " .. tostring(m) .. "\n") end
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on this actor"); return false end
+
+    -- (1) Available options per body region.
+    local avail = nil
+    pcall(function() avail = comp:GetAvailableBodyDecorData() end)
+    if not (avail and avail:IsValid()) then
+        say("GetAvailableBodyDecorData() returned nothing/invalid.")
+    else
+        local m = nil
+        pcall(function() m = avail.BodyDecorations end)
+        if not m then
+            say("GetAvailableBodyDecorData().BodyDecorations not readable.")
+        else
+            local regionCount = 0
+            pcall(function()
+                m:ForEach(function(k, v)
+                    regionCount = regionCount + 1
+                    local ki = headgearEnumInt(k)
+                    local regionName = (ki and BODY_PART_TYPE_NAMES[ki]) or ("?" .. tostring(ki))
+                    local optCount = 0
+                    pcall(function()
+                        local opts = v.BodyPartDecorOptions
+                        pcall(function() optCount = opts:GetArrayNum() end)
+                        if optCount == 0 then pcall(function() optCount = #opts end) end
+                    end)
+                    say(string.format("  [available] region=%s options=%d", regionName, optCount))
+                end)
+            end)
+            say(string.format("Total regions with any decor options: %d", regionCount))
+        end
+    end
+
+    -- (2) Currently-applied, live.
+    local currentArr = nil
+    pcall(function() currentArr = comp:GetSkinDecorData() end)
+    if currentArr then
+        local n = 0
+        pcall(function() n = currentArr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #currentArr end) end
+        say(string.format("GetSkinDecorData() (currently applied, live): %d entries", n))
+        for i = 1, n do
+            local el = nil
+            pcall(function() el = currentArr[i] end)
+            if el == nil then pcall(function() el = currentArr:Get(i) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            if el then
+                local bp, uid, pal = nil, "?", nil
+                pcall(function() bp = tonumber(el.BodyPart) end)
+                pcall(function() uid = el.SelectedDecorUID.TagName:ToString() end)
+                pcall(function() pal = tonumber(el.SelectedColorPaletteIndex) end)
+                say(string.format("  [current] region=%s uid=%s paletteIdx=%s",
+                    (bp and BODY_PART_TYPE_NAMES[bp]) or ("?" .. tostring(bp)), uid, tostring(pal)))
+            end
+        end
+    else
+        say("GetSkinDecorData() returned nothing.")
+    end
+
+    -- (3) Cross-check via SavedCustomizationData (the same struct Age's investigation used).
+    local saved = nil
+    pcall(function() saved = comp.SavedCustomizationData.SelectedSkinDecor end)
+    if saved then
+        local n = 0
+        pcall(function() n = saved:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #saved end) end
+        say(string.format("SavedCustomizationData.SelectedSkinDecor (cross-check): %d entries", n))
+    else
+        say("SavedCustomizationData.SelectedSkinDecor not readable.")
+    end
+    return true
+end
+
+local BODY_PART_TYPE_BY_NAME = {}
+for k, v in pairs(BODY_PART_TYPE_NAMES) do BODY_PART_TYPE_BY_NAME[v:lower()] = k end
+
+-- Spawner.ApplyDecorTag(bodyPartArg, assetPathArg, paletteIdxArg, sayIn, which) -- "lbtestdecor
+-- <bodyPart> <assetPath> <paletteIdx> [test]" (2026-09-11). RedFalcon found the real per-option
+-- source assets directly (e.g. DA_Hero_CompositeMeshParams_SkinDecor_Lips_Type_01, one
+-- R5CompositeMeshSelectionDecorData DataAsset per selectable design) -- each one's own `DecorName`
+-- field is a REAL, already-existing GameplayTag object, so this test needs no tag construction at
+-- all (this project's own documented "cannot construct a GameplayTag outside the Editor" limitation
+-- never applies here -- resolveAsset() + reading DecorName off it is enough). Both live NPCs probed
+-- so far (Marita, Sailor bot) show SelectedSkinDecor as a FIXED 14-entry array in the SAME order as
+-- the BODY_PART_TYPE_NAMES enum (Face..Cursemark) -- indexes directly by body-part int rather than
+-- searching, on that same observed pattern. Same escalating A/B/C write strategy as
+-- Spawner.ApplySavedAge (nested set / read-modify-reassign-array / bracket with StartCharacterEdit-
+-- EndCharacterEdit) -- reports which stuck; RedFalcon still needs to eyeball the target to see if
+-- ANY of them actually render, the same "a stuck write and a visual update are different questions"
+-- caveat that closed out the Age investigation.
+function Spawner.ApplyDecorTag(bodyPartArg, assetPathArg, paletteIdxArg, sayIn, which)
+    local say = sayIn or function(m) print("[LivingBase] [test-decor] " .. tostring(m) .. "\n") end
+    if not (bodyPartArg and assetPathArg) then
+        say("usage: lbtestdecor <bodyPart> <assetPath> [paletteIdx] [test] -- bodyPart one of: Face/Head/Chest/Back/ShoulderRight/ForearmRight/ShoulderLeft/ForearmLeft/LegLeft/LegRight/Eyeliner/Lips/Cheecks/Cursemark.")
+        return false
+    end
+    local bpInt = BODY_PART_TYPE_BY_NAME[bodyPartArg:lower()]
+    if not bpInt then say("unknown body part '" .. bodyPartArg .. "'."); return false end
+    local paletteIdx = tonumber(paletteIdxArg) or 0
+
+    if not assetPathArg:match("%.[%w_]+$") then
+        local last = assetPathArg:match("([^/]+)$")
+        if last then assetPathArg = assetPathArg .. "." .. last end
+    end
+    local decorAsset = resolveAsset(assetPathArg)
+    if not decorAsset then say("UNRESOLVED: " .. assetPathArg); return false end
+    local newTag = nil
+    pcall(function() newTag = decorAsset.DecorName end)
+    if not newTag then say("could not read DecorName off " .. assetPathArg); return false end
+    local newTagStr = "?"; pcall(function() newTagStr = newTag.TagName:ToString() end)
+    say("resolved decor asset -- DecorName=" .. newTagStr)
+
+    local actor = nil
+    if which and tostring(which):lower():find("test") then
+        actor = resolveTestDiagActor()
+        if not (actor and actor:IsValid()) then say("no test actor -- spawn/probe one first, or omit the arg for the player."); return false end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        actor = pc and pc:IsValid() and pc.Pawn or nil
+        if not (actor and actor:IsValid()) then say("no player Pawn"); return false end
+    end
+    do local fn = "?"; pcall(function() fn = actor:GetFullName() end); say("actor: " .. fn) end
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on this actor"); return false end
+
+    local function readCurrent()
+        local uid, pal = "?", nil
+        pcall(function()
+            local arr = comp.SavedCustomizationData.SelectedSkinDecor
+            local el = arr[bpInt + 1]; if el == nil then pcall(function() el = arr:Get(bpInt) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            uid = el.SelectedDecorUID.TagName:ToString()
+            pal = tonumber(el.SelectedColorPaletteIndex)
+        end)
+        return uid, pal
+    end
+
+    local beforeUid, beforePal = readCurrent()
+    say(string.format("before: region=%s uid=%s paletteIdx=%s", bodyPartArg, beforeUid, tostring(beforePal)))
+
+    -- A. direct nested set on the array element.
+    local okA = pcall(function()
+        local arr = comp.SavedCustomizationData.SelectedSkinDecor
+        local el = arr[bpInt + 1]; if el == nil then pcall(function() el = arr:Get(bpInt) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        el.SelectedDecorUID = newTag
+        el.SelectedColorPaletteIndex = paletteIdx
+    end)
+    local afterAUid, afterAPal = readCurrent()
+    say(string.format("[A: direct nested element set] okCall=%s after uid=%s paletteIdx=%s -- %s",
+        tostring(okA), afterAUid, tostring(afterAPal), (afterAUid == newTagStr) and "STUCK" or "did not stick"))
+    if afterAUid == newTagStr then
+        say("Write A stuck. Go look at the target NOW -- did the tattoo/makeup actually render?")
+        return true
+    end
+
+    -- B. read-modify-reassign the WHOLE array back onto the struct.
+    local okB = pcall(function()
+        local struct = comp.SavedCustomizationData
+        local arr = struct.SelectedSkinDecor
+        local el = arr[bpInt + 1]; if el == nil then pcall(function() el = arr:Get(bpInt) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        el.SelectedDecorUID = newTag
+        el.SelectedColorPaletteIndex = paletteIdx
+        struct.SelectedSkinDecor = arr
+        comp.SavedCustomizationData = struct
+    end)
+    local afterBUid, afterBPal = readCurrent()
+    say(string.format("[B: read-modify-reassign array+struct] okCall=%s after uid=%s paletteIdx=%s -- %s",
+        tostring(okB), afterBUid, tostring(afterBPal), (afterBUid == newTagStr) and "STUCK" or "did not stick"))
+    if afterBUid == newTagStr then
+        say("Write B stuck. Go look at the target NOW -- did the tattoo/makeup actually render?")
+        return true
+    end
+
+    -- C. bracket B with a character-edit session (same commit sequence tried for Age/MorphParams).
+    local okStart = pcall(function() comp:StartCharacterEdit() end)
+    local okC = pcall(function()
+        local struct = comp.SavedCustomizationData
+        local arr = struct.SelectedSkinDecor
+        local el = arr[bpInt + 1]; if el == nil then pcall(function() el = arr:Get(bpInt) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        el.SelectedDecorUID = newTag
+        el.SelectedColorPaletteIndex = paletteIdx
+        struct.SelectedSkinDecor = arr
+        comp.SavedCustomizationData = struct
+    end)
+    local okEnd = pcall(function() comp:EndCharacterEdit(true) end)
+    local afterCUid, afterCPal = readCurrent()
+    say(string.format("[C: StartCharacterEdit/write/EndCharacterEdit(true)] okStart=%s okWrite=%s okEnd=%s after uid=%s paletteIdx=%s -- %s",
+        tostring(okStart), tostring(okC), tostring(okEnd), afterCUid, tostring(afterCPal),
+        (afterCUid == newTagStr) and "STUCK" or "did not stick"))
+    if afterCUid == newTagStr then
+        say("Write C stuck. Go look at the target NOW -- did the tattoo/makeup actually render?")
+    else
+        say("All three write strategies failed to stick.")
+    end
+    return afterCUid == newTagStr
+end
+
+-- Spawner.DumpHeadgearSuspend(sayIn) -- "lbdumpheadgearsuspend" (2026-09-11). RedFalcon: "do all the
+-- hairs have a version that works with the various types of headwear?" -- wrong axis to check from
+-- the Hairs side. windrose.jmap shows every composite piece (headgear included) is itself an
+-- R5CompositeMeshParams DataAsset carrying its own SlotsToSuspend map (key
+-- ER5BLCompositeMeshBodyPartType -> value ER5BLCompositeMeshSuspendType) -- THIS is the real
+-- mechanism that hides/suspends another slot (Hairs, Beard, etc.) while a piece is worn. There's no
+-- separate "this hair is headwear-compatible" flag to check on the Hairs side at all -- it's each
+-- headgear piece unilaterally declaring which OTHER slots it suspends, and how much
+-- (SuspendHat/SuspendBandana/SuspendHeadband are named-method tiers; Light/Medium/Full read as
+-- generic severity tiers; None/absent = no suspension, hair stays visible under that piece). This
+-- walks every one of the 65 Headgear pieces in Barbie_Slot_Item_Catalog.xlsx (raw asset paths, with
+-- the catalog's staging-artifact /Game/R5/Content/ prefix re-derived back to /Game/) and dumps each
+-- piece's SlotsToSuspend contents so which pieces actually suspend Hairs -- and by what method --
+-- is real per-piece data, not a guess. Full dump also captured to a timestamped
+-- headgear_suspend_<ts>.txt (ue4ss.log truncates on launch).
+local HEADGEAR_PIECES = {
+    { name = "DA_Armor_Regular_BlackBeard_Grenadier_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_01_CompositeMeshData.DA_Armor_Regular_BlackBeard_Grenadier_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Grenadier_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_02_CompositeMeshData.DA_Armor_Regular_BlackBeard_Grenadier_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Grenadier_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Grenadier/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Grenadier_Head_03_CompositeMeshData.DA_Armor_Regular_BlackBeard_Grenadier_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Musketeer_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_01_CompositeMeshData.DA_Armor_Regular_BlackBeard_Musketeer_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Musketeer_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_02_CompositeMeshData.DA_Armor_Regular_BlackBeard_Musketeer_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Musketeer_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Musketeer/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Musketeer_Head_03_CompositeMeshData.DA_Armor_Regular_BlackBeard_Musketeer_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sailor_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_01_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sailor_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sailor_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_02_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sailor_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sailor_Head_None_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sailor/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sailor_Head_None_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sailor_Head_None_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sergeant_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_01_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sergeant_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sergeant_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_02_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sergeant_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_BlackBeard_Sergeant_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/BlackBeard_Sergeant/CompositeMeshData/Head/DA_Armor_Regular_BlackBeard_Sergeant_Head_03_CompositeMeshData.DA_Armor_Regular_BlackBeard_Sergeant_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Combatant_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_01_CompositeMeshData.DA_Armor_Regular_Combatant_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Combatant_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_02_CompositeMeshData.DA_Armor_Regular_Combatant_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Combatant_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Combatant/CompositeMeshData/Head/DA_Armor_Regular_Combatant_Head_03_CompositeMeshData.DA_Armor_Regular_Combatant_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Dogface_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_01_CompositeMeshData.DA_Armor_Regular_Dogface_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Dogface_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_02_CompositeMeshData.DA_Armor_Regular_Dogface_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Dogface_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Dogface/CompositeMeshData/Head/DA_Armor_Regular_Dogface_Head_03_CompositeMeshData.DA_Armor_Regular_Dogface_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Armored_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_01_CompositeMeshData.DA_Armor_Regular_Drowned_Armored_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Armored_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_02_CompositeMeshData.DA_Armor_Regular_Drowned_Armored_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Armored_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned_Armored/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Armored_Head_03_CompositeMeshData.DA_Armor_Regular_Drowned_Armored_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_01_CompositeMeshData.DA_Armor_Regular_Drowned_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_02_CompositeMeshData.DA_Armor_Regular_Drowned_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Drowned_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Drowned/CompositeMeshData/Head/DA_Armor_Regular_Drowned_Head_03_CompositeMeshData.DA_Armor_Regular_Drowned_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_01_CompositeMeshData.DA_Armor_Regular_Flibustier_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_02_CompositeMeshData.DA_Armor_Regular_Flibustier_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_03_CompositeMeshData.DA_Armor_Regular_Flibustier_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Head_04_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Flibustier_Head_04_CompositeMeshData.DA_Armor_Regular_Flibustier_Head_04_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Adventurer_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Head/DA_Armor_Regular_Hero_Adventurer_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Adventurer_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Bandit_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Head/DA_Armor_Regular_Hero_Bandit_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Bandit_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Brigant_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Head/DA_Armor_Regular_Hero_Brigant_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Brigant_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Conquistador_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Head/DA_Armor_Regular_Hero_Conquistador_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Conquistador_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Flibustier_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Head/DA_Armor_Regular_Hero_Flibustier_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Flibustier_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_MaskSenkamati_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T03_Head_MaskSenkamati/CompositeMeshData/Head/DA_Armor_Regular_Hero_MaskSenkamati_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_MaskSenkamati_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Mercenary_Head_Bandana_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Bandana_01_CompositeMeshData.DA_Armor_Regular_Hero_Mercenary_Head_Bandana_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Mercenary_Head_Hat_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Hat_01_CompositeMeshData.DA_Armor_Regular_Hero_Mercenary_Head_Hat_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Mercenary_Head_Headband_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Head/DA_Armor_Regular_Hero_Mercenary_Head_Headband_01_CompositeMeshData.DA_Armor_Regular_Hero_Mercenary_Head_Headband_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Pikeman_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Head/DA_Armor_Regular_Hero_Pikeman_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Pikeman_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_SoloPlayer_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T01_Head_SoloPlayer/CompositeMeshData/Head/DA_Armor_Regular_Hero_SoloPlayer_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_SoloPlayer_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_SoloPlayer_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/T01_Head_SoloPlayer/CompositeMeshData/Head/DA_Armor_Regular_Hero_SoloPlayer_Head_02_CompositeMeshData.DA_Armor_Regular_Hero_SoloPlayer_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Starter_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Head/DA_Armor_Regular_Hero_Starter_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Starter_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Vanilla_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Head/DA_Armor_Regular_Hero_Vanilla_Head_01_CompositeMeshData.DA_Armor_Regular_Hero_Vanilla_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_01_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_02_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_03_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_04_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_04_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_04_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_07_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_07_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_07_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Head_None_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Head/DA_Armor_Regular_Jeweler_Head_None_CompositeMeshData.DA_Armor_Regular_Jeweler_Head_None_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Musketeer_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_01_CompositeMeshData.DA_Armor_Regular_Musketeer_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Musketeer_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_02_CompositeMeshData.DA_Armor_Regular_Musketeer_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Musketeer_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Musketeer/CompositeMeshData/Head/DA_Armor_Regular_Musketeer_Head_03_CompositeMeshData.DA_Armor_Regular_Musketeer_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Hunter_Feather_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_01_CompositeMeshData.DA_Armor_Regular_Senkamati_Hunter_Feather_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Hunter_Feather_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_02_CompositeMeshData.DA_Armor_Regular_Senkamati_Hunter_Feather_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Hunter_Feather_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Hunter_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Hunter_Feather_Head_03_CompositeMeshData.DA_Armor_Regular_Senkamati_Hunter_Feather_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Shaman_Feather_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_01_CompositeMeshData.DA_Armor_Regular_Senkamati_Shaman_Feather_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Shaman_Feather_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_02_CompositeMeshData.DA_Armor_Regular_Senkamati_Shaman_Feather_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Shaman_Feather_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Shaman_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Shaman_Feather_Head_03_CompositeMeshData.DA_Armor_Regular_Senkamati_Shaman_Feather_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Thrall_Feather_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_01_CompositeMeshData.DA_Armor_Regular_Senkamati_Thrall_Feather_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Thrall_Feather_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_02_CompositeMeshData.DA_Armor_Regular_Senkamati_Thrall_Feather_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Thrall_Feather_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_03_CompositeMeshData.DA_Armor_Regular_Senkamati_Thrall_Feather_Head_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Thrall_Feather_Head_04_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Thrall_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Thrall_Feather_Head_04_CompositeMeshData.DA_Armor_Regular_Senkamati_Thrall_Feather_Head_04_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Warrior_Feather_Head_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_01_CompositeMeshData.DA_Armor_Regular_Senkamati_Warrior_Feather_Head_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Warrior_Feather_Head_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_02_CompositeMeshData.DA_Armor_Regular_Senkamati_Warrior_Feather_Head_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Senkamati_Warrior_Feather_Head_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Senkamati_Warrior_Feather/CompositeMeshData/Head/DA_Armor_Regular_Senkamati_Warrior_Feather_Head_03_CompositeMeshData.DA_Armor_Regular_Senkamati_Warrior_Feather_Head_03_CompositeMeshData" },
+    { name = "DA_Mob_Boneman_Spanish_Ghost_CompositeMeshData_Head_01", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Ghost/CompositeMeshData/Torso/DA_Mob_Boneman_Spanish_Ghost_CompositeMeshData_Head_01.DA_Mob_Boneman_Spanish_Ghost_CompositeMeshData_Head_01" },
+}
+
+local HEADGEAR_BODYPART_TYPE_NAMES = {
+    [0] = "None", [1] = "Eyebrows", [2] = "Beard", [3] = "Hairs", [4] = "Headgear", [5] = "Mask",
+    [6] = "Cape", [7] = "Torso", [8] = "Sash", [9] = "Belt", [10] = "Sling", [11] = "Strap",
+    [12] = "Frog", [13] = "Legs", [14] = "Feets", [15] = "Waist", [16] = "Hands", [17] = "Mustache",
+    [18] = "Whiskers",
+}
+local HEADGEAR_SUSPEND_TYPE_NAMES = {
+    [0] = "None", [1] = "SuspendHat", [2] = "SuspendBandana", [3] = "SuspendHeadband",
+    [4] = "Light", [5] = "Medium", [6] = "Full",
+}
+
+-- UE4SS surfaces TMap<enum,enum> keys/values as plain Lua numbers in some code paths and as
+-- userdata enum wrappers (:get()/:ToString()) in others -- handle both rather than assume one.
+local function headgearEnumInt(v)
+    if type(v) == "number" then return math.floor(v) end
+    local ok, n = pcall(function() return v:get() end)
+    if ok and type(n) == "number" then return math.floor(n) end
+    ok, n = pcall(function() return tonumber(tostring(v)) end)
+    if ok and n then return math.floor(n) end
+    return nil
+end
+
+function Spawner.DumpHeadgearSuspend(sayIn)
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local file, filePath = nil, nil
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/headgear_suspend_" .. ts .. ".txt", "Mods/LivingBase/headgear_suspend_" .. ts .. ".txt", "headgear_suspend_" .. ts .. ".txt" }) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+    local realPrint = print
+    if file then
+        print = function(...)
+            realPrint(...)
+            local parts = {}
+            for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+    local say = sayIn or function(m) print("[LivingBase] [headgear-suspend] " .. tostring(m) .. "\n") end
+    local ok, err = pcall(function()
+        say(string.format("Scanning %d Headgear pieces for SlotsToSuspend...", #HEADGEAR_PIECES))
+        local hairsCount, anyCount, emptyCount, failCount = 0, 0, 0, 0
+        for _, piece in ipairs(HEADGEAR_PIECES) do
+            local asset = resolveAsset(piece.path)
+            if not asset then
+                failCount = failCount + 1
+                say(string.format("  [UNRESOLVED] %s", piece.name))
+            else
+                local entries = {}
+                local hasMap = false
+                pcall(function()
+                    local m = asset.SlotsToSuspend
+                    if m then
+                        hasMap = true
+                        pcall(function()
+                            m:ForEach(function(k, v)
+                                local ki, vi = headgearEnumInt(k), headgearEnumInt(v)
+                                entries[#entries + 1] = string.format("%s=%s",
+                                    (ki and HEADGEAR_BODYPART_TYPE_NAMES[ki]) or ("?" .. tostring(ki)),
+                                    (vi and HEADGEAR_SUSPEND_TYPE_NAMES[vi]) or ("?" .. tostring(vi)))
+                                if ki == 3 then hairsCount = hairsCount + 1 end
+                            end)
+                        end)
+                    end
+                end)
+                if not hasMap then
+                    failCount = failCount + 1
+                    say(string.format("  [NO SlotsToSuspend PROPERTY] %s", piece.name))
+                elseif #entries == 0 then
+                    emptyCount = emptyCount + 1
+                    say(string.format("  [empty] %s", piece.name))
+                else
+                    anyCount = anyCount + 1
+                    say(string.format("  %s: %s", piece.name, table.concat(entries, ", ")))
+                end
+            end
+        end
+        say(string.format("Done. %d/%d pieces suspend Hairs specifically; %d have some suspend rule; %d empty; %d unresolved/no-property.",
+            hairsCount, #HEADGEAR_PIECES, anyCount, emptyCount, failCount))
+    end)
+    print = realPrint
+    if file then pcall(function() file:flush(); file:close() end) end
+    if filePath then print("[LivingBase] [headgear-suspend] full dump also written to " .. filePath .. "\n") end
+    if not ok then print("[LivingBase] [headgear-suspend] FAILED: " .. tostring(err) .. "\n") end
+    return ok
+end
+
+-- Spawner.DumpPieceSuspend(pathArg, say) -- "lbdumpsuspend <path>" (2026-09-11). RedFalcon found a
+-- real, live counter-example to the "Torso and Waist are mutually exclusive" claim (19n, tested
+-- 2026-09-03): the native Female Herbalist wears Torso (SK_Armor_Underwear_01_Female_Torso) AND
+-- Waist (SK_Armor_Bandit_Female_Waist) simultaneously. Reframes the question exactly like the
+-- Headgear/Hairs investigation did: it's very likely never been a hardcoded MeshBodyPart-level
+-- exclusion at all -- it's the SAME per-piece SlotsToSuspend mechanism, and 19n's specific test
+-- Torso piece (whatever regular-armor Torso it used) may simply have declared a SlotsToSuspend
+-- entry that suspends Waist, while an Underwear-classified Torso apparently does not. This is a
+-- one-off single-asset version of DumpHeadgearSuspend's own per-piece dump logic (not looping a
+-- fixed roster) so ANY piece -- the Vanilla Torso this session's own outfit fix used, the
+-- Underwear Torso, the regular-armor Torso 19n actually tested if it can be identified -- can be
+-- checked directly by path, live, without needing to add it to a hardcoded list first.
+function Spawner.DumpPieceSuspend(pathArg, say)
+    say = say or function(m) print("[LivingBase] [dump-suspend] " .. tostring(m) .. "\n") end
+    if not pathArg or pathArg == "" then
+        say("usage: lbdumpsuspend <path> -- e.g. a DA_Armor_Regular_*_CompositeMeshData full path.")
+        return false
+    end
+    if not pathArg:match("%.[%w_]+$") then
+        local last = pathArg:match("([^/]+)$")
+        if last then pathArg = pathArg .. "." .. last end
+    end
+    local asset = resolveAsset(pathArg)
+    if not asset then
+        say("UNRESOLVED: " .. pathArg)
+        return false
+    end
+    local entries = {}
+    local hasMap = false
+    pcall(function()
+        local m = asset.SlotsToSuspend
+        if m then
+            hasMap = true
+            pcall(function()
+                m:ForEach(function(k, v)
+                    local ki, vi = headgearEnumInt(k), headgearEnumInt(v)
+                    entries[#entries + 1] = string.format("%s=%s",
+                        (ki and HEADGEAR_BODYPART_TYPE_NAMES[ki]) or ("?" .. tostring(ki)),
+                        (vi and HEADGEAR_SUSPEND_TYPE_NAMES[vi]) or ("?" .. tostring(vi)))
+                end)
+            end)
+        end
+    end)
+    if not hasMap then
+        say(pathArg .. ": [NO SlotsToSuspend PROPERTY]")
+    elseif #entries == 0 then
+        say(pathArg .. ": [empty -- suspends nothing]")
+    else
+        say(pathArg .. ": " .. table.concat(entries, ", "))
+    end
+    return true
+end
+
+-- Spawner.DumpTorsoSuspend(sayIn) -- "lbdumptorsosuspend" (2026-09-11). RedFalcon confirmed via
+-- lbdumpsuspend that DA_Armor_Regular_Hero_Vanilla_Torso_01_CompositeMeshData -- the piece this
+-- session's own outfit fix used for the Barbie/Custom default -- declares Waist=Full, exactly the
+-- thing suspending Waist on every Barbie/Custom spawn (never actually confirmed working before this
+-- -- the earlier "legs torso and waist" confirmation was the unrelated native Herbalist, not this
+-- outfit). This is DumpHeadgearSuspend's own batch pattern applied to every human-appropriate,
+-- dual-sex-confirmed Torso piece in the game (24, from Barbie_Slot_Item_Catalog.xlsx -- Drowned/
+-- Senkamati/Ghost creature variants excluded, not appropriate for a default human look) so a
+-- genuinely Waist-safe replacement can be picked from real data instead of trial-and-error.
+local TORSO_PIECES = {
+    { name = "DA_Armor_Regular_Flibustier_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_01_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Torso_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_02_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Torso_02_Long_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_02_Long_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_02_Long_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Torso_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_03_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Torso_04_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_04_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_04_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Flibustier_Torso_05_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Flibustier_Torso_05_CompositeMeshData.DA_Armor_Regular_Flibustier_Torso_05_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Adventurer_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Adventurer/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Adventurer_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Adventurer_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Bandit_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Bandit/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Bandit_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Bandit_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Brigant_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Brigant/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Brigant_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Brigant_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Conquistador_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Conquistador/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Conquistador_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Conquistador_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Flibustier_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Flibustier/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Flibustier_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Flibustier_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Mercenary_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Mercenary/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Mercenary_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Mercenary_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Pikeman_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Pikeman/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Pikeman_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Pikeman_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Starter_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Starter_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Starter_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Starter_Torso_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Starter/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Starter_Torso_02_CompositeMeshData.DA_Armor_Regular_Hero_Starter_Torso_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Hero_Vanilla_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Set_Vanilla/CompositeMeshData/Torso/DA_Armor_Regular_Hero_Vanilla_Torso_01_CompositeMeshData.DA_Armor_Regular_Hero_Vanilla_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_01_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_01_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_01_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_02_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_02_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_02_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_03_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_03_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_03_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_04_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_04_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_04_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_05_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_05_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_05_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_06_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_06_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_06_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_07_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_07_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_07_CompositeMeshData" },
+    { name = "DA_Armor_Regular_Jeweler_Torso_08_CompositeMeshData", path = "/Game/Gameplay/Character/Customization/Regular/Armor/Jeweler/CompositeMeshData/Torso/DA_Armor_Regular_Jeweler_Torso_08_CompositeMeshData.DA_Armor_Regular_Jeweler_Torso_08_CompositeMeshData" },
+}
+
+function Spawner.DumpTorsoSuspend(sayIn)
+    local ts = os.date("%Y%m%d_%H%M%S")
+    local file, filePath = nil, nil
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/torso_suspend_" .. ts .. ".txt", "Mods/LivingBase/torso_suspend_" .. ts .. ".txt", "torso_suspend_" .. ts .. ".txt" }) do
+        local f = io.open(p, "w")
+        if f then file, filePath = f, p; break end
+    end
+    local realPrint = print
+    if file then
+        print = function(...)
+            realPrint(...)
+            local parts = {}
+            for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+            pcall(function() file:write(table.concat(parts, "\t")) end)
+        end
+    end
+    local say = sayIn or function(m) print("[LivingBase] [torso-suspend] " .. tostring(m) .. "\n") end
+    local ok, err = pcall(function()
+        say(string.format("Scanning %d Torso pieces for SlotsToSuspend...", #TORSO_PIECES))
+        local waistSafeCount, anySuspendCount, emptyCount, failCount = 0, 0, 0, 0
+        for _, piece in ipairs(TORSO_PIECES) do
+            local asset = resolveAsset(piece.path)
+            if not asset then
+                failCount = failCount + 1
+                say(string.format("  [UNRESOLVED] %s", piece.name))
+            else
+                local entries = {}
+                local hasMap = false
+                local suspendsWaist = false
+                pcall(function()
+                    local m = asset.SlotsToSuspend
+                    if m then
+                        hasMap = true
+                        pcall(function()
+                            m:ForEach(function(k, v)
+                                local ki, vi = headgearEnumInt(k), headgearEnumInt(v)
+                                entries[#entries + 1] = string.format("%s=%s",
+                                    (ki and HEADGEAR_BODYPART_TYPE_NAMES[ki]) or ("?" .. tostring(ki)),
+                                    (vi and HEADGEAR_SUSPEND_TYPE_NAMES[vi]) or ("?" .. tostring(vi)))
+                                if ki == 15 then suspendsWaist = true end
+                            end)
+                        end)
+                    end
+                end)
+                if not hasMap or #entries == 0 then
+                    waistSafeCount = waistSafeCount + 1
+                    emptyCount = emptyCount + ((not hasMap) and 0 or 1)
+                    say(string.format("  [WAIST-SAFE] %s%s", piece.name, hasMap and "" or " (no SlotsToSuspend property)"))
+                elseif not suspendsWaist then
+                    waistSafeCount = waistSafeCount + 1
+                    anySuspendCount = anySuspendCount + 1
+                    say(string.format("  [WAIST-SAFE, suspends something else] %s: %s", piece.name, table.concat(entries, ", ")))
+                else
+                    anySuspendCount = anySuspendCount + 1
+                    say(string.format("  [SUSPENDS WAIST] %s: %s", piece.name, table.concat(entries, ", ")))
+                end
+            end
+        end
+        say(string.format("Done. %d/%d Torso pieces are Waist-safe; %d unresolved.",
+            waistSafeCount, #TORSO_PIECES, failCount))
+    end)
+    print = realPrint
+    if file then pcall(function() file:flush(); file:close() end) end
+    if filePath then print("[LivingBase] [torso-suspend] full dump also written to " .. filePath .. "\n") end
+    if not ok then print("[LivingBase] [torso-suspend] FAILED: " .. tostring(err) .. "\n") end
+    return ok
 end
 
 -- Spawner.ApplyMorphLive(sayIn, morphToken) -- "lbtestmorphlive <DA_Custom_MorphParams_X>" (2026-09-10).
@@ -6967,6 +7934,38 @@ function Spawner.SetFirstPerson(mode, say)
     return true
 end
 
+-- Spawner._resolveTripodActor() -- (2026-09-13, RedFalcon: "the FOV is not working on the standalone
+-- cam" -- root cause was `lbreload` wiping `Spawner._photoTripodActor` even though the actual
+-- CameraActor stays spawned and stays the player's live view target -- RestartMod resets the Lua
+-- module's own state but doesn't touch the world or SetViewTargetWithBlend). Returns the cached actor
+-- if still valid; otherwise tries to recover it by reading the PlayerController's ACTUAL current view
+-- target and re-adopting it if it's a CameraActor (our tripod is the only thing that ever sets the
+-- view target to one). Keeps lbcameramove/lbcamerarotate/lbcamerafov/lbcamerapose working across a
+-- reload without needing to re-run lbphototripod/Zoom In first.
+function Spawner._resolveTripodActor()
+    local cam = Spawner._photoTripodActor
+    if cam and cam:IsValid() then return cam end
+    local ok, recovered = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local camMgr = pc and pc:IsValid() and pc.PlayerCameraManager
+        local vt = camMgr and camMgr:IsValid() and camMgr.ViewTarget
+        local target = vt and vt.Target
+        if target and target:IsValid() then
+            local className
+            pcall(function() className = target:GetClass():GetFName():ToString() end)
+            if className == "CameraActor" then
+                return target
+            end
+        end
+        return nil
+    end)
+    if ok and recovered then
+        Spawner._photoTripodActor = recovered
+        return recovered
+    end
+    return nil
+end
+
 -- Spawner.MoveTripodCamera(axis, amount, say) -- "lbcameramove <x|y|z> <amount>" (2026-09-08).
 -- RedFalcon's request for exact, repeatable positioning of the lbphototripod camera: nudge it
 -- along one WORLD axis by a specific signed amount, so exact coordinates can be dialed in over a
@@ -6976,7 +7975,7 @@ end
 -- Spawner.WarpNear/lbnudge.
 function Spawner.MoveTripodCamera(axis, amount, say)
     say = say or function(m) print("[LivingBase] [cameramove] " .. tostring(m) .. "\n") end
-    local cam = Spawner._photoTripodActor
+    local cam = Spawner._resolveTripodActor()
     if not (cam and cam:IsValid()) then
         say("no active tripod camera -- run lbphototripod on first.")
         return false
@@ -7006,7 +8005,7 @@ end
 -- repeatable framing. Uses K2_GetActorRotation/K2_SetActorRotation.
 function Spawner.RotateTripodCamera(axis, amount, say)
     say = say or function(m) print("[LivingBase] [camerarotate] " .. tostring(m) .. "\n") end
-    local cam = Spawner._photoTripodActor
+    local cam = Spawner._resolveTripodActor()
     if not (cam and cam:IsValid()) then
         say("no active tripod camera -- run lbphototripod on first.")
         return false
@@ -7030,6 +8029,38 @@ function Spawner.RotateTripodCamera(axis, amount, say)
     return ok
 end
 
+-- Spawner.SetTripodFOV(value, say) -- "lbcamerafov <value>" (2026-09-13, RedFalcon: "can i adjust
+-- [FOV] on the tripod camera as well, like the one used for zoom in?"). Same idea as
+-- MoveTripodCamera/RotateTripodCamera but for the lens itself -- sets FieldOfView on the ACTIVE
+-- Spawner._photoTripodActor's own CameraComponent (the SAME actor `lbphototripod`/the Custom tab's
+-- "Zoom In" button/`Spawner.ZoomTripodOnTarget` all share -- one active tripod at a time). Unlike
+-- Spawner.TestSetFOV (the player's own FollowCamera), this tripod is a plain vanilla
+-- /Script/Engine.CameraActor spawned by Spawner.SetPhotoTripod -- it has none of Windrose's own
+-- CameraParams settings-driven reassertion system, so a direct FieldOfView write on its
+-- CameraComponent just holds -- no detach-first dance needed the way the player camera required.
+function Spawner.SetTripodFOV(value, say)
+    say = say or function(m) print("[LivingBase] [camerafov] " .. tostring(m) .. "\n") end
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- run lbphototripod on first (or Zoom In from the Custom tab).")
+        return false
+    end
+    local target = tonumber(value)
+    if not target then
+        say("usage: lbcamerafov <value> (e.g. 90)")
+        return false
+    end
+    local camComp
+    pcall(function() camComp = cam.CameraComponent end)
+    if not (camComp and camComp:IsValid()) then
+        say("could not read tripod camera's CameraComponent.")
+        return false
+    end
+    local ok, err = pcall(function() camComp.FieldOfView = target end)
+    say(string.format("tripod FOV set to %.1f: %s%s", target, tostring(ok), (not ok) and (" err=" .. tostring(err)) or ""))
+    return ok
+end
+
 -- Spawner.TripodPose(say, posStr, rotStr) -- "lbcamerapose [X,Y,Z] [Pitch,Yaw,Roll]" (2026-09-10,
 -- RedFalcon: "same with the tripodcamera, but all locations and all rotations" -- an ABSOLUTE
 -- transform so a photo setup is fully reproducible by copy-pasting numbers, instead of nudging with
@@ -7037,7 +8068,7 @@ end
 -- the format the setter accepts. One arg (X,Y,Z) -> set position only. Two -> set both.
 function Spawner.TripodPose(say, posStr, rotStr)
     say = say or function(m) print("[LivingBase] [camerapose] " .. tostring(m) .. "\n") end
-    local cam = Spawner._photoTripodActor
+    local cam = Spawner._resolveTripodActor()
     if not (cam and cam:IsValid()) then
         say("no active tripod camera -- run lbphototripod on first.")
         return false
@@ -7102,6 +8133,205 @@ function Spawner.TargetPose(say)
     return true
 end
 
+-- Spawner.PrepareCameraSubjectPose(actor, say) / Spawner.RestoreCameraSubjectPose(say) -- (2026-09-13,
+-- RedFalcon originally asked for a whole statue/walker pose-swap-to-"Regular Idle 2" system here.
+-- SIMPLIFIED (2026-09-14) after Face View switched to reading the target's REAL head-bone position
+-- live (Spawner._computeHeadCenterPose) -- RedFalcon confirmed that framing "seems to work with just
+-- about every pose and height" once the camera is genuinely centered on the head, so forcing a
+-- specific pose for a good shot turned out to be unnecessary. Final scope, RedFalcon's own words:
+-- "no need for pose swap... still freeze non idle walkers". This function now ONLY freezes a moving
+-- walker for the shot (and unfreezes it after) -- it never touches animation/pose at all anymore,
+-- for statues or walkers. All the old pose-read/restore machinery (AnimationMode/
+-- AnimSingleNodeInstance/CurrentAsset struct-drilling, the SetAnimationMode/InitAnim restore dance
+-- that hit a genuine dead end on statues) was removed along with it -- see project_livingbase_
+-- spawn_menu memory for that saga's full history if it's ever needed again.
+--
+-- Called once, from ZoomTripodOnTarget/FaceViewOnTarget, the FIRST time either camera activates on
+-- a target (guarded by Spawner._cameraPoseSaved so switching Full Body <-> Face View while already
+-- zoomed doesn't re-trigger it); undone from SetPhotoTripod's own "off" branch, the one place both
+-- an explicit Zoom Out click and a plain `lbphototripod off` funnel through.
+--
+-- "Statue" vs "walker": whether actor.Controller/GetR5AIController() resolves to a valid
+-- AIController at all -- a statue never has one, so there's nothing to freeze. "Is a walker
+-- currently frozen" reuses the exact StateTreeComponent/BrainComponent/StateTree -> st:IsRunning()
+-- read already proven live elsewhere in this file (Spawner.WakeAI's own probe) --
+-- StopLogic()/StartLogic() (Spawner.SetAILogic) is what actually starts/stops that tree.
+function Spawner.PrepareCameraSubjectPose(actor, say)
+    say = say or function(m) print("[LivingBase] [camera-pose] " .. tostring(m) .. "\n") end
+    if Spawner._cameraPoseSaved then
+        -- Already prepared this zoom session (switching Full Body <-> Face View) -- don't re-prep.
+        return
+    end
+    if not (actor and actor:IsValid()) then return end
+
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not (ctrl and ctrl:IsValid()) then pcall(function() ctrl = actor:GetR5AIController() end) end
+
+    local saved = { actor = actor }
+
+    if ctrl and ctrl:IsValid() then
+        local st = nil
+        for _, n in ipairs({ "StateTreeComponent", "BrainComponent", "StateTree" }) do
+            if not st then
+                pcall(function()
+                    local c = ctrl[n]
+                    if c and c:IsValid() then st = c end
+                end)
+            end
+        end
+        local running = true
+        if st and st:IsValid() then
+            pcall(function() running = st:IsRunning() end)
+        end
+        if running then
+            Spawner.SetAILogic(actor, false)
+            saved.weFroze = true
+            say("walker-type subject was moving -- frozen for the shot.")
+        end
+    end
+
+    Spawner._cameraPoseSaved = saved
+end
+
+function Spawner.RestoreCameraSubjectPose(say)
+    say = say or function(m) print("[LivingBase] [camera-pose] " .. tostring(m) .. "\n") end
+    local saved = Spawner._cameraPoseSaved
+    Spawner._cameraPoseSaved = nil
+    if not saved then return end
+    local actor = saved.actor
+    if not (actor and actor:IsValid()) then return end
+
+    if saved.weFroze then
+        Spawner.SetAILogic(actor, true)
+    end
+    say("subject restored.")
+end
+
+-- Spawner.TestReadHeadBone(say) -- "lbheadpos" (2026-09-13, RedFalcon: mesh-scale ratio improved
+-- Face View's framing but didn't fully fix it -- Marita (0.95 scale) still landed noticeably above
+-- her actual face, too much error for a mere 5% scale difference to explain. Points at a SKELETON
+-- PROPORTION difference between body types, not just uniform scale -- the fixed Z+70 offset (tuned
+-- against one specific male skeleton) doesn't generalize even after scaling, since it assumes every
+-- skeleton has the same head-to-root ratio. Real fix needs the ACTUAL head bone position each time
+-- instead of a guessed offset -- but neither `GetSocketLocation`/`GetBoneLocation` has ever been
+-- tried in this file before, and this R5 build's reflection surface has already surprised us twice
+-- this session (SetAnimationMode wanting an undocumented 2nd param, InitAnim not exposed at all) --
+-- so this is a PURE-READ diagnostic first, not a live wire-in, to confirm which call/bone-name
+-- combination actually works before touching FaceViewOnTarget's real math. Tries both
+-- GetSocketLocation (which normally falls back to a plain bone name if no explicit Socket exists)
+-- and GetBoneLocation (WorldSpace=0) against a short list of common humanoid head-bone names.
+function Spawner.TestReadHeadBone(say)
+    say = say or function(m) print("[LivingBase] [headpos] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        say("actor.Mesh not readable.")
+        return false
+    end
+    local loc
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    say(string.format("actor root Z = %s", loc and string.format("%.2f", loc.Z) or "?"))
+
+    local function tryCall(label, fn)
+        local ok, result = pcall(fn)
+        if ok and result then
+            local okX = pcall(function() return result.X + 0 end)
+            if okX then
+                local aboveRoot = loc and (result.Z - loc.Z) or nil
+                say(string.format("%s = (%.2f, %.2f, %.2f)%s", label, result.X, result.Y, result.Z,
+                    aboveRoot and string.format("  [%.2f above root]", aboveRoot) or ""))
+                return true
+            end
+        end
+        say(label .. " -- no usable result (call failed or returned non-vector).")
+        return false
+    end
+
+    local boneNames = { "head", "Head", "b_head", "Bip01_Head", "Bip001_Head", "head_lod0" }
+    local anySocketWorked, anyBoneWorked = false, false
+    for _, bn in ipairs(boneNames) do
+        if tryCall("GetSocketLocation(" .. bn .. ")", function() return mesh:GetSocketLocation(FName(bn)) end) then
+            anySocketWorked = true
+        end
+    end
+    for _, bn in ipairs(boneNames) do
+        if tryCall("GetBoneLocation(" .. bn .. ", world)", function() return mesh:GetBoneLocation(FName(bn), 0) end) then
+            anyBoneWorked = true
+        end
+    end
+    if not (anySocketWorked or anyBoneWorked) then
+        say("none of the tried names/calls returned a usable result -- may need a real bone-name dump instead of guessing.")
+    end
+    return anySocketWorked or anyBoneWorked
+end
+
+-- Spawner.TestReadChestBone(say) -- "lbchestpos" (2026-09-14, RedFalcon: "is there a bone in the
+-- skeleton that would represent the center of the chest, similar to the head"). Same pure-read
+-- diagnostic shape as Spawner.TestReadHeadBone just above -- `head` (bare, lowercase, no prefix)
+-- confirmed working there via GetSocketLocation, which matches the stock UE Mannequin skeleton's own
+-- bone-naming convention (pelvis/spine_01/spine_02/spine_03/neck_01/head), not a Biped- or
+-- "b_"-prefixed rig -- so `spine_03` (the top spine bone, sternum-height, right below the neck) is
+-- the most likely chest analog, tried first; a short net of fallback names covers other common
+-- conventions in case this skeleton deviates. Confirm live before wiring into anything real, same
+-- discipline the head-bone diagnostic followed.
+function Spawner.TestReadChestBone(say)
+    say = say or function(m) print("[LivingBase] [chestpos] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        say("actor.Mesh not readable.")
+        return false
+    end
+    local loc
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    say(string.format("actor root Z = %s", loc and string.format("%.2f", loc.Z) or "?"))
+
+    local function tryCall(label, fn)
+        local ok, result = pcall(fn)
+        if ok and result then
+            local okX = pcall(function() return result.X + 0 end)
+            if okX then
+                local aboveRoot = loc and (result.Z - loc.Z) or nil
+                say(string.format("%s = (%.2f, %.2f, %.2f)%s", label, result.X, result.Y, result.Z,
+                    aboveRoot and string.format("  [%.2f above root]", aboveRoot) or ""))
+                return true
+            end
+        end
+        say(label .. " -- no usable result (call failed or returned non-vector).")
+        return false
+    end
+
+    local boneNames = { "spine_03", "spine_02", "spine_01", "chest", "Chest", "b_spine_03", "Bip01_Spine2", "Bip001_Spine2" }
+    local anySocketWorked, anyBoneWorked = false, false
+    for _, bn in ipairs(boneNames) do
+        if tryCall("GetSocketLocation(" .. bn .. ")", function() return mesh:GetSocketLocation(FName(bn)) end) then
+            anySocketWorked = true
+        end
+    end
+    for _, bn in ipairs(boneNames) do
+        if tryCall("GetBoneLocation(" .. bn .. ", world)", function() return mesh:GetBoneLocation(FName(bn), 0) end) then
+            anyBoneWorked = true
+        end
+    end
+    if not (anySocketWorked or anyBoneWorked) then
+        say("none of the tried names/calls returned a usable result -- may need a real bone-name dump instead of guessing.")
+    end
+    return anySocketWorked or anyBoneWorked
+end
+
 function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
     say = say or function(m) print("[LivingBase] [phototripod] " .. tostring(m) .. "\n") end
     local pc, pawn
@@ -7114,6 +8344,14 @@ function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
         return false
     end
     if mode == "off" then
+        pcall(function() Spawner.RestoreCameraSubjectPose(say) end)
+        -- "When done I want rotation set back to before zooming in" -- clear BOTH cameras' orbit
+        -- state so the NEXT activation starts fresh instead of carrying over wherever the orbit
+        -- buttons left it (ZoomTripodOnTarget/FaceViewOnTarget also reset their own on every
+        -- (re)activation, but clearing here too means it can't linger even if something else
+        -- destroys the tripod).
+        Spawner._cameraFaceViewOrbitOffset = 0.0
+        Spawner._cameraFullBodyOrbitOffset = 0.0
         local ok = pcall(function() pc:SetViewTargetWithBlend(pawn, 0.0, 0, 0.0, false) end)
         say("view target restored to player pawn: " .. tostring(ok))
         if Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid() then
@@ -7183,6 +8421,480 @@ function Spawner.SetPhotoTripod(mode, distance, heightOffset, say)
     say(string.format("tripod cam ON -- positioned at (%.1f, %.1f, %.1f), yaw=%.1f, distance=%.1f, heightOffset=%.1f.",
         camPos.X, camPos.Y, camPos.Z, camYaw, distance, heightOffset))
     return true
+end
+
+-- Spawner._computeTripodFullBodyPose -- REMOVED 2026-09-14 (RedFalcon, after confirming the chest-
+-- bone approach worked great for lbchestcenter: "change full body to that with a distance of
+-- 200uu"). This function used to be Full Body's own wide-shot basis: a GUESSED Z+40*meshScale offset
+-- above the actor's root plus a flat 5uu lateral nudge, both just scaled by mesh scale rather than
+-- reading anything real off the skeleton (see this file's git history / the memory file for the full
+-- multi-day tuning saga -- mesh-scale ratio fix, "still off" on Marita, etc.). Once
+-- Spawner._computeChestCenterPose proved the REAL "spine_03" bone read (found via `lbchestpos`)
+-- "looks perfect" with height-scaled pullback and no guessed offsets at all, RedFalcon asked to just
+-- point Full Body at that same helper instead of maintaining two parallel approximations -- see
+-- Spawner.ZoomTripodOnTarget/RotateFullBodyYaw below, both now call _computeChestCenterPose directly.
+
+-- Spawner._computeHeadCenterPose(actor, pullbackUU, orbitOffsetDegrees) -- shared base-pose math for
+-- FaceViewOnTarget/CenterOnHeadTarget/RotateFaceViewYaw (2026-09-14, RedFalcon: "create a command
+-- that centers on the head with no other extra adjustments", then confirmed after testing
+-- lbheadcenter live: "we can honestly set the camera at 100 away with 50 FOV and it seems to work
+-- with just about every pose and height"). Originally kept deliberately separate from Full Body's
+-- own wide-shot basis (a guessed fixed offset above root, RedFalcon confirmed at the time should
+-- stay untouched) -- that guessed-offset formula was later REMOVED entirely (2026-09-14, see
+-- Spawner._computeChestCenterPose's header) once the real-bone-read approach proved itself, and Full
+-- Body now shares this exact code path too. This one reads the target's REAL "head" socket/bone
+-- world Z (confirmed live via `lbheadpos`:
+-- `mesh:GetSocketLocation(FName("head"))` is the one working call in this R5 build, GetBoneLocation
+-- never returned a usable result) instead of guessing/scaling an offset, and skips the lateral
+-- offset entirely -- "no other extra adjustments".
+--
+-- `orbitOffsetDegrees` (2026-09-14, CORRECTED after RedFalcon's follow-up: "i basically either want
+-- to rotate the target or orbit around the target so i can better see other angles when zoomed in"
+-- -- the first cut of the "<"/">" buttons just spun the CAMERA'S OWN yaw in place, which only pans
+-- the view without moving around the subject, not what was asked). Adds to the angle used for BOTH
+-- the camera's position around the target (a circle of radius `pullbackUU` centered on the target)
+-- AND the look-back yaw, so the camera swings around the target -- always the same distance, same
+-- height, always facing back at their head -- rather than rotating in place. At offset 0 the camera
+-- sits directly in front of wherever the target is currently facing, matching the original
+-- (non-orbiting) behavior exactly. Optional, defaults to 0.
+--
+-- Camera sits `pullbackUU` from the target at that orbit angle, at the EXACT head-bone Z, looking
+-- level (Pitch=0) straight back at them. Returns {pos={X,Y,Z}, yaw=<camera look yaw>} or nil if the
+-- actor's transform or head socket can't be read.
+--
+-- `boneName` (2026-09-14, RedFalcon: "is there a bone in the skeleton that would represent the
+-- center of the chest, similar to the head" -- confirmed via `lbchestpos` that `spine_03` is a real,
+-- distinct bone on this skeleton, 36.56uu above root vs. head's 67.02uu) -- optional, defaults to
+-- "head" so every existing caller (FaceViewOnTarget/CenterOnHeadTarget/RotateFaceViewYaw) is
+-- unaffected. Spawner._computeChestCenterPose below just passes "spine_03" through this same
+-- function rather than duplicating the whole body of it.
+function Spawner._computeHeadCenterPose(actor, pullbackUU, orbitOffsetDegrees, boneName)
+    orbitOffsetDegrees = orbitOffsetDegrees or 0.0
+    boneName = boneName or "head"
+    local loc, rot
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    pcall(function() rot = actor:K2_GetActorRotation() end)
+    if not (loc and rot) then return nil end
+
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    local headX, headY, headZ = nil, nil, nil
+    if mesh and mesh:IsValid() then
+        local ok, headLoc = pcall(function() return mesh:GetSocketLocation(FName(boneName)) end)
+        if ok and headLoc then
+            local okX = pcall(function() return headLoc.X + 0 end)
+            if okX then headX, headY, headZ = headLoc.X, headLoc.Y, headLoc.Z end
+        end
+    end
+    if not (headX and headY and headZ) then return nil end
+
+    -- Horizontal centering (2026-09-14, RedFalcon: "is it possible to have the face camera also
+    -- center horizontally so if the head is leaning to the side it still centers") -- pullback used
+    -- to originate from the ACTOR ROOT's X/Y (loc.X/loc.Y), which only ever matches the head's own
+    -- X/Y when the head sits straight above the root. A leaning/tilted pose puts the real head bone
+    -- off to one side of that, so the old math kept the root centered while the head drifted out of
+    -- frame. Now originates from the head bone's own X/Y (already read above for Z) instead of the
+    -- root's, so the shot re-centers on wherever the head actually is, lean included.
+    local yawRad = math.rad(rot.Yaw + orbitOffsetDegrees)
+    local camYaw = rot.Yaw + orbitOffsetDegrees + 180.0
+    local pos = { X = headX + math.cos(yawRad) * pullbackUU, Y = headY + math.sin(yawRad) * pullbackUU, Z = headZ }
+    return { pos = pos, yaw = camYaw }
+end
+
+-- Spawner._computeChestCenterPose(actor, pullbackUU, orbitOffsetDegrees) -- "lbchestcenter"
+-- (2026-09-14, RedFalcon: "let's do [a chest view]... don't go up the Z and make the angle 0 so we
+-- can see what it looks like" -- then, after seeing it live: "tweak that so it rotates pitch -10
+-- degrees again, and calculate distance based on height"). Reads meshScale the SAME way
+-- Spawner._computeTripodFullBodyPose does (mesh:K2_GetComponentScale().X, confirmed-safe pattern
+-- from the Full Body height-scaling fix, see that function's own header for the 3-screenshot
+-- evidence that pullback must scale with subject size or a bigger/smaller actor crops out of frame
+-- or sits too far back) and scales pullbackUU by it before delegating to
+-- Spawner._computeHeadCenterPose with boneName="spine_03" instead of "head" -- still no lateral
+-- offset, no Z lift beyond the bone's own real height.
+function Spawner._computeChestCenterPose(actor, pullbackUU, orbitOffsetDegrees)
+    local meshScale = 1.0
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if mesh and mesh:IsValid() then
+        local ok, s = pcall(function() return mesh:K2_GetComponentScale() end)
+        if ok and s then
+            local okX = pcall(function() return s.X + 0 end)
+            if okX and s.X and s.X > 0 then meshScale = s.X end
+        end
+    end
+    return Spawner._computeHeadCenterPose(actor, pullbackUU * meshScale, orbitOffsetDegrees, "spine_03")
+end
+
+-- Spawner.CenterOnChestTarget(say, pullbackUU) -- "lbchestcenter [pullback]" (2026-09-14). Same
+-- shape as Spawner.CenterOnHeadTarget, just built on _computeChestCenterPose (spine_03, height-scaled
+-- pullback) instead of the head bone -- no lateral offset, no FOV override, no pose/freeze handling.
+-- Pitch fixed at -10 (2026-09-14, RedFalcon: "rotates pitch -10 degrees again" -- matching the SAME
+-- tilt Full Body already uses, ZoomTripodOnTarget/RotateFullBodyYaw's own -10.0). Camera sits
+-- `pullbackUU` (before height-scaling; default 200) in front of the target along their own forward
+-- vector, at the EXACT world Z of their "spine_03" bone.
+function Spawner.CenterOnChestTarget(say, pullbackUU)
+    say = say or function(m) print("[LivingBase] [chestcenter] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    pullbackUU = pullbackUU or 200.0
+
+    local pose = Spawner._computeChestCenterPose(actor, pullbackUU)
+    if not pose then
+        say("could not read the target's transform or a 'spine_03' socket/bone on its skeleton.")
+        return false
+    end
+
+    if not (Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()) then
+        if not Spawner.SetPhotoTripod("on", 150.0, 160.0, say) then
+            say("could not start the tripod camera.")
+            return false
+        end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            pcall(function() pc:SetViewTargetWithBlend(Spawner._photoTripodActor, 0.0, 0, 0.0, false) end)
+        end
+    end
+
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("tripod camera unavailable after start attempt.")
+        return false
+    end
+
+    local camRot = { Pitch = -10.0, Yaw = pose.yaw, Roll = 0.0 }
+    local okPos = pcall(function() cam:K2_SetActorLocation(pose.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation(camRot, false) end)
+    say(string.format("chest-centered on target -- cam @ %.1f,%.1f,%.1f yaw=%.1f pitch=-10 (pos=%s rot=%s)",
+        pose.pos.X, pose.pos.Y, pose.pos.Z, pose.yaw, tostring(okPos), tostring(okRot)))
+    return okPos and okRot
+end
+
+-- Spawner.ZoomTripodOnTarget(say, pullbackUU) -- "Zoom In"/"Full Body" button, Custom tab
+-- (2026-09-11, RedFalcon: "point it at the middle of the actor... and pull back from its front
+-- 200u"). Reuses lbphototripod's own tripod camera (Spawner._photoTripodActor) and
+-- SetViewTargetWithBlend mechanism. Pose math CHANGED 2026-09-14 (RedFalcon: "change full body to
+-- that with a distance of 200uu", after lbchestcenter proved out) -- now calls
+-- Spawner._computeChestCenterPose (the same real "spine_03" bone read + height-scaled pullback
+-- lbchestcenter uses) instead of the old guessed-offset formula; see that function's own header and
+-- _computeTripodFullBodyPose's removal note for the full history.
+function Spawner.ZoomTripodOnTarget(say, pullbackUU)
+    say = say or function(m) print("[LivingBase] [zoom] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    pullbackUU = pullbackUU or 200.0
+    pcall(function() Spawner.PrepareCameraSubjectPose(actor, say) end)
+
+    -- Orbit buttons (2026-09-14, RedFalcon: "can you also make it work in full body view?") -- reset
+    -- to 0 every time Full Body (re)activates, same "set back to before zooming in" guarantee Face
+    -- View's own orbit already has.
+    Spawner._cameraFullBodyOrbitOffset = 0.0
+
+    local base = Spawner._computeChestCenterPose(actor, pullbackUU)
+    if not base then
+        say("could not read the target's transform or a 'spine_03' socket/bone on its skeleton.")
+        return false
+    end
+
+    -- Ensure the tripod camera actually exists first -- reuses SetPhotoTripod's own spawn path
+    -- (its initial player-relative position doesn't matter, overridden immediately below) rather
+    -- than duplicating the CameraActor-spawn/SetViewTargetWithBlend boilerplate a second time.
+    if not (Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()) then
+        if not Spawner.SetPhotoTripod("on", 150.0, 160.0, say) then
+            say("could not start the tripod camera.")
+            return false
+        end
+    else
+        -- Already active from something else -- make sure the player is actually LOOKING through
+        -- it before silently repositioning a camera they might not even be viewing.
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            pcall(function() pc:SetViewTargetWithBlend(Spawner._photoTripodActor, 0.0, 0, 0.0, false) end)
+        end
+    end
+
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("tripod camera unavailable after start attempt.")
+        return false
+    end
+
+    -- Pitch-10 (2026-09-11, RedFalcon's own tuned framing) -- tilt slightly down to compensate for
+    -- the raised camera height instead of a level shot straight from pivot height.
+    local okPos = pcall(function() cam:K2_SetActorLocation(base.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation({ Pitch = -10.0, Yaw = base.yaw, Roll = 0.0 }, false) end)
+    -- Reset FOV back to the CameraActor's own default (2026-09-13, added alongside Face View) --
+    -- Face View sets FieldOfView=50 on this SAME reused actor, so switching from Face straight to
+    -- Full Body without an off/on cycle in between would otherwise leave the 50 FOV behind.
+    local camComp
+    pcall(function() camComp = cam.CameraComponent end)
+    if camComp and camComp:IsValid() then
+        pcall(function() camComp.FieldOfView = 90.0 end)
+    end
+    say(string.format("zoomed in on target -- cam @ %.1f,%.1f,%.1f yaw=%.1f (pos=%s rot=%s)",
+        base.pos.X, base.pos.Y, base.pos.Z, base.yaw, tostring(okPos), tostring(okRot)))
+    return okPos and okRot
+end
+
+-- Spawner.FaceViewOnTarget(say) -- "Face View" button, Custom tab (2026-09-13, RedFalcon: "add
+-- another button under [Full Body] that is Face View"). REPLACED (2026-09-14) after RedFalcon
+-- confirmed the plain head-centered `lbheadcenter` formula "works with just about every pose and
+-- height" at 100 pullback / FOV 50 -- now built on the SAME Spawner._computeHeadCenterPose helper
+-- CenterOnHeadTarget uses, just with freeze handling and FOV added on top. Final scope RedFalcon
+-- gave explicitly: "no need for pose swap... still freeze non idle walkers... change face to the
+-- new info i provided [but] just the face though" -- Full Body's own framing/pose-swap-removal is a
+-- SEPARATE, unrelated change (see PrepareCameraSubjectPose's own header); this function only
+-- changed Face View's camera math.
+function Spawner.FaceViewOnTarget(say)
+    say = say or function(m) print("[LivingBase] [faceview] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    pcall(function() Spawner.PrepareCameraSubjectPose(actor, say) end)
+
+    local pose = Spawner._computeHeadCenterPose(actor, 100.0)
+    if not pose then
+        say("could not read the target's transform or a 'head' socket/bone on its skeleton.")
+        return false
+    end
+
+    if not (Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()) then
+        if not Spawner.SetPhotoTripod("on", 150.0, 160.0, say) then
+            say("could not start the tripod camera.")
+            return false
+        end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            pcall(function() pc:SetViewTargetWithBlend(Spawner._photoTripodActor, 0.0, 0, 0.0, false) end)
+        end
+    end
+
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("tripod camera unavailable after start attempt.")
+        return false
+    end
+
+    -- Orbit buttons (2026-09-14, RedFalcon: "<- and -> buttons to rotate on the Z axis" -- CORRECTED
+    -- after "i basically either want to rotate the target or orbit around the target so i can better
+    -- see other angles when zoomed in": these orbit the CAMERA around the target, not spin it in
+    -- place -- see Spawner._computeHeadCenterPose's own header for the full math). Reset the
+    -- accumulated orbit offset to 0 every time Face View (re)activates (switching from Full Body, or
+    -- re-clicking Face View) so a leftover orbit never carries into a fresh framing ("When done I
+    -- want rotation set back to before zooming in").
+    Spawner._cameraFaceViewOrbitOffset = 0.0
+
+    local camRot = { Pitch = 0.0, Yaw = pose.yaw, Roll = 0.0 }
+    local okPos = pcall(function() cam:K2_SetActorLocation(pose.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation(camRot, false) end)
+    local camComp
+    pcall(function() camComp = cam.CameraComponent end)
+    local okFov = false
+    if camComp and camComp:IsValid() then
+        okFov = pcall(function() camComp.FieldOfView = 55.0 end)
+    end
+    say(string.format("face view on target -- cam @ %.1f,%.1f,%.1f yaw=%.1f pitch=0 fov=55 (pos=%s rot=%s fov=%s)",
+        pose.pos.X, pose.pos.Y, pose.pos.Z, pose.yaw, tostring(okPos), tostring(okRot), tostring(okFov)))
+    return okPos and okRot
+end
+
+-- Spawner.RotateFaceViewYaw(deltaDegrees, say) -- "<"/">" buttons under Face View, Custom tab
+-- (2026-09-14, RedFalcon: "i basically either want to rotate the target or orbit around the target
+-- so i can better see other angles when zoomed in"). Adds deltaDegrees to
+-- Spawner._cameraFaceViewOrbitOffset (accumulates across repeated clicks) and feeds it straight into
+-- Spawner._computeHeadCenterPose, which recomputes BOTH the camera's position (swinging it around
+-- the target on a circle of the same 100uu radius, same head-bone height) AND its look-back yaw --
+-- an orbit, not a spin in place. Reset by FaceViewOnTarget every time Face View (re)activates, so a
+-- leftover orbit never carries into a fresh framing ("When done I want rotation set back to before
+-- zooming in").
+function Spawner.RotateFaceViewYaw(deltaDegrees, say)
+    say = say or function(m) print("[LivingBase] [faceview-rotate] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- open Face View first.")
+        return false
+    end
+    Spawner._cameraFaceViewOrbitOffset = (Spawner._cameraFaceViewOrbitOffset or 0.0) + deltaDegrees
+    local pose = Spawner._computeHeadCenterPose(actor, 100.0, Spawner._cameraFaceViewOrbitOffset)
+    if not pose then
+        say("could not recompute orbit pose -- target transform or head socket unreadable.")
+        return false
+    end
+    local camRot = { Pitch = 0.0, Yaw = pose.yaw, Roll = 0.0 }
+    local okPos = pcall(function() cam:K2_SetActorLocation(pose.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation(camRot, false) end)
+    say(string.format("orbit %s%.1f deg -> cam @ %.1f,%.1f,%.1f yaw=%.1f (pos=%s rot=%s)",
+        deltaDegrees >= 0 and "+" or "", deltaDegrees, pose.pos.X, pose.pos.Y, pose.pos.Z, pose.yaw, tostring(okPos), tostring(okRot)))
+    return okPos and okRot
+end
+
+-- Spawner.RotateFullBodyYaw(deltaDegrees, say) -- "<"/">" buttons, Full Body mode (2026-09-14,
+-- RedFalcon: "can you also make it work in full body view?" -- same orbit buttons under Face View,
+-- widened to Full Body too). Same shape as Spawner.RotateFaceViewYaw, just against
+-- Spawner._computeChestCenterPose (CHANGED 2026-09-14, same "change full body to that" swap as
+-- ZoomTripodOnTarget -- real "spine_03" bone read + height-scaled pullback) instead of the old
+-- guessed-offset formula -- Full Body's own 200uu pullback, orbiting the WHOLE framing (distance and
+-- look angle together) around the target rather than spinning the camera in place. Reset by
+-- ZoomTripodOnTarget every time Full Body (re)activates, so a leftover orbit never carries into a
+-- fresh framing.
+function Spawner.RotateFullBodyYaw(deltaDegrees, say)
+    say = say or function(m) print("[LivingBase] [fullbody-rotate] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("no active tripod camera -- open Full Body first.")
+        return false
+    end
+    Spawner._cameraFullBodyOrbitOffset = (Spawner._cameraFullBodyOrbitOffset or 0.0) + deltaDegrees
+    local base = Spawner._computeChestCenterPose(actor, 200.0, Spawner._cameraFullBodyOrbitOffset)
+    if not base then
+        say("could not recompute orbit pose -- target transform unreadable.")
+        return false
+    end
+    local okPos = pcall(function() cam:K2_SetActorLocation(base.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation({ Pitch = -10.0, Yaw = base.yaw, Roll = 0.0 }, false) end)
+    say(string.format("orbit %s%.1f deg -> cam @ %.1f,%.1f,%.1f yaw=%.1f (pos=%s rot=%s)",
+        deltaDegrees >= 0 and "+" or "", deltaDegrees, base.pos.X, base.pos.Y, base.pos.Z, base.yaw, tostring(okPos), tostring(okRot)))
+    return okPos and okRot
+end
+
+-- Spawner.CenterOnHeadTarget(say, pullbackUU) -- "lbheadcenter [pullback]" (2026-09-14, RedFalcon:
+-- "create a command that centers on the head with no other extra adjustments"). Thin wrapper around
+-- the shared Spawner._computeHeadCenterPose (FaceViewOnTarget now uses the SAME helper, just with
+-- freeze/FOV added on top) -- no lateral offset, no pitch tilt, no FOV override, no pose/freeze
+-- handling at all here. Camera sits `pullbackUU` in front of the target along their own forward
+-- vector (default 200), at the EXACT world Z of their "head" socket, looking level (Pitch=0)
+-- straight back at them.
+function Spawner.CenterOnHeadTarget(say, pullbackUU)
+    say = say or function(m) print("[LivingBase] [headcenter] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    pullbackUU = pullbackUU or 200.0
+
+    local pose = Spawner._computeHeadCenterPose(actor, pullbackUU)
+    if not pose then
+        say("could not read the target's transform or a 'head' socket/bone on its skeleton.")
+        return false
+    end
+
+    if not (Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()) then
+        if not Spawner.SetPhotoTripod("on", 150.0, 160.0, say) then
+            say("could not start the tripod camera.")
+            return false
+        end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            pcall(function() pc:SetViewTargetWithBlend(Spawner._photoTripodActor, 0.0, 0, 0.0, false) end)
+        end
+    end
+
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("tripod camera unavailable after start attempt.")
+        return false
+    end
+
+    local camRot = { Pitch = 0.0, Yaw = pose.yaw, Roll = 0.0 }
+    local okPos = pcall(function() cam:K2_SetActorLocation(pose.pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation(camRot, false) end)
+    say(string.format("head-centered on target -- cam @ %.1f,%.1f,%.1f yaw=%.1f pitch=0 (pos=%s rot=%s)",
+        pose.pos.X, pose.pos.Y, pose.pos.Z, pose.yaw, tostring(okPos), tostring(okRot)))
+    return okPos and okRot
+end
+
+-- Spawner.TestReadActorHeight(say) -- "lbheight" (2026-09-13, RedFalcon: "Marita is shorter so i
+-- can't quite see her face. Can we get NPC height?"). Reads the target-locked actor's own
+-- CapsuleComponent.GetScaledCapsuleHalfHeight() -- the same proven call TestDumpMovement already
+-- uses (real, confirmed-working proxy for "how tall is this character," doubled for full height).
+--
+-- WIDENED same day after RedFalcon reported Marita's capsule height reads the SAME as a normal
+-- NPC's -- "I think she may be at a different scale." Correct instinct: this game (like most UE
+-- character setups) keeps the CapsuleComponent a fixed gameplay-collision size per class regardless
+-- of visual size, and instead shrinks/grows the visible character via a plain SCALE on the MESH (or
+-- the whole actor root) -- a "small variant" NPC can look short while still walking through the same
+-- doorways/collision as everyone else. Now also reads actor.Mesh's own K2_GetComponentScale() (the
+-- SkeletalMeshComponent's visual scale, proven binding already used for Niagara components
+-- elsewhere in this file) AND the RootComponent's scale for comparison -- if Mesh's scale is < 1.0
+-- while RootComponent's stays 1.0, that confirms a mesh-only visual shrink, and Face View's Z offset
+-- should scale by THIS number, not capsule height (which won't move).
+-- This is a PURE READ, deliberately not yet wired into FaceViewOnTarget's own Z math -- need real
+-- numbers for at least one short NPC (Marita) vs. an average one before deciding how to scale the
+-- +40/+30 Z offsets rather than guessing a formula blind.
+function Spawner.TestReadActorHeight(say)
+    say = say or function(m) print("[LivingBase] [height] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return nil
+    end
+    local loc = nil
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    local capsule = nil
+    pcall(function() capsule = actor.CapsuleComponent end)
+    local halfHeight = nil
+    if capsule and capsule:IsValid() then
+        pcall(function() halfHeight = capsule:GetScaledCapsuleHalfHeight() end)
+    end
+    local fullHeight = halfHeight and (halfHeight * 2.0) or nil
+
+    local meshScale = nil
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if mesh and mesh:IsValid() then
+        local ok, s = pcall(function() return mesh:K2_GetComponentScale() end)
+        if ok and s then
+            local okX = pcall(function() return s.X + 0 end)
+            if okX then meshScale = s end
+        end
+    end
+
+    local rootScale = nil
+    local root = nil
+    pcall(function() root = actor:K2_GetRootComponent() end)
+    if root and root:IsValid() then
+        local ok, s = pcall(function() return root:K2_GetComponentScale() end)
+        if ok and s then
+            local okX = pcall(function() return s.X + 0 end)
+            if okX then rootScale = s end
+        end
+    end
+
+    say(string.format("root Z=%s, capsule half-height=%s, full height=%s, Mesh scale=%s, RootComponent scale=%s",
+        loc and string.format("%.1f", loc.Z) or "?",
+        halfHeight and string.format("%.1f", halfHeight) or "n/a",
+        fullHeight and string.format("%.1f", fullHeight) or "n/a",
+        meshScale and string.format("(%.3f, %.3f, %.3f)", meshScale.X, meshScale.Y, meshScale.Z) or "n/a",
+        rootScale and string.format("(%.3f, %.3f, %.3f)", rootScale.X, rootScale.Y, rootScale.Z) or "n/a"))
+    return { rootZ = loc and loc.Z, capsuleHalfHeight = halfHeight, capsuleFullHeight = fullHeight, meshScale = meshScale, rootScale = rootScale }
 end
 
 -- Spawner.ProbeBuildAbility() -- TEMP DEV TOOL (2026-08-19, build-ghost-preview feasibility spike):
@@ -8825,6 +10537,44 @@ local function getPlayerPawnAsActor()
     return pawn
 end
 
+-- Spawner.CacheOwnPawnForProbe() -- "lbprobe player" (2026-09-14, RedFalcon: "is there a way to do a
+-- probedump on the player?"). ProbeNearestActor's own camera-aim logic deliberately EXCLUDES the
+-- player's own pawn/controller/camera-manager by instance path (see that function's own header) and
+-- a third-person camera can't aim at itself anyway -- so this just writes the player's own pawn
+-- directly into the SAME Spawner._lastProbedActor slot ProbeNearestActor itself writes to, reusing
+-- lbprobedump's existing "dump whatever's cached" step unchanged. Placed here (right after
+-- getPlayerPawnAsActor's own declaration) rather than up near ProbeNearestActor purely so this local
+-- helper is already in scope -- see feedback_lua_forward_reference_check.
+function Spawner.CacheOwnPawnForProbe()
+    local pawn = getPlayerPawnAsActor()
+    if not pawn then error("could not resolve the player's own pawn.") end
+    Spawner._lastProbedActor = pawn
+    return true
+end
+
+-- Spawner.CacheChildPropertyForProbe(propName) -- "lbprobe child <propName>" (2026-09-14,
+-- RedFalcon's own live find: lbprobedump on GC_SpawnLantern_C showed it owns TWO named actor-
+-- reference properties, "Lantern" (BP_BeltLantern_C, the mesh actor -- already probed) and
+-- "LanternLight" (BP_BeltLanternLight_C, a completely separate light actor we'd never actually
+-- inspected -- the earlier "0 light components" finding was checked against the wrong sibling).
+-- Rather than a one-off lantern-specific command, this is a general "drill into a named actor
+-- reference on whatever's currently cached" tool -- reads Spawner._lastProbedActor[propName] and,
+-- if it resolves to a valid actor, re-points the SAME cache slot lbprobedump/lbprobelight already
+-- read from at it. Chain-able (probe A -> child X -> child Y) since it just keeps overwriting the
+-- one shared cache slot.
+function Spawner.CacheChildPropertyForProbe(propName)
+    if not (propName and propName ~= "") then error("usage: lbprobe child <propertyName>") end
+    local cur = Spawner._lastProbedActor
+    if not (cur and cur:IsValid()) then error("no cached probe target -- run lbprobe first.") end
+    local child = nil
+    pcall(function() child = cur[propName] end)
+    if not (child and child:IsValid()) then
+        error("'" .. propName .. "' is not a valid actor reference on the currently cached target.")
+    end
+    Spawner._lastProbedActor = child
+    return true
+end
+
 local function findNearestSpawnInFront(maxDist, ignoreLock)
     if #Spawner.spawned == 0 then pcall(Spawner.RetrackOrphans) end   -- Ctrl+R recovery
     local MIN_STABLE_DIST = 40.0
@@ -10389,39 +12139,15 @@ local function armorProceedWithMesh(matched, meshPath, mesh, actor, smcCls)
             pcall(function() m.comp:SetHiddenInGame(false, false) end)
             pcall(function() m.comp:SetCollisionResponseToAllChannels(2) end)
         end
-        -- Cloth-sim rebind after a runtime swap -- see Spawner.TestApplyClothingPiece's own
-        -- comment (2026-08-28) for the full history: RecreateClothingActor() and a direct
-        -- SetSkeletalMesh(m.comp, mesh, true) BOTH failed with the same "nullptr instance" error
-        -- on the SAME m.comp reference that had just succeeded for SetSkeletalMeshAsset --
-        -- a stale-captured-reference pattern, not a bad function name. Fixed the same way: re-fetch
-        -- a FRESH component handle (matched by m.compName) before the follow-up call.
-        local okCloth, clothErr = "n/a", nil
-        if okMesh and actor and smcCls then
-            local freshComp = nil
-            pcall(function()
-                local comps2 = actor:K2_GetComponentsByClass(smcCls)
-                local n2 = 0
-                pcall(function() n2 = comps2:GetArrayNum() end)
-                if n2 == 0 then pcall(function() n2 = #comps2 end) end
-                for i = 1, n2 do
-                    local c2 = comps2[i]; if not c2 then pcall(function() c2 = comps2:Get(i) end) end
-                    pcall(function() if c2 ~= nil and type(c2) == "userdata" and c2.get then c2 = c2:get() end end)
-                    if c2 and c2:IsValid() and not freshComp then
-                        local cn = "?"
-                        pcall(function() cn = c2:GetFName():ToString() end)
-                        if cn == m.compName then freshComp = c2 end
-                    end
-                end
-            end)
-            if freshComp then
-                okCloth, clothErr = pcall(function() freshComp:SetSkeletalMesh(mesh, true) end)
-            else
-                okCloth, clothErr = false, "could not re-fetch fresh component handle"
-            end
-        end
+        -- Cloth-sim rebind after a runtime swap -- WALKED BACK (2026-09-11), see
+        -- Spawner.TestApplyClothingPiece's own comment for the full three-attempt history (this is
+        -- the exact same call, on a separate code path). RE-CONFIRMED broken live 2026-09-11 on
+        -- real content -- the "fresh handle" fix never actually worked, it just wasn't exercised
+        -- until now. No longer attempted -- SetSkeletalMeshAsset above already triggers UE5's own
+        -- internal clothing-actor recreation as part of its own implementation.
+        local okCloth = "skipped"
         print(string.format("[LivingBase] [test-armor] comp=%s BEFORE=%s AFTER=%s clothRebind=%s\n",
-            m.compName, m.curName, meshPath,
-            (okCloth == "n/a") and "n/a" or (okCloth and "ok" or ("FAILED: " .. tostring(clothErr)))))
+            m.compName, m.curName, meshPath, okCloth))
     end
 end
 
@@ -10735,7 +12461,7 @@ end
 function Spawner.TestSetSkinDecor(paramName, texturePathArg)
     local VALID = { ["FaceDecor"] = true, ["BodyDecor"] = true, ["SkinDecor ID"] = true, ["SkinAging"] = true }
     if not paramName or paramName == "" then
-        print("[LivingBase] [test-decor] usage: lbtestdecor <FaceDecor|BodyDecor|\"SkinDecor ID\"|SkinAging> [texturePath] -- omit path to just find which slot has it (use lbprobedump to read its current value)\n")
+        print("[LivingBase] [test-decor] usage: lbtestskinaging <FaceDecor|BodyDecor|\"SkinDecor ID\"|SkinAging> [texturePath] -- omit path to just find which slot has it (use lbprobedump to read its current value)\n")
         return false
     end
     -- case-insensitive match against the 4 known real names ("SkinDecor ID" has a literal space
@@ -11387,41 +13113,28 @@ function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
     -- the underlying skeleton's bone poses/collision at runtime rather than being a fixed authored
     -- shape, so it may genuinely drape differently (and better) on a mismatched body instead of
     -- clipping outright.
-    -- FIRST TWO ATTEMPTS BOTH CONFIRMED BROKEN in this build, same signature both times
-    -- (2026-08-28, same day): RecreateClothingActor() failed, then SetSkeletalMesh(mesh, true)
-    -- ALSO failed -- both with "Tried calling a member function but the UObject instance is
-    -- nullptr", called on the SAME targetComp reference that had just succeeded moments earlier
-    -- for SetSkeletalMeshAsset. Two different functions failing identically on the same handle
-    -- points at the handle itself, not either function name -- a stale-captured-reference pattern
-    -- already documented elsewhere in this file (line ~1508: K2_GetComponentsByClass returns 0 on
-    -- a captured actor reference, needs a FRESH FindAllOf handle) -- just triggered here by
-    -- SetSkeletalMeshAsset instead. Fixed by re-fetching a FRESH component handle (by matching
-    -- targetCompName, captured before the swap) via a new K2_GetComponentsByClass call, and
-    -- calling SetSkeletalMesh on THAT fresh reference instead of the original targetComp.
-    local okCloth, clothErr = "n/a", nil
-    if okMesh then
-        local freshComp = nil
-        pcall(function()
-            local comps2 = actor:K2_GetComponentsByClass(smcCls)
-            local n2 = 0
-            pcall(function() n2 = comps2:GetArrayNum() end)
-            if n2 == 0 then pcall(function() n2 = #comps2 end) end
-            for i = 1, n2 do
-                local c2 = comps2[i]; if not c2 then pcall(function() c2 = comps2:Get(i) end) end
-                pcall(function() if c2 ~= nil and type(c2) == "userdata" and c2.get then c2 = c2:get() end end)
-                if c2 and c2:IsValid() and not freshComp then
-                    local cn = "?"
-                    pcall(function() cn = c2:GetFName():ToString() end)
-                    if cn == targetCompName then freshComp = c2 end
-                end
-            end
-        end)
-        if freshComp then
-            okCloth, clothErr = pcall(function() freshComp:SetSkeletalMesh(mesh, true) end)
-        else
-            okCloth, clothErr = false, "could not re-fetch fresh component handle"
-        end
-    end
+    -- WALKED BACK (2026-09-11, same "don't fight a broken native call" call as the auto-scale
+    -- attempt right below): THREE separate attempts, all with the identical "Tried calling a
+    -- member function but the UObject instance is nullptr" signature. Attempt 1 (2026-08-28):
+    -- RecreateClothingActor() on targetComp. Attempt 2 (same day): SetSkeletalMesh(mesh, true)
+    -- directly on targetComp. Attempt 3 (same day, the "fix" kept live until now): re-fetch a
+    -- FRESH component handle by matching targetCompName via a new K2_GetComponentsByClass scan,
+    -- then call SetSkeletalMesh on THAT instead of the original targetComp -- theory being a
+    -- stale-captured-reference (the SAME class of bug fixed elsewhere in this file, line ~1508,
+    -- for K2_GetComponentsByClass on a captured actor). **Re-confirmed broken 2026-09-11**, live,
+    -- on real content (a Vanilla-family Headgear/Torso/Feet/Legs/Cape swap on BlackAxel) -- the
+    -- "fresh handle" passed its own IsValid() check in the scan loop moments before the call, then
+    -- the call itself still threw the identical nullptr. Three independent attempts across two
+    -- different calling conventions and two different handle-capture strategies, always the same
+    -- signature, strongly suggests this specific 2-arg SetSkeletalMesh(Mesh, bReinitPose) overload
+    -- is simply unsupported/stubbed in this shipping build (matches this project's own established
+    -- pattern of legacy/deprecated Blueprint-exposed calls silently no-op'ing or nulling here --
+    -- see feedback_windrose_cheatmanager_neutered) -- not a fixable handle-lifetime bug. The
+    -- PRIMARY swap (SetSkeletalMeshAsset, just above, confirmed working every time) already calls
+    -- UE5's own modern internal RecreateClothingActors() as part of ITS OWN implementation, so this
+    -- second call was very likely redundant even when it worked. No longer attempted at all --
+    -- reported as a plain "skipped" rather than a scary failed-attempt traceback every swap.
+    local okCloth, clothErr = "skipped", nil
 
     -- Per-body-group resize (2026-08-28, RedFalcon's own live-tuned values) -- a NEW, separate
     -- use of component scale/offset from the walked-back Senkamati-Witch auto-scale above: this
@@ -11442,9 +13155,13 @@ function Spawner.TestApplyClothingPiece(family, slot, pieceName, sexOverride)
         end
     end
 
+    local clothStatus
+    if okCloth == "n/a" or okCloth == "skipped" then clothStatus = okCloth
+    elseif okCloth then clothStatus = "ok"
+    else clothStatus = "FAILED: " .. tostring(clothErr) end
     print(string.format("[LivingBase] [test-clothes] target=%s sex=%s family=%s slot=%s piece=%s applied=%s clothRebind=%s resize=%s\n",
         name, sex, matched.family, matched.slot, matched.name, tostring(okMesh),
-        (okCloth == "n/a") and "n/a" or (okCloth and "ok" or ("FAILED: " .. tostring(clothErr))),
+        clothStatus,
         (okResize == "n/a") and "n/a" or (okResize and "ok" or ("FAILED: " .. tostring(resizeErr)))))
     pcall(function() Spawner.Toast("Clothes: " .. matched.family .. " " .. matched.slot .. " " .. matched.name .. " on " .. name, 2.5) end)
 
@@ -11542,6 +13259,561 @@ function Spawner.TestRandomBeltLayout(say)
     return true
 end
 
+-- Spawner.TestSpawnBeltLantern(say, useSelf) -- "lbtestlantern [player]" (2026-09-14, RedFalcon:
+-- "i'm thinking lantern. I could wear one and you could see what its doing"). BP_BeltLantern
+-- (class_index.lua: /Game/Gameplay/Character/Common/GameplayCue/Consumables/Lantern/
+-- BP_BeltLantern.BP_BeltLantern_C) is a real, already-shipped Blueprint actor with its own mesh/
+-- light/FX wired together internally by the game's own developers -- spawning THIS class avoids the
+-- crash-prone raw Niagara SpawnSystemAttached path entirely (see that function's own header, ~4691);
+-- nothing here manually spawns or attaches any FX, only the one already-built actor. The belt
+-- skeleton already carries a matching "soc_Lantern" socket (11759's own comment already lists it
+-- alongside soc_beltB etc), confirming this is the game's own real attachment point, not a guess.
+--
+-- Deliberately does NOT use a real engine actor-to-actor attach (K2_AttachToActor) to make it follow
+-- the host -- that exact call is CONFIRMED to crash immediately on a different actor class
+-- (Spawner.AttachActorToShip, ~9598) with root cause never established; not worth risking blind on a
+-- second actor class here. Instead reuses the SAME proven-safe workaround already established for
+-- that exact crash (the "ship rider" pattern, Spawner.AddShipRider/shipRiders below) -- a plain
+-- per-tick position resync using ONLY calls already proven safe elsewhere in this file:
+-- `GetSocketLocation` (8447's own comment: "the one working call in this R5 build" for a live socket
+-- read, GetSocketTransform/GetSocketRotation are NOT proven and deliberately not risked here) for
+-- position, and the host's own `K2_GetActorRotation()` for orientation (a lantern hanging off a belt
+-- roughly tracks the wearer's yaw anyway -- exact socket-local rotation isn't worth an unproven call).
+Spawner._beltLanternActor = Spawner._beltLanternActor or nil
+Spawner._beltLanternHost = Spawner._beltLanternHost or nil
+Spawner._beltLanternTickRunning = Spawner._beltLanternTickRunning or false
+local BELT_LANTERN_SOCKET = "soc_Lantern"
+local BELT_LANTERN_CLASS_PATH = "/Game/Gameplay/Character/Common/GameplayCue/Consumables/Lantern/BP_BeltLantern.BP_BeltLantern_C"
+
+local function beltLanternRiderTick()
+    if not Spawner._beltLanternTickRunning then return end
+    local lantern = Spawner._beltLanternActor
+    local host = Spawner._beltLanternHost
+    if not (lantern and lantern:IsValid() and host and host:IsValid()) then
+        Spawner._beltLanternTickRunning = false
+        return
+    end
+    pcall(function()
+        local body = host.Mesh
+        if body and body:IsValid() then
+            local loc = body:GetSocketLocation(FName(BELT_LANTERN_SOCKET))
+            if loc then lantern:K2_SetActorLocation(loc, false, {}, false) end
+        end
+        local rot = nil
+        pcall(function() rot = host:K2_GetActorRotation() end)
+        if rot then pcall(function() lantern:K2_SetActorRotation(rot, false) end) end
+    end)
+    if ExecuteWithDelay then ExecuteWithDelay(30, beltLanternRiderTick) end
+end
+
+function Spawner.TestSpawnBeltLantern(say, useSelf)
+    say = say or function(m) print("[LivingBase] [test-lantern] " .. tostring(m) .. "\n") end
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
+    else
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlantern player'.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    local hasSocket = false
+    pcall(function() hasSocket = body:DoesSocketExist(FName(BELT_LANTERN_SOCKET)) end)
+    if not hasSocket then
+        say(name .. " has no '" .. BELT_LANTERN_SOCKET .. "' socket on its skeleton -- can't place the lantern here.")
+        return false
+    end
+
+    local cls = resolveClass(BELT_LANTERN_CLASS_PATH)
+    if not (cls and cls:IsValid()) then
+        say("BP_BeltLantern class did not resolve: " .. BELT_LANTERN_CLASS_PATH)
+        return false
+    end
+
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("could not resolve GameplayStatics/World.")
+        return false
+    end
+
+    local loc = nil
+    pcall(function() loc = body:GetSocketLocation(FName(BELT_LANTERN_SOCKET)) end)
+    if not loc then
+        say("could not read '" .. BELT_LANTERN_SOCKET .. "' socket location.")
+        return false
+    end
+    local rot = nil
+    pcall(function() rot = actor:K2_GetActorRotation() end)
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = loc,
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+
+    -- Clear any previous test lantern before spawning a new one, same "one at a time" convention
+    -- Spawner.ClearHoverEffect already uses for its own single-tracked test actor.
+    pcall(function() Spawner.TestClearBeltLantern(function() end) end)
+
+    local lanternActor = Spawner._DoEngineSpawn(gs, world, cls, transform, "BeltLantern", nil, nil)
+    if not (lanternActor and lanternActor:IsValid()) then
+        say("BP_BeltLantern spawn failed.")
+        return false
+    end
+    if rot then pcall(function() lanternActor:K2_SetActorRotation(rot, false) end) end
+
+    Spawner._beltLanternActor = lanternActor
+    Spawner._beltLanternHost = actor
+    Spawner._beltLanternTickRunning = true
+    beltLanternRiderTick()
+
+    say(name .. ": spawned BP_BeltLantern at '" .. BELT_LANTERN_SOCKET .. "', now following via a per-tick position resync (no actor-attach call used -- see this function's own header for why). Run 'lbtestlantern clear' (or lbtestlanternclear) to remove it.")
+    return true
+end
+
+-- Spawner.TestClearBeltLantern(say) -- companion to TestSpawnBeltLantern, stops the rider tick and
+-- destroys the spawned actor. Same shape as Spawner.ClearHoverEffect.
+function Spawner.TestClearBeltLantern(say)
+    say = say or function(m) print("[LivingBase] [test-lantern] " .. tostring(m) .. "\n") end
+    Spawner._beltLanternTickRunning = false
+    local a = Spawner._beltLanternActor
+    Spawner._beltLanternActor = nil
+    Spawner._beltLanternHost = nil
+    if a and a:IsValid() then
+        pcall(function() a:K2_DestroyActor() end)
+        say("belt lantern removed.")
+    else
+        say("no belt lantern currently spawned.")
+    end
+    return true
+end
+
+-- Spawner.TestProbeLightComponents(say) -- "lbprobelight" (2026-09-14, RedFalcon's own probedump of
+-- the REAL, live GC_SpawnLantern-spawned BP_BeltLantern instance showed only StaticMeshComponent0
+-- (SM_Accessories_Lantern_01), a child SM_Accessories_LanternGlass_01 (with MI_Belt_Glass_LanternOn
+-- already applied -- confirms that IS the "on" glow material) and FX_Lantern (a NiagaraComponent) --
+-- no light component anywhere in that walk). That silence is NOT proof one doesn't exist though --
+-- the generic probedump tool only ever sweeps SkeletalMeshComponent/StaticMeshComponent classes (see
+-- Spawner.TestDumpSockets' own sweep() calls), it never checks for a light class at all. This is a
+-- quick, targeted answer instead of an inference: sweeps PointLightComponent/SpotLightComponent/
+-- LightComponent (the base class, catches anything the two specific subclasses miss) on whatever
+-- Spawner._lastProbedActor currently is (same cache lbprobe/lbprobedump already share), reporting
+-- every match found with its own Intensity/AttenuationRadius/Visible state.
+function Spawner.TestProbeLightComponents(say)
+    say = say or function(m) print("[LivingBase] [probe-light] " .. tostring(m) .. "\n") end
+    local actor = Spawner._lastProbedActor
+    if not (actor and actor:IsValid()) then
+        say("no cached probe target -- run lbprobe (or lbprobe player) first.")
+        return false
+    end
+    local found = 0
+    for _, className in ipairs({ "PointLightComponent", "SpotLightComponent", "LightComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps = nil
+            pcall(function() comps = actor:GetComponentsByClass(cls) end)
+            if not comps then pcall(function() comps = actor:K2_GetComponentsByClass(cls) end) end
+            local n = 0
+            if comps then pcall(function() n = comps:GetArrayNum() end); if n == 0 then pcall(function() n = #comps end) end end
+            for i = 1, n do
+                local c = nil
+                pcall(function() c = comps[i] end)
+                if c == nil then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() then
+                    found = found + 1
+                    local compName, intensity, radius, visible, color = "?", nil, nil, nil, nil
+                    pcall(function() compName = c:GetFName():ToString() end)
+                    pcall(function() intensity = c.Intensity end)
+                    pcall(function() radius = c.AttenuationRadius end)
+                    pcall(function() visible = c:IsVisible() end)
+                    pcall(function() color = c.LightColor end)
+                    local colorStr = "?"
+                    if color then
+                        local okc, r, g, b = pcall(function() return color.R, color.G, color.B end)
+                        if okc and r then colorStr = string.format("(%s,%s,%s)", tostring(r), tostring(g), tostring(b)) end
+                    end
+                    say(string.format("[%s] name=%s intensity=%s radius=%s color=%s visible=%s", className, compName, tostring(intensity), tostring(radius), colorStr, tostring(visible)))
+                end
+            end
+        end
+    end
+    if found == 0 then
+        say("0 light components of any kind found on this actor -- the native lantern's glow really is emissive-material + FX only, no real dynamic PointLight/SpotLight.")
+    else
+        say(string.format("%d light component(s) found total (see lines above).", found))
+    end
+    return found > 0
+end
+
+-- CORRECTED (2026-09-14, RedFalcon: "so there is the lantern light socket. soc_LanternLight...
+-- looking at mine i dont think the light eminates from it" -- the belt skeleton has a SEPARATE
+-- socket, soc_LanternLight, distinct from soc_Lantern (which the mesh/glass use) -- explains why the
+-- first version looked wrong, the light was sitting inside/behind the opaque lantern body mesh at
+-- the mesh's OWN socket instead of at the dedicated light position).
+--
+-- SIMPLIFIED (2026-09-14, same day): two separate attempts to copy "real" values off a
+-- BP_PointLight_* template both failed for different reasons -- spawning one via
+-- Spawner._DoEngineSpawn consistently hit "SPAWN FAILED (all begin-spawn signatures rejected)"
+-- (verbose logging showed BeginDeferredActorSpawnFromClass returns nil WITHOUT throwing for this
+-- class, a failure mode the generic retry loop doesn't even log), and reading the class's own CDO
+-- directly (the Spawner.ProbeClassCustomization trick, proven for a buildable-trader's
+-- CompositeMeshComponent) found no PointLightComponent at all -- CDOs apparently don't populate
+-- OwnedComponents the way a real spawned/constructed instance does. RedFalcon: "sounds fair to me"
+-- to dropping template-copying entirely in favor of direct numeric control -- Intensity/
+-- AttenuationRadius are now plain arguments with sane defaults, tuned live instead of copied from
+-- an asset we can't reliably read.
+--
+-- REAL VALUES FOUND (2026-09-14, same day) -- RedFalcon's own genuinely-equipped lantern IS real
+-- and IS lit after all: GC_SpawnLantern_C owns a "LanternLight" actor reference distinct from
+-- "Lantern" (the mesh actor already probed, which correctly has no light) -- the earlier "0 light
+-- components" finding was checked against the wrong sibling actor. Drilling into it via the new
+-- `lbprobe child LanternLight` -> `lbprobelight` chain found a real PointLightComponent named
+-- "PointLight": Intensity=4.3, AttenuationRadius=850. These are now the defaults below (LightColor
+-- wasn't captured by lbprobelight's own read -- it only checks Intensity/AttenuationRadius/Visible
+-- -- so the warm-orange guess stays as-is unless/until that's probed too).
+local BELT_LANTERN_LIGHT_SOCKET = "soc_LanternLight"
+local BELT_LANTERN_LIGHT_DEFAULT_INTENSITY = 4.3
+local BELT_LANTERN_LIGHT_DEFAULT_RADIUS = 850.0
+-- Real value found 2026-09-14 via lbprobe child LanternLight -> lbprobelight: (255,255,255), plain
+-- white -- the warm look comes from the glass material's own tint (MI_Belt_Glass_LanternOn), not the
+-- light source itself. The earlier (255,180,90) warm-orange guess was wrong.
+local BELT_LANTERN_LIGHT_DEFAULT_COLOR = { R = 255, G = 255, B = 255, A = 255 }
+
+Spawner._beltLanternLightComp = Spawner._beltLanternLightComp or nil
+
+-- Offset/rotation args added (2026-09-14, RedFalcon: "is it possible to rotate the light in the
+-- socket. i think its pointing straight down" + "we may need to move it out from his chest as it
+-- may be too close and reflecting off him"). The attach below uses SnapToTarget rules (2,2,2 --
+-- Location/Rotation/Scale, see the K2_AttachToComponent enum note elsewhere in this file), which
+-- makes the component's RelativeLocation/RelativeRotation collapse to identity relative to the
+-- socket right after attaching -- calling K2_SetRelativeLocation/K2_SetRelativeRotation AFTERWARD
+-- (as done below) applies a genuine offset ON TOP of the socket's own base transform, exactly the
+-- same "snap then nudge" pattern Config.KNOWN_ATTACHMENT_TRANSFORMS-driven code elsewhere in this
+-- file already uses for mesh placement. offX/offY/offZ are in socket-LOCAL space (uu); pitch/yaw/
+-- roll are a plain relative Rotator offset (degrees) layered on the socket's own base rotation.
+function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, offXArg, offYArg, offZArg, pitchArg, yawArg, rollArg, rArg, gArg, bArg)
+    say = say or function(m) print("[LivingBase] [test-lanternlight] " .. tostring(m) .. "\n") end
+    local intensity = tonumber(intensityArg) or BELT_LANTERN_LIGHT_DEFAULT_INTENSITY
+    local radius = tonumber(radiusArg) or BELT_LANTERN_LIGHT_DEFAULT_RADIUS
+    local offX = tonumber(offXArg) or 0.0
+    local offY = tonumber(offYArg) or 0.0
+    local offZ = tonumber(offZArg) or 0.0
+    local pitch = tonumber(pitchArg) or 0.0
+    local yaw = tonumber(yawArg) or 0.0
+    local roll = tonumber(rollArg) or 0.0
+    -- RGB override (2026-09-14, RedFalcon: "can you add an RGB option... might be useful down the
+    -- road"). All three must be given together or none are -- a partial R-only override would leave
+    -- G/B at the default white's 255, silently producing a wrong color instead of an obviously
+    -- incomplete one.
+    local colorR = tonumber(rArg)
+    local colorG = tonumber(gArg)
+    local colorB = tonumber(bArg)
+    local color = (colorR and colorG and colorB) and { R = colorR, G = colorG, B = colorB, A = 255 } or BELT_LANTERN_LIGHT_DEFAULT_COLOR
+
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
+    else
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlanternlight %s %s player'.", tostring(intensity), tostring(radius), maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    local hasSocket = false
+    pcall(function() hasSocket = body:DoesSocketExist(FName(BELT_LANTERN_LIGHT_SOCKET)) end)
+    if not hasSocket then
+        say(name .. " has no '" .. BELT_LANTERN_LIGHT_SOCKET .. "' socket -- can't attach here.")
+        return false
+    end
+
+    -- Remove any previous test light first (one at a time, same convention as TestSpawnBeltLantern).
+    pcall(function() Spawner.TestClearLanternLight(function() end) end)
+
+    local lightCls = StaticFindObject("/Script/Engine.PointLightComponent")
+    if not (lightCls and lightCls:IsValid()) then
+        say("PointLightComponent class did not resolve.")
+        return false
+    end
+    local lightComp = nil
+    pcall(function()
+        lightComp = actor:AddComponentByClass(lightCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (lightComp and lightComp:IsValid()) then
+        say("AddComponentByClass(PointLightComponent) failed.")
+        return false
+    end
+
+    -- Genuine visibility OFF before any property writes (2026-09-14, RedFalcon: "i still had to
+    -- look away for it to be at the right intensity" -- MarkRenderStateDirty alone wasn't enough,
+    -- same as it wasn't enough for the belts either). A component freshly added via
+    -- AddComponentByClass is already visible by default -- a single SetVisibility(true) later is
+    -- very likely a no-op (common UE pattern: setters skip re-processing when the new value equals
+    -- the old one), never actually forcing the render proxy to rebuild with the values set below.
+    -- Bracketing with a REAL false->true transition (the exact shape Spawner.SetBodyPartMesh's own
+    -- proven belt fix uses) forces a genuine state change instead.
+    pcall(function() lightComp:SetVisibility(false, false) end)
+
+    -- Force legacy "Unitless" intensity scale (2026-09-14, RedFalcon: "I'm trying all sorts of
+    -- different numbers, including whole ones, and it all looks the same. radius changes work") --
+    -- radius visibly changing while intensity does nothing across a wide tested range is the exact
+    -- signature of a light-units mismatch: a freshly AddComponentByClass'd PointLightComponent can
+    -- default to a physically-based unit (Candelas/Lumens, ELightUnits 1/2), where anything under
+    -- several thousand is imperceptible, instead of the old-style Unitless scale (ELightUnits 0)
+    -- the real 4.3 value we probed off the native BeltLanternLight was almost certainly authored in.
+    -- Setting this explicitly BEFORE writing Intensity so the number actually means what we think.
+    local unitsBefore = nil
+    pcall(function() unitsBefore = lightComp.IntensityUnits end)
+    pcall(function() lightComp.IntensityUnits = 0 end)
+    pcall(function() lightComp.Intensity = intensity end)
+    pcall(function() lightComp.AttenuationRadius = radius end)
+    pcall(function() lightComp.LightColor = color end)
+
+    local attached = pcall(function() lightComp:K2_AttachToComponent(body, FName(BELT_LANTERN_LIGHT_SOCKET), 2, 2, 2, false) end)
+    if attached and (offX ~= 0.0 or offY ~= 0.0 or offZ ~= 0.0) then
+        pcall(function() lightComp:K2_SetRelativeLocation({ X = offX, Y = offY, Z = offZ }, false, {}, false) end)
+    end
+    if attached and (pitch ~= 0.0 or yaw ~= 0.0 or roll ~= 0.0) then
+        pcall(function() lightComp:K2_SetRelativeRotation({ Pitch = pitch, Yaw = yaw, Roll = roll }, false, {}, false) end)
+    end
+    pcall(function() lightComp:SetVisibility(true, false) end)
+    -- Same stale render-state class of bug already fixed for Belt/Sling/Strap mesh swaps
+    -- (Spawner.SetBodyPartMesh) -- RedFalcon: "its the same refresh issue as the belts". A property
+    -- write on the game-thread UObject doesn't necessarily propagate to an already-created render
+    -- proxy; this forces an immediate one instead of waiting on some unrelated event to trigger it.
+    pcall(function() lightComp:MarkRenderStateDirty() end)
+
+    if attached then Spawner._beltLanternLightComp = lightComp end
+
+    say(string.format("target=%s | socket=%s | PointLightComponent attach=%s | intensityUnits(before->0)=%s | intensity=%s radius=%s color=(%s,%s,%s) | offset=(%s,%s,%s) rot=(P%s,Y%s,R%s) | zero-lag socket attach, no tick loop.",
+        name, BELT_LANTERN_LIGHT_SOCKET, tostring(attached), tostring(unitsBefore), tostring(intensity), tostring(radius),
+        tostring(color.R), tostring(color.G), tostring(color.B),
+        tostring(offX), tostring(offY), tostring(offZ), tostring(pitch), tostring(yaw), tostring(roll)))
+    return attached
+end
+
+-- Spawner.TestClearLanternLight(say) -- companion to TestAttachLanternLight, destroys the attached
+-- light component. Components can't be K2_DestroyActor'd (that's actor-level) -- DestroyComponent is
+-- the real per-component equivalent.
+function Spawner.TestClearLanternLight(say)
+    say = say or function(m) print("[LivingBase] [test-lanternlight] " .. tostring(m) .. "\n") end
+    local c = Spawner._beltLanternLightComp
+    Spawner._beltLanternLightComp = nil
+    if c and c:IsValid() then
+        -- FIXED (2026-09-14, RedFalcon: "clear also doesnt seem to be working") -- this used to call
+        -- c:DestroyComponent(c), passing the component itself where DestroyComponent actually wants a
+        -- plain bool (bPromoteChildren) -- a wrong-type argument that silently failed under pcall,
+        -- leaving the component alive. DestroyComponent(false) is the same proven-safe call already
+        -- used elsewhere in this file (Spawner.ClearHoverEffect's own sibling, ~4742).
+        local ok = pcall(function() c:DestroyComponent(false) end)
+        if not ok then pcall(function() c:SetVisibility(false, false) end) end
+        say("lantern light removed.")
+    else
+        say("no lantern light currently attached.")
+    end
+    return true
+end
+
+-- Spawner.TestAttachLanternMesh(say, useSelf) -- "lbtestlanternmesh [player|clear]" (2026-09-14,
+-- RedFalcon: "lets just do lantern and lantern glass directly to the lantern socket" -- a dedicated
+-- one-shot version of the two lbtesttool calls RedFalcon was already running by hand, both attached
+-- DIRECTLY to soc_Lantern (RedFalcon's own explicit call, rather than parenting the glass under the
+-- body component the way the real native BP_BeltLantern's own component hierarchy does it -- either
+-- placement reads the same visually since both meshes are modeled to align at that one point). Same
+-- zero-lag AddComponentByClass + K2_AttachToComponent mechanism lbtesttool/TestPopulateAllSockets
+-- already use, just bundled as one call plus the one thing lbtesttool alone doesn't do: applying
+-- MI_Belt_Glass_LanternOn onto the glass mesh's own material slot (the real native actor's own "on"
+-- look, confirmed via lbprobedump on an actually-equipped lantern).
+local BELT_LANTERN_MESH_PATH = "/Game/Character/Common/Accessoires/SM_Accessories_Lantern_01.SM_Accessories_Lantern_01"
+local BELT_LANTERN_GLASS_MESH_PATH = "/Game/Character/Common/Accessoires/SM_Accessories_LanternGlass_01.SM_Accessories_LanternGlass_01"
+local BELT_LANTERN_GLASS_ON_MATERIAL_PATH = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Materials/MI_Belt_Glass_LanternOn.MI_Belt_Glass_LanternOn"
+
+Spawner._beltLanternMeshComps = Spawner._beltLanternMeshComps or nil
+
+function Spawner.TestAttachLanternMesh(say, useSelf)
+    say = say or function(m) print("[LivingBase] [test-lanternmesh] " .. tostring(m) .. "\n") end
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
+    else
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlanternmesh player'.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    local hasSocket = false
+    pcall(function() hasSocket = body:DoesSocketExist(FName(BELT_LANTERN_SOCKET)) end)
+    if not hasSocket then
+        say(name .. " has no '" .. BELT_LANTERN_SOCKET .. "' socket -- can't attach here.")
+        return false
+    end
+
+    -- Remove any previous test mesh set first (one at a time, same convention as the light/actor tools).
+    pcall(function() Spawner.TestClearLanternMesh(function() end) end)
+
+    local smcCls = StaticFindObject("/Script/Engine.StaticMeshComponent")
+    if not (smcCls and smcCls:IsValid()) then
+        say("StaticMeshComponent class did not resolve.")
+        return false
+    end
+
+    local function attachOne(meshPath, materialPath)
+        local mesh = resolveAsset(meshPath)
+        if not (mesh and mesh:IsValid()) then
+            say("mesh did not resolve: " .. meshPath)
+            return nil
+        end
+        local comp = nil
+        pcall(function()
+            comp = actor:AddComponentByClass(smcCls, true, {
+                Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+                Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+                Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+            }, false)
+        end)
+        if not (comp and comp:IsValid()) then
+            say("AddComponentByClass failed for " .. meshPath)
+            return nil
+        end
+        pcall(function() comp:SetStaticMesh(mesh) end)
+        if materialPath then
+            local mat = resolveAsset(materialPath)
+            if mat and mat:IsValid() then
+                pcall(function() comp:SetMaterial(0, mat) end)
+            else
+                say("material did not resolve (mesh still attached with its default material): " .. materialPath)
+            end
+        end
+        local attached = pcall(function() comp:K2_AttachToComponent(body, FName(BELT_LANTERN_SOCKET), 2, 2, 2, false) end)
+        pcall(function() comp:SetVisibility(true, false) end)
+        say(string.format("%s: attach=%s", meshPath:match("([^/%.]+)%.[%w_]+$") or meshPath, tostring(attached)))
+        return attached and comp or nil
+    end
+
+    local bodyComp = attachOne(BELT_LANTERN_MESH_PATH, nil)
+    local glassComp = attachOne(BELT_LANTERN_GLASS_MESH_PATH, BELT_LANTERN_GLASS_ON_MATERIAL_PATH)
+
+    Spawner._beltLanternMeshComps = { bodyComp, glassComp }
+    local okCount = (bodyComp and 1 or 0) + (glassComp and 1 or 0)
+    say(string.format("target=%s | %d/2 lantern mesh piece(s) attached to '%s'.", name, okCount, BELT_LANTERN_SOCKET))
+    return okCount > 0
+end
+
+-- Spawner.TestClearLanternMesh(say) -- companion to TestAttachLanternMesh, destroys both attached
+-- mesh components.
+function Spawner.TestClearLanternMesh(say)
+    say = say or function(m) print("[LivingBase] [test-lanternmesh] " .. tostring(m) .. "\n") end
+    local comps = Spawner._beltLanternMeshComps
+    Spawner._beltLanternMeshComps = nil
+    local n = 0
+    if comps then
+        for _, c in ipairs(comps) do
+            if c and c:IsValid() then
+                -- Same wrong-argument fix as TestClearLanternLight -- DestroyComponent wants a bool
+                -- (bPromoteChildren), not the component itself.
+                local ok = pcall(function() c:DestroyComponent(false) end)
+                if not ok then pcall(function() c:SetVisibility(false, false) end) end
+                n = n + 1
+            end
+        end
+    end
+    if n > 0 then say(n .. " lantern mesh piece(s) removed.") else say("no lantern mesh currently attached.") end
+    return true
+end
+
+-- Spawner.TestAttachLanternSet(say, useSelf) -- "lbtestlanternset [player|clear]" (2026-09-14,
+-- RedFalcon settled on `lbtestlanternlight 300 850 100 0 0` paired with `lbtestlanternmesh` as the
+-- final combo -- "We mix this with the mesh to summon a lantern"). One-shot convenience wrapper:
+-- calls TestAttachLanternMesh then TestAttachLanternLight with those exact settled values baked in
+-- as defaults, so the full lit lantern goes on in a single call instead of two. Both underlying
+-- functions already handle their own "clear previous first" step, so calling this twice in a row is
+-- safe and just replaces both pieces.
+--
+-- Color CORRECTED back to warm orange (2026-09-14, same day): RedFalcon's original settled test ran
+-- BEFORE the real-lantern probe corrected the default color to pure white -- "that was nearly spot
+-- on" confirms the ORIGINAL warm-orange guess (255,180,90), not the later "authentic" white, is the
+-- look actually wanted here. Baked back in explicitly rather than relying on
+-- TestAttachLanternLight's own (now white) default.
+local BELT_LANTERN_SET_LIGHT_INTENSITY = 300.0
+local BELT_LANTERN_SET_LIGHT_RADIUS = 850.0
+local BELT_LANTERN_SET_LIGHT_OFFSET_X = 100.0
+local BELT_LANTERN_SET_LIGHT_R = 255.0
+local BELT_LANTERN_SET_LIGHT_G = 180.0
+local BELT_LANTERN_SET_LIGHT_B = 90.0
+
+function Spawner.TestAttachLanternSet(say, useSelf)
+    say = say or function(m) print("[LivingBase] [test-lanternset] " .. tostring(m) .. "\n") end
+    local meshOk = Spawner.TestAttachLanternMesh(say, useSelf)
+    local lightOk = Spawner.TestAttachLanternLight(say, useSelf, BELT_LANTERN_SET_LIGHT_INTENSITY,
+        BELT_LANTERN_SET_LIGHT_RADIUS, BELT_LANTERN_SET_LIGHT_OFFSET_X, 0.0, 0.0, 0.0, 0.0, 0.0,
+        BELT_LANTERN_SET_LIGHT_R, BELT_LANTERN_SET_LIGHT_G, BELT_LANTERN_SET_LIGHT_B)
+    say(string.format("lantern set: mesh=%s light=%s", tostring(meshOk), tostring(lightOk)))
+    return meshOk and lightOk
+end
+
+-- Spawner.TestClearLanternSet(say) -- companion to TestAttachLanternSet, clears both mesh and light.
+function Spawner.TestClearLanternSet(say)
+    say = say or function(m) print("[LivingBase] [test-lanternset] " .. tostring(m) .. "\n") end
+    Spawner.TestClearLanternMesh(say)
+    Spawner.TestClearLanternLight(say)
+    return true
+end
+
 -- Spawner.TestGenerateSocketItems(say) -- "lbtestsocketitems" (2026-09-07) -- RedFalcon's full
 -- SocketItems.xlsx design (Config.SOCKETITEMS_* -- see that data's own header comment in config.lua
 -- for the complete rule list and the data-quality fixups already applied). One call rolls a
@@ -11560,7 +13832,12 @@ end
 --     location's own sockets -- this alone is what makes "one weapon per location" true.
 --   * Tag synergy is one shared, growing set across BOTH passes (soc items rolled first, so a
 --     themed accessory pick can influence which weapon gets favored afterward too).
-function Spawner.TestGenerateSocketItems(say)
+-- excludeSockets (2026-09-15, optional 2nd param, added for Spawner.RandomizeSocketAccessories's
+-- own Senkamati-necklace-in-Sling exception) -- when given, a {socketName=true,...} set of real
+-- sockets to leave OUT of both the soc-item and weapon socket pools for this one call, as if they
+-- didn't exist on the skeleton at all. nil (every existing caller, including the "lbtestsocketitems"
+-- console command) behaves exactly as before.
+function Spawner.TestGenerateSocketItems(say, excludeSockets)
     say = say or function(m) print("[LivingBase] [socket-items] " .. tostring(m) .. "\n") end
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
@@ -11657,17 +13934,19 @@ function Spawner.TestGenerateSocketItems(say)
     local weaponSocketsByLocation = {}
     local weaponRequiredPiece = {}
     for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
-        if s.socType == "soc" then
-            for _, bp in ipairs(s.beltpiece or {}) do
-                local typeCap = bp:sub(1, 1):upper() .. bp:sub(2)
-                local key = s.locationTag .. "|" .. typeCap
-                socSocketsByGroup[key] = socSocketsByGroup[key] or {}
-                table.insert(socSocketsByGroup[key], s.socket)
+        if not (excludeSockets and excludeSockets[s.socket]) then
+            if s.socType == "soc" then
+                for _, bp in ipairs(s.beltpiece or {}) do
+                    local typeCap = bp:sub(1, 1):upper() .. bp:sub(2)
+                    local key = s.locationTag .. "|" .. typeCap
+                    socSocketsByGroup[key] = socSocketsByGroup[key] or {}
+                    table.insert(socSocketsByGroup[key], s.socket)
+                end
+            elseif s.socType == "weapon" then
+                weaponSocketsByLocation[s.locationTag] = weaponSocketsByLocation[s.locationTag] or {}
+                table.insert(weaponSocketsByLocation[s.locationTag], s.socket)
+                weaponRequiredPiece[s.locationTag] = (s.beltpiece or {})[1]
             end
-        elseif s.socType == "weapon" then
-            weaponSocketsByLocation[s.locationTag] = weaponSocketsByLocation[s.locationTag] or {}
-            table.insert(weaponSocketsByLocation[s.locationTag], s.socket)
-            weaponRequiredPiece[s.locationTag] = (s.beltpiece or {})[1]
         end
     end
 
@@ -12149,16 +14428,25 @@ function Spawner.TestAddMissingClothingSlot(slotArg, meshPathArg)
     if not okMesh then pcall(function() newComp:SetSkeletalMesh(mesh, false) end) end
     breadcrumb("mesh assign done, applied=" .. tostring(okMesh))
 
+    -- BUG FIX (2026-09-12, live-caught via a real crash + the RefLog breadcrumb trail -- this
+    -- exact call was the crash point): K2_AttachToComponent's socket-name parameter is an FName,
+    -- not a plain Lua string. Spawner.AttachShield (a long-proven-stable precedent) always wraps it
+    -- as FName(socket); this call passed a bare "" instead, a genuine type mismatch in UE4SS's own
+    -- reflection-based argument marshaling -- crashed INSIDE UE4SS.dll (confirmed via the project's
+    -- own minidump triage script), not the game engine. FName("") is the correct "no socket" value.
     breadcrumb("about to call K2_AttachToComponent -- if nothing follows this line, THIS crashed.")
-    pcall(function() newComp:K2_AttachToComponent(body, "", 2, 2, 2, false) end)
+    pcall(function() newComp:K2_AttachToComponent(body, FName(""), 2, 2, 2, false) end)
     pcall(function() newComp:SetVisibility(true, false) end)
     breadcrumb("attach call returned.")
 
+    -- BUG FIX (2026-09-12, found live via Spawner.AddBarbieFacialHair's own identical call): this
+    -- UE4SS build's SetLeaderPoseComponent binding requires all 3 C++ params explicitly (no
+    -- defaults) -- "UFunction expected 3 parameters, received 1" when called with just `body`.
     breadcrumb("about to call SetLeaderPoseComponent -- if nothing follows this line, THIS crashed.")
-    local okLead, errLead = pcall(function() newComp:SetLeaderPoseComponent(body) end)
+    local okLead, errLead = pcall(function() newComp:SetLeaderPoseComponent(body, true, false) end)
     if not okLead then
         breadcrumb("SetLeaderPoseComponent pcall FAILED (did not crash): " .. tostring(errLead) .. " -- trying SetMasterPoseComponent fallback.")
-        okLead, errLead = pcall(function() newComp:SetMasterPoseComponent(body) end)
+        okLead, errLead = pcall(function() newComp:SetMasterPoseComponent(body, true) end)
     end
     breadcrumb("leader-pose call(s) returned, ok=" .. tostring(okLead))
 
@@ -12187,6 +14475,184 @@ function Spawner.TestAddMissingClothingSlot(slotArg, meshPathArg)
 
     pcall(function() Spawner.Toast(string.format("Added %s slot on %s (leader-pose verified=%s)", wantSlot, name, tostring(verified)), 3.0) end)
     return okLead and verified
+end
+
+-- Spawner.AddBarbieFacialHair(actor, sexArg, say) -- "lbtestbarbiefacial" (2026-09-12). SAFE
+-- ALTERNATIVE after TWO live crashes trying to fix facial hair by editing the cooked Custom outfit's
+-- own CompositeMeshGroup array (WINDROSE_MODDING_NOTES.md 19ad/19ae) -- first attempt pointed the
+-- broken Eyebrows/Mustache/Beard/Whiskers/Hairs-dup slots at raw R5CompositeMeshParams pieces
+-- (crashed), second attempt pointed them at the real native R5CompositeMeshGroup wrapper assets
+-- confirmed to be the correct CLASS (crashed again) -- and per WINDROSE_MODDING_NOTES.md 19q, an
+-- EARLIER, completely different attempt (a proper Editor-authored sex-keyed
+-- CompositeMeshGroupsByBodySex map, 2026-09-03) also built ZERO facial-hair pieces live for reasons
+-- never root-caused. Three independent techniques failing the same feature is strong evidence the
+-- Custom outfit's own Group asset has a real structural block here -- not re-attempting a 4th data-
+-- level edit. This sidesteps the whole question by never touching that Group/pak at all: builds
+-- fresh SkeletalMeshComponents directly on the ALREADY-SPAWNED actor, the exact same proven-safe
+-- recipe Spawner.TestAddMissingClothingSlot already uses for missing CLOTHING slots
+-- (AddComponentByClass -> SetSkeletalMeshAsset -> K2_AttachToComponent -> SetLeaderPoseComponent,
+-- leader-pose skinning, no socket) -- just not gated through that function's own
+-- Config.CLOTHING_REMOVABLE_SLOTS/clothingSlotOf checks, since Beard/Mustache/Whiskers/Eyebrows
+-- were never clothing slots to begin with. Real raw SkeletalMesh paths from the SAME "Sparse" family
+-- Config.CUSTOM_FACIAL already curates (proven-safe resolveAsset targets, used all session by
+-- lbtestfacial to swap an EXISTING facial-hair component's mesh -- this just also builds the
+-- component itself, which lbtestfacial never needed to since native NPCs already have one).
+-- Eyebrows added for both sexes (a real Female asset exists); Beard/Mustache/Whiskers Male-only
+-- (confirmed 19q: no female-equivalent asset exists anywhere in the game for any of the three).
+function Spawner.AddBarbieFacialHair(actorArg, sexArg, say)
+    say = say or function(m) print("[LivingBase] [barbie-facial] " .. tostring(m) .. "\n") end
+    local actor = actorArg
+    local name = "actor"
+    if not (actor and actor:IsValid()) then
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = findNearestSpawnInFront(maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
+    end
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no body Mesh component.")
+        return false
+    end
+
+    -- Auto-detect sex the same way lbtestfacial does when sexArg is omitted -- check for a
+    -- Female-family skin material name pattern on the body mesh, default Male otherwise.
+    local isMale = true
+    if sexArg and (sexArg:upper() == "F" or sexArg:upper() == "FEMALE") then
+        isMale = false
+    elseif sexArg and (sexArg:upper() == "M" or sexArg:upper() == "MALE") then
+        isMale = true
+    else
+        pcall(function()
+            local n = body:GetNumMaterials()
+            for i = 0, n - 1 do
+                local mat = body:GetMaterial(i)
+                if mat and mat:IsValid() then
+                    local mn = mat:GetFName():ToString()
+                    if mn:find("Female", 1, true) then isMale = false; break end
+                end
+            end
+        end)
+    end
+
+    local FACIAL_GAME = "/Game/Character/Skeletal_Meshes/Facial"
+    local pieces
+    if isMale then
+        pieces = {
+            { tag = "Eyebrows", path = FACIAL_GAME .. "/Male/Eyebrows/Meshes/SK_Eyebrows_Male_01" },
+            { tag = "Beard",    path = FACIAL_GAME .. "/Male/Beard/Sparse/SK_Beard_Sparse_01" },
+            { tag = "Mustache", path = FACIAL_GAME .. "/Male/Beard/Sparse/SK_Mustache_Sparse_01" },
+            { tag = "Whiskers", path = FACIAL_GAME .. "/Male/Beard/Sparse/SK_Whiskers_Sparse_01" },
+        }
+    else
+        pieces = {
+            { tag = "Eyebrows", path = FACIAL_GAME .. "/Female/Eyebrows/Meshes/SK_Eyebrows_Female_01" },
+        }
+    end
+
+    local compCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then
+        say("SkeletalMeshComponent class did not resolve.")
+        return false
+    end
+
+    -- Same breadcrumb-before-every-risky-call discipline as TestAddMissingClothingSlot (item 71's
+    -- own lesson: a native crash never returns to Lua, so log BEFORE, not just after).
+    local function breadcrumb(msg)
+        print("[LivingBase] [barbie-facial] " .. msg .. "\n")
+        Spawner.RefLog("barbiefacial", "target=" .. name .. " -- " .. msg)
+    end
+
+    local okAll = true
+    for _, p in ipairs(pieces) do
+        -- BUG FIX (2026-09-12, live-caught: "Asset was found but not loaded, could be a package" /
+        -- "mesh did not resolve" on every single piece): resolveAsset needs the fully-qualified
+        -- "<path>.<AssetName>" form, not a bare package path -- every other path-taking tool in this
+        -- file (lbtesttool/lbtestpiece/lbtestaddslot/etc.) appends this before calling resolveAsset;
+        -- this function forgot that one step.
+        local fullPath = p.path
+        if not fullPath:match("%.[%w_]+$") then
+            local last = fullPath:match("([^/]+)$")
+            if last then fullPath = fullPath .. "." .. last end
+        end
+        local mesh = resolveAsset(fullPath)
+        if not (mesh and mesh:IsValid()) then
+            say(p.tag .. ": mesh did not resolve: " .. fullPath)
+            okAll = false
+        else
+            breadcrumb(p.tag .. ": about to call AddComponentByClass -- if nothing follows this line, THIS crashed.")
+            local newComp = nil
+            local okAdd = pcall(function()
+                newComp = actor:AddComponentByClass(compCls, true, {
+                    Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+                    Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+                    Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+                }, false)
+            end)
+            if not (okAdd and newComp and newComp:IsValid()) then
+                breadcrumb(p.tag .. ": AddComponentByClass FAILED (pcall returned, did not crash).")
+                okAll = false
+            else
+                local okMesh = pcall(function() newComp:SetSkeletalMeshAsset(mesh) end)
+                if not okMesh then pcall(function() newComp:SetSkeletalMesh(mesh, false) end) end
+                -- BUG FIX (2026-09-12): see Spawner.TestAddMissingClothingSlot's own matching fix
+                -- comment -- K2_AttachToComponent's socket param is an FName, not a bare string;
+                -- this was the confirmed crash point (RefLog breadcrumb trail + minidump triage).
+                breadcrumb(p.tag .. ": about to call K2_AttachToComponent -- if nothing follows this line, THIS crashed.")
+                pcall(function() newComp:K2_AttachToComponent(body, FName(""), 2, 2, 2, false) end)
+                pcall(function() newComp:SetVisibility(true, false) end)
+                -- BUG FIX (2026-09-12, live-caught: no crash this time, but "leaderPoseOk=false" on
+                -- every piece and RedFalcon reporting "the hair does not attach to his face" --
+                -- SetLeaderPoseComponent never actually applied). Two real bugs in the original
+                -- version of this block: (1) never captured/logged either call's own error text,
+                -- just the bare pcall boolean -- couldn't tell WHY it failed, only THAT it failed;
+                -- (2) never verified via readback like TestAddMissingClothingSlot's own
+                -- GetLeaderPoseComponent() check does -- a pcall returning true only means the call
+                -- didn't THROW, not that it actually set anything.
+                -- BUG FIX (2026-09-12, live-caught, 2nd round -- real error text now logged instead
+                -- of a bare boolean): "UFunction expected 3 parameters, received 1". This UE4SS
+                -- build's binding for SetLeaderPoseComponent requires ALL of its C++ params passed
+                -- explicitly, no defaults -- real UE5 signature is
+                -- SetLeaderPoseComponent(USkinnedMeshComponent* NewLeaderBoneComponent,
+                -- bool bFollowLeaderPoseOverride = true, bool bUpdateNumBones = false), 3 total
+                -- (matches the error's own count). Same fix applied to the SetMasterPoseComponent
+                -- fallback (pre-5.1 name, 2-param signature: NewMasterBoneComponent,
+                -- bFollowMasterPose = true).
+                breadcrumb(p.tag .. ": about to call SetLeaderPoseComponent -- if nothing follows this line, THIS crashed.")
+                local okLead, errLead = pcall(function() newComp:SetLeaderPoseComponent(body, true, false) end)
+                local okFallback, errFallback = nil, nil
+                if not okLead then
+                    okFallback, errFallback = pcall(function() newComp:SetMasterPoseComponent(body, true) end)
+                end
+                local verified = false
+                pcall(function()
+                    local got = nil
+                    pcall(function() got = newComp:GetLeaderPoseComponent() end)
+                    if not (got and got:IsValid()) then pcall(function() got = newComp:GetMasterPoseComponent() end) end
+                    if got and got:IsValid() then
+                        local gotName, bodyName = "", ""
+                        pcall(function() gotName = got:GetFName():ToString() end)
+                        pcall(function() bodyName = body:GetFName():ToString() end)
+                        verified = (gotName == bodyName)
+                    end
+                end)
+                say(string.format("%s: mesh=%s applied=%s leaderPoseCallOk=%s%s fallbackCallOk=%s%s verified=%s",
+                    p.tag, p.path, tostring(okMesh), tostring(okLead),
+                    (not okLead) and (" err=" .. tostring(errLead)) or "",
+                    tostring(okFallback),
+                    (okFallback == false) and (" err=" .. tostring(errFallback)) or "",
+                    tostring(verified)))
+                if not verified then okAll = false end
+            end
+        end
+    end
+    pcall(function() Spawner.Toast("Added facial hair on " .. name .. " (" .. (isMale and "Male" or "Female") .. ")", 3.0) end)
+    return okAll
 end
 
 -- Spawner.TestBuildCustomOutfit(swapSlot, swapFamily, swapName) -- "lbtestgroup" (2026-08-29).
@@ -12627,6 +15093,51 @@ local function pollForBuildThenUndress(actor, name, attemptsLeft)
     end
     if ExecuteWithDelay then
         ExecuteWithDelay(300, function() pollForBuildThenUndress(actor, name, attemptsLeft - 1) end)
+    end
+end
+
+-- pollForBuildThenOnSpawned(actor, name, callback, attemptsLeft) -- BUG FIX (2026-09-11, RedFalcon:
+-- "when I summon mortar man, he's floating way up in the air for placement, unlike the others").
+-- Same root cause pollForBuildThenUndress (just above) already had to solve for the undress step:
+-- comp.BuildedCompositeMeshes doesn't populate synchronously inside Spawner.Spawn's own call, but
+-- SwapBodyType's `onSpawned` callback (StartPlacementPreview, for the Barbie picker) was being fired
+-- immediately anyway. StartPlacementPreview's own floor-lock measures the actor's visual bounds
+-- (computeStatueBottomOffset -> GetActorBounds) to know how far below the pivot the real feet sit --
+-- called this early, that reads whatever PRE-BUILD fallback bounds the engine has (most likely just
+-- the root capsule, not the finished composite mesh). That fallback happened to be close enough to
+-- correct for every other Barbie-picker body (ordinary walking Handyman-family humanoids) to go
+-- unnoticed, but MortarMan is normally a stationary gun-emplacement NPC with a differently-sized
+-- root/capsule setup -- the same wrong-early-guess bug, just finally big enough to see. Same
+-- self-rescheduling, capped (~3.6s) poll idiom as pollForBuildThenUndress, generalized to run any
+-- callback once the build is real instead of only the undress step -- falls back to firing the
+-- callback anyway once attempts run out (better to place him somewhere than never place him at all).
+local function pollForBuildThenOnSpawned(actor, name, callback, attemptsLeft)
+    attemptsLeft = attemptsLeft or 12
+    if not (actor and actor:IsValid()) then return end
+    local built = 0
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            local list = comp.BuildedCompositeMeshes
+            if list then
+                pcall(function() built = list:GetArrayNum() end)
+                if built == 0 then pcall(function() built = #list end) end
+            end
+        end
+    end)
+    if built > 0 then
+        pcall(callback, actor)
+        return
+    end
+    if attemptsLeft <= 1 then
+        print("[LivingBase] [barbie-place] gave up waiting for composite build on " .. tostring(name) .. " before placing (still 0 BuildedCompositeMeshes after ~3.6s) -- placing anyway.\n")
+        pcall(callback, actor)
+        return
+    end
+    if ExecuteWithDelay then
+        ExecuteWithDelay(300, function() pollForBuildThenOnSpawned(actor, name, callback, attemptsLeft - 1) end)
+    else
+        pcall(callback, actor)
     end
 end
 
@@ -13321,7 +15832,28 @@ end
 -- when given it's set as compositeLook.morphParams so the composite build applies that donor's body
 -- proportions to WHATEVER mesh (incl. a retargeted Adventurer one), fixing the "mesh retarget kills
 -- the per-donor shape" problem.
-function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn, bodyTypesOverride, atOverride, morphOverride)
+-- persistPlacement (2026-09-11, the LivingBaseSpawnMenu "Barbie" picker): every prior caller of
+-- this function is a dev/test command (lbtestbodyswap/lbtestbodyspawn) and deliberately spawns
+-- TRANSIENT (no persist.txt entry -- see the "leftover persisted test actor races a new spawn"
+-- crash writeup, WINDROSE_MODDING_NOTES.md 19z). The Barbie picker is a real placeable-item
+-- feature, not a dev test -- it needs the SAME "survives a reload, movable/despawnable via the
+-- Move/Despawn UI" behavior every other placed item (decor, statues, crew) already has. Default
+-- nil/false preserves the transient behavior for every existing caller unchanged; true skips the
+-- transient wrap below so Spawner.Spawn's normal persistAppend runs.
+-- onSpawned (2026-09-11, the Barbie picker's own "move it like the statues" request): an optional
+-- callback invoked ONCE, synchronously, the moment the actor is created (right after
+-- Spawner.Spawn returns a valid actor, well before the async phase 1/2 composite-build/underwear
+-- work finishes) -- lets a caller start Spawner.StartPlacementPreview(actor) on it immediately, the
+-- same live-follow-the-camera placement session every OTHER placeable-item roster (decor/statues/
+-- townsfolk/crew/livestock) already gets from pollSpawnMenuRequest in main.lua. Deliberately a
+-- callback, not a change to this function's own true/false return contract -- multiple early-return
+-- points already exist (spawn failure, the despawn-settle-delay branch) and every existing caller
+-- (lbtestbodyswap/lbtestbodyspawn) only ever checks for a pcall error, never the return value.
+-- labelOverride (2026-09-11, RedFalcon: "use the origin and bodytype in the name, not literally the
+-- words") -- the Barbie picker builds a real per-spawn name from the actual selections (e.g.
+-- "MortarMan_F_Senkamati"), not a fixed placeholder string. nil keeps the existing "BodyTypeSwap"
+-- label every dev/test caller already gets.
+function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, freshSpawn, bodyTypesOverride, atOverride, morphOverride, persistPlacement, onSpawned, labelOverride)
     say = say or function(m) print("[LivingBase] [bodyswap] " .. tostring(m) .. "\n") end
     if familyArg and familyArg:lower() == "reset" then
         if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then
@@ -13626,14 +16158,38 @@ function Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say, f
         -- DespawnActor), and even a normal lbtestbodyswap leaves its LAST actor's entry behind. These
         -- are dev/diagnostic spawns -- they should NEVER persist. Mark transient around the spawn so
         -- persistAppend early-returns (same mechanism whistle.lua uses for night raiders).
+        -- persistPlacement (2026-09-11) is the one exception -- the Barbie picker's spawns are real
+        -- placed items, not dev tests, so they skip this transient wrap and get a normal persist.txt
+        -- entry like any other placed NPC.
+        -- markIdle=true (2026-09-11, RedFalcon: "placing turns AI back on... make placement match" --
+        -- same bug on the Move/grab path too): every SwapBodyType spawn is frozen by design
+        -- (SetAILogic(actor, false) right below, "AI frozen" in every say() this whole session) --
+        -- but Spawner.Spawn's OWN entry.idle metadata defaulted to false here, so
+        -- releasePlacementMobility (the shared Confirm/Cancel-placement cleanup) treated her like a
+        -- normal walking actor and unconditionally called SetAILogic(actor, true) the moment a
+        -- placement/relocate session ended -- undoing the freeze regardless of whether anyone ever
+        -- ran lbwakeai. markIdle=true records the CORRECT default resting state up front so
+        -- placement (both the initial post-spawn preview AND a later re-grab/move) leaves her
+        -- exactly as frozen as she was before, matching the same idle-Senkamati precedent this exact
+        -- mechanism was originally built for.
+        -- Label: labelOverride when the caller gave one (the Barbie picker's real per-spawn name,
+        -- e.g. "MortarMan_F_Senkamati" -- built from the actual selections, not a fixed string),
+        -- else the unchanged "BodyTypeSwap" every dev/test command (lbtestbodyswap/lbtestbodyspawn)
+        -- already gets.
+        local spawnLabel = labelOverride or "BodyTypeSwap"
         local _prevTransient = Spawner.transient
-        Spawner.transient = true
-        local actor = Spawner.Spawn(classPath, "BodyTypeSwap", atLocation, preFinishAIPawnParams, aiControllerOverride, yaw, false, compositeLook, nil, false)
+        Spawner.transient = not persistPlacement
+        local actor = Spawner.Spawn(classPath, spawnLabel, atLocation, preFinishAIPawnParams, aiControllerOverride, yaw, false, compositeLook, nil, true)
         Spawner.transient = _prevTransient
         if not (actor and actor:IsValid()) then
             say("Spawn FAILED.")
             return false
         end
+        -- BUG FIX (2026-09-11): was `if onSpawned then pcall(onSpawned, actor) end` -- fired
+        -- immediately, before the composite build had actually finished, which fed
+        -- StartPlacementPreview's floor-lock a pre-build bounds guess (see
+        -- pollForBuildThenOnSpawned's own header comment -- the MortarMan-floats-in-the-air bug).
+        if onSpawned then pollForBuildThenOnSpawned(actor, spawnLabel, onSpawned) end
         -- 2026-09-09 TRIED AND REVERTED: delaying SetAILogic(false) by 2000ms (to test whether
         -- StopLogic() interrupts the StateTree's own first-time init) crashed live -- a NEW, THIRD
         -- crash signature this session, inside UE4SS.dll itself (not the game engine, unlike the
@@ -14286,6 +16842,19 @@ function Spawner.ToggleClothesUnlock()
         print("[LivingBase] [clothes-unlock] Custom > Clothes fit restrictions: restored (default).\n")
         pcall(function() Spawner.Toast("Clothes fit restrictions restored", 2.5) end)
     end
+    -- CustomMenu.cpp bridge (2026-09-14) -- the Clothes dropdown's "Only with Unlock" items need to
+    -- know this state live, not just on a "Read Current" click (RedFalcon: "update the dropdowns
+    -- when that command is run"). Plain one-line status file, written here on every toggle -- same
+    -- "small status file the DLL polls every frame" shape as StandaloneWindow.cpp's own
+    -- PublishWindowVisible, just the other direction (Lua writes, C++ reads).
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/clothes_unlock_state.txt", "Mods/LivingBase/clothes_unlock_state.txt", "clothes_unlock_state.txt" }) do
+        local f = io.open(p, "w")
+        if f then
+            f:write(Config.CLOTHES_UNLOCK_ALL and "1" or "0")
+            f:close()
+            break
+        end
+    end
     return Config.CLOTHES_UNLOCK_ALL
 end
 
@@ -14307,6 +16876,91 @@ local function facialSlotOf(meshName)
         if meshName:find(pair[1], 1, true) then return pair[2] end
     end
     return nil
+end
+
+-- HAIR_VARIANT_TOKENS / detectHairVariant / hairVariantPath (2026-09-12, RedFalcon: "its only
+-- looking at the no hat version of the hair and not the other versions" -- confirmed via a real
+-- pakcontents.xlsx check, not assumed: EVERY Hairs mesh actually ships as several real per-headwear
+-- geometry variants, NOT a single generic mesh that just gets hidden. Geometry variants shaped to
+-- fit under that category of headwear. **The naming is genuinely INCONSISTENT across the roster,
+-- confirmed by scanning every single /Hair/*.uasset name, not assumed from one example**: some
+-- styles use "SuspendHat"/"SuspendBandana"/"SuspendHeadband" (e.g. SK_Hair_Wavy_01_SuspendHat_Male),
+-- SAME-FAMILY Wig_02 instead uses "SuspendedHat"/"SuspendedBandana"/"SuspendedHeadband" (with "ed"
+-- -- SK_Hair_Wig_02_SuspendedBandana_Female, the exact mesh Marita Suarez dump surfaced this
+-- session), and PartialDreadlocks uses bare "Hat"/"Bandana"/"Headband" with no Suspend* prefix at
+-- all. All 10 real tokens found are enumerated below rather than guessing one spelling. This
+-- explains two real bugs: (1) TestReadHairStyles' reverse lookup only ever compared against
+-- Config.HAIR_CATEGORY_ITEMS' own stored "_Default_" path, so it silently failed to match anything
+-- whenever a hat/bandana/headband was actually worn (the equipped mesh's real name never equalled
+-- the catalog's Default-only name); (2) Spawner.ApplyHairCategoryMesh always resolved and applied
+-- the "_Default_" path regardless of what the target was ALREADY wearing on their head, meaning
+-- picking a new Hairs style while a hat was worn replaced a correctly-fitted variant mesh with the
+-- no-hat Default one, clipping through the hat -- the real, more precise version of "changing hair
+-- doesnt set based on hat" (bigger and more common than the missing-component case
+-- hasHeadgearEquipped's own coarser heuristic covers). NOTE: this Default/variant split is HAIR-
+-- ONLY, confirmed absent for Beard/Mustache/Whiskers (pakcontents has no per-headwear facial-hair
+-- assets at all -- hats don't conflict with facial hair the way they do with head hair).
+local HAIR_VARIANT_TOKENS = {
+    "Default",
+    "SuspendHat", "SuspendBandana", "SuspendHeadband",
+    "SuspendedHat", "SuspendedBandana", "SuspendedHeadband",
+    "Hat", "Bandana", "Headband",
+}
+local function detectHairVariant(meshName)
+    if not meshName then return nil end
+    for _, tok in ipairs(HAIR_VARIANT_TOKENS) do
+        if meshName:find("_" .. tok .. "_", 1, true) then return tok end
+    end
+    return nil
+end
+-- Collapses any raw variant token (Hat/SuspendHat/SuspendedHat/etc) down to just its HEADWEAR
+-- CATEGORY ("Hat"/"Bandana"/"Headband"), stripping whichever "Suspend"/"Suspended" prefix (if any)
+-- is present -- "Default" passes through unchanged. Needed because the SAME category can be spelled
+-- 3 different ways depending on which hairstyle it's on (see this block's own header comment).
+local function hairVariantCategory(token)
+    if not token or token == "Default" then return token end
+    local cat = token:gsub("^Suspended", ""):gsub("^Suspend", "")
+    return cat
+end
+-- Collapses whichever real variant token a mesh name carries down to one shared placeholder, so
+-- comparing two mesh names ignores which of the 10 real spellings each one happens to use --
+-- exactly what TestReadHairStyles needs (the catalog only stores "_Default_", but the equipped mesh
+-- could be any real variant, in any of the 3 naming conventions). Falls through unchanged if no
+-- known token is found (safe no-op for non-Hairs categories, or any future/unknown naming).
+local function normalizeHairMeshName(name)
+    if not name then return name end
+    local variant = detectHairVariant(name)
+    if not variant then return name end
+    local out = name:gsub("_" .. variant .. "_", "_VARIANT_", 1)
+    return out
+end
+-- Given an already-resolved "_Default_" path (what Config.HAIR_CATEGORY_ITEMS' own malePath/
+-- femalePath/unisexPath always store) and a headwear CATEGORY ("Hat"/"Bandana"/"Headband"), returns
+-- every plausible real variant path for that category, in the SAME 3-spelling order
+-- hairVariantCategory strips from -- since the NEW style being switched to might use a different
+-- one of the 3 naming conventions than whatever the CURRENT style happened to use, the caller tries
+-- each candidate with resolveAsset in order and keeps the first one that actually exists, rather
+-- than assuming the current style's own spelling carries over.
+--
+-- BUG FIX (2026-09-14, live-caught via applyHeadgearHairFit: "'Short Bob' has no Hat variant asset
+-- ... falling back to Default" despite Config.CUSTOM_HAIR's own hardcoded ShortBob-Hat row proving
+-- SK_Hair_ShortBob_SuspendHat_Female genuinely exists) -- the gsub below used a `1` replacement-
+-- count limit, but `defaultPath` is always "Package/Path.AssetName" with the SAME "_Default_"-
+-- bearing name repeated in BOTH halves (e.g. ".../SK_Hair_ShortBob_Default_Female.SK_Hair_
+-- ShortBob_Default_Female") -- capping at 1 replacement only fixed the PACKAGE half, leaving the
+-- ASSET NAME half still saying "_Default_", producing a mismatched/nonexistent combined path that
+-- could never resolve. This silently broke every variant-lookup caller since this function was
+-- written, INCLUDING Spawner.ApplyHairCategoryMesh's own hat-preservation logic (switching
+-- hairstyles while a hat is worn), not just the new headgear-apply path that surfaced it. Fixed by
+-- dropping the count limit so gsub fixes BOTH occurrences consistently.
+local function hairVariantPathCandidates(defaultPath, category)
+    local candidates = {}
+    if not defaultPath or not category or category == "Default" then return candidates end
+    for _, tok in ipairs({ "Suspend" .. category, "Suspended" .. category, category }) do
+        local p, replaced = defaultPath:gsub("_Default_", "_" .. tok .. "_")
+        if replaced > 0 then candidates[#candidates + 1] = p end
+    end
+    return candidates
 end
 
 -- Spawner.RemoveHairOnActor(actor, slotArg, name) / Spawner.TestRemoveHairPiece(slotArg) --
@@ -14399,6 +17053,667 @@ function Spawner.TestRemoveHairPiece(slotArg)
         return false
     end
     return Spawner.RemoveHairOnActor(e.actor, slotArg, e.label)
+end
+
+-- findHairFamilyComponent(actor, bodyPartKey) -- shared component finder for the new
+-- HairCategories.xlsx-driven Custom-tab Hair section (2026-09-12). bodyPartKey one of
+-- "Hairs"/"Beard"/"Mustache"/"Whiskers" (matches Config.HAIR_CATEGORY_ITEMS' own bodyPart strings).
+-- Walks every SkeletalMeshComponent on the actor and classifies it the SAME way
+-- Spawner.RemoveHairOnActor already does ("/Hair/" path check for head hair, facialSlotOf() token
+-- match for Beard/Mustache/Whiskers) -- works uniformly whether the component came from a real
+-- composite build (native NPCs) or was added fresh via AddComponentByClass (Barbies, see
+-- Spawner.AddBarbieFacialHair) -- unlike Spawner.TestSetCPDPaletteColor's own BuildedCompositeMeshes-
+-- only lookup, which can never find the latter kind. Returns nil if nothing matches (a Barbie/NPC
+-- that genuinely has no component for this category yet).
+local function findHairFamilyComponent(actor, bodyPartKey)
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (cls and cls:IsValid()) then return nil end
+    local comps
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+    end
+    for i = 1, n do
+        local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local curName, curFullPath = "", ""
+            pcall(function()
+                local sk = c.SkeletalMesh
+                if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then
+                    curName = sk:GetFName():ToString()
+                    pcall(function() curFullPath = sk:GetFullName() end)
+                end
+            end)
+            if bodyPartKey == "Hairs" then
+                if curFullPath:find("/Hair/") then return c end
+            else
+                if facialSlotOf(curName) == bodyPartKey then return c end
+            end
+        end
+    end
+    return nil
+end
+
+-- hasHeadgearEquipped -- REMOVED 2026-09-14 (superseded, see Spawner.SyncHairToCurrentHeadgear/
+-- applyHeadgearHairFit far below in this file). This used to be a coarse best-effort stand-in for
+-- "would the native pipeline currently suspend Hairs" -- its own header explained why a PRECISE
+-- per-hat SlotsToSuspend check wasn't cheaply available at the time: "no live reference from a
+-- composite element back to its own backing DataAsset". That gap is now closed -- Config.
+-- CLOTHES_ITEMS (built for the new Clothes dropdown feature) carries each Headgear item's own
+-- `sourceAsset` DataAsset path, so a currently-worn mesh CAN now be reverse-matched back to its
+-- real backing asset and its actual SlotsToSuspend read directly (the exact mechanism
+-- lbdumpsuspend/DumpHeadgearSuspend already used, just applied live instead of from a static
+-- roster). This precise check replaced the coarse "is ANY headgear worn" guess everywhere it was
+-- used (Spawner.ApplyHairCategoryMesh's own hairstyle-apply paths).
+
+-- addHairFamilyComponent(actor, body, mesh) -- builds a fresh SkeletalMeshComponent when
+-- findHairFamilyComponent finds nothing to swap (a clean-shaven native NPC with no Beard component
+-- yet, for instance). The exact same proven, bug-fixed recipe Spawner.AddBarbieFacialHair uses
+-- (AddComponentByClass -> SetSkeletalMeshAsset -> K2_AttachToComponent(body, FName(""), ...) ->
+-- SetLeaderPoseComponent(body, true, false)) -- see that function's own header comment for the two
+-- real UE4SS-binding bugs this recipe took to find (FName socket param, all-3-params-explicit).
+local function addHairFamilyComponent(actor, body, mesh)
+    local compCls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if not (compCls and compCls:IsValid()) then return nil, false end
+    local newComp = nil
+    local okAdd = pcall(function()
+        newComp = actor:AddComponentByClass(compCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (okAdd and newComp and newComp:IsValid()) then return nil, false end
+    local okMesh = pcall(function() newComp:SetSkeletalMeshAsset(mesh) end)
+    if not okMesh then pcall(function() newComp:SetSkeletalMesh(mesh, false) end) end
+    pcall(function() newComp:K2_AttachToComponent(body, FName(""), 2, 2, 2, false) end)
+    pcall(function() newComp:SetVisibility(true, false) end)
+    local okLead = pcall(function() newComp:SetLeaderPoseComponent(body, true, false) end)
+    if not okLead then pcall(function() newComp:SetMasterPoseComponent(body, true) end) end
+    return newComp, okMesh
+end
+
+-- Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say) -- the new Custom-tab Hair section's
+-- mesh-apply mechanism (2026-09-12), driven by Config.HAIR_CATEGORY_ITEMS (generated from RedFalcon's
+-- own Other/HairCategories.xlsx). categoryKey one of "Hairs"/"Beard"/"Mustache"/"Whiskers"/"Sets" --
+-- "Sets" looks up the SAME friendlyName in Beard+Mustache+Whiskers and applies all three (RedFalcon's
+-- own design: "Sets will apply all whisker, beard, and mustaches with the same friendly name").
+-- Facial hair (Beard/Mustache/Whiskers/Sets) is a real, confirmed male-only concept in this game
+-- (19q) -- silently no-ops on a female target rather than applying nothing useful (the C++ side
+-- already greys this section out for a female target -- this is defense in depth, not the primary
+-- gate). "Hairs" itself has NO such restriction -- RedFalcon confirmed live: "all hair works on
+-- women's heads, so if there isnt a woman mesh, just use the male" -- so path selection for Hairs
+-- always falls back through female->unisex->male regardless of target sex, never gated/refused.
+-- "Eyebrows" (2026-09-14 addition) is ALSO exempt from the male-only gate -- unlike Beard/Mustache/
+-- Whiskers, Eyebrows is a genuine sex-paired family (real Female art exists, see Config.
+-- HAIR_CATEGORY_ITEMS' own Eyebrows rows) -- same reasoning/exemption as Hairs, kept as its own
+-- named exception rather than folded into the "== Hairs" check so it stays legible.
+function Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say)
+    say = say or function(m) print("[LivingBase] [hair-cat] " .. tostring(m) .. "\n") end
+    if not categoryKey or categoryKey == "" or not friendlyName or friendlyName == "" then
+        say("usage: internal call requires categoryKey + friendlyName")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    -- "(Remove)" sentinel (2026-09-14, RedFalcon: "can we add remove to each of the hair and
+    -- facial hair slots" -- same reserved top-of-list entry the Clothes dropdowns already use).
+    -- Reuses the existing, already-proven Spawner.RemoveHairOnActor (SetVisibility(false) +
+    -- SetHiddenInGame + zero collision, re-dressable afterward) rather than a new mechanism.
+    -- categoryKey "Hairs" maps to RemoveHairOnActor's own slot name "Hair" (singular, matches its
+    -- "/Hair/" path-based classification) -- every other categoryKey (Beard/Mustache/Whiskers)
+    -- already matches facialSlotOf's own return strings exactly. Not offered for "Sets" (that row
+    -- is a multi-slot convenience applier, not a real slot of its own -- same reasoning it never
+    -- gets a Read Current line either).
+    if friendlyName == "(Remove)" then
+        local slotArg = (categoryKey == "Hairs") and "Hair" or categoryKey
+        return Spawner.RemoveHairOnActor(actor, slotArg, name)
+    end
+
+    local isFemale = false
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            isFemale = tonumber(comp:GetBodySex()) == 2
+        end
+    end)
+
+    local function applyOne(bodyPartKey)
+        local row = nil
+        for _, r in ipairs(Config.HAIR_CATEGORY_ITEMS) do
+            if r.bodyPart == bodyPartKey and r.friendlyName == friendlyName then row = r; break end
+        end
+        if not row then
+            say(string.format("no %s entry named '%s'", bodyPartKey, friendlyName))
+            return false
+        end
+        if bodyPartKey ~= "Hairs" and bodyPartKey ~= "Eyebrows" and isFemale then
+            say(string.format("%s has no facial hair -- skipping %s '%s'.", name, bodyPartKey, friendlyName))
+            return false
+        end
+        local path
+        if bodyPartKey == "Hairs" or bodyPartKey == "Eyebrows" then
+            path = isFemale and (row.femalePath or row.unisexPath or row.malePath)
+                             or (row.malePath or row.unisexPath or row.femalePath)
+        else
+            path = row.unisexPath or (isFemale and row.femalePath or row.malePath) or row.malePath or row.femalePath
+        end
+        if not path then
+            say(string.format("%s '%s' has no usable mesh path.", bodyPartKey, friendlyName))
+            return false
+        end
+        if not path:match("%.[%w_]+$") then
+            local last = path:match("([^/]+)$")
+            if last then path = path .. "." .. last end
+        end
+
+        local comp = findHairFamilyComponent(actor, bodyPartKey)
+
+        -- Hat-variant preservation (2026-09-12, RedFalcon: "its only looking at the no hat version
+        -- of the hair and not the other versions") -- Hairs ONLY (see HAIR_VARIANT_TOKENS' own
+        -- header comment for the pakcontents-confirmed, genuinely inconsistent Default/Suspend*/
+        -- Suspended*/bare mesh naming). Before resolving the catalog's own "_Default_" path, check
+        -- what headwear CATEGORY the EXISTING component is already wearing (Hat/Bandana/Headband,
+        -- prefix-spelling stripped) and, if it's not Default, try every real spelling of that SAME
+        -- category on the NEW style (the new style might use a different one of the 3 conventions
+        -- than the current one did) -- keeps a hat/bandana/headband correctly fitted across a style
+        -- change instead of always reverting to the no-hat geometry.
+        if bodyPartKey == "Hairs" and comp and comp:IsValid() then
+            local curMeshName = nil
+            pcall(function()
+                local sk = comp.SkeletalMesh
+                if not (sk and sk:IsValid()) and comp.GetSkeletalMeshAsset then sk = comp:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curMeshName = sk:GetFName():ToString() end
+            end)
+            local variant = detectHairVariant(curMeshName)
+            local category = hairVariantCategory(variant)
+            if category and category ~= "Default" then
+                local altPath = nil
+                for _, candidate in ipairs(hairVariantPathCandidates(path, category)) do
+                    local altMesh = resolveAsset(candidate)
+                    if altMesh and altMesh:IsValid() then altPath = candidate; break end
+                end
+                if altPath then
+                    say(string.format("%s: target currently wears %s -- applying '%s' as the %s variant (%s).", bodyPartKey, variant, friendlyName, category, altPath:match("([^/%.]+)%.[^%.]+$") or altPath))
+                    path = altPath
+                else
+                    say(string.format("%s: target wears %s but '%s' has no %s variant in any known spelling -- falling back to Default.", bodyPartKey, variant, friendlyName, category))
+                end
+            end
+        end
+
+        local mesh = resolveAsset(path)
+        if not (mesh and mesh:IsValid()) then
+            say(string.format("%s '%s': mesh did not resolve: %s", bodyPartKey, friendlyName, path))
+            return false
+        end
+        if comp and comp:IsValid() then
+            local okMesh = pcall(function() comp:SetSkeletalMeshAsset(mesh) end)
+            if not okMesh then pcall(function() comp:SetSkeletalMesh(mesh, false) end) end
+            say(string.format("%s '%s': swapped existing component, applied=%s", bodyPartKey, friendlyName, tostring(okMesh)))
+            -- Re-fit to whatever the target's Headgear slot currently wants (2026-09-14, RedFalcon:
+            -- "when i change the hairstyle the same check needs to be run" -- the same real
+            -- SlotsToSuspend-driven fit applyHeadgearHairFit already does for a headgear CHANGE).
+            -- Supersedes the old guess-from-current-mesh heuristic that used to live here -- this
+            -- reads the actual currently-worn headgear's own suspend data instead of guessing.
+            if okMesh and bodyPartKey == "Hairs" then
+                pcall(function() Spawner.SyncHairToCurrentHeadgear(actor, say) end)
+            end
+            return okMesh
+        end
+        local body = nil
+        pcall(function() body = actor.Mesh end)
+        if not (body and body:IsValid()) then
+            say(name .. " has no body Mesh component -- cannot add " .. bodyPartKey)
+            return false
+        end
+        local newComp, okMesh = addHairFamilyComponent(actor, body, mesh)
+        if newComp and okMesh and bodyPartKey == "Hairs" then
+            pcall(function() Spawner.SyncHairToCurrentHeadgear(actor, say) end)
+        end
+        say(string.format("%s '%s': added new component, meshApplied=%s", bodyPartKey, friendlyName, tostring(okMesh and newComp ~= nil)))
+        return newComp ~= nil and okMesh
+    end
+
+    local anyOk = false
+    if categoryKey == "Sets" then
+        for _, bp in ipairs({ "Beard", "Mustache", "Whiskers" }) do
+            if applyOne(bp) then anyOk = true end
+        end
+    else
+        anyOk = applyOne(categoryKey)
+    end
+    if anyOk then
+        pcall(function() Spawner.Toast(friendlyName .. " applied on " .. name, 2.5) end)
+    end
+    return anyOk
+end
+
+-- Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say) -- writes the 9-entry hair CPD
+-- palette (Config.CPD_HAIR_COLOR_NAMES) directly onto whichever component findHairFamilyComponent
+-- finds for this category -- bypasses Spawner.TestSetCPDPaletteColor's own BuildedCompositeMeshes-
+-- only lookup (which can never find a Barbie's AddComponentByClass-created facial-hair component),
+-- same reasoning as ApplyHairCategoryMesh above, reusing that SAME proven
+-- SetCustomPrimitiveDataVector4(3, {...}) write call. "Sets" applies to Beard+Mustache+Whiskers all
+-- three (RedFalcon: "Sets will apply the color to all 3 types"). colorSlots=1 for all 4 of these
+-- categories (Config.CPD_BODYPART_COLOR_INFO) -- Color1/2/3 all get the SAME value, matching the
+-- established "write the same value to all 3 slots to be safe" rule used elsewhere in this file.
+function Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say)
+    say = say or function(m) print("[LivingBase] [hair-cat-color] " .. tostring(m) .. "\n") end
+    local idx = tonumber(paletteIdx)
+    if idx == nil then
+        say("usage: internal call requires a numeric palette index")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local isFemale = false
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            isFemale = tonumber(comp:GetBodySex()) == 2
+        end
+    end)
+
+    local function applyOne(bodyPartKey)
+        if bodyPartKey ~= "Hairs" and bodyPartKey ~= "Eyebrows" and isFemale then
+            say(string.format("%s has no facial hair -- skipping %s color.", name, bodyPartKey))
+            return false
+        end
+        local comp = findHairFamilyComponent(actor, bodyPartKey)
+        if not (comp and comp:IsValid()) then
+            say(string.format("%s: no component found to color.", bodyPartKey))
+            return false
+        end
+        local vec4 = { X = idx, Y = idx, Z = idx, W = 0.0 }
+        local okSet, errSet = pcall(function() comp:SetCustomPrimitiveDataVector4(3, vec4) end)
+        say(string.format("%s: SetCustomPrimitiveDataVector4(3, {%d,%d,%d,0}) = %s%s", bodyPartKey, idx, idx, idx,
+            tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+        return okSet
+    end
+
+    local anyOk = false
+    if categoryKey == "Sets" then
+        for _, bp in ipairs({ "Beard", "Mustache", "Whiskers" }) do
+            if applyOne(bp) then anyOk = true end
+        end
+    else
+        anyOk = applyOne(categoryKey)
+    end
+    return anyOk
+end
+
+-- Spawner.TestReadHairColors(say) -- pure-read counterpart to ApplyHairCategoryColor above, for the
+-- Custom tab's "Read Current" button (2026-09-12). Reads whatever's already written at CPD float 3
+-- (same SetCustomPrimitiveDataVector4(3, {idx,idx,idx,0}) convention ApplyHairCategoryColor writes,
+-- and TestDumpAllCPD's own "[%d]=%s", i-1 convention confirms CPD index 3 sits at Lua array
+-- position 4) on whichever component findHairFamilyComponent finds for each of Hairs/Beard/
+-- Mustache/Whiskers/Eyebrows (Eyebrows added 2026-09-14). No "Sets" entry -- Sets isn't a real body
+-- part on its own, so there's nothing to read back for it; the C++ side leaves that swatch alone on
+-- a read. Returns a plain {bodyPartKey = idx, ...} table, only keys that resolved to a real index.
+--
+-- FALLBACK SOURCE (2026-09-12 fix, RedFalcon: "their regular hair and all the hair colors are not
+-- reading when i click on read current") -- same root cause TestReadCategoryColors' own header
+-- comment already documents for cloth: CPD is only ever POPULATED the moment OUR OWN Apply/
+-- ApplyHairCategoryColor writes to it -- a target that has never been recolored through this tab
+-- ("regular"/native hair) has a genuinely EMPTY CustomPrimitiveData.Data on its hair component, so
+-- the CPD-only read above correctly found nothing there (not a bug in the CPD read itself) --
+-- meaning the color was never actually reachable at all until this fix. The native default instead
+-- lives in the SAME SavedCustomizationData.SelectedColors struct TestReadCategoryColors already
+-- reads for cloth -- one {BodyPart, Value, bOverrideDefaultColor} entry per color slot, grouped by
+-- BodyPart, Color1 first. Read once here (on the actor's CompositeMeshComponent, NOT the per-piece
+-- component findHairFamilyComponent returns) and used as the fallback for any of the 4 categories
+-- whose own per-piece CPD comes back empty -- CPD stays authoritative when present, exactly
+-- mirroring the cloth reader's own priority order.
+function Spawner.TestReadHairColors(say)
+    say = say or function(m) print("[LivingBase] [read-haircolor] " .. tostring(m) .. "\n") end
+    local results = {}
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return results
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return results end
+
+    -- BodyPart ordinal per category, matching Config.CPD_BODYPART_COLOR_INFO exactly. Eyebrows=1
+    -- added 2026-09-14 alongside the new Eyebrows dropdown/swatch.
+    local BODYPART_ORDINAL = { Hairs = 3, Beard = 2, Mustache = 17, Whiskers = 18, Eyebrows = 1 }
+
+    local savedColorsByBodyPart = {}
+    do
+        local compositeComp = nil
+        pcall(function() compositeComp = actor.CompositeMeshComponent end)
+        local struct = nil
+        if compositeComp and compositeComp:IsValid() then pcall(function() struct = compositeComp.SavedCustomizationData end) end
+        local arr = nil
+        if struct then pcall(function() arr = struct.SelectedColors end) end
+        if arr then
+            local an = 0
+            pcall(function() an = arr:GetArrayNum() end)
+            if an == 0 then pcall(function() an = #arr end) end
+            for i = 1, an do
+                local el = nil
+                pcall(function() el = arr[i] end)
+                if el == nil then pcall(function() el = arr:Get(i) end) end
+                pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+                if el then
+                    local bp, val = nil, nil
+                    pcall(function() bp = tonumber(el.BodyPart) end)
+                    pcall(function() val = tonumber(el.Value) end)
+                    if bp and val then
+                        savedColorsByBodyPart[bp] = savedColorsByBodyPart[bp] or {}
+                        local slots = savedColorsByBodyPart[bp]
+                        slots[#slots + 1] = val
+                    end
+                end
+            end
+            say(string.format("SavedCustomizationData.SelectedColors: %d entries (fallback source for hair colors CPD has nothing for)", an))
+        else
+            say("SavedCustomizationData.SelectedColors not readable -- no fallback available if CPD is empty.")
+        end
+    end
+
+    for _, bodyPartKey in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
+        local comp = findHairFamilyComponent(actor, bodyPartKey)
+        local idx = nil
+        if comp and comp:IsValid() then
+            local okRead, dataArr = pcall(function() return comp.CustomPrimitiveData.Data end)
+            local n = 0
+            if okRead and dataArr then
+                pcall(function() n = dataArr:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #dataArr end) end
+            end
+            if n >= 4 then
+                local v = nil
+                pcall(function() v = dataArr[4] end)
+                if v == nil then pcall(function() v = dataArr:Get(4) end) end
+                local raw = tonumber(v)
+                if raw then
+                    idx = math.floor(raw + 0.5)
+                    if idx < 0 then idx = nil end
+                end
+                if idx then say(string.format("%s: CPD3=%s -> idx=%d", bodyPartKey, tostring(v), idx)) end
+            end
+        else
+            say(string.format("%s: no component found.", bodyPartKey))
+        end
+        if not idx then
+            local ordinal = BODYPART_ORDINAL[bodyPartKey]
+            local slots = ordinal and savedColorsByBodyPart[ordinal]
+            if slots and slots[1] then
+                idx = math.floor(slots[1] + 0.5)
+                say(string.format("%s: CPD empty -- using SavedCustomizationData fallback, Color1=%s -> idx=%d", bodyPartKey, tostring(slots[1]), idx))
+            end
+        end
+        -- Third-tier fallback, everything but Hairs itself (2026-09-12, RedFalcon: "its not
+        -- bringing in the mustache beard or whisker colors" -- even after the SavedCustomizationData
+        -- fallback above, Beard/Mustache/Whiskers apparently don't carry their OWN independent
+        -- entries in that struct on most NPCs, unlike Hair/cloth which reliably do; the game most
+        -- likely just ties facial-hair color to head-hair color by default rather than storing it
+        -- separately per piece). Reuses whatever Hairs already resolved to, IF it did -- "Hairs" is
+        -- always processed first (it's first in the ipairs list above), so results.Hairs is already
+        -- populated by the time Beard/Mustache/Whiskers/Eyebrows reach this point. Eyebrows (added
+        -- 2026-09-14) gets the SAME default -- a real independent CPD or SavedCustomizationData
+        -- value for any of these still wins over this guess whenever one actually exists (checked
+        -- above, in order, before this).
+        if not idx and bodyPartKey ~= "Hairs" and results.Hairs then
+            idx = results.Hairs
+            say(string.format("%s: no independent color found -- defaulting to Hairs' own color (idx=%d).", bodyPartKey, idx))
+        end
+        if idx and idx >= 0 then results[bodyPartKey] = idx end
+    end
+    return results
+end
+
+-- Spawner.TestReadHairStyles(say) -- pure-read counterpart to ApplyHairCategoryMesh above, for the
+-- Custom tab's "Read Current" button (2026-09-12, RedFalcon: "i want read current to check all
+-- items including hair styles and colors" -- widened after an earlier round deliberately left
+-- style/mesh selection out). Reads whichever mesh findHairFamilyComponent finds equipped for each
+-- of Hairs/Beard/Mustache/Whiskers/Eyebrows (Eyebrows added 2026-09-14), then reverse-looks-up
+-- which Config.HAIR_CATEGORY_ITEMS row's
+-- malePath/femalePath/unisexPath ends in that SAME asset name (every path here is already
+-- "<pkg>.<AssetName>", so the AssetName IS the trailing segment after the last '.') -- returns that
+-- row's own friendlyName, matching exactly what the dropdown itself would show. No "Sets" entry --
+-- same reasoning as TestReadHairColors, Sets isn't a real body part to read a mesh off of.
+function Spawner.TestReadHairStyles(say)
+    say = say or function(m) print("[LivingBase] [read-hairstyle] " .. tostring(m) .. "\n") end
+    local results = {}
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return results
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return results end
+
+    local function assetNameOf(path)
+        if not path then return nil end
+        return path:match("%.([^%.]+)$") or path:match("([^/]+)$")
+    end
+
+    for _, bodyPartKey in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
+        local comp = findHairFamilyComponent(actor, bodyPartKey)
+        local curName = nil
+        local visible = true
+        if comp and comp:IsValid() then
+            pcall(function() visible = comp:IsVisible() end)
+            pcall(function()
+                local sk = comp.SkeletalMesh
+                if not (sk and sk:IsValid()) and comp.GetSkeletalMeshAsset then sk = comp:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+        end
+        -- Hidden (2026-09-14, the new "(Remove)" hair option -- Spawner.RemoveHairOnActor hides
+        -- rather than destroys the component, same "hide, not clear the mesh, re-dressable
+        -- afterward" discipline as Clothes removal) reads as "not there", same rule
+        -- Spawner.TestReadClothesStyles already applies -- otherwise Read Current would show a
+        -- removed style as if it were still worn.
+        if not curName or not visible then
+            say(string.format("%s: no component/mesh found or currently hidden.", bodyPartKey))
+        else
+            local matched = nil
+            for _, row in ipairs(Config.HAIR_CATEGORY_ITEMS) do
+                if row.bodyPart == bodyPartKey then
+                    -- Built as an explicit non-nil list rather than ipairs({row.malePath,
+                    -- row.femalePath, row.unisexPath}) directly -- ipairs stops at the FIRST nil
+                    -- slot it hits, so a row with malePath set but femalePath=nil would silently
+                    -- never check unisexPath at all (a real Lua table-literal-with-holes gotcha,
+                    -- not a hypothetical one -- caught while chasing "regular hair styles aren't
+                    -- reading" 2026-09-12).
+                    local candidates = {}
+                    if row.malePath then candidates[#candidates + 1] = row.malePath end
+                    if row.femalePath then candidates[#candidates + 1] = row.femalePath end
+                    if row.unisexPath then candidates[#candidates + 1] = row.unisexPath end
+                    -- Normalized comparison (2026-09-12) -- the catalog only ever stores the
+                    -- "_Default_" path, but the currently-equipped mesh could be any of the 4 real
+                    -- Default/SuspendHat/SuspendBandana/SuspendHeadband variants (Hairs only -- see
+                    -- normalizeHairMeshName's own header comment). Collapsing both sides to the
+                    -- same placeholder before comparing matches regardless of which variant is
+                    -- currently worn; a no-op for Beard/Mustache/Whiskers, which have no variants.
+                    local curNorm = normalizeHairMeshName(curName):lower()
+                    for _, p in ipairs(candidates) do
+                        local an = assetNameOf(p)
+                        if an and normalizeHairMeshName(an):lower() == curNorm then
+                            matched = row.friendlyName
+                            break
+                        end
+                    end
+                end
+                if matched then break end
+            end
+            if matched then
+                results[bodyPartKey] = matched
+                say(string.format("%s: mesh=%s -> %s", bodyPartKey, curName, matched))
+            else
+                say(string.format("%s: mesh=%s -- no matching catalog entry (custom/unknown mesh).", bodyPartKey, curName))
+            end
+        end
+    end
+    return results
+end
+
+-- applyHeadgearHairFit(actor, sourceAssetPath, say) -- (2026-09-14, RedFalcon: first "we need to
+-- ensure that hair and headgear interaction is right because i removed the hat and she kept her
+-- hat hair", then "assigning headgear also needs to behave correctly with the hair" -- the same gap
+-- in the OTHER direction). Real root cause both times: Spawner.ApplyHairCategoryMesh's own
+-- hat-variant-preservation logic (see HAIR_VARIANT_TOKENS' header) only ever runs when APPLYING a
+-- hairstyle CHOICE, and even then it deliberately PRESERVES whatever variant the hair already has --
+-- it was never meant to REACT to a headgear change at all. The new Clothes dropdown's Headgear
+-- apply/remove never goes through ApplyHairCategoryMesh (it's a raw Spawner.SetBodyPartMesh swap or
+-- a plain hide), so nothing ever told the hair to switch variants either way.
+--
+-- `sourceAssetPath` is the NEW headgear's own backing DA_Armor_..._CompositeMeshData path (nil for
+-- a Headgear REMOVAL) -- reads its real SlotsToSuspend property for the Hairs slot (ordinal 3, see
+-- HEADGEAR_BODYPART_TYPE_NAMES/HEADGEAR_SUSPEND_TYPE_NAMES far above in this file -- the SAME
+-- decode `lbdumpsuspend`/DumpHeadgearSuspend already use) rather than guessing a Hat/Bandana/
+-- Headband category from the mesh filename -- this is the authoritative, per-piece answer the game
+-- itself uses. SuspendHat/SuspendBandana/SuspendHeadband -> fit the CURRENT hairstyle to that
+-- category's own variant mesh (reverse-looked-up against Config.HAIR_CATEGORY_ITEMS, same
+-- normalized-name matching Spawner.TestReadHairStyles uses, so it works regardless of which of the
+-- 3 real spelling conventions the hairstyle happens to use). Full/Medium/Light (a fuller
+-- helmet-style piece) -> hide the Hairs component outright, matching the native pipeline's own
+-- "no Hairs entry at all" behavior for these (see hasHeadgearEquipped's own header). None/no
+-- SlotsToSuspend entry/nil sourceAssetPath (Headgear removed, or a piece that doesn't touch hair at
+-- all) -> make sure Hairs is VISIBLE (undoing a PREVIOUS Full/Medium/Light hide) and reverted to its
+-- own Default (no-hat) variant. No-op if the hair is already in the right state, or if the current
+-- mesh doesn't match anything in the catalog (a custom/unknown mesh is left alone rather than
+-- guessed at).
+local function applyHeadgearHairFit(actor, sourceAssetPath, say)
+    say = say or function(m) print("[LivingBase] [headgear-hairfit] " .. tostring(m) .. "\n") end
+    local suspendType = "None"
+    if sourceAssetPath then
+        local asset = resolveAsset(sourceAssetPath)
+        if not asset then
+            say("headgear-hairfit: could not resolve source asset: " .. tostring(sourceAssetPath))
+        else
+            local hasMap = false
+            pcall(function()
+                local m = asset.SlotsToSuspend
+                if m then
+                    hasMap = true
+                    m:ForEach(function(k, v)
+                        local ki = headgearEnumInt(k)
+                        if ki == 3 then -- Hairs ordinal
+                            local vi = headgearEnumInt(v)
+                            suspendType = (vi and HEADGEAR_SUSPEND_TYPE_NAMES[vi]) or "None"
+                        end
+                    end)
+                end
+            end)
+            say(string.format("headgear-hairfit: source=%s hasSlotsToSuspend=%s suspendType(Hairs)=%s",
+                sourceAssetPath, tostring(hasMap), suspendType))
+        end
+    else
+        say("headgear-hairfit: no source asset (Headgear removed) -- treating as suspendType=None.")
+    end
+
+    local hairComp = findHairFamilyComponent(actor, "Hairs")
+    if not (hairComp and hairComp:IsValid()) then
+        say("headgear-hairfit: no Hairs component found on actor -- nothing to fit.")
+        return false
+    end
+
+    if suspendType == "Full" or suspendType == "Medium" or suspendType == "Light" then
+        pcall(function() hairComp:SetVisibility(false, false) end)
+        say(string.format("Hairs: hidden (new headgear suspends hair: %s).", suspendType))
+        return true
+    end
+    pcall(function() hairComp:SetVisibility(true, false) end)
+
+    local category = nil
+    if suspendType == "SuspendHat" then category = "Hat"
+    elseif suspendType == "SuspendBandana" then category = "Bandana"
+    elseif suspendType == "SuspendHeadband" then category = "Headband"
+    end
+
+    local curName = nil
+    pcall(function()
+        local sk = hairComp.SkeletalMesh
+        if not (sk and sk:IsValid()) and hairComp.GetSkeletalMeshAsset then sk = hairComp:GetSkeletalMeshAsset() end
+        if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+    end)
+    if not curName then
+        say("headgear-hairfit: could not read the Hairs component's current mesh name.")
+        return false
+    end
+    local curVariant = detectHairVariant(curName)
+    say(string.format("headgear-hairfit: current hair mesh=%s (detected variant=%s), wanted category=%s",
+        curName, tostring(curVariant), tostring(category)))
+    if not category and (not curVariant or curVariant == "Default") then
+        say("headgear-hairfit: already Default and no category wanted -- nothing to do.")
+        return false -- already Default and no category wanted -- nothing to do
+    end
+
+    local isFemale = false
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then isFemale = tonumber(comp:GetBodySex()) == 2 end
+    end)
+    local curNorm = normalizeHairMeshName(curName):lower()
+    local matchedRow = false
+    for _, row in ipairs(Config.HAIR_CATEGORY_ITEMS) do
+        if row.bodyPart == "Hairs" then
+            local candidates = {}
+            if row.malePath then candidates[#candidates + 1] = row.malePath end
+            if row.femalePath then candidates[#candidates + 1] = row.femalePath end
+            if row.unisexPath then candidates[#candidates + 1] = row.unisexPath end
+            for _, p in ipairs(candidates) do
+                local an = p:match("%.([^%.]+)$") or p:match("([^/]+)$")
+                if an and normalizeHairMeshName(an):lower() == curNorm then
+                    matchedRow = true
+                    local defaultPath = isFemale and (row.femalePath or row.unisexPath or row.malePath)
+                                                   or (row.malePath or row.unisexPath or row.femalePath)
+                    local targetPath = defaultPath
+                    if category then
+                        local tried = {}
+                        for _, cand in ipairs(hairVariantPathCandidates(defaultPath, category)) do
+                            tried[#tried + 1] = cand
+                            local m = resolveAsset(cand)
+                            if m and m:IsValid() then targetPath = cand; break end
+                        end
+                        if targetPath == defaultPath then
+                            say(string.format("headgear-hairfit: '%s' has no %s variant asset (tried %d candidate path(s)) -- falling back to Default.",
+                                row.friendlyName, category, #tried))
+                        end
+                    end
+                    local mesh = resolveAsset(targetPath)
+                    if mesh and mesh:IsValid() then
+                        local ok = pcall(function() hairComp:SetSkeletalMeshAsset(mesh) end)
+                        if not ok then pcall(function() hairComp:SetSkeletalMesh(mesh, false) end) end
+                        say(string.format("Hairs: '%s' fitted to %s (%s).", row.friendlyName, category or "Default", targetPath))
+                        return true
+                    else
+                        say("headgear-hairfit: target path did not resolve: " .. tostring(targetPath))
+                    end
+                end
+            end
+        end
+    end
+    if not matchedRow then
+        say("headgear-hairfit: current hair mesh doesn't match any Config.HAIR_CATEGORY_ITEMS row (custom/unknown mesh) -- left alone.")
+    end
+    return false
 end
 
 -- Spawner.TestApplyFacialPiece(family, slot, pieceName, sexOverride) -- "Custom > Face"
@@ -15312,6 +18627,13 @@ function Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)
     end
     if not (target and target:IsValid()) then
         say(string.format("no BuildedCompositeMeshes entry found for BodyPart=%s", tostring(bodyPart)))
+        -- User-visible notification (2026-09-14, RedFalcon: "I'd also like it to notify if you try
+        -- to swap anything in a slot that is empty and cant be swapped") -- SetBodyPartMesh can only
+        -- ever SWAP an EXISTING BuildedCompositeMeshes entry (no such thing as "create a new slot"
+        -- in this game's own content, see Spawner.RemoveClothesItem's own header) -- this is that
+        -- exact "genuinely empty, nothing to swap" case. Every caller of this function (Clothes
+        -- items, lbtestpiece, etc.) gets this toast for free rather than each needing its own check.
+        pcall(function() Spawner.Toast("Nothing to swap there -- that slot is empty on this body.", 2.5) end)
         return false
     end
     local mesh = resolveAsset(meshPath)
@@ -15331,6 +18653,25 @@ function Spawner.SetBodyPartMesh(actor, bodyPart, meshPath, say)
         end)
     end
     pcall(function() target:SetVisibility(true, false) end)
+    -- Match Spawner.TestApplyClothingPiece's OWN proven post-swap cleanup exactly (2026-09-14,
+    -- RedFalcon: "lbtestbeltroll doesnt seem to have this problem" -- lbtestbeltroll/lbtestclothes go
+    -- through TestApplyClothingPiece, not this function, and DON'T show the "invisible until I look
+    -- away and back" bug lbtestpiece hits on Belt/Sling/Strap. Two earlier theories here (a stale
+    -- leader-pose no-op, then a VisibilityBasedAnimTickOption culling trap) were both tried and
+    -- RedFalcon confirmed neither fixed it -- diffing against TestApplyClothingPiece's own working
+    -- code found the REAL difference: it explicitly resets RelativeScale3D/RelativeLocation to
+    -- identity and re-asserts SetHiddenInGame/collision on every swap (originally added for an
+    -- unrelated Torso-drift bug, see that function's own comment), while this function only ever
+    -- touched SetVisibility. If Belt/Sling/Strap start from a stale non-identity transform (from
+    -- however they were built onto this body originally), the mesh can be sitting off to the side or
+    -- scaled away -- invisible until a camera change happens to bring it into view, not a real fix.
+    if ok then
+        pcall(function() target:SetHiddenInGame(false, false) end)
+        pcall(function() target:SetCollisionResponseToAllChannels(2) end)
+        pcall(function() target:SetRelativeScale3D({ X = 1.0, Y = 1.0, Z = 1.0 }) end)
+        pcall(function() target:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = 0.0 }, false, {}, false) end)
+    end
+    pcall(function() target:MarkRenderStateDirty() end)
     say(string.format("BodyPart=%s mesh swap %s (%s)", tostring(bodyPart), ok and "OK" or "FAILED", meshPath))
     return ok
 end
@@ -15342,6 +18683,1079 @@ local BODY_PART_ENUM_BY_NAME = {
     Sash = 8, Belt = 9, Sling = 10, Strap = 11, Frog = 12, Legs = 13, Feets = 14, Waist = 15,
     Hands = 16, Mustache = 17, Whiskers = 18,
 }
+
+-- Spawner.TestDumpCompositeAsset(assetPath, say) -- "lbdumpbodypart <DataAsset path>" (2026-09-14,
+-- RedFalcon: "the senkamati witch has a 'neck' item, and i am unsure what slot or socket it is
+-- assigned to... i did a probe and see nothing"). A CompositeMeshData DataAsset (e.g.
+-- DA_Armor_Regular_Senkamati_Shaman_Feather_Neck_01_CompositeMeshData) carries its own real
+-- `MeshBodyPart` value as static data -- no live actor needs to be wearing the piece to read it,
+-- unlike lbprobedump which only ever shows BuildedCompositeMeshes for an actor that's ALREADY built
+-- with this piece equipped (explaining "i did a probe and see nothing" -- nothing native is wearing
+-- it right now). config.lua's own `slot="Neck"` label on this row is a descriptive category from the
+-- source spreadsheet, NOT confirmed to be one of the real 18 BODY_PART_ENUM_BY_NAME values above
+-- (no "Neck" entry at all, same class of mismatch already found for "TorsoCloth") -- this reads the
+-- actual numeric MeshBodyPart directly off the asset instead of trusting that label. Tries both
+-- shapes seen in this codebase: a top-level `MeshBodyPart` property, and a nested
+-- `Params.MeshBodyPart` (the shape lbprobedump's own BuildedCompositeMeshes walk shows for a piece
+-- ALREADY built onto an actor) -- whichever resolves is reported.
+function Spawner.TestDumpCompositeAsset(assetPath, say)
+    say = say or function(m) print("[LivingBase] [dump-bodypart] " .. tostring(m) .. "\n") end
+    if not (assetPath and assetPath ~= "") then
+        say("usage: lbdumpbodypart <DataAsset /Game/... path> -- reads MeshBodyPart directly off a CompositeMeshData asset, no live actor needed.")
+        return false
+    end
+    if not assetPath:match("%.[%w_]+$") then
+        local last = assetPath:match("([^/]+)$")
+        if last then assetPath = assetPath .. "." .. last end
+    end
+    local asset = resolveAsset(assetPath)
+    if not (asset and asset:IsValid()) then
+        say("asset did not resolve: " .. assetPath)
+        return false
+    end
+
+    -- REAL SHAPE FOUND (2026-09-14, same day, via the generic-dump fallback below): this
+    -- R5CompositeMeshParams asset has no top-level MeshBodyPart/Params at all -- an earlier attempt
+    -- reading those names got back "UObject: 0x..." for both, a non-nil placeholder UE4SS's Lua
+    -- __index apparently returns even for a nonexistent property name, not the real data. The actual
+    -- field is `CompositeMeshesData`, a TArray of R5CompositeMeshData structs -- iterate it and read
+    -- each entry's own `.MeshBodyPart` (same field name/shape lbprobedump's live-actor
+    -- BuildedCompositeMeshes walk already showed, just under `Params.` there instead -- this
+    -- DataAsset's own array elements ARE the Params struct directly, no extra `.Params` layer).
+    local dataArr = nil
+    pcall(function() dataArr = asset.CompositeMeshesData end)
+    if not dataArr then
+        say("CompositeMeshesData not readable -- dumping the full property list instead:")
+        pcall(function() dumpObjectProperties(asset, "COMPOSITEASSET") end)
+        return true
+    end
+
+    local function nameFor(idx)
+        if idx == nil then return nil end
+        for nm, num in pairs(BODY_PART_ENUM_BY_NAME) do
+            if num == idx then return nm end
+        end
+        return "?unknown?"
+    end
+
+    local n = 0
+    pcall(function() n = dataArr:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #dataArr end) end
+    if n == 0 then
+        say("CompositeMeshesData is empty on this asset.")
+        return true
+    end
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = dataArr[i] end)
+        if el == nil then pcall(function() el = dataArr:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bpRaw = nil
+            pcall(function() bpRaw = el.MeshBodyPart end)
+            local bp = tonumber(bpRaw)
+            if bp then
+                say(string.format("CompositeMeshesData[%d].MeshBodyPart = %d -> %s", i, bp, tostring(nameFor(bp))))
+            else
+                say(string.format("CompositeMeshesData[%d].MeshBodyPart not a real number (raw=%s)", i, tostring(bpRaw)))
+            end
+        else
+            say(string.format("CompositeMeshesData[%d] not readable.", i))
+        end
+    end
+    return true
+end
+
+-- Wrapped in a bare do...end block (2026-09-15) SOLELY to keep this section's 3 module-scope locals
+-- (findBeltStrapComponent/WEAPON_GROUP_SOCKETS/WEAPON_GROUP_LOCATION) from permanently occupying
+-- chunk-level local slots for the rest of the file -- this file's main chunk was already right at
+-- Lua's hard 200-local ceiling ("too many local variables (limit is 200) in main function"), so any
+-- new top-level `local` added after this point without scoping would break the whole file from
+-- loading. The functions defined inside (Spawner.ApplyBeltStrapPiece etc.) are plain table-field
+-- assignments, not locals, and keep working as closures/upvalues over these 3 after the block below
+-- exits -- only the LEXICAL visibility of the 3 names themselves ends at the closing `end`, freeing
+-- their slots for reuse by whatever locals come later in the file.
+do
+-- findBeltStrapComponent(actor, bodyPart) -- shared read-only walk over BuildedCompositeMeshes for
+-- one BodyPart enum value (2026-09-15, new "Belts and Straps" Custom-tab section), factored out of
+-- Spawner.SetBodyPartMesh's own inline walk so the new Belt/Sling/Strap/Frog apply/remove functions
+-- and the "is the Senkamati necklace currently in the Sling slot" check below can find/read the
+-- live EquippedMesh component without re-deriving this TArray walk a third time.
+local function findBeltStrapComponent(actor, bodyPart)
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then return nil end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then return nil end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    local wantBodyPart = tonumber(bodyPart)
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                local target = nil
+                pcall(function() target = el.EquippedMesh end)
+                if target and target:IsValid() then return target end
+            end
+        end
+    end
+    return nil
+end
+
+-- clearAccessoriesForRemovedPiece(pieceType, say) -- (2026-09-15, RedFalcon: "if a belt or strap is
+-- removed, any associated accessories should also be removed") -- called from
+-- Spawner.ApplyBeltStrapPiece's own "None" branch right after a successful hide. Clears every real
+-- soc_* accessory socket that physically belongs to this piece (Config.SOCKETITEMS_SOCKETS' own
+-- `beltpiece` tag), plus the ONE weapon-location dependency the Accessories GUI's own gating already
+-- encodes: Belt->the 2 Pistol holster sockets, Frog->the 2 Sheath sockets (a "sword frog" is the
+-- leather loop a sheathed blade actually hangs from). Sling/Strap have no such weapon dependency, and
+-- Back Weapon is deliberately independent of everything (RedFalcon: "back is fine no matter what"),
+-- so neither is touched here regardless of what Config.SOCKETITEMS_SOCKETS' own `beltpiece` tag on
+-- the *_backsocket rows says.
+local function clearAccessoriesForRemovedPiece(pieceType, say)
+    local lowerType = pieceType:lower()
+    for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
+        if s.socType == "soc" then
+            for _, bp in ipairs(s.beltpiece or {}) do
+                if bp == lowerType then
+                    Spawner.RemoveSocketAttachment(s.socket, say)
+                    break
+                end
+            end
+        end
+    end
+    if pieceType == "Belt" then
+        Spawner.RemoveSocketAttachment("beltSlot_01_lSocket", say)
+        Spawner.RemoveSocketAttachment("beltSlot_01_rSocket", say)
+    elseif pieceType == "Frog" then
+        Spawner.RemoveSocketAttachment("swordSlot_lSocket", say)
+        Spawner.RemoveSocketAttachment("rapierSlot_lSocket", say)
+    end
+end
+
+-- Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say) -- Custom tab "Belts and Straps"
+-- section (2026-09-15). pieceType is one of Belt/Sling/Strap/Frog (matches BODY_PART_ENUM_BY_NAME
+-- exactly). friendlyName == "None" hides that slot's own component instead of swapping a mesh
+-- (SetBodyPartMesh can only ever SWAP an EXISTING entry, never remove one -- same reasoning as
+-- Spawner.RemoveClothesItem). Otherwise looks up the real mesh in the spreadsheet-generated
+-- Config.BELTSTRAPS_PIECES by (type, friendlyName) and picks maleMesh/femaleMesh by the target's own
+-- GetBodySex(), same convention Spawner.ApplyClothesItem already uses -- EXCEPT the "Shaman
+-- Necklace" row (Sling only), which has no maleMesh at all (RedFalcon: "the senkamati neck item can
+-- be applied to either sex, even though it is female only mesh") -- the fallback chain below just
+-- uses whichever of the two mesh fields actually exists when only one does, so that row needs no
+-- special-case code of its own.
+-- RedFalcon (2026-09-15): Belt/Sling/Strap/Frog are fully INDEPENDENT here -- no "Sling/Strap
+-- require Belt" cross-forcing like the older lbtestbeltroll rule; each is a plain one-slot replace.
+function Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say)
+    say = say or function(m) print("[LivingBase] [beltstraps] " .. tostring(m) .. "\n") end
+    local bodyPart = BODY_PART_ENUM_BY_NAME[pieceType]
+    if not bodyPart then
+        say("no such belt/strap slot: " .. tostring(pieceType))
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    if friendlyName == "None" then
+        local target = findBeltStrapComponent(actor, bodyPart)
+        if not target then
+            say(string.format("%s: nothing currently equipped there.", pieceType))
+            return false
+        end
+        local ok = pcall(function() target:SetVisibility(false, false) end)
+        say(string.format("%s: removed (hidden) -- %s", pieceType, tostring(ok)))
+        if ok then
+            clearAccessoriesForRemovedPiece(pieceType, function() end)
+        end
+        return ok
+    end
+
+    local row = nil
+    for _, r in ipairs(Config.BELTSTRAPS_PIECES or {}) do
+        if r.type == pieceType and r.friendlyName == friendlyName then row = r; break end
+    end
+    if not row then
+        say(string.format("no %s entry named '%s'", pieceType, tostring(friendlyName)))
+        return false
+    end
+
+    local isFemale = false
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then isFemale = tonumber(comp:GetBodySex()) == 2 end
+    end)
+
+    local path = row.maleMesh and row.femaleMesh
+        and (isFemale and row.femaleMesh or row.maleMesh)
+        or (row.femaleMesh or row.maleMesh)
+    if not path then
+        say(string.format("%s '%s' has no usable mesh path.", pieceType, friendlyName))
+        return false
+    end
+
+    local ok = Spawner.SetBodyPartMesh(actor, bodyPart, path, say)
+    if ok then
+        say(string.format("%s: %s now wearing '%s'.", pieceType, name, friendlyName))
+    end
+    return ok
+end
+
+-- Spawner.ApplyBeltStrapSet(setFriendlyName, say) -- the "Set" dropdown, applies Belt N + Sling N +
+-- Strap N together (2026-09-15). Frog is NOT part of a Set -- neither the "Belts and Straps" sheet
+-- nor RedFalcon's own mockup ties Frog to the Set concept, it stays an independent dropdown.
+-- "None" clears all three; a real "Set N" pulls N out of the name and reuses
+-- Spawner.ApplyBeltStrapPiece 3 times against "Belt N"/"Sling N"/"Strap N" -- the exact naming
+-- convention Config.BELTSTRAPS_PIECES' own rows already use, so no extra lookup table is needed.
+function Spawner.ApplyBeltStrapSet(setFriendlyName, say)
+    say = say or function(m) print("[LivingBase] [beltstraps-set] " .. tostring(m) .. "\n") end
+    if setFriendlyName == "None" then
+        local okB = Spawner.ApplyBeltStrapPiece("Belt", "None", say)
+        local okS = Spawner.ApplyBeltStrapPiece("Sling", "None", say)
+        local okT = Spawner.ApplyBeltStrapPiece("Strap", "None", say)
+        return okB or okS or okT
+    end
+    local n = setFriendlyName:match("^Set%s+(%d+)$")
+    if not n then
+        say("malformed set name: " .. tostring(setFriendlyName))
+        return false
+    end
+    local okB = Spawner.ApplyBeltStrapPiece("Belt", "Belt " .. n, say)
+    local okS = Spawner.ApplyBeltStrapPiece("Sling", "Sling " .. n, say)
+    local okT = Spawner.ApplyBeltStrapPiece("Strap", "Strap " .. n, say)
+    say(string.format("Set %s applied: belt=%s sling=%s strap=%s", n, tostring(okB), tostring(okS), tostring(okT)))
+    return okB or okS or okT
+end
+
+-- Spawner.ToggleBeltLantern(on, say) -- Custom tab Lantern toggle (2026-09-15). Thin wrapper over
+-- the existing TestAttachLanternSet/TestClearLanternSet -- useSelf=false always, so it targets the
+-- nearest/locked actor like every other Custom-tab operation, never the player's own pawn.
+function Spawner.ToggleBeltLantern(on, say)
+    say = say or function(m) print("[LivingBase] [beltstraps-lantern] " .. tostring(m) .. "\n") end
+    if on then
+        return Spawner.TestAttachLanternSet(say, false)
+    end
+    return Spawner.TestClearLanternSet(say)
+end
+
+-- Spawner.RemoveSocketAttachment(socketName, say) -- destroys whatever component (skeletal or
+-- static mesh) is CURRENTLY attached at exactly this one socket on the nearest/locked actor, if
+-- anything (2026-09-15, per-socket "None" entries in the new Accessories windowshade). Narrower than
+-- Spawner.RemoveAllSocketAttachments (which sweeps EVERY soc_/weapon socket at once, fragment-
+-- matched) -- this only ever touches the one exact socket name given, so picking "None" on one
+-- dropdown row never disturbs any other socket's own item.
+function Spawner.RemoveSocketAttachment(socketName, say)
+    say = say or function(m) print("[LivingBase] [remove-socket] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local removed = 0
+    local function sweep(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock == socketName then
+                    pcall(function() c:K2_DestroyComponent(actor) end)
+                    removed = removed + 1
+                end
+            end
+        end
+    end
+    sweep("/Script/Engine.SkeletalMeshComponent")
+    sweep("/Script/Engine.StaticMeshComponent")
+    say(string.format("socket %s: %d component(s) removed.", socketName, removed))
+    return removed > 0
+end
+
+-- Spawner.ClearSocketAccessories(say) -- "Randomize Accessories" row's own red X (2026-09-15). Same
+-- fragment-matched sweep as Spawner.RemoveAllSocketAttachments, EXCEPT it explicitly skips any
+-- socket whose name contains "soc_lantern" (soc_Lantern/soc_LanternLight) -- the deliberate lantern
+-- feature (its own separate Lantern toggle) must survive a "clear accessories" click; only the misc
+-- Items/Weapons socket layout should be wiped.
+function Spawner.ClearSocketAccessories(say)
+    say = say or function(m) print("[LivingBase] [clear-socket-accessories] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local removed = 0
+    local function sweep(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock ~= "" then
+                    local sockLower = sock:lower()
+                    if not sockLower:find("soc_lantern", 1, true) then
+                        local matched = false
+                        for _, frag in ipairs({ "_backsocket", "soc_", "swordslot", "rapierslot", "beltslot" }) do
+                            if sockLower:find(frag, 1, true) then matched = true; break end
+                        end
+                        if matched then
+                            pcall(function() c:K2_DestroyComponent(actor) end)
+                            removed = removed + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    sweep("/Script/Engine.SkeletalMeshComponent")
+    sweep("/Script/Engine.StaticMeshComponent")
+    say(string.format("removed %d accessory socket attachment(s).", removed))
+    return true
+end
+
+-- Spawner.RandomizeSocketAccessories(say) -- "Randomize Accessories" button, Belts and Straps
+-- section (2026-09-15). Thin wrapper over the existing Spawner.TestGenerateSocketItems -- the SAME
+-- full random Items+Weapons layout, just renamed/exposed for the new GUI row (RedFalcon: "adds
+-- accessories with the randomness we decided on before (not belts or straps, just the socket
+-- items)" -- i.e. this never touches the Belt/Sling/Strap/Frog MESH dropdowns above it, only the
+-- soc_*/weapon accessory sockets, exactly what TestGenerateSocketItems already did).
+-- Senkamati necklace exception (RedFalcon: "If that is in place, sockets related to that slot should
+-- not be added"): the 8 soc_Sling* sockets are physically part of the SLING MESH -- if the Sling
+-- body-part slot is currently running the Senkamati necklace mesh instead of a real sling model,
+-- those sockets have nothing to visually sit on, so this excludes them from the roll for just this
+-- one call (via TestGenerateSocketItems's own optional excludeSockets set, added alongside this).
+function Spawner.RandomizeSocketAccessories(say)
+    say = say or function(m) print("[LivingBase] [randomize-accessories] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+
+    local excludeSockets = nil
+    local slingComp = findBeltStrapComponent(actor, BODY_PART_ENUM_BY_NAME.Sling)
+    if slingComp then
+        local meshName = ""
+        pcall(function()
+            local sk = nil
+            pcall(function() sk = slingComp.SkeletalMesh end)
+            if not (sk and sk:IsValid()) and slingComp.GetSkeletalMeshAsset then pcall(function() sk = slingComp:GetSkeletalMeshAsset() end) end
+            if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+        end)
+        if meshName:find("Senkamati_Witch_Feather_01_Neck", 1, true) then
+            excludeSockets = {}
+            for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
+                if s.socket:match("^soc_Sling") then excludeSockets[s.socket] = true end
+            end
+            say("Senkamati necklace detected in Sling slot -- excluding soc_Sling* sockets from this roll.")
+        end
+    end
+
+    return Spawner.TestGenerateSocketItems(say, excludeSockets)
+end
+
+-- Spawner.ApplySocketItemManual(socketName, friendlyName, say) -- per-socket dropdown, Accessories
+-- windowshade (2026-09-15, RedFalcon: "For Belt, Sling, and strap ones i want all items in the Items
+-- tab available, ignoring the randomization limitations"). Looks up Config.SOCKETITEMS_ITEMS by
+-- friendlyName ONLY -- deliberately ignores that row's own `sockets` eligibility list (that
+-- restriction only matters for Spawner.TestGenerateSocketItems' own random roll, not a manual pick).
+-- "None" removes whatever is currently on that one socket via Spawner.RemoveSocketAttachment.
+function Spawner.ApplySocketItemManual(socketName, friendlyName, say)
+    say = say or function(m) print("[LivingBase] [socket-manual] " .. tostring(m) .. "\n") end
+    if friendlyName == "None" then
+        return Spawner.RemoveSocketAttachment(socketName, say)
+    end
+    local row = nil
+    for _, r in ipairs(Config.SOCKETITEMS_ITEMS or {}) do
+        if r.friendlyName == friendlyName then row = r; break end
+    end
+    if not row then
+        say("no item entry named '" .. tostring(friendlyName) .. "'")
+        return false
+    end
+    Spawner.RemoveSocketAttachment(socketName, function() end)
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say)
+    if not actor then return false end
+    local exists = false
+    pcall(function() exists = body:DoesSocketExist(FName(socketName)) end)
+    if not exists then
+        say(name .. " has no '" .. socketName .. "' socket.")
+        return false
+    end
+    return attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, socketName, say)
+end
+
+-- WEAPON_GROUP_SOCKETS/WEAPON_GROUP_LOCATION -- the 4 combined weapon dropdowns in the Accessories
+-- windowshade (2026-09-15, RedFalcon: "as far as weapons go, use the Location column to determine
+-- the list... combined based on weapon location"). Sheath (swordSlot_lSocket/rapierSlot_lSocket) and
+-- Back (the 6 *_backsocket names) are each genuinely several real sockets sharing ONE dropdown --
+-- only one weapon can occupy any of them at a time (Sockets tab's own "do not use with other
+-- Back Sockets/lSockets" rule) -- while LeftPistol/RightPistol are each just their own single real
+-- socket, split into two dropdowns purely because RedFalcon wants them selectable independently
+-- ("pistol can go in either pistol dropdown").
+local WEAPON_GROUP_SOCKETS = {
+    Sheath = { "swordSlot_lSocket", "rapierSlot_lSocket" },
+    Back = { "Axe1h_backsocket", "Axe2h_backsocket", "Crossbow2h_backsocket", "GSword_backsocket", "Halberd_backsocket", "Musket_backsocket" },
+    LeftPistol = { "beltSlot_01_lSocket" },
+    RightPistol = { "beltSlot_01_rSocket" },
+}
+local WEAPON_GROUP_LOCATION = { Sheath = "Sheath", Back = "Back", LeftPistol = "Pistol", RightPistol = "Pistol" }
+
+-- Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say) -- locationKey is one of Sheath/
+-- Back/LeftPistol/RightPistol (2026-09-15). Always clears every real socket in that location's own
+-- group FIRST (only one weapon can occupy a Sheath/Back/one-side-Pistol location at a time), then --
+-- unless friendlyName is "None" -- looks up the item in Config.SOCKETITEMS_WEAPONS by
+-- (friendlyName, Location) and resolves which ONE real socket in the group it actually belongs on
+-- via that row's own `sockets` list (several different weapons share one combined dropdown, but
+-- each only fits one specific real backsocket/lSocket -- e.g. an axe only fits Axe2h_backsocket,
+-- never Halberd_backsocket) -- except the two Pistol dropdowns, where the socket is just whichever
+-- side the dropdown itself represents.
+function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say)
+    say = say or function(m) print("[LivingBase] [weapon-manual] " .. tostring(m) .. "\n") end
+    local group = WEAPON_GROUP_SOCKETS[locationKey]
+    if not group then
+        say("no such weapon slot: " .. tostring(locationKey))
+        return false
+    end
+    for _, sock in ipairs(group) do
+        Spawner.RemoveSocketAttachment(sock, function() end)
+    end
+    if friendlyName == "None" then
+        say(locationKey .. ": cleared.")
+        return true
+    end
+
+    local wantLocation = WEAPON_GROUP_LOCATION[locationKey]
+    local row = nil
+    for _, r in ipairs(Config.SOCKETITEMS_WEAPONS or {}) do
+        if r.friendlyName == friendlyName and r.location == wantLocation then row = r; break end
+    end
+    if not row then
+        say(string.format("no %s weapon entry named '%s'", wantLocation, tostring(friendlyName)))
+        return false
+    end
+
+    local targetSocket = nil
+    if locationKey == "LeftPistol" or locationKey == "RightPistol" then
+        targetSocket = group[1]
+    else
+        for _, s in ipairs(row.sockets or {}) do
+            for _, g in ipairs(group) do
+                if s == g then targetSocket = s; break end
+            end
+            if targetSocket then break end
+        end
+    end
+    if not targetSocket then
+        say(string.format("'%s' has no socket in the %s group.", friendlyName, locationKey))
+        return false
+    end
+
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say)
+    if not actor then return false end
+    local exists = false
+    pcall(function() exists = body:DoesSocketExist(FName(targetSocket)) end)
+    if not exists then
+        say(name .. " has no '" .. targetSocket .. "' socket.")
+        return false
+    end
+    return attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, targetSocket, say)
+end
+
+-- Spawner.TestReadBeltStrapStyles(say) -- Read Current's own belts/straps half (2026-09-15,
+-- RedFalcon: "i'd like the belts and straps to be detected like the other stuff"). Returns a table
+-- keyed Belt/Sling/Strap/Frog -> { visible = bool, friendlyName = string or nil }. `visible` reflects
+-- the LIVE component (found via findBeltStrapComponent, the same BuildedCompositeMeshes walk
+-- Spawner.ApplyBeltStrapPiece uses) regardless of whether its current mesh matches a known
+-- Config.BELTSTRAPS_PIECES row -- this is what CustomMenu.cpp's new Accessories-column gating reads
+-- (RedFalcon: "if there is no strap then grey out all strap dropdowns... Pistols is dependant on
+-- belt and sheath is dependant on frog"). `friendlyName` is only set when the current mesh's own
+-- short name matches one of that piece type's rows (maleMesh or femaleMesh, whichever the target's
+-- sex would have picked) -- used to sync the Belt/Sling/Strap/Frog dropdowns themselves, same
+-- convention as Spawner.TestReadClothesStyles.
+function Spawner.TestReadBeltStrapStyles(say)
+    say = say or function(m) print("[LivingBase] [read-beltstraps] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return nil end
+    local actor = e.actor
+
+    local function shortMeshName(path)
+        if not path then return nil end
+        return path:match("([^/%.]+)%.[%w_]+$") or path:match("([^/]+)$")
+    end
+
+    local result = {}
+    for _, pieceType in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
+        local comp = findBeltStrapComponent(actor, BODY_PART_ENUM_BY_NAME[pieceType])
+        local visible = false
+        pcall(function() visible = comp ~= nil and comp:IsVisible() == true end)
+        local entry = { visible = visible }
+        if visible then
+            local meshName = nil
+            pcall(function()
+                local sk = nil
+                pcall(function() sk = comp.SkeletalMesh end)
+                if not (sk and sk:IsValid()) and comp.GetSkeletalMeshAsset then pcall(function() sk = comp:GetSkeletalMeshAsset() end) end
+                if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+            end)
+            if meshName then
+                for _, r in ipairs(Config.BELTSTRAPS_PIECES or {}) do
+                    if r.type == pieceType and (meshName == shortMeshName(r.maleMesh) or meshName == shortMeshName(r.femaleMesh)) then
+                        entry.friendlyName = r.friendlyName
+                        break
+                    end
+                end
+            end
+        end
+        result[pieceType] = entry
+    end
+    return result
+end
+end -- do (see this section's own opening comment re: the 200-local ceiling)
+
+-- CLOTHES_SLOT_KEYS -- the 7 real slots this feature covers, matching Config.CLOTHES_ITEMS' own
+-- keys (and BODY_PART_ENUM_BY_NAME's spelling) exactly. Shared by every function below rather than
+-- re-listing it per function.
+local CLOTHES_SLOT_KEYS = { "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape" }
+
+-- detectSenkamatiSex(actor) -- is the target's OWN base body a Senkamati skeleton at all, and if so
+-- which sex (2026-09-14, RedFalcon: "the female senkamati should not be allowed to change torso and
+-- legs to anything but other female senkamati torso and leg parts... when a senkamati is selected
+-- and detected, the gender specific senkamati items should be available"). Checks the CURRENT
+-- SkeletalMesh asset name on actor.Mesh (the base body, never a clothing piece) for the literal
+-- substring "Senkamati" -- matches BOTH the female Witch/Shaman body (SK_Senkamati_Witch_01_Female)
+-- and the male Warrior/Hunter/Thrall/Caster mob body (SK_SenkamatiCorrupted_Male_<Size>) without
+-- needing to enumerate every exact mesh name (same "generic substring, not an exhaustive list"
+-- reasoning Config.SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES' own comment already established was
+-- safe). Sex comes from the SAME GetBodySex() call every other sex-aware Clothes function already
+-- uses -- config.lua's own 2026-07-07 finding ("no female Senkamati archetype exists... Senkamati
+-- stays male-only" for the crew-reskin path) doesn't apply here since the Witch/Shaman body is a
+-- genuinely separate, real female Senkamati skeleton, not that archetype system.
+local function detectSenkamatiSex(actor)
+    if not (actor and actor:IsValid()) then return nil end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then return nil end
+    local meshName = nil
+    pcall(function()
+        local sk = target.SkeletalMesh
+        if not (sk and sk:IsValid()) and target.GetSkeletalMeshAsset then sk = target:GetSkeletalMeshAsset() end
+        if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+    end)
+    if not (meshName and meshName:find("Senkamati")) then return nil end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    local isFemaleBody = false
+    if comp and comp:IsValid() then
+        pcall(function() isFemaleBody = tonumber(comp:GetBodySex()) == 2 end)
+    end
+    return isFemaleBody and "Female" or "Male"
+end
+
+-- senkamatiClothesRowSex(row) -- is a Config.CLOTHES_ITEMS row one of the real Senkamati Hunter/
+-- Thrall/Warrior (male)/Shaman (female, uses the Witch's own meshes) family pieces -- identified by
+-- the row's own `name` field, which always starts "Senkamati_<Family>_..." for these (Other/
+-- Hair_And_Clothes_Export.xlsx's own naming) -- NOT by `availability`, since several of these rows
+-- are labeled "BOTH" there despite being rigged for one specific Senkamati skeleton only (Hunter/
+-- Thrall/Warrior all share the one MALE Senkamati body; "Shaman" is the one FEMALE Senkamati body,
+-- Witch). Returns "Male"/"Female"/nil (nil = not a Senkamati item at all).
+local function senkamatiClothesRowSex(row)
+    if not (row and row.name) then return nil end
+    if row.name:match("^Senkamati_Shaman_") then return "Female" end
+    if row.name:match("^Senkamati_Hunter_") or row.name:match("^Senkamati_Thrall_") or row.name:match("^Senkamati_Warrior_") then return "Male" end
+    return nil
+end
+
+-- Spawner.TestReadSenkamatiSex(say) -- Custom tab Read Current's own Senkamati-detection line
+-- (2026-09-14) -- thin wrapper around the local detectSenkamatiSex(actor) helper above so main.lua
+-- can call it (locals aren't visible outside this file). Returns "Male"/"Female"/nil exactly like
+-- that helper -- nil means the target's own base body isn't a Senkamati skeleton at all, which is
+-- also how CustomMenu.cpp's own Torso/Legs dropdown filtering decides whether to show the regular
+-- item list or the Senkamati-only one (see its own g_targetSenkamatiSex).
+function Spawner.TestReadSenkamatiSex(say)
+    say = say or function(m) print("[LivingBase] [read-senkamati] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return nil end
+    local sex = detectSenkamatiSex(e.actor)
+    if sex then say(string.format("target is a %s Senkamati body.", sex)) end
+    return sex
+end
+
+-- findClothesSlotEntry(actor, bodyPartKey) -- the SAME BuildedCompositeMeshes search
+-- Spawner.SetBodyPartMesh already does internally, factored out as its own read-only helper so
+-- Spawner.RemoveClothesItem/TestReadClothesStyles below can find the CURRENT EquippedMesh
+-- component without duplicating SetBodyPartMesh's own write logic (hide/swap/rebind/show) or
+-- risking a second, potentially-diverging copy of that search loop. SetBodyPartMesh itself is left
+-- completely untouched -- this is purely additive.
+local function findClothesSlotEntry(actor, bodyPartKey)
+    local wantBodyPart = BODY_PART_ENUM_BY_NAME[bodyPartKey]
+    if not wantBodyPart then return nil end
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then return nil end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then return nil end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    for i = 1, n do
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            if tonumber(bp) == wantBodyPart then
+                local target = nil
+                pcall(function() target = el.EquippedMesh end)
+                if target and target:IsValid() then return target end
+                return nil
+            end
+        end
+    end
+    return nil
+end
+
+-- Spawner.SyncHairToCurrentHeadgear(actor, say) -- (2026-09-14, RedFalcon: "when i change the
+-- hairstyle the same check needs to be run" -- the same real SlotsToSuspend-driven hair fit
+-- applyHeadgearHairFit does for a HEADGEAR change, now also run after a HAIRSTYLE change).
+-- Spawner.ApplyHairCategoryMesh's own pre-existing "Hat-variant preservation" logic only ever
+-- GUESSES the wanted category from whatever variant the OLD (about-to-be-replaced) hair mesh
+-- happened to have -- it can't tell "Full/Medium/Light" (a fuller headgear piece that should hide
+-- hair entirely, not fit a variant) from "no headgear at all", and it inherits nothing if the old
+-- mesh was never correctly fitted to begin with. This is the authoritative fix, called AFTER any
+-- new Hairs mesh is applied: finds whatever the target's Headgear slot is CURRENTLY wearing (via
+-- findClothesSlotEntry), reverse-looks-up which Config.CLOTHES_ITEMS.Headgear row it matches (same
+-- normalized-name matching Spawner.TestReadClothesStyles uses), and runs that row's own
+-- `sourceAsset` through the SAME applyHeadgearHairFit a real headgear CHANGE uses -- nil
+-- sourceAsset (no headgear worn, or an unrecognized/hidden mesh) correctly falls through to
+-- applyHeadgearHairFit's own "ensure visible + revert to Default" behavior.
+function Spawner.SyncHairToCurrentHeadgear(actor, say)
+    say = say or function(m) print("[LivingBase] [headgear-hairfit] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then return false end
+    local headTarget = findClothesSlotEntry(actor, "Headgear")
+    local sourceAsset = nil
+    if headTarget and headTarget:IsValid() then
+        local visible = true
+        pcall(function() visible = headTarget:IsVisible() end)
+        if visible then
+            local curName = nil
+            pcall(function()
+                local sk = headTarget.SkeletalMesh
+                if not (sk and sk:IsValid()) and headTarget.GetSkeletalMeshAsset then sk = headTarget:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+            if curName then
+                for _, row in ipairs(Config.CLOTHES_ITEMS.Headgear or {}) do
+                    local candidates = {}
+                    if row.maleMesh then candidates[#candidates + 1] = row.maleMesh end
+                    if row.femaleMesh then candidates[#candidates + 1] = row.femaleMesh end
+                    if row.unisexMesh then candidates[#candidates + 1] = row.unisexMesh end
+                    for _, p in ipairs(candidates) do
+                        local an = p:match("%.([^%.]+)$") or p:match("([^/]+)$")
+                        if an and an:lower() == curName:lower() then
+                            sourceAsset = row.sourceAsset
+                            break
+                        end
+                    end
+                    if sourceAsset then break end
+                end
+            end
+        end
+    end
+    return applyHeadgearHairFit(actor, sourceAsset, say)
+end
+
+-- Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say) -- the Custom tab's "Clothes" section
+-- dropdowns (2026-09-14, RedFalcon: "I want each body category in it's own dropdown using the
+-- spreadsheet you exported for me... they should all be organized alphabetically... realtime like
+-- the other items"). Looks up `friendlyName` in Config.CLOTHES_ITEMS[bodyPartKey] (generated from
+-- Other/Hair_And_Clothes_Export.xlsx's "Clothes Adjusted" sheet by gen_clothes_lua.py), resolves
+-- the mesh for the target's OWN sex, and calls straight through to the already-proven
+-- Spawner.SetBodyPartMesh (same hide -> swap -> leader-pose-rebind -> show sequence lbtestpiece
+-- already uses). Sex-mesh fallback chain is the EXACT same one Spawner.ApplyHairCategoryMesh uses
+-- for non-Hairs rows: `isFemale and (femaleMesh or unisexMesh or maleMesh) or (maleMesh or
+-- unisexMesh or femaleMesh)` -- this alone implements RedFalcon's "where you see [a sex-flagged
+-- item] with a mesh only for one sex type, use it for both" rule (a row validated as BOTH but only
+-- one mesh populated just falls through to that one mesh regardless of target sex). Items tagged
+-- "Only with Unlock" in their `availability` string are gated on Config.CLOTHES_UNLOCK_ALL
+-- (lbunlockclothes) -- the SAME flag that already bypasses the women's-fit rules elsewhere in this
+-- file, not a new mechanism -- EXCEPT for the real Senkamati family items (see
+-- senkamatiClothesRowSex), which bypass that gate on their own the moment a matching-sex Senkamati
+-- body is actually detected (2026-09-14, RedFalcon: "when a senkamati is selected and detected, the
+-- gender specific senkamati items should be available" -- no need for the player to also flip the
+-- global "unreviewed content" unlock just to dress the one body these were built for). A successful
+-- Headgear apply also runs applyHeadgearHairFit (2026-09-14, RedFalcon: "assigning headgear also
+-- needs to behave correctly with the hair") -- fits the current hairstyle to whatever Hat/Bandana/
+-- Headband variant (or full hide) the new piece's own real SlotsToSuspend data calls for, see that
+-- function's own header for the full explanation.
+--
+-- Senkamati Torso/Legs body-fit gate (2026-09-14, RedFalcon: "the female senkamati should not be
+-- allowed to change torso and legs to anything but other female senkamati torso and leg parts")
+-- -- FEMALE ONLY (same-day correction: "Male Senkamati can wear other clothes, its just the
+-- females who are limited due to their body shape") -- only the female Witch/Shaman body's
+-- proportions differ enough from the regular human ones that a REGULAR Torso/Legs piece clips
+-- badly on it (an already-documented fact in this project -- see the OLD tree's own "Senkamati
+-- women just can't wear regular torso or legs" rule and Config.
+-- SENKAMATI_TORSO_LEGS_COMPATIBLE_BODIES); the male Senkamati skeleton is close enough to the
+-- regular human one that this never applied to him, unlike the "Only with Unlock" auto-bypass just
+-- above, which stays available to BOTH sexes. Only Torso/Legs are gated -- "Others slots seem ok"
+-- per that same original finding, so Feet/Hands/Headgear/Cape/Waist are untouched. Same
+-- Config.CLOTHES_UNLOCK_ALL escape hatch as the old tree's own Mechanism A -- unlocking is "no
+-- restrictions at all," not just "show unreviewed content," matching that established precedent
+-- rather than inventing a stricter always-on rule.
+function Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say)
+    say = say or function(m) print("[LivingBase] [clothes] " .. tostring(m) .. "\n") end
+    local items = Config.CLOTHES_ITEMS and Config.CLOTHES_ITEMS[bodyPartKey]
+    if not items then
+        say("no such clothing slot: " .. tostring(bodyPartKey))
+        return false
+    end
+    local row = nil
+    for _, r in ipairs(items) do
+        if r.friendlyName == friendlyName then row = r; break end
+    end
+    if not row then
+        say(string.format("no %s entry named '%s'", bodyPartKey, tostring(friendlyName)))
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local isFemale = false
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then isFemale = tonumber(comp:GetBodySex()) == 2 end
+    end)
+
+    local rowSenkamatiSex = senkamatiClothesRowSex(row)
+    -- WIDENED (2026-09-14, same-day correction, RedFalcon: "When a senkamati is selected I want
+    -- senkamati items in all categories available") -- detection itself (and the "Only with Unlock"
+    -- auto-bypass just below that depends on it) is no longer limited to Torso/Legs; a detected
+    -- Senkamati of either sex gets their own matching Feet/Hands/Headgear/Cape/Waist items surfaced
+    -- too, not just Torso/Legs. Only the BODY-FIT BLOCK further down stays Torso/Legs-and-Female-only
+    -- -- that one is about the Witch/Shaman skeleton's own proportions, unrelated to availability.
+    local targetSenkamatiSex = detectSenkamatiSex(actor)
+
+    if row.availability and row.availability:lower():find("only with unlock", 1, true)
+       and not Config.CLOTHES_UNLOCK_ALL
+       and not (rowSenkamatiSex and rowSenkamatiSex == targetSenkamatiSex) then
+        say(string.format("'%s' requires lbunlockclothes first.", friendlyName))
+        return false
+    end
+
+    -- FEMALE + TORSO/LEGS ONLY (2026-09-14 correction, RedFalcon: "Male Senkamati can wear other
+    -- clothes, its just the females who are limited due to their body shape") -- the male Senkamati
+    -- skeleton is close enough to the regular human one that regular Torso/Legs pieces fit fine;
+    -- only the female Witch/Shaman body's genuinely different proportions cause the clipping this
+    -- guards against, and "Others slots seem ok" per the original finding means even SHE has no
+    -- fit problem on Feet/Hands/Headgear/Cape/Waist. A Male Senkamati target, or any Senkamati on
+    -- any slot other than Torso/Legs, hits neither this block nor Spawner.RemoveClothesItem's own
+    -- redirect -- he/she can wear anything there, same as a regular human.
+    if not Config.CLOTHES_UNLOCK_ALL and targetSenkamatiSex == "Female"
+       and (bodyPartKey == "Torso" or bodyPartKey == "Legs")
+       and rowSenkamatiSex ~= targetSenkamatiSex then
+        say(string.format("%s: '%s' doesn't fit this Senkamati body (%s) -- removing instead.",
+            bodyPartKey, friendlyName, targetSenkamatiSex))
+        return Spawner.RemoveClothesItem(bodyPartKey, say)
+    end
+
+    -- Strict sex exclusivity (2026-09-14, live-caught: "it seems you didnt read the availability
+    -- column. Some items are strictly male or female. in that case instead of applying the item,
+    -- use the underwear setup"). The sex-mesh FALLBACK CHAIN just above/below this comment is
+    -- deliberately permissive (it's what implements "use the one mesh for both" for items
+    -- VALIDATED as working on both sexes) -- this is the separate, narrower check for items the
+    -- sheet marks as genuinely ONE-sex-only ("MALE"/"MALE ONLY"/"MALE ONLY - Only with Unlock" or
+    -- the FEMALE equivalents -- always start with "MALE"/"FEMALE" in this data, "BOTH"/"Both (...)"
+    -- never do). Rather than force that item's own mesh onto the wrong sex, swap to the real
+    -- underwear item for this slot instead -- "Character Underwear Legs" (BOTH sexes) for Legs,
+    -- "Character Underwear Torso" (FEMALE ONLY -- no male equivalent exists in this game's own
+    -- content) for Torso on a female target only. Every other slot, and a female-only Torso item
+    -- mismatched onto a male target, has no underwear equivalent at all -- skipped outright rather
+    -- than guessed at.
+    local sexOnly = row.availability and (row.availability:match("^MALE") and "male"
+        or (row.availability:match("^FEMALE") and "female" or nil))
+    if (sexOnly == "male" and isFemale) or (sexOnly == "female" and not isFemale) then
+        local underwearName = ({ Legs = "Character Underwear Legs", Torso = "Character Underwear Torso" })[bodyPartKey]
+        if underwearName and not (bodyPartKey == "Torso" and not isFemale) then
+            say(string.format("'%s' is %s-only -- target is %s, using underwear instead.",
+                friendlyName, sexOnly, isFemale and "female" or "male"))
+            return Spawner.ApplyClothesItem(bodyPartKey, underwearName, say)
+        end
+        say(string.format("'%s' is %s-only -- target is %s and no underwear fallback exists for %s -- skipped.",
+            friendlyName, sexOnly, isFemale and "female" or "male", bodyPartKey))
+        return false
+    end
+
+    local path = isFemale and (row.femaleMesh or row.unisexMesh or row.maleMesh)
+                           or (row.maleMesh or row.unisexMesh or row.femaleMesh)
+    if not path then
+        say(string.format("%s '%s' has no usable mesh path.", bodyPartKey, friendlyName))
+        return false
+    end
+
+    local ok = Spawner.SetBodyPartMesh(actor, BODY_PART_ENUM_BY_NAME[bodyPartKey], path, say)
+    if ok then
+        say(string.format("%s: %s now wearing '%s'.", bodyPartKey, name, friendlyName))
+        if bodyPartKey == "Headgear" then
+            pcall(function() applyHeadgearHairFit(actor, row.sourceAsset, say) end)
+        end
+    end
+    return ok
+end
+
+-- Spawner.RemoveClothesItem(bodyPartKey, say) -- "Remove" entry at the top of each body-part
+-- dropdown (2026-09-14, RedFalcon: "add a remove to each body part at the top of the list... so
+-- they can remove an item if they wish"). SetBodyPartMesh only ever SWAPS an existing
+-- BuildedCompositeMeshes entry's mesh, it has no real "nothing equipped" mesh to swap to (no such
+-- asset exists in this game's content) -- so removal here means hiding that slot's own component
+-- instead (SetVisibility(false, false), the same visibility toggle DeCorrupt/SetBodyPartMesh's own
+-- hide-before-swap step already uses safely elsewhere in this file), not reassigning a mesh --
+-- EXCEPT for Legs (always) and Torso (women only), see below.
+--
+-- Underwear substitution (2026-09-14, live-caught: "we have to remember to put underwear on them
+-- when legs are removed and the top on women when the torso is removed" -- a bare-hidden Legs/
+-- female-Torso slot showed an incomplete/ugly underlying body layer, unlike the other 5 slots where
+-- being empty looks visually fine). Config.CLOTHES_ITEMS already carries the game's own real
+-- underwear pieces as ordinary rows (from the same "Clothes Adjusted" sheet) -- "Character
+-- Underwear Legs" (BOTH sexes, a real Male+Female mesh pair) and "Character Underwear Torso"
+-- (FEMALE ONLY -- there is no male-Torso-underwear asset anywhere in this game's own content) -- so
+-- Legs/female-Torso removal is routed through Spawner.ApplyClothesItem with that item instead of
+-- hiding. A male Torso removal still just hides (bare chest) -- no equivalent asset exists, matching
+-- this project's own established "assign the underwear item when one exists for that sex, otherwise
+-- it's fine bare" convention.
+--
+-- FEMALE SENKAMATI EXCEPTION (2026-09-14, RedFalcon: "assign the female senkamati Senkamati Shaman
+-- Feather Legs 1 and Senkamati Shaman Feather Torso 1 for underwear instead") -- the regular human
+-- underwear meshes are just another Torso/Legs piece as far as the body-fit problem is concerned
+-- (see Spawner.ApplyClothesItem's own Senkamati body-fit gate), so a detected Female Senkamati
+-- target gets her OWN real armor pieces substituted here instead of the regular underwear item --
+-- there's no "bare Senkamati underwear" asset to fall back to, and her own gear is what's actually
+-- confirmed to fit. Male Senkamati is untouched (no fit problem at all, same regular underwear as
+-- any human male/female).
+--
+-- Headgear removal also fixes up hair (2026-09-14, RedFalcon: "ensure that hair and headgear
+-- interaction is right because i removed the hat and she kept her hat hair") -- see
+-- applyHeadgearHairFit's own header for the full explanation.
+--
+-- UNLOCK GATE on the underwear substitution (2026-09-14 fix, RedFalcon: "when unlock clothes is
+-- enabled, do not add underwear during removes") -- matches the SAME `Config.CLOTHES_UNLOCK_ALL`
+-- convention Spawner.RemoveClothingOnActor's own modesty guard already established (see that
+-- function's header): the substitution only exists to avoid leaving a RESTRICTED target bare,
+-- so once lbunlockclothes has been run there's nothing to guard against and Legs/female-Torso
+-- removal goes back to a true hide, same as every other slot.
+function Spawner.RemoveClothesItem(bodyPartKey, say)
+    say = say or function(m) print("[LivingBase] [clothes] " .. tostring(m) .. "\n") end
+    if not BODY_PART_ENUM_BY_NAME[bodyPartKey] then
+        say("no such clothing slot: " .. tostring(bodyPartKey))
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local unlocked = Config.CLOTHES_UNLOCK_ALL == true
+
+    if bodyPartKey == "Legs" and not unlocked then
+        if detectSenkamatiSex(actor) == "Female" then
+            return Spawner.ApplyClothesItem("Legs", "Senkamati Shaman Feather Legs 1", say)
+        end
+        return Spawner.ApplyClothesItem("Legs", "Character Underwear Legs", say)
+    end
+    if bodyPartKey == "Torso" and not unlocked then
+        local isFemale = false
+        pcall(function()
+            local comp = actor.CompositeMeshComponent
+            if comp and comp:IsValid() then isFemale = tonumber(comp:GetBodySex()) == 2 end
+        end)
+        if isFemale then
+            if detectSenkamatiSex(actor) == "Female" then
+                return Spawner.ApplyClothesItem("Torso", "Senkamati Shaman Feather Torso 1", say)
+            end
+            return Spawner.ApplyClothesItem("Torso", "Character Underwear Torso", say)
+        end
+    end
+
+    local target = findClothesSlotEntry(actor, bodyPartKey)
+    if not target then
+        say(string.format("%s: nothing currently equipped there.", bodyPartKey))
+        return false
+    end
+    local ok = pcall(function() target:SetVisibility(false, false) end)
+    say(string.format("%s: removed (hidden) -- %s", bodyPartKey, tostring(ok)))
+    if ok and bodyPartKey == "Headgear" then
+        pcall(function() applyHeadgearHairFit(actor, nil, say) end)
+    end
+    return ok
+end
+
+-- Spawner.ApplyClothesOutfit(setName, say) -- "Outfit" dropdown, top of the Clothes section
+-- (2026-09-14, RedFalcon: "an additional 'Outfits' type with no colors that assigns a collection
+-- of outfit items similar to the facial hair sets"). Looks up `setName` in Config.CLOTHES_OUTFITS
+-- (generated from the "Clothing Outfits" sheet, already pre-filtered to only sets with at least
+-- Feets+Torso+Legs -- RedFalcon: "If it doesn't [have those], dont create that outfit") and applies
+-- each piece it defines via Spawner.ApplyClothesItem. Deliberately does NOT touch any slot the
+-- outfit doesn't mention (RedFalcon: "only set the items, but do not clear any others") -- an
+-- outfit is a partial overlay, not a full look reset.
+function Spawner.ApplyClothesOutfit(setName, say)
+    say = say or function(m) print("[LivingBase] [clothes-outfit] " .. tostring(m) .. "\n") end
+    local outfit = nil
+    for _, o in ipairs(Config.CLOTHES_OUTFITS or {}) do
+        if o.setName == setName then outfit = o; break end
+    end
+    if not outfit then
+        say("no such outfit: " .. tostring(setName))
+        return false
+    end
+    local anyOk = false
+    for _, bodyPartKey in ipairs(CLOTHES_SLOT_KEYS) do
+        local friendlyName = outfit.pieces[bodyPartKey]
+        if friendlyName then
+            if Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say) then anyOk = true end
+        end
+    end
+    return anyOk
+end
+
+-- Spawner.RemoveAllClothes(say) -- "Remove All" entry, top of the Outfit dropdown (2026-09-14,
+-- RedFalcon: "a remove all on the outfits"). Removes (hides) all 7 real clothing slots at once via
+-- Spawner.RemoveClothesItem -- the bulk counterpart to picking "Remove" on every dropdown one at a
+-- time.
+function Spawner.RemoveAllClothes(say)
+    say = say or function(m) print("[LivingBase] [clothes-outfit] " .. tostring(m) .. "\n") end
+    local anyOk = false
+    for _, bodyPartKey in ipairs(CLOTHES_SLOT_KEYS) do
+        if Spawner.RemoveClothesItem(bodyPartKey, say) then anyOk = true end
+    end
+    return anyOk
+end
+
+-- Spawner.TestReadClothesStyles(say) -- pure-read counterpart to ApplyClothesItem, for the Custom
+-- tab's "Read Current" button (2026-09-14, RedFalcon: "make it realtime like the other items, and
+-- all items detected along with the color" -- the color half of this already exists via
+-- Spawner.TestReadCategoryColors/Config.CUSTOM_TAB_CLOTH_CATEGORIES, this is the missing item-name
+-- half). Reads whichever mesh findClothesSlotEntry finds equipped for each of the 7 real slots,
+-- then reverse-looks-up which Config.CLOTHES_ITEMS row's maleMesh/femaleMesh/unisexMesh ends in
+-- that SAME asset name (every path here is already "<pkg>.<AssetName>", so the AssetName IS the
+-- trailing segment after the last '.') -- SAME reverse-lookup shape as Spawner.TestReadHairStyles.
+-- A hidden (removed) slot or a mesh not in the catalog leaves that slot's own entry absent from the
+-- results table rather than guessing.
+function Spawner.TestReadClothesStyles(say)
+    say = say or function(m) print("[LivingBase] [read-clothes] " .. tostring(m) .. "\n") end
+    local results = {}
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return results
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return results end
+
+    local function assetNameOf(path)
+        if not path then return nil end
+        return path:match("%.([^%.]+)$") or path:match("([^/]+)$")
+    end
+
+    for _, bodyPartKey in ipairs(CLOTHES_SLOT_KEYS) do
+        local target = findClothesSlotEntry(actor, bodyPartKey)
+        local curName = nil
+        local visible = true
+        if target then
+            pcall(function() visible = target:IsVisible() end)
+            pcall(function()
+                local sk = target.SkeletalMesh
+                if not (sk and sk:IsValid()) and target.GetSkeletalMeshAsset then sk = target:GetSkeletalMeshAsset() end
+                if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
+            end)
+        end
+        if not curName or not visible then
+            say(string.format("%s: no component/mesh found or currently hidden.", bodyPartKey))
+        else
+            local matched = nil
+            for _, row in ipairs(Config.CLOTHES_ITEMS[bodyPartKey] or {}) do
+                local candidates = {}
+                if row.maleMesh then candidates[#candidates + 1] = row.maleMesh end
+                if row.femaleMesh then candidates[#candidates + 1] = row.femaleMesh end
+                if row.unisexMesh then candidates[#candidates + 1] = row.unisexMesh end
+                for _, p in ipairs(candidates) do
+                    local an = assetNameOf(p)
+                    if an and an:lower() == curName:lower() then matched = row.friendlyName; break end
+                end
+                if matched then break end
+            end
+            if matched then
+                results[bodyPartKey] = matched
+                say(string.format("%s: mesh=%s -> %s", bodyPartKey, curName, matched))
+            else
+                say(string.format("%s: mesh=%s -- no matching catalog entry (custom/unknown mesh).", bodyPartKey, curName))
+            end
+        end
+    end
+    return results
+end
 
 -- Spawner.TestPreviewPiece(bodyPartArg, meshPathArg, say) -- "lbtestpiece" (2026-09-04, RedFalcon:
 -- "can you make a command that let's me test what these look like", re: Other/Barbie_Slot_Item_
@@ -16681,14 +21095,20 @@ end
 -- eyes, applied on top of the plain default MI_Eye material.
 --
 -- NARROWED (2026-09-08) after RedFalcon directly compared all 5 discrete variants against the real
--- CPD15 palette: "All the CPD colors match their lbtesteye counterparts so we dont need the testeye
--- ones. The only one of those we will want is 'Evil' but i'd prefer to call it 'Glowing'." Blue/
--- Brown/Green/Grey/Default all turned out to be visually redundant with their CPD15 counterparts --
--- only `MI_EyeRound_Evil_01` (a real, genuinely emissive/glowing look, also the Senkamati Caster's
--- own native eye material -- see the DECORRUPT `MI_EyeRound_Evil` replace rules elsewhere in
--- config.lua) is something CPD's own palette can't reproduce, so it's the one variant worth keeping
--- as its own separate option. User-facing name is "Glowing"; the underlying asset name (`Evil`) is
--- unchanged since that's the real, shipped material's own name, not something we can rename.
+-- CPD15 palette on the NPCs he checked that day: "All the CPD colors match their lbtesteye
+-- counterparts so we dont need the testeye ones. The only one of those we will want is 'Evil' but
+-- i'd prefer to call it 'Glowing'." Blue/Brown/Green/Grey/Default all looked visually redundant with
+-- their CPD15 counterparts on those NPCs -- only `MI_EyeRound_Evil_01` (a real, genuinely emissive/
+-- glowing look, also the Senkamati Caster's own native eye material -- see the DECORRUPT
+-- `MI_EyeRound_Evil` replace rules elsewhere in config.lua) is something CPD's own palette can't
+-- reproduce, so it briefly became the only variant kept as its own separate option.
+--
+-- RESTORED (2026-09-14, RedFalcon: "some NPCs do use the non cpd colors for their eyes") -- the
+-- "redundant" finding above didn't generalize: some NPCs have one of Blue/Brown/Green/Grey assigned
+-- as their NATIVE material rather than the plain CPD-driven `MI_Eye`, so CPD15 has nothing to move
+-- on them at all -- `lbtesteye` is the only lever that reaches those. All 5 restored to
+-- `EYE_COLOR_VARIANTS`. User-facing name for Evil stays "Glowing"; the underlying asset name (`Evil`)
+-- is unchanged since that's the real, shipped material's own name, not something we can rename.
 -- This function itself is otherwise unchanged -- still the same "swap to an existing pre-made
 -- material instance" mechanism already proven safe for skin tone (a plain SetMaterial call, nothing
 -- like the crashy CreateDynamicMaterialInstance). Finds the eye material SLOT on actor.Mesh by
@@ -16698,18 +21118,39 @@ end
 -- CONFIRMED EXHAUSTIVE 2026-08-31 via lbtestlistclass against the live AssetRegistry (not just an
 -- offline pak-name-substring guess): every MaterialInstanceConstant with "Eye" in its path, across
 -- the WHOLE game, is either one of the 5 original human eye-color variants (Blue/Brown/Evil/Green/
--- Grey -- now narrowed to just Evil/"Glowing" above), the plain base `MI_Eye` itself (no color
--- suffix -- almost certainly the Gatherer/every un-recolored NPC's own native material), an animal/
--- creature eye material (Dodo/Crocodile/Wolf/Goat/Boar/SwampToad -- unrelated skeletons), or an
--- unrelated FX/post-process material whose name just happens to contain "Eye"
--- ("...StrictEyeAdaptation"/"...DisableDepth..."). There is no 6th human eye COLOR beyond those 5 --
--- "Default"/"Native" (below) is the plain base material, not a recolor.
-local EYE_COLOR_VARIANTS = { { display = "Glowing", asset = "Evil" } }
+-- Grey), the plain base `MI_Eye` itself (no color suffix -- almost certainly the Gatherer/every
+-- un-recolored NPC's own native material), an animal/creature eye material (Dodo/Crocodile/Wolf/
+-- Goat/Boar/SwampToad -- unrelated skeletons), or an unrelated FX/post-process material whose name
+-- just happens to contain "Eye" ("...StrictEyeAdaptation"/"...DisableDepth..."). There is no 6th
+-- human eye COLOR beyond those 5 -- "Default"/"Native" (below) is the plain base material, not a
+-- recolor.
+--
+-- RESTORED (2026-09-14, RedFalcon: "some NPCs do use the non cpd colors for their eyes") -- the
+-- 2026-09-08 narrowing above assumed CPD15 was a universal substitute since every NPC checked THAT
+-- day matched, but some NPCs genuinely have one of these 4 discrete materials assigned NATIVELY
+-- (not the plain CPD-driven `MI_Eye`), so `lbtestbasecpd 15 <index>` has nothing to move on them --
+-- back to all 5 so `lbtesteye` can still force a specific look on those. See WINDROSE_MODDING_NOTES
+-- .md's own "CORRECTION (2026-09-14)" for the full story.
+local EYE_COLOR_VARIANTS = {
+    { display = "Blue",    asset = "Blue" },
+    { display = "Brown",   asset = "Brown" },
+    { display = "Glowing", asset = "Evil" },
+    { display = "Green",   asset = "Green" },
+    { display = "Grey",    asset = "Grey" },
+}
+-- Reverse map from a discrete material's own display name to the CPD15 index it visually matches
+-- (Config.CPD_EYE_COLOR_NAMES: Brown=0, Green=3, Blue=5, Gray=6 -- "Grey" here is the same color as
+-- CPD's "Gray", just the material asset's own spelling) -- used by TestReadEyeColor below so a
+-- native discrete-material NPC still reports a sane Read Current color instead of nothing. Glowing
+-- has no CPD equivalent at all (see the header above) so it's deliberately absent from this map.
+local EYE_MATERIAL_TO_CPD_INDEX = { Blue = 5, Brown = 0, Green = 3, Grey = 6 }
 local EYE_DEFAULT_PATH = "/Game/Character/Shaders/InstanceMaterials/Eyes/MI_Eye.MI_Eye"
 function Spawner.TestSetEyeColor(colorName, say)
     say = say or function(m) print("[LivingBase] [test-eye] " .. tostring(m) .. "\n") end
     if not colorName then
-        say("usage: lbtesteye <Glowing|Default>")
+        local names = {}
+        for _, v in ipairs(EYE_COLOR_VARIANTS) do names[#names + 1] = v.display end
+        say(string.format("usage: lbtesteye <%s|Default>", table.concat(names, "|")))
         return false
     end
     local isDefault = (colorName:lower() == "default" or colorName:lower() == "native")
@@ -16772,6 +21213,442 @@ function Spawner.TestSetEyeColor(colorName, say)
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
     say("done -- check visually now, no reload needed.")
     return okSet
+end
+
+-- Spawner.TestReadEyeColor(say) -- pure-read counterpart to TestSetEyeColor/TestSetBaseCPDFloat,
+-- for the Custom tab's "Read Current" button (2026-09-13, RedFalcon: "i would like read current to
+-- include eyes"). Two independent mechanisms to check, same order TestSetEyeColor itself checks
+-- them in: (1) a full MATERIAL swap on actor.Mesh's own eye slot, detected the exact same way
+-- TestSetEyeColor finds the slot to swap -- GetNumMaterials/GetMaterial/GetFName():ToString(), just
+-- read-only here -- so check that FIRST; (2) otherwise read CPD15 (a palette index into kEyeColors
+-- on the C++ side) directly off actor.Mesh, same raw-index convention TestSetBaseCPDFloat writes
+-- with (native CPD index, not Lua's 1-based array position -- CPD15 lands at dataArr[16] once read
+-- back as a Lua array). No SavedCustomizationData fallback exists for this one (unlike hair) --
+-- CPD15 is genuinely empty on a native/un-recolored NPC (their eyes just use the plain default
+-- MI_Eye material with no CPD override at all), so that case returns nil and Read Current simply
+-- won't show an eye color line for them.
+--
+-- WIDENED (2026-09-14, alongside EYE_COLOR_VARIANTS' own restoration) -- mechanism (1) used to only
+-- ever check for "Evil"/Glowing, since Blue/Brown/Green/Grey were assumed CPD-redundant and mechanism
+-- (2) would always catch them. Now that some NPCs are confirmed to carry one of those 4 materials
+-- NATIVELY (CPD15 has nothing to read on them), this checks against EVERY EYE_COLOR_VARIANTS asset
+-- name, not just Evil -- Blue/Brown/Green/Grey report back the matching CPD15 index (via
+-- EYE_MATERIAL_TO_CPD_INDEX) so the GUI's Eye Color swatch still shows something sane for these NPCs
+-- instead of the "no fallback" case; only Glowing (no CPD equivalent) still returns the "GLOWING"
+-- string sentinel.
+--
+-- WIDENED AGAIN (2026-09-14, same day, RedFalcon: "if they are reading as default why are colors
+-- not populating for them?") -- two tested native NPCs (Marita Suares, Bucc Merchant Woman) both
+-- had their eye material slot sitting on the plain default MI_Eye (mechanism 1 correctly found
+-- nothing), yet their eyes clearly show a real color in-game -- meaning CPD15 itself was never the
+-- real source for them either; this function's own header used to claim "no SavedCustomizationData
+-- fallback exists for this one (unlike hair)" but that was simply never built, not a real absence.
+-- RedFalcon confirmed live via `lbprobecolors` that eye color's own BodyPart ordinal in
+-- SavedCustomizationData.SelectedColors is 15 -- added as a THIRD mechanism, same
+-- actor.CompositeMeshComponent.SavedCustomizationData.SelectedColors struct + BodyPart-grouping
+-- pattern Spawner.TestReadHairColors already uses for Hairs/Beard/Mustache/Whiskers/Eyebrows (see
+-- that function's own header for the fuller struct-shape story), checked only as the LAST resort
+-- after both the material-slot scan and the live CPD15 read come back empty -- CPD stays
+-- authoritative whenever it actually has something, exactly mirroring every other category's own
+-- priority order.
+function Spawner.TestReadEyeColor(say)
+    say = say or function(m) print("[LivingBase] [read-eyecolor] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return nil end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then say("actor.Mesh not readable"); return nil end
+
+    local numMats = 0
+    pcall(function() numMats = mesh:GetNumMaterials() end)
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = mesh:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm and nm:lower():find("eye") then
+                local nmLower = nm:lower()
+                for _, v in ipairs(EYE_COLOR_VARIANTS) do
+                    if nmLower:find(v.asset:lower(), 1, true) then
+                        if v.asset == "Evil" then
+                            say("eye color: Glowing (found " .. nm .. " on slot " .. slot .. ")")
+                            return "GLOWING"
+                        end
+                        local cpdIdx = EYE_MATERIAL_TO_CPD_INDEX[v.display]
+                        if cpdIdx then
+                            say(string.format("eye color: native %s material (found %s on slot %d) -- reporting matching CPD idx=%d", v.display, nm, slot, cpdIdx))
+                            return cpdIdx
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local okRead, dataArr = pcall(function() return mesh.CustomPrimitiveData.Data end)
+    local n = 0
+    if okRead and dataArr then
+        pcall(function() n = dataArr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #dataArr end) end
+    end
+    if n >= 16 then
+        local v = nil
+        pcall(function() v = dataArr[16] end)
+        if v == nil then pcall(function() v = dataArr:Get(16) end) end
+        local raw = tonumber(v)
+        if raw then
+            local idx = math.floor(raw + 0.5)
+            if idx >= 0 then
+                say(string.format("eye color: CPD15=%s -> idx=%d", tostring(v), idx))
+                return idx
+            end
+        end
+    end
+
+    -- Third mechanism (2026-09-14): SavedCustomizationData.SelectedColors, BodyPart=15 (confirmed
+    -- live by RedFalcon via lbprobecolors) -- same struct/grouping TestReadHairColors already reads
+    -- for Hairs/Beard/etc, just scoped to the one BodyPart eye color uses. Only reached when both
+    -- the material-slot scan and live CPD15 came back empty above.
+    do
+        local compositeComp = nil
+        pcall(function() compositeComp = actor.CompositeMeshComponent end)
+        local struct = nil
+        if compositeComp and compositeComp:IsValid() then pcall(function() struct = compositeComp.SavedCustomizationData end) end
+        local arr = nil
+        if struct then pcall(function() arr = struct.SelectedColors end) end
+        if arr then
+            local an = 0
+            pcall(function() an = arr:GetArrayNum() end)
+            if an == 0 then pcall(function() an = #arr end) end
+            for i = 1, an do
+                local el = nil
+                pcall(function() el = arr[i] end)
+                if el == nil then pcall(function() el = arr:Get(i) end) end
+                pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+                if el then
+                    local bp, val = nil, nil
+                    pcall(function() bp = tonumber(el.BodyPart) end)
+                    pcall(function() val = tonumber(el.Value) end)
+                    if bp == 15 and val then
+                        local idx = math.floor(val + 0.5)
+                        if idx >= 0 then
+                            say(string.format("eye color: CPD/material empty -- using SavedCustomizationData fallback (BodyPart=15), Value=%s -> idx=%d", tostring(val), idx))
+                            return idx
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    say("eye color: CPD15 empty/unreadable, no SavedCustomizationData entry either -- genuinely un-recolored.")
+    return nil
+end
+
+-- Spawner.TestEyeScleraAlpha(alphaArg, say) -- "lbtesteyealpha <0-1>" (2026-09-12, RedFalcon: "the
+-- eyes by themselves are creepy because you can see the full orb of the eye... can we make the orb
+-- transparent and just keep the glow fx"). GENUINELY EXPERIMENTAL, outcome unknown -- `lbprobedump`
+-- confirmed the Glowing eye material (MI_EyeRound_Evil_01) exposes NO TextureParameterValues and NO
+-- StaticSwitchParameters, only 3 VectorParameterValues (BaseColor/ScleraColor/"Retro Color") and 3
+-- scalars -- meaning there's no exposed blend-mode toggle at all (blend mode is normally baked into
+-- a material asset in UE, not instance-overridable), so a genuine "make it translucent" switch may
+-- simply not exist here. `ScleraColor` (the white-of-the-eye color) is the one plausible lever if
+-- this shader treats its own alpha channel as a Masked-mode cutout -- worth trying, but this is a
+-- real guess about the shader graph, which is invisible in this cooked build.
+--
+-- Deliberately does NOT use CreateDynamicMaterialInstance/SetVectorParameterValue -- that whole
+-- mechanism is CONFIRMED DEAD in this codebase, independently, at least 3 separate times, in every
+-- argument shape tried (component-level, Kismet-library, 1/3/4-arg) -- see Spawner.TestSetColorID's
+-- and Spawner.TestSetCPDColor's own header comments for the full history. The mechanism that
+-- actually turned out to work for per-instance material tuning in this game is CPD (Custom
+-- Primitive Data) -- ordinary BlueprintCallable functions, a completely different, much safer
+-- marshaling path. Reuses that exact same pattern: try the named lookup
+-- (GetCustomPrimitiveDataIndexForVectorParameter with a real FName, built via
+-- UEHelpers.FindOrAddFName -- a raw Lua string in that slot is what crashed the FIRST attempt at
+-- this mechanism, per TestSetCPDColor's own comment) for "ScleraColor" specifically, and only if
+-- that resolves to a real index (>=0) does it write anything -- no blind raw-index bombardment
+-- across 0..7 like the earliest CPD tool did (confirmed to stomp OTHER CPD-driven effects sharing
+-- the same buffer, producing a "moldy" side effect) -- a targeted, single-parameter attempt only.
+-- No live way to READ the current ScleraColor RGB first (CPD has no getter for the vector value
+-- itself, only for its index), so this defaults R/G/B to white (1,1,1) -- a guess at the sclera's
+-- likely base color, only the alpha (the actual thing being tested) is the real input.
+function Spawner.TestEyeScleraAlpha(alphaArg, say)
+    say = say or function(m) print("[LivingBase] [test-eyealpha] " .. tostring(m) .. "\n") end
+    local alpha = tonumber(alphaArg)
+    if alpha == nil then
+        say("usage: lbtesteyealpha <0-1> (0 = fully transparent attempt, 1 = fully opaque/unchanged)")
+        return false
+    end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return false
+    end
+
+    local fname = nil
+    local okName, errName = pcall(function() fname = UEHelpers.FindOrAddFName("ScleraColor") end)
+    if not okName then
+        say("FindOrAddFName('ScleraColor') FAILED: " .. tostring(errName))
+        return false
+    end
+    local idx = nil
+    local okGet, errGet = pcall(function() idx = target:GetCustomPrimitiveDataIndexForVectorParameter(fname) end)
+    local idxNum = tonumber(idx)
+    say(string.format("named lookup 'ScleraColor' -> index %s (call ok=%s%s)", tostring(idx), tostring(okGet),
+        (not okGet) and (" err=" .. tostring(errGet)) or ""))
+    if not (okGet and idxNum ~= nil and idxNum >= 0) then
+        say("this material has no CPD binding named 'ScleraColor' -- this specific lever doesn't exist for it. Not falling back to a raw index guess (too likely to stomp an unrelated CPD-driven effect on the same buffer).")
+        return false
+    end
+
+    local vec4 = { X = 1.0, Y = 1.0, Z = 1.0, W = alpha }
+    local okSet, errSet = pcall(function() target:SetVectorParameterForCustomPrimitiveData(fname, vec4) end)
+    say(string.format("SetVectorParameterForCustomPrimitiveData('ScleraColor', alpha=%.2f) = %s%s -- check visually now, no reload needed.",
+        alpha, tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    return okSet
+end
+
+-- Spawner.MakeGhost(say) -- "lbmakeghost" (2026-09-12, RedFalcon's own fixed preset request).
+-- Applies a full ghost look in one call, reusing every proven mechanism already in this file
+-- rather than inventing anything new:
+--   - SKIN: whichever material slot on actor.Mesh matches the real skin-family naming convention
+--     (ends in _Small/_Medium/_Large -- the SAME name pattern Spawner.TestSetSkinSize already uses
+--     to find the skin slot on ANY body archetype) gets the ghost skin material.
+--   - EYE SLOT (matched by material name containing "eye") gets the SAME skin material too --
+--     CHANGED 2026-09-12: originally used M_CharacterGhost_V2 (see below), matching a real native
+--     ghost dump, but RedFalcon still found it "creepy" and asked to just hide the eyes outright.
+--     No real invisible/hidden material exists anywhere in this game's own content (confirmed via a
+--     pakcontents.xlsx sweep) -- per RedFalcon's own fallback call, the skin material is used
+--     instead, so the eye region reads as plain blank skin rather than a distinct orb.
+--   - MOUTH SLOT (matched by material name containing "mouth", e.g. MI_Pirate_Mouth -- confirmed
+--     fixed slot order [Eye, Mouth, Skin, Hair] on actor.Mesh, see the FAMILY_SKIN_MATERIAL comment
+--     above) gets the SAME skin material too -- CHANGED 2026-09-13, RedFalcon: "lets make the mouth
+--     the same texture as the skin. floating teeth are creepy". Originally used M_CharacterGhost_V2
+--     like the real native ghost does, but the disembodied teeth read as worse than the mismatch.
+--   - ANY OTHER SLOT on actor.Mesh (a 4th body-mesh-own slot beyond Eye/Mouth/Skin) gets
+--     M_CharacterGhost_V2 -- found 2026-09-12 by dumping a REAL native BP_NPC_QuestStatic_Ghost and
+--     comparing it against this function's first version, which had used a glowing/emissive eye
+--     material: the real ghost does NOT have glowing eyes at all (confirmed live: "He does not have
+--     glowing eyes though") -- its eye and that 4th slot use this one dedicated, zero-parameter base
+--     Material (mouth was moved to the skin bucket above, 2026-09-13).
+--   - HAIR/BEARD/MUSTACHE/WHISKERS/EYEBROWS: every OTHER SkeletalMeshComponent classified as
+--     hair-family (the SAME "/Hair/" path check + facialSlotOf() token match Spawner.
+--     RemoveHairOnActor already uses -- Eyebrows included, RedFalcon's own call, 2026-09-12: "if
+--     [eyebrows] can be retextured... i want them to have ghost hair as well" rather than removed)
+--     gets the ghost hair material on every one of its own slots by default -- confirmed correct
+--     against the real ghost dump (MI_Hair_Ghost, exact match). Optional `hairUsesArmor` arg swaps
+--     this to the armor material instead, for a quick side-by-side look (RedFalcon, 2026-09-12: "i
+--     want to see what it looks like when all the facial hair and eyebrows are the armor texture").
+--   - EVERYTHING ELSE (clothing/armor components) AND weapons/belt StaticMeshComponents: get the
+--     ghost armor material.
+--   - VISIBLE SKELETON MESH SWAP -- REMOVED 2026-09-13 (RedFalcon: "It looks like it's applying the
+--     ghosts armor. I only wanted to change textures no clothes."). A prior version (2026-09-12)
+--     swapped Torso/Legs/Feet/Hands/Headgear to the real `SK_ArmorCreature_Boneman_Spanish_Ghost_*`
+--     creature-armor MESHES to match a real native ghost dump's visible skeleton look -- but that
+--     replaces the actor's own worn clothing geometry with a different creature's armor pieces,
+--     which reads as changing what the actor is wearing, not just retexturing it. Dropped entirely;
+--     this preset now only ever calls SetMaterial (textures), never SetBodyPartMesh/mesh swaps, on
+--     any clothing/armor slot -- the actor keeps their own real clothes, just reskinned.
+-- All material paths are plain SetMaterial swaps (the same proven-safe pattern every other
+-- material tester in this file uses) -- no dynamic material instance, no pak edits, nothing new.
+local GHOST_SKIN_PATH  = "/Game/Character/Skeletal_Meshes/Human/Regular/Ghost/Materials/MI_Fable_Male_Ghost_Small"
+local GHOST_HAIR_PATH  = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Ghost/Materials/MI_Hair_Ghost"
+local GHOST_ARMOR_PATH = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Ghost/Materials/MI_Boneman_Ghost_Spanish"
+local GHOST_BASE_PATH  = "/Game/Character/Shaders/MasterMaterials/M_CharacterGhost_V2"
+function Spawner.MakeGhost(say, hairUsesArmor)
+    say = say or function(m) print("[LivingBase] [make-ghost] " .. tostring(m) .. "\n") end
+
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    -- BUG FIX (2026-09-12, live-caught: "skin material did not resolve" on a real, confirmed-
+    -- existing path): resolveAsset needs the fully-qualified "<path>.<AssetName>" form, not a bare
+    -- package path -- the exact same fix Spawner.AddBarbieFacialHair already needed. Every other
+    -- path-taking tool in this file appends this before calling resolveAsset; this one forgot it too.
+    local function withSuffix(p)
+        if not p:match("%.[%w_]+$") then
+            local last = p:match("([^/]+)$")
+            if last then return p .. "." .. last end
+        end
+        return p
+    end
+    local skinMat = resolveAsset(withSuffix(GHOST_SKIN_PATH))
+    local hairMat = resolveAsset(withSuffix(GHOST_HAIR_PATH))
+    local armorMat = resolveAsset(withSuffix(GHOST_ARMOR_PATH))
+    local baseMat = resolveAsset(withSuffix(GHOST_BASE_PATH))
+    if not (skinMat and skinMat:IsValid()) then say("skin material did not resolve: " .. GHOST_SKIN_PATH); return false end
+    if not (hairMat and hairMat:IsValid()) then say("hair material did not resolve: " .. GHOST_HAIR_PATH); return false end
+    if not (armorMat and armorMat:IsValid()) then say("armor material did not resolve: " .. GHOST_ARMOR_PATH); return false end
+    if not (baseMat and baseMat:IsValid()) then say("base ghost material did not resolve: " .. GHOST_BASE_PATH); return false end
+
+    -- 1) Base body: the slot matching the real skin-family naming (_Small/_Medium/_Large, same
+    -- pattern Spawner.TestSetSkinSize uses) gets the skin material; the eye slot ALSO gets the skin
+    -- material (RedFalcon, 2026-09-12: "the eyes are still creepy, lets just hide them" -- no real
+    -- invisible/hidden material exists anywhere in this game's own content, confirmed via a
+    -- pakcontents.xlsx sweep, so per RedFalcon's own fallback call, "use the same skin texture"
+    -- instead -- makes the eye region read as plain blank skin rather than a distinct orb, the
+    -- closest thing to "hidden" without a genuinely translucent material to reach for); the mouth
+    -- slot (matched by name containing "mouth") ALSO gets the skin material -- CHANGED 2026-09-13,
+    -- RedFalcon: "floating teeth are creepy" -- any remaining slot on actor.Mesh (the 4th
+    -- body-mesh-own slot) gets the base ghost material, matching the real native ghost's own recipe
+    -- (confirmed via lbprobedump).
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    local bodyFName = ""
+    local skinSlots, baseSlots = 0, 0
+    if body and body:IsValid() then
+        pcall(function() bodyFName = body:GetFName():ToString() end)
+        local numMats = 0
+        pcall(function() numMats = body:GetNumMaterials() end)
+        for slot = 0, numMats - 1 do
+            local mat = nil
+            pcall(function() mat = body:GetMaterial(slot) end)
+            local matName = ""
+            if mat and mat:IsValid() then pcall(function() matName = mat:GetFName():ToString() end) end
+            local isSkinSlot = matName:match("_Small$") or matName:match("_Medium$") or matName:match("_Large$")
+            local isEyeSlot = matName:lower():find("eye") ~= nil
+            local isMouthSlot = matName:lower():find("mouth") ~= nil
+            if isSkinSlot or isEyeSlot or isMouthSlot then
+                if pcall(function() body:SetMaterial(slot, skinMat) end) then skinSlots = skinSlots + 1 end
+            else
+                if pcall(function() body:SetMaterial(slot, baseMat) end) then baseSlots = baseSlots + 1 end
+            end
+        end
+    else
+        say(name .. " has no body Mesh component -- skin material skipped.")
+    end
+
+    -- 2) Every other SkeletalMeshComponent: hair-family (Hair/Beard/Mustache/Whiskers/Eyebrows)
+    -- gets the hair material, everything else (clothing/armor) gets the armor material.
+    local hairComps, armorComps = 0, 0
+    local cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent")
+    if cls and cls:IsValid() then
+        local comps
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local compFName = ""
+                pcall(function() compFName = c:GetFName():ToString() end)
+                -- Skip the body component itself (already handled in step 1) -- compared by
+                -- FName, never `==`, per this project's own established UE4SS component-identity
+                -- gotcha (two references to the same component are not guaranteed `==` here).
+                if compFName == "" or compFName ~= bodyFName then
+                    local curName, curFullPath = "", ""
+                    pcall(function()
+                        local sk = c.SkeletalMesh
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then sk = c:GetSkeletalMeshAsset() end
+                        if sk and sk:IsValid() then
+                            curName = sk:GetFName():ToString()
+                            pcall(function() curFullPath = sk:GetFullName() end)
+                        end
+                    end)
+                    local facialSlot = facialSlotOf(curName)
+                    local isHeadHair = curFullPath:find("/Hair/") ~= nil
+                    local isFacialHair = facialSlot ~= nil
+                    local isHairFamily = (isHeadHair or isFacialHair)
+                    -- hairUsesArmor (2026-09-12, RedFalcon: "i want to see what it looks like when
+                    -- all the facial hair and eyebrows are the armor texture as opposed to the
+                    -- [hair] texture" -- then, same day: "i like that, but i want to keep the hair
+                    -- on the head the original ghost hair") -- an optional A/B comparison for
+                    -- Beard/Mustache/Whiskers/Eyebrows ONLY, never the actual head-hair component --
+                    -- that one always stays the hair material regardless of this flag.
+                    local targetMat
+                    if isHeadHair then
+                        targetMat = hairMat
+                    elseif isFacialHair then
+                        targetMat = hairUsesArmor and armorMat or hairMat
+                    else
+                        targetMat = armorMat
+                    end
+                    local nm = 0
+                    pcall(function() nm = c:GetNumMaterials() end)
+                    local anySet = false
+                    for slot = 0, nm - 1 do
+                        if pcall(function() c:SetMaterial(slot, targetMat) end) then anySet = true end
+                    end
+                    if anySet then
+                        if isHairFamily then hairComps = hairComps + 1 else armorComps = armorComps + 1 end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2b) Weapons/belt accessories (RedFalcon, 2026-09-12: "apply the armor texture to any weapons
+    -- and belt accessories as well") -- these are StaticMeshComponents, not SkeletalMeshComponents
+    -- (the real prefix convention this project already mapped in full, WINDROSE_MODDING_NOTES.md
+    -- 19q: every socket-attached extra in the whole game is named `SM_Belt_Misc_*` or `SM_Drop_*`,
+    -- zero exceptions) -- so step 2's SkeletalMeshComponent-only sweep never touches them at all.
+    -- Unconditionally armor here -- no hair-family concept applies to a static prop.
+    local weaponComps = 0
+    local staticCls = StaticFindObject("/Script/Engine.StaticMeshComponent")
+    if staticCls and staticCls:IsValid() then
+        local comps
+        pcall(function() comps = actor:K2_GetComponentsByClass(staticCls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local nm = 0
+                pcall(function() nm = c:GetNumMaterials() end)
+                local anySet = false
+                for slot = 0, nm - 1 do
+                    if pcall(function() c:SetMaterial(slot, armorMat) end) then anySet = true end
+                end
+                if anySet then weaponComps = weaponComps + 1 end
+            end
+        end
+    end
+
+    -- 2c) Visible skeleton mesh swap -- REMOVED 2026-09-13 (see this function's own header comment):
+    -- RedFalcon found that swapping Torso/Legs/Feet/Hands/Headgear to the real Boneman-creature
+    -- meshes read as replacing the actor's clothes rather than retexturing them. This preset now
+    -- only ever touches materials, never meshes, on clothing/armor slots.
+
+    -- Eyes -- REMOVED 2026-09-12 (see this function's own header comment): the real native ghost
+    -- has no glowing eyes at all, confirmed by RedFalcon dumping one live. The eye slot is already
+    -- covered by step 1's base-ghost-material assignment (any actor.Mesh slot that isn't the skin
+    -- slot), so there's nothing left to do here.
+
+    say(string.format("target=%s skinSlots=%d baseGhostSlots=%d hairComps=%d(incl. eyebrows) armorComps=%d weaponComps=%d",
+        name, skinSlots, baseSlots, hairComps, armorComps, weaponComps))
+    pcall(function() Spawner.Toast("Ghost look applied to " .. name, 3.0) end)
+    return true
 end
 
 -- Spawner.TestSetSkinSize(sizeName, say) -- "lbtestskinsize <Small|Medium|Large>" (2026-09-02).
@@ -16868,6 +21745,275 @@ function Spawner.TestSetSkinSize(sizeName, say)
         (not okSet) and (" err=" .. tostring(errSet)) or "", tostring(currentName)))
     say("done -- check visually now, no reload needed.")
     return okSet
+end
+
+-- Spawner.TestReadSkinSize(say) -- pure-read counterpart to TestSetSkinSize above, for the Custom
+-- tab's "Read Current" button (2026-09-12, RedFalcon: "read all currently set properties we have
+-- (other than the body type and mesh ones)" -- Physique/skin size is a material swap, not a mesh
+-- one, so it belongs in that read). Exact same slot-detection as TestSetSkinSize (a material name
+-- ending in _Small/_Medium/_Large on actor.Mesh) but never calls SetMaterial. Returns the matched
+-- size name (e.g. "Medium") or nil if no sized skin material was found.
+function Spawner.TestReadSkinSize(say)
+    say = say or function(m) print("[LivingBase] [read-skinsize] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return nil end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return nil
+    end
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = target:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm then
+                for _, sz in ipairs(SKIN_SIZE_NAMES) do
+                    if nm:lower():match("_" .. sz:lower() .. "$") then
+                        say(string.format("skin material slot %d = %s (size=%s)", slot, nm, sz))
+                        return sz
+                    end
+                end
+            end
+        end
+    end
+    say(string.format("no sized skin material found (checked %d slots).", numMats))
+    return nil
+end
+
+-- pickSkinSwapAssetForSize(rules, size) -- rules is one of Config.SkinFamilySwapRules/
+-- Corrupted/Drowned/Ghoul/IsraelSkinSwapRules' own return shape (one {match,to} pair per size,
+-- match always ending in "_"..size since that's how every one of those generators builds it) --
+-- picks out just the `to` path for the given size directly, by suffix, without needing to actually
+-- run `match` as a pattern against anything. Falls back to the first rule's `to` if `size` isn't
+-- recognized (Ghoul/Israel-Male's 3 rules all point at the SAME single asset anyway, so any of them
+-- is correct there).
+local function pickSkinSwapAssetForSize(rules, size)
+    for _, r in ipairs(rules or {}) do
+        if r.match and r.match:sub(-#size) == size then
+            return r.to
+        end
+    end
+    return rules and rules[1] and rules[1].to or nil
+end
+
+-- Spawner.ApplyCustomTabSkinTone(toneName, say) -- the Custom tab's new "Skin Tone" swatch selector
+-- (2026-09-14, RedFalcon: "put in place of where Physique was a Skin Tone Swatch Selector...This
+-- will be the different skin materials, by default they are the same as the body mesh and the
+-- physique selection. When you select a different swatch I would like it to change to the mesh
+-- skin texture that matches physique.").
+--
+-- FIXED same day (RedFalcon: "something is funky as it isnt changing skin tone on anyone after
+-- selecting drowned... I want to make sure that skin tone can always be changed"). Root cause,
+-- confirmed live via the log (Drowned applies fine -- swapped=1 -- then EVERY tone after it fails,
+-- swapped=0, on that same target): the original version reused Spawner.DeCorrupt's generic
+-- match-CURRENT-material-NAME sweep, whose `match` patterns are "MI_%a+_"..sex.."_"..size --
+-- keying off the sex actually being findable IN the current name. Drowned's own real asset is
+-- ALWAYS "..._Male_<size>" even when applied to a Female target (RedFalcon's own explicit
+-- instruction, no separate Female asset exists) -- so after Drowned applies, the material's name
+-- says "Male" while the target IS Female, and no "_Female_<size>" pattern (nor any other family's)
+-- can ever match it again. (Separately, some NATIVE NPCs turned out to already have this same
+-- sex/material-name mismatch pre-existing, e.g. a logged "Herbalist_M_Albion" whose very FIRST
+-- attempt failed too -- same root cause, just not self-inflicted.)
+--
+-- Fix: stop trying to identify the skin slot by matching the CURRENT name's sex+family -- instead
+-- find it by ROLE, the exact same sex-AGNOSTIC "ends in _Small/_Medium/_Large, or is one of the 2
+-- known flat single-asset names" check Spawner.TestReadSkinTone/TestSetSkinSize already use, then
+-- SetMaterial that ONE slot directly (no Spawner.DeCorrupt sweep needed at all -- this is simpler
+-- AND immune to the naming mismatch, since it never needs the OLD name to contain the right sex).
+-- "matches physique": the located slot's OWN current size suffix (if it has one) is reused for the
+-- new tone via pickSkinSwapAssetForSize above -- same "carry the current size over" behavior as
+-- before, just driven by a name-agnostic size read instead of a sex-specific pattern match. Ghoul
+-- and Israel-on-a-Male (flat, no size suffix at all) fall back to "Medium" since there's genuinely
+-- no size information left to read once one of those is applied -- Physique then has nothing
+-- size-specific to act on (Spawner.TestSetSkinSize's own slot-finder, unchanged, simply won't find
+-- a sized name there either) -- "some do not have a small, medium, or large variant so in that case
+-- just apply the one," RedFalcon's own words -- but the Skin Tone swatch itself always still finds
+-- the slot and can freely switch to any OTHER tone from there, since that slot-finder never
+-- required a size (or sex) to already be present.
+function Spawner.ApplyCustomTabSkinTone(toneName, say)
+    say = say or function(m) print("[LivingBase] [custom-skintone] " .. tostring(m) .. "\n") end
+    if not toneName or toneName == "" then
+        say("usage: internal call requires a skin tone name")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    local name = tostring(e.label or "actor")
+
+    local comp
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say(name .. " has no CompositeMeshComponent -- skin-tone swap needs a composite-driven body.")
+        return false
+    end
+    local sexVal
+    pcall(function() sexVal = comp:GetBodySex() end)
+    local sexN = tonumber(sexVal)
+    local sex = (sexN == 1) and "Male" or "Female"
+
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say(name .. " has no readable body Mesh -- cannot swap skin.")
+        return false
+    end
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    local skinSlot, currentSize = nil, "Medium"
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = target:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm == "MI_Boss_IsraelHands" or nm == "MI_NPC_IsraelHands" then
+                skinSlot = slot
+                break
+            elseif nm then
+                for _, sz in ipairs(SKIN_SIZE_NAMES) do
+                    if nm:lower():match("_" .. sz:lower() .. "$") then
+                        skinSlot = slot
+                        currentSize = sz
+                        break
+                    end
+                end
+            end
+        end
+        if skinSlot then break end
+    end
+    if skinSlot == nil then
+        say(string.format("%s: no skin material slot found (checked %d slots).", name, numMats))
+        return false
+    end
+
+    local lower = toneName:lower()
+    local rules
+    if lower == "corrupted" then
+        rules = Config.CorruptedSkinSwapRules(sex)
+    elseif lower == "drowned" then
+        rules = Config.DrownedSkinSwapRules(sex)
+    elseif lower == "ghoul" then
+        rules = Config.GhoulSkinSwapRules(sex)
+    elseif lower == "israel" then
+        rules = Config.IsraelSkinSwapRules(sex)
+    else
+        local matched = nil
+        for _, f in ipairs(Config.SKIN_FAMILIES or {}) do
+            if f:lower() == lower then matched = f; break end
+        end
+        if not matched then
+            say(string.format("unknown skin tone '%s' -- known: %s", toneName, table.concat(Config.CUSTOM_TAB_SKIN_TONES or {}, ", ")))
+            return false
+        end
+        rules = Config.SkinFamilySwapRules(matched, sex)
+    end
+
+    local path = pickSkinSwapAssetForSize(rules, currentSize)
+    if not path then
+        say(string.format("%s: could not derive an asset path for tone '%s' size '%s'.", name, toneName, currentSize))
+        return false
+    end
+    local newMat = resolveAsset(path)
+    if not (newMat and newMat:IsValid()) then
+        say(string.format("%s: skin tone '%s' mesh did not resolve: %s", name, toneName, path))
+        return false
+    end
+    local okSet, errSet = pcall(function() target:SetMaterial(skinSlot, newMat) end)
+    say(string.format("skin tone '%s' applied to %s (sex=%s, size=%s, slot=%d) = %s%s", toneName, name, sex, currentSize, skinSlot,
+        tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    if okSet then
+        pcall(function() Spawner.Toast(toneName .. " skin applied to " .. name, 2.5) end)
+        return true
+    end
+    return false
+end
+
+-- SKIN_TONE_NAME_PREFIXES / Spawner.TestReadSkinTone(say) -- pure-read counterpart to
+-- ApplyCustomTabSkinTone above, for the Custom tab's "Read Current" button. Reverse-derives which
+-- of Config.CUSTOM_TAB_SKIN_TONES's 11 tones (if any) the target's CURRENT skin material belongs
+-- to, by matching the material's own name PREFIX (every family's real asset name starts with
+-- "MI_<Family>_", except Corrupted which is really the Senkamati family under the hood, and
+-- Ghoul/Israel which are single flat asset names with no size suffix at all -- see the skin slot
+-- finder below, widened from Spawner.TestReadSkinSize's own to also recognize those two exact
+-- names). Returns nil (not "Adventurer" or any default) when the current material doesn't match
+-- any of these 11 -- e.g. the target's own native, un-swapped family/size that this picker simply
+-- doesn't cover, or nothing readable at all -- so a fresh Read Current on a new target correctly
+-- reverts the swatch to "nothing selected" instead of showing a stale guess.
+local SKIN_TONE_NAME_PREFIXES = {
+    { prefix = "MI_Adventurer_", name = "Adventurer" },
+    { prefix = "MI_African_",    name = "African" },
+    { prefix = "MI_Albion_",     name = "Albion" },
+    { prefix = "MI_Fable_",      name = "Fable" },
+    { prefix = "MI_Native_",     name = "Native" },
+    { prefix = "MI_Orient_",     name = "Orient" },
+    { prefix = "MI_Scum_",       name = "Scum" },
+    { prefix = "MI_Senkamati_",  name = "Corrupted" },
+    { prefix = "MI_Drowned_",    name = "Drowned" },
+    { prefix = "MI_Boss_IsraelHands", name = "Ghoul" },
+    { prefix = "MI_NPC_IsraelHands",  name = "Israel" },
+}
+function Spawner.TestReadSkinTone(say)
+    say = say or function(m) print("[LivingBase] [read-skintone] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return nil end
+    local target = nil
+    pcall(function() target = actor.Mesh end)
+    if not (target and target:IsValid()) then
+        say("actor.Mesh not readable/valid")
+        return nil
+    end
+    local numMats = 0
+    pcall(function() numMats = target:GetNumMaterials() end)
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = target:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm then
+                local isSkinSlot = (nm == "MI_Boss_IsraelHands") or (nm == "MI_NPC_IsraelHands")
+                if not isSkinSlot then
+                    for _, sz in ipairs(SKIN_SIZE_NAMES) do
+                        if nm:lower():match("_" .. sz:lower() .. "$") then isSkinSlot = true; break end
+                    end
+                end
+                if isSkinSlot then
+                    for _, p in ipairs(SKIN_TONE_NAME_PREFIXES) do
+                        if nm:find(p.prefix, 1, true) == 1 then
+                            say(string.format("skin material slot %d = %s -> tone=%s", slot, nm, p.name))
+                            return p.name
+                        end
+                    end
+                    say(string.format("skin material slot %d = %s -- not one of the %d Custom-tab tones (native/unknown family).", slot, nm, #SKIN_TONE_NAME_PREFIXES))
+                    return nil
+                end
+            end
+        end
+    end
+    say(string.format("no skin material slot found (checked %d slots).", numMats))
+    return nil
 end
 
 -- Spawner.TestDumpMeshSlots(say) -- "lbtestmeshslots" (2026-09-02). RedFalcon's question: does the
@@ -18144,6 +23290,77 @@ function Spawner.RestorePlacementCameraOffset()
         Spawner._placementCamOrigParams = nil
         Spawner._placementCamOrigUseSettingsFov = nil
     end
+end
+
+-- Spawner.TestSetFOV(value, say) -- "lbfov <value>" (2026-09-13, RedFalcon: "is there a command to
+-- change FOV?"). General-purpose ABSOLUTE FOV setter, independent of
+-- Spawner.ApplyPlacementCameraOffset above (which only ever applies a fixed +6 DELTA, automatically,
+-- while actively placing something). Same proven detach-then-write recipe as that function -- see
+-- its own header comment for the full root-cause story -- Windrose's FollowCamera keeps reasserting
+-- its own FOV via CameraParams unless bUseSettingsFov is cleared and CameraParams is nilled out
+-- FIRST. Saves the pre-detach baseline in its OWN separate globals (_testFov*, not
+-- Spawner._placementCam*) so this command and placement mode don't stomp each other's "value to
+-- restore" bookkeeping if both happen to run in the same session. Only captures the baseline on the
+-- FIRST call (nil-checked) so a second lbfov call doesn't overwrite the real original with an
+-- already-modified value.
+function Spawner.TestSetFOV(value, say)
+    say = say or function(m) print("[LivingBase] [test-fov] " .. tostring(m) .. "\n") end
+    local target = tonumber(value)
+    if not target then
+        say("usage: lbfov <value> (e.g. 90), or 'lbfov reset' to restore the original FOV")
+        return false
+    end
+    local pc, pawn, cam
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+        cam = pawn and pawn:IsValid() and pawn.FollowCamera
+    end)
+    if not (cam and cam:IsValid()) then
+        say("no pawn.FollowCamera -- are you actually in-game with a pawn possessed?")
+        return false
+    end
+    local ok, err = pcall(function()
+        if Spawner._testFovOrigValue == nil then
+            Spawner._testFovOrigValue = cam.FieldOfView
+            Spawner._testFovOrigUseSettingsFov = cam.bUseSettingsFov
+            Spawner._testFovOrigParams = cam.CameraParams
+        end
+        cam.bUseSettingsFov = false
+        cam.CameraParams = nil
+        cam.FieldOfView = target
+    end)
+    say(string.format("FOV set to %.1f = %s%s", target, tostring(ok), (not ok) and (" err=" .. tostring(err)) or ""))
+    return ok
+end
+
+-- Spawner.ResetFOV(say) -- "lbfov reset". Restores whatever FOV/CameraParams/bUseSettingsFov were
+-- active before the FIRST Spawner.TestSetFOV call this session -- same restore shape as
+-- Spawner.RestorePlacementCameraOffset's own FOV branch, just for this standalone command's saved
+-- state instead of the placement-mode one.
+function Spawner.ResetFOV(say)
+    say = say or function(m) print("[LivingBase] [test-fov] " .. tostring(m) .. "\n") end
+    if Spawner._testFovOrigValue == nil then
+        say("nothing to reset -- lbfov hasn't changed anything yet this session.")
+        return false
+    end
+    local origValue = Spawner._testFovOrigValue
+    local ok, err = pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local pawn = pc and pc:IsValid() and pc.Pawn
+        local cam = pawn and pawn:IsValid() and pawn.FollowCamera
+        if not (cam and cam:IsValid()) then error("no pawn.FollowCamera") end
+        cam.FieldOfView = Spawner._testFovOrigValue
+        if Spawner._testFovOrigParams ~= nil then cam.CameraParams = Spawner._testFovOrigParams end
+        if Spawner._testFovOrigUseSettingsFov ~= nil then cam.bUseSettingsFov = Spawner._testFovOrigUseSettingsFov end
+    end)
+    say(string.format("FOV reset to %.1f = %s%s", origValue, tostring(ok), (not ok) and (" err=" .. tostring(err)) or ""))
+    if ok then
+        Spawner._testFovOrigValue = nil
+        Spawner._testFovOrigParams = nil
+        Spawner._testFovOrigUseSettingsFov = nil
+    end
+    return ok
 end
 
 -- Spawner.StartPlacementPreview/ConfirmPlacement/CancelPlacement -- REAL FEATURE (2026-08-20): a

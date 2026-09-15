@@ -1,6 +1,15 @@
-# gen_socketitems_lua.py -- (2026-09-07) regenerates the Config.SOCKETITEMS_* block in config.lua
-# from RedFalcon's own Other/SocketItems.xlsx (5 tabs: Sockets, Item Ratios, Rarity Ratios, Items,
-# Weapons -- see WINDROSE_MODDING_NOTES.md 19u for the full design/rules this data drives).
+# gen_socketitems_lua.py -- (2026-09-07, extended 2026-09-15) regenerates the Config.SOCKETITEMS_*
+# and Config.BELTSTRAPS_PIECES blocks in config.lua from RedFalcon's own Other/SocketItems.xlsx
+# (7 tabs: Belts and Straps, Sockets, Item Ratios, Rarity Ratios, Items, Weapons, plus a "Socket
+# List" tab that's just RedFalcon's own UI mockup, not real data -- see WINDROSE_MODDING_NOTES.md
+# 19u for the full design/rules this data drives, and the Custom-tab "Belts and Straps" section for
+# the 2026-09-15 GUI work built on top of it).
+#
+# 2026-09-15: Items/Weapons/Sockets tabs each gained a real "Friendly Name" column (Sockets also
+# gained "test command", ignored here -- it's just a copy/paste console-command helper for RedFalcon
+# himself). Column layouts below match the CURRENT tabs; if RedFalcon reorders/adds columns again,
+# re-check with `ws.iter_rows(min_row=1,max_row=1,values_only=True)` before assuming these indices
+# still line up.
 #
 # Run this after ANY edit to SocketItems.xlsx, then paste the printed block over the existing
 # Config.SOCKETITEMS_* section in config.lua (it starts right before the "OPTIONAL: ModSettings"
@@ -51,15 +60,44 @@ def luaarr(items):
 
 out = []
 
+# Excluded from the random socket-item pool entirely (2026-09-14, RedFalcon: "let's remove
+# soc_Lantern from the mix for the socket randomization" -- reserved for the deliberate
+# lbtestlanternset/lbtestlanternmesh/lbtestlanternlight feature; a random belt-misc item landing
+# there would visually clash with an intentionally-summoned lantern). Filtered here rather than
+# hand-edited into config.lua's generated output, and rather than edited row-by-row in the
+# spreadsheet's per-item Sockets columns, since Config.SOCKETITEMS_SOCKETS (the "Sockets" tab below)
+# is the actual master pool Spawner.TestGenerateSocketItems draws real candidate sockets from -- an
+# item's own per-row socket list is only consulted AFTER a socket's already been picked from this
+# pool, so excluding it here is the single correct choke point.
+EXCLUDED_SOCKETS = {"soc_Lantern"}
+
+# ---- Belts and Straps ---- (2026-09-15, new tab: the real Belt/Sling/Strap/Frog MESH pieces
+# themselves, distinct from the soc_*/weapon ACCESSORY sockets below. "Set" rows (Set 1/3/4) carry
+# no mesh data -- they're just the valid Set-number markers the Custom tab's "Set" dropdown offers,
+# each meaning "apply Belt N + Sling N + Strap N together". The "Shaman Necklace" row (Type=Sling)
+# has NO male mesh -- RedFalcon: "the senkamati neck item can be applied to either sex, even though
+# it is female only mesh" -- Lua applies the female mesh regardless of target sex for that one row.
+ws = wb["Belts and Straps"]
+out.append("Config.BELTSTRAPS_PIECES = {")
+for row in ws.iter_rows(min_row=2, values_only=True):
+    pieceType, friendly, maleMesh, femaleMesh = row[:4]
+    if pieceType is None or friendly is None:
+        continue
+    maleLua = luastr(maleMesh) if maleMesh else "nil"
+    femaleLua = luastr(femaleMesh) if femaleMesh else "nil"
+    out.append(f"  {{ type={luastr(pieceType)}, friendlyName={luastr(friendly)}, maleMesh={maleLua}, femaleMesh={femaleLua} }},")
+out.append("}")
+out.append("")
+
 # ---- Sockets ----
 ws = wb["Sockets"]
 out.append("Config.SOCKETITEMS_SOCKETS = {")
 for row in ws.iter_rows(min_row=2, values_only=True):
-    socket, locDesc, socType, beltpiece, locTag = row[:5]
-    if socket is None:
+    socket, locDesc, socType, beltpiece, locTag, friendly = row[:6]
+    if socket is None or socket in EXCLUDED_SOCKETS:
         continue
     bp = split_list(beltpiece)
-    out.append(f"  {{ socket={luastr(socket)}, location={luastr(locDesc)}, socType={luastr(socType)}, beltpiece={luaarr(bp)}, locationTag={luastr(locTag)} }},")
+    out.append(f"  {{ socket={luastr(socket)}, location={luastr(locDesc)}, socType={luastr(socType)}, beltpiece={luaarr(bp)}, locationTag={luastr(locTag)}, friendlyName={luastr(friendly)} }},")
 out.append("}")
 out.append("")
 
@@ -86,14 +124,15 @@ for row in ws.iter_rows(min_row=2, values_only=True):
 out.append("}")
 out.append("")
 
-# ---- Items ----
+# ---- Items ---- (columns as of 2026-09-15: Asset, Test Command, Short Name, Friendly Name,
+# Available Socket, Limit, Tag, Rarity -- Test Command ignored)
 ws = wb["Items"]
 out.append("Config.SOCKETITEMS_ITEMS = {")
 for row in ws.iter_rows(min_row=2, values_only=True):
-    asset, shortName, availSocket, limit, tag, rarity = row[:6]
+    asset, _testCmd, shortName, friendly, availSocket, limit, tag, rarity = row[:8]
     if asset is None:
         continue
-    socks = split_list(availSocket)
+    socks = [s for s in split_list(availSocket) if s not in EXCLUDED_SOCKETS]
     tags = split_list(tag)
     # Defensive Limit parse -- one real row has had a stray string like "1_L" instead of a number.
     if isinstance(limit, (int, float)):
@@ -101,20 +140,21 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     else:
         m = re.match(r"^\s*(\d+)", str(limit or ""))
         limitNum = int(m.group(1)) if m else 1
-    out.append(f"  {{ asset={luastr(asset)}, shortName={luastr(shortName)}, sockets={luaarr(socks)}, limit={limitNum}, tags={luaarr(tags)}, rarity={luastr(rarity)} }},")
+    out.append(f"  {{ asset={luastr(asset)}, shortName={luastr(shortName)}, friendlyName={luastr(friendly)}, sockets={luaarr(socks)}, limit={limitNum}, tags={luaarr(tags)}, rarity={luastr(rarity)} }},")
 out.append("}")
 out.append("")
 
-# ---- Weapons ----
+# ---- Weapons ---- (columns as of 2026-09-15: Asset, Short Name, Friendly Name, Available Socket,
+# Tag, Location, Rarity)
 ws = wb["Weapons"]
 out.append("Config.SOCKETITEMS_WEAPONS = {")
 for row in ws.iter_rows(min_row=2, values_only=True):
-    asset, shortName, availSocket, tag, location, rarity = row[:6]
+    asset, shortName, friendly, availSocket, tag, location, rarity = row[:7]
     if asset is None:
         continue
-    socks = split_list(availSocket)
+    socks = [s for s in split_list(availSocket) if s not in EXCLUDED_SOCKETS]
     tags = split_list(tag)
-    out.append(f"  {{ asset={luastr(asset)}, shortName={luastr(shortName)}, sockets={luaarr(socks)}, tags={luaarr(tags)}, location={luastr(location)}, rarity={luastr(rarity)} }},")
+    out.append(f"  {{ asset={luastr(asset)}, shortName={luastr(shortName)}, friendlyName={luastr(friendly)}, sockets={luaarr(socks)}, tags={luaarr(tags)}, location={luastr(location)}, rarity={luastr(rarity)} }},")
 out.append("}")
 
 result = "\n".join(out)

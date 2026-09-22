@@ -242,6 +242,7 @@ local VK_FALLBACK = {
   OEM_LEFT_BRACKET = 0xDB, OEM_RIGHT_BRACKET = 0xDD, OEM_QUOTE = 0xDE,
   MOUSE_LEFT = 0x01, MOUSE_RIGHT = 0x02, MOUSE_MIDDLE = 0x04, MOUSE_THUMB1 = 0x05, MOUSE_THUMB2 = 0x06,
   F9 = 0x78, F10 = 0x79, F11 = 0x7A, F12 = 0x7B,
+  HOME = 0x24, END = 0x23, INSERT = 0x2D, DELETE = 0x2E, PAGE_UP = 0x21, PAGE_DOWN = 0x22,
 }
 -- Letters (A-Z) and top-row digits (DIGIT_0..DIGIT_9): Windows VK codes equal their ASCII values
 -- for these ranges, so generated rather than hand-typed to avoid transcription errors. "A".."Z" is
@@ -374,6 +375,14 @@ register("despawn", windowGatedDebouncedAction(Testbed.DespawnInFront, "despawn"
 -- Numpad +: target lock (2026-08-13) -- pins despawn/live-edit to ONE tracked actor instead of
 -- re-picking "nearest in front" on every press. UNCHANGED by the numpad rebuild.
 register("targetLock", windowGatedAction(function() Spawner.ToggleTargetLock() end, "targetLock"))
+
+-- HOME: probe the nearest/locked target's CompositeMeshComponent.DefaultParams.CustomizationData
+-- (2026-09-16, RedFalcon: "to make things easier on me, can we make a key run the command" -- the
+-- manual, one-at-a-time roster-preset-building workflow this project settled on after the
+-- automated lbwalkroster batch approach proved unreliable). Not a numpad key -- every numpad slot
+-- was already spoken for by the 2026-08-24 rebuild, and this is a pure diagnostic read anyway, not
+-- a gameplay action, so it doesn't need to live on the numpad convention.
+register("probeDefaultParams", windowGatedAction(function() Spawner.TestReadDefaultParamsOnTarget() end, "probeDefaultParams"))
 
 -- BUILD-GHOST-PREVIEW (2026-08-20): confirm/cancel a live-following placement started from the
 -- LivingBaseSpawnMenu Spawn button. Moved off F5/F6/F7/F8 onto the numpad (2026-08-24).
@@ -512,10 +521,15 @@ local SPAWN_MENU_HANDLERS = {
     -- risking `result.IsValid` indexing a bare boolean. No tracking/persist.txt entry either --
     -- consistent with RedFalcon's own framing of this as not needing persistence yet, since the
     -- pose only ever modifies an actor that already exists.
+    -- 2026-09-21, RedFalcon: "when a pose is selected in the custom tab, it launches using
+    -- lbposescrub in play mode" -- swapped from the plain looping Spawner.TestApplyPoseByPath to
+    -- Spawner.PoseScrubStartAndPlay so the resulting playback is scrub-trackable (Spawner.poseScrub)
+    -- from the instant it starts, ready for the Custom tab's own Play/Pause/Frame controls with no
+    -- separate "arm scrubbing" step needed first.
     CUSTOM_POSES = function(index)
         local row = Config.CUSTOM_POSES and Config.CUSTOM_POSES[index]
         if not row then return false, "index " .. tostring(index) .. " out of range" end
-        local ok, err = pcall(function() Spawner.TestApplyPoseByPath(row.path) end)
+        local ok, err = pcall(function() Spawner.PoseScrubStartAndPlay(row.path) end)
         if not ok then return false, tostring(err) end
         return false
     end,
@@ -590,6 +604,26 @@ local SPAWN_MENU_HANDLERS = {
         if not ok then return false, tostring(err) end
         return false
     end,
+    -- "Mobile" named-NPC spawns (2026-09-20) -- deliberately a BESPOKE handler here, NOT registered
+    -- in SPAWN_MENU_STATUE_ROSTERS below, even though it dispatches the same by-name way every
+    -- statue roster does. That table's own loop (a few lines down) ALSO populates
+    -- Spawner.FriendlyLabels[shortClassName] from spawn_menu.ini -- several of this roster's rows
+    -- share a class with an existing STANDING_STATUES entry (Marita's idle vs. mobile spawn are the
+    -- same class), and that map has no per-roster dimension, so registering there would let this
+    -- roster's label silently clobber (or lose to) the statue roster's own one depending on Lua's
+    -- unspecified `pairs()` order. This roster's own placeMobileQuestNPC (testbed.lua) uses each
+    -- row's explicit `label` field directly instead, so it never needs FriendlyLabels at all.
+    -- NOTE: inlines the short-class-name match itself rather than calling spawnMenuStatueShortName
+    -- -- that local function isn't declared until further down this file (see its own header
+    -- comment on why it's a small duplicate, not a shared call, for exactly this ordering reason;
+    -- SPAWN_MENU_HANDLERS is a plain table literal evaluated top-to-bottom, so referencing a later
+    -- local here would silently resolve to a global nil, not the intended function).
+    MOBILE_QUEST_NPCS = function(index)
+        local row = Config.MOBILE_QUEST_NPCS and Config.MOBILE_QUEST_NPCS[index]
+        if not row then return false, "index " .. tostring(index) .. " out of range" end
+        local shortName = tostring(row.path):match("([%w_]+)%.[%w_]+$") or tostring(row.path)
+        return Testbed.SpawnMobileQuestNPCByName(shortName)
+    end,
 }
 
 -- Rosters whose handler modifies an EXISTING target rather than spawning a new one -- see the
@@ -610,6 +644,11 @@ local SPAWN_MENU_STATUE_ROSTERS = {
     SEATED_STATUES      = { list = Config.SEATED_STATUES,      fn = Testbed.SpawnSeatedByName },
     CHAIR_STATUES        = { list = Config.CHAIR_STATUES,       fn = Testbed.SpawnChairByName },
     INTERACTIVE_STATUES = { list = Config.INTERACTIVE_STATUES, fn = Testbed.SpawnInteractiveByName },
+    -- Monsterous root category (2026-09-20) -- same {faction,path} shape and by-name dispatch as
+    -- the four above, its class is unique (never shared with another roster), so it's safe to let
+    -- it populate Spawner.FriendlyLabels via the generic loop below too -- unlike MOBILE_QUEST_NPCS,
+    -- which is deliberately NOT registered here, see that roster's own bespoke handler below.
+    MONSTEROUS_STANDING = { list = Config.MONSTEROUS_STANDING, fn = Testbed.SpawnMonsterousByName },
 }
 for roster, def in pairs(SPAWN_MENU_STATUE_ROSTERS) do
     SPAWN_MENU_HANDLERS[roster] = function(index)
@@ -762,6 +801,15 @@ local function pollSpawnMenuRequest()
         elseif verb == "SPAWN" and result and result.IsValid and result:IsValid()
                and (roster == "DECOR" or roster == "TOWNSFOLK_CLASSES" or roster == "FACTION_VISITOR_LOOKS"
                     or roster == "LIVESTOCK" or roster == "FEMALE_RESKIN_TARGETS" or roster == "SENKAMATI_LOOKS"
+                    -- MOBILE_QUEST_NPCS (2026-09-20): named explicitly here rather than via
+                    -- SPAWN_MENU_STATUE_ROSTERS[roster] -- that table is deliberately skipped for
+                    -- this roster to avoid a Spawner.FriendlyLabels collision (see Config.
+                    -- MOBILE_QUEST_NPCS' own comment), but placement-preview ("drag it into place
+                    -- before it wanders off") is a completely separate, unrelated mechanism -- a
+                    -- freshly-spawned Mobile NPC needs it just as much as any other walker roster,
+                    -- caught by RedFalcon: "i think you forgot to add the drag and drop options to
+                    -- the new walkers."
+                    or roster == "MOBILE_QUEST_NPCS"
                     or SPAWN_MENU_STATUE_ROSTERS[roster]) then
             -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues, 2026-08-24 to
             -- townsfolk/crew/livestock/female-walkers/Senkamati). Briefly pulled the four humanoid
@@ -900,12 +948,31 @@ local function pollCustomColorRequest()
             end
         end
     end)
+    return true
 end
 
 -- PURE READ -- never touches restoreGate, same as lbdumpcpd/lbprobecpd staying available
 -- regardless of the world-load restore lock (nothing here writes anything to the game). All the
 -- actual target-resolution/CPD-reading work lives in Spawner.TestReadCategoryColors (spawner.lua)
 -- -- findNearestSpawnInFront is a spawner.lua-local, not reachable from this file directly.
+-- pollCustomColorReadRequest -- STAGING REVERTED, then a SECOND cause found (2026-09-16).
+-- RedFalcon reproduced a crash twice in a row (a Barbie's own auto-detect, and a belt/strap piece
+-- apply's own auto-triggered requestReadCurrent()) where a read firing immediately after a
+-- mesh-mutation burst crashed early. First fix attempt: this function had been restructured into a
+-- chain of small ExecuteWithDelay-paced stages; reverted back to one atomic ExecuteInGameThread
+-- burst (all 8 steps), on the theory that ExecuteWithDelay's own callback not running on the game
+-- thread was opening an interleaving window between stages. That revert did NOT fully fix it --
+-- RedFalcon reproduced it a THIRD time (stripped an NPC's belts, added one back, crashed) with the
+-- staging already gone. Real cause: CustomMenu.cpp fires a mutating request (belt piece, clothes
+-- item, hair, etc.) AND requestReadCurrent() together on one click, so both land in the SAME 400ms
+-- customColorPollLoop tick -- even fully atomic, the mutation's own ExecuteInGameThread burst and
+-- the read's burst were still running back-to-back with no real frame boundary between them. Fixed
+-- at the CALLER (customColorPollLoop, below): every mutating poll handler now returns true when it
+-- actually processed a request, and the read is skipped entirely (left for the next tick, 400ms
+-- later, via its own request-file check) whenever any mutation ran in the same tick. The belts/
+-- clothes single-pass array-walk fixes from this same investigation stay in place regardless.
+-- `stepLog` (the VERBOSE-gate fix -- `log()` only prints when Config.VERBOSE is true, which is
+-- false in this deployment) is kept, since it's independently useful for future diagnosis.
 local function pollCustomColorReadRequest()
     local path = findCustomColorReadRequestPath()
     if not path then return end
@@ -922,6 +989,15 @@ local function pollCustomColorReadRequest()
         -- category's own array length + resolved values) so a "nothing" result can be diagnosed
         -- from the log directly instead of guessing.
         local function say(m) print("[LivingBase] [custom-read-current] " .. tostring(m) .. "\n") end
+        -- Per-step "starting" breadcrumbs (2026-09-16, RedFalcon: "sometimes read current crashes
+        -- while running") -- a genuine native access violation inside UE4SS.dll's own reflection
+        -- bridge leaves ZERO further log output and is NOT catchable by the pcall wrapping each
+        -- step below -- pcall only catches Lua-level errors, never a real AV. stepLog, NOT the
+        -- file-global `log()` (2026-09-16 fix: `log()` only prints when Config.VERBOSE is true,
+        -- which is false in this deployment -- every one of these breadcrumbs was silently
+        -- no-op'ing until this fix).
+        local function stepLog(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+        stepLog("custom-read-current: starting step 1/8 (cloth category colors)")
         local ok, results = pcall(function()
             return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES, say)
         end)
@@ -931,7 +1007,7 @@ local function pollCustomColorReadRequest()
                     r.c1 and tostring(r.c1) or "-", r.c2 and tostring(r.c2) or "-", r.c3 and tostring(r.c3) or "-")
             end
         elseif not ok then
-            log("custom tab read-current FAILED: " .. tostring(results))
+            stepLog("custom tab read-current FAILED: " .. tostring(results))
         end
 
         -- Physique + Hair colors (2026-09-12, RedFalcon: "read all currently set properties we have
@@ -940,13 +1016,15 @@ local function pollCustomColorReadRequest()
         -- is meant to populate the whole tab in one shot. Deliberately NOT reading back which Hair/
         -- Beard/Mustache/Whiskers MESH is currently equipped (that's the "mesh" RedFalcon asked to
         -- leave out) -- only the material-swap-shaped properties (skin size, hair-family CPD color).
+        stepLog("custom-read-current: starting step 2/8 (skin size)")
         local okSize, size = pcall(function() return Spawner.TestReadSkinSize(say) end)
         if okSize and size then
             lines[#lines + 1] = "PHYSIQUE:" .. size
         elseif not okSize then
-            log("custom tab read-current (physique) FAILED: " .. tostring(size))
+            stepLog("custom tab read-current (physique) FAILED: " .. tostring(size))
         end
 
+        stepLog("custom-read-current: starting step 3/8 (hair colors)")
         local okHairColors, hairColors = pcall(function() return Spawner.TestReadHairColors(say) end)
         if okHairColors and hairColors then
             for _, bp in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
@@ -955,30 +1033,38 @@ local function pollCustomColorReadRequest()
                 end
             end
         elseif not okHairColors then
-            log("custom tab read-current (hair colors) FAILED: " .. tostring(hairColors))
+            stepLog("custom tab read-current (hair colors) FAILED: " .. tostring(hairColors))
         end
 
         -- Hair STYLES too (2026-09-12, RedFalcon: "i want read current to check all items including
         -- hair styles and colors" -- widened from the color-only pass above).
-        local okHairStyles, hairStyles = pcall(function() return Spawner.TestReadHairStyles(say) end)
+        stepLog("custom-read-current: starting step 4/8 (hair styles)")
+        local okHairStyles, hairStyles, hairSlotAvailable = pcall(function() return Spawner.TestReadHairStyles(say) end)
         if okHairStyles and hairStyles then
             for _, bp in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
                 if hairStyles[bp] then
                     lines[#lines + 1] = string.format("HAIRSTYLE:%s:%s", bp, hairStyles[bp])
                 end
+                -- HAIRSLOT:<bodyPart>:0|1 (2026-09-16, RedFalcon: "let's extend this to the hair,
+                -- facial hair and belts and straps") -- ALWAYS emitted for all 5 (same "always sent,
+                -- unlike the conditional STYLE line" convention CLOTHESSLOT already established).
+                if hairSlotAvailable and hairSlotAvailable[bp] ~= nil then
+                    lines[#lines + 1] = string.format("HAIRSLOT:%s:%d", bp, hairSlotAvailable[bp] and 1 or 0)
+                end
             end
         elseif not okHairStyles then
-            log("custom tab read-current (hair styles) FAILED: " .. tostring(hairStyles))
+            stepLog("custom tab read-current (hair styles) FAILED: " .. tostring(hairStyles))
         end
 
         -- Eye color too (2026-09-13, RedFalcon: "i would like read current to include eyes").
         -- TestReadEyeColor returns the string "GLOWING", an integer CPD15 palette index, or nil (no
         -- CPD written yet -- a native, un-recolored NPC).
+        stepLog("custom-read-current: starting step 5/8 (eye color)")
         local okEyeColor, eyeColor = pcall(function() return Spawner.TestReadEyeColor(say) end)
         if okEyeColor and eyeColor ~= nil then
             lines[#lines + 1] = "EYECOLOR:" .. tostring(eyeColor)
         elseif not okEyeColor then
-            log("custom tab read-current (eye color) FAILED: " .. tostring(eyeColor))
+            stepLog("custom tab read-current (eye color) FAILED: " .. tostring(eyeColor))
         end
 
         -- Clothes item STYLES too (2026-09-14, RedFalcon: "make it realtime like the other items,
@@ -987,15 +1073,24 @@ local function pollCustomColorReadRequest()
         -- item-name half). No "Outfit" line is ever emitted -- an outfit is a bulk-apply action,
         -- not a persistent per-target state to read back (same reasoning TestReadHairStyles gives
         -- for never emitting a "Sets" line).
-        local okClothes, clothesStyles = pcall(function() return Spawner.TestReadClothesStyles(say) end)
+        stepLog("custom-read-current: starting step 6/8 (clothes item styles)")
+        local okClothes, clothesStyles, clothesSlotAvailable = pcall(function() return Spawner.TestReadClothesStyles(say) end)
         if okClothes and clothesStyles then
-            for _, bp in ipairs({ "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape" }) do
+            for _, bp in ipairs({ "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape", "Mask" }) do
                 if clothesStyles[bp] then
                     lines[#lines + 1] = string.format("CLOTHESITEM:%s:%s", bp, clothesStyles[bp])
                 end
+                -- CLOTHESSLOT:<bodyPart>:0|1 (2026-09-16, RedFalcon: "if a target doesnt have a
+                -- swappable item in the hat slot, Grey out the hat selectors") -- ALWAYS emitted for
+                -- all 8 slots (unlike CLOTHESITEM, which is only sent on a real catalog match) so
+                -- CustomMenu.cpp can grey out a row whose slot genuinely doesn't exist on this
+                -- target, distinct from a slot that exists but is hidden/holding an unmatched mesh.
+                if clothesSlotAvailable and clothesSlotAvailable[bp] ~= nil then
+                    lines[#lines + 1] = string.format("CLOTHESSLOT:%s:%d", bp, clothesSlotAvailable[bp] and 1 or 0)
+                end
             end
         elseif not okClothes then
-            log("custom tab read-current (clothes items) FAILED: " .. tostring(clothesStyles))
+            stepLog("custom tab read-current (clothes items) FAILED: " .. tostring(clothesStyles))
         end
 
         -- Skin Tone too (2026-09-14, the new Skin Tone swatch selector's own Read Current line) --
@@ -1003,22 +1098,25 @@ local function pollCustomColorReadRequest()
         -- 11 known tones (native/un-swapped family, or nothing readable), so no line is emitted and
         -- the swatch correctly reverts to "nothing selected" (see pollReadCurrentResult's own reset
         -- block on the C++ side).
+        stepLog("custom-read-current: starting step 7/8 (skin tone)")
         local okSkinTone, skinTone = pcall(function() return Spawner.TestReadSkinTone(say) end)
         if okSkinTone and skinTone then
             lines[#lines + 1] = "SKINTONE:" .. skinTone
         elseif not okSkinTone then
-            log("custom tab read-current (skin tone) FAILED: " .. tostring(skinTone))
+            stepLog("custom tab read-current (skin tone) FAILED: " .. tostring(skinTone))
         end
 
         -- Senkamati body detection too (2026-09-14, RedFalcon: "when a senkamati is selected and
         -- detected, the gender specific senkamati items should be available") -- CustomMenu.cpp's
         -- Torso/Legs dropdowns use this to swap in the Senkamati-only item list instead of the
         -- regular one. nil/absent means the target's own base body isn't a Senkamati skeleton.
+        stepLog("custom-read-current: starting step 8a/8 (senkamati sex)")
         local okSenkamati, senkamatiSex = pcall(function() return Spawner.TestReadSenkamatiSex(say) end)
+        stepLog("custom-read-current: step 8a/8 returned.")
         if okSenkamati and senkamatiSex then
             lines[#lines + 1] = "SENKAMATI:" .. senkamatiSex
         elseif not okSenkamati then
-            log("custom tab read-current (senkamati) FAILED: " .. tostring(senkamatiSex))
+            stepLog("custom tab read-current (senkamati) FAILED: " .. tostring(senkamatiSex))
         end
 
         -- Belts and Straps too (2026-09-15, RedFalcon: "i'd like the belts and straps to be detected
@@ -1026,20 +1124,99 @@ local function pollCustomColorReadRequest()
         -- (Strap/Sling/Belt columns and the Sheath/Pistol weapon rows all depend on their own piece
         -- being visible); BELTPIECE only when the current mesh matches a known friendly name, same
         -- "no match leaves the dropdown alone" convention as CLOTHESITEM.
-        local okBelt, beltStyles = pcall(function() return Spawner.TestReadBeltStrapStyles(say) end)
-        if okBelt and beltStyles then
-            for _, bp in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
-                local entry = beltStyles[bp]
-                if entry then
-                    lines[#lines + 1] = string.format("BELTVISIBLE:%s:%d", bp, entry.visible and 1 or 0)
-                    if entry.friendlyName then
-                        lines[#lines + 1] = string.format("BELTPIECE:%s:%s", bp, entry.friendlyName)
+        -- TEMP crash-isolation skip (2026-09-16) -- see Config.TEMP_SKIP_BELTSTRAPS_READ's own
+        -- header (config.lua) for the full reasoning/revert instructions.
+        if Config.TEMP_SKIP_BELTSTRAPS_READ then
+            stepLog("custom-read-current: step 8b/8 SKIPPED (Config.TEMP_SKIP_BELTSTRAPS_READ).")
+        else
+            stepLog("custom-read-current: starting step 8b/8 (belts and straps)")
+            local okBelt, beltStyles = pcall(function() return Spawner.TestReadBeltStrapStyles(say) end)
+            stepLog("custom-read-current: step 8b/8 returned.")
+            if okBelt and beltStyles then
+                for _, bp in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
+                    local entry = beltStyles[bp]
+                    if entry then
+                        lines[#lines + 1] = string.format("BELTVISIBLE:%s:%d", bp, entry.visible and 1 or 0)
+                        -- BELTAVAILABLE (2026-09-16, RedFalcon: "let's extend this to the hair,
+                        -- facial hair and belts and straps") -- distinct from BELTVISIBLE: a HIDDEN
+                        -- piece (picked "None") is still a real, swappable composite entry -- only
+                        -- a target with no such entry AT ALL can never have this piece selector do
+                        -- anything. Greys out the Belt/Sling/Strap/Frog piece SELECTOR; BELTVISIBLE
+                        -- keeps driving the Accessories grid's own socket-dependency gating,
+                        -- unchanged.
+                        lines[#lines + 1] = string.format("BELTAVAILABLE:%s:%d", bp, entry.available and 1 or 0)
+                        if entry.friendlyName then
+                            lines[#lines + 1] = string.format("BELTPIECE:%s:%s", bp, entry.friendlyName)
+                        end
                     end
                 end
+            elseif not okBelt then
+                stepLog("custom tab read-current (belts and straps) FAILED: " .. tostring(beltStyles))
             end
-        elseif not okBelt then
-            log("custom tab read-current (belts and straps) FAILED: " .. tostring(beltStyles))
         end
+
+        -- Current pose too (2026-09-16, RedFalcon: "bring over the poses... a textbox that
+        -- displays the current pose or say Unknown for ones that cant be determined") -- always
+        -- emits a line (unlike CLOTHESITEM/BELTPIECE's "no match, no line" convention) since
+        -- CustomMenu.cpp's own textbox always shows SOMETHING, defaulting to "Unknown" itself.
+        stepLog("custom-read-current: starting step 8c/8 (current pose)")
+        local okPose, poseName = pcall(function() return Spawner.TestReadCurrentPoseName(say) end)
+        stepLog("custom-read-current: step 8c/8 returned.")
+        lines[#lines + 1] = "POSE:" .. ((okPose and poseName) and tostring(poseName) or "Unknown")
+        if not okPose then
+            stepLog("custom tab read-current (pose) FAILED: " .. tostring(poseName))
+        end
+
+        -- Height too (2026-09-18, RedFalcon's height-slider idea) -- always emits a line (same
+        -- "textbox always shows something" convention as Pose just above), so the Height slider
+        -- snaps to the target's real current value instead of staying wherever it last was.
+        stepLog("custom-read-current: starting step 8d/8 (height)")
+        local okHeight, heightFeet = pcall(function() return Spawner.TestReadActorHeightFeet(say) end)
+        stepLog("custom-read-current: step 8d/8 returned.")
+        if okHeight and heightFeet then
+            lines[#lines + 1] = string.format("HEIGHT:%.4f", heightFeet)
+        elseif not okHeight then
+            stepLog("custom tab read-current (height) FAILED: " .. tostring(heightFeet))
+        end
+
+        -- AI toggle + Lantern too (2026-09-21, RedFalcon: "it also doesnt seem to correctly detect
+        -- current AI or lantern status on detect") -- neither was ever wired into THIS round-trip:
+        -- g_aiDisabled/g_lanternOn were purely local click-state on the C++ side, with the lantern
+        -- getting only a partial fix (synced from the SEPARATE "Detect Accessories" sub-button, never
+        -- from the main "Read Current" click) and the AI toggle never synced at all. Both real
+        -- read-back functions already existed (Spawner.TestReadAILogicState/TestReadLanternState,
+        -- used by Save Customizations' own diff) -- just never plugged into this flow. Always emit
+        -- both (same "textbox always shows something" convention as Pose/Height above), since a
+        -- checkbox/toggle always has SOME real current value, never an absent one.
+        stepLog("custom-read-current: starting step 8e/8 (ai toggle)")
+        local okAI, aiRunning = pcall(function() return Spawner.TestReadAILogicState(say) end)
+        if okAI then
+            lines[#lines + 1] = "AITOGGLE:" .. (aiRunning and "1" or "0")
+        else
+            stepLog("custom tab read-current (ai toggle) FAILED: " .. tostring(aiRunning))
+        end
+
+        stepLog("custom-read-current: starting step 8f/8 (lantern)")
+        local okLantern, lanternOn = pcall(function() return Spawner.TestReadLanternState(say) end)
+        if okLantern then
+            lines[#lines + 1] = "LANTERN:" .. (lanternOn and "1" or "0")
+        else
+            stepLog("custom tab read-current (lantern) FAILED: " .. tostring(lanternOn))
+        end
+
+        -- Hand items too (2026-09-21, RedFalcon's Left/Right Hand item dropdowns) -- same "no
+        -- match, no line" convention as CLOTHESITEM/BELTPIECE (an empty hand or an unresolvable
+        -- mesh just leaves both dropdowns at their default category-name state).
+        stepLog("custom-read-current: starting step 8g/8 (hand items)")
+        local okHands, handItems = pcall(function() return Spawner.TestReadHandItems(say) end)
+        if okHands and handItems then
+            if handItems.Left then lines[#lines + 1] = "HANDITEM:Left:" .. handItems.Left end
+            if handItems.Right then lines[#lines + 1] = "HANDITEM:Right:" .. handItems.Right end
+        elseif not okHands then
+            stepLog("custom tab read-current (hand items) FAILED: " .. tostring(handItems))
+        end
+
+        stepLog("custom-read-current: all 8 steps completed, writing status file.")
 
         -- Always write SOMETHING, even an empty dump (no target / no composite mesh) -- CustomMenu.cpp
         -- is waiting on this file's mere existence to know the read finished, not just its content.
@@ -1221,6 +1398,43 @@ local function pollCustomPhysiqueRequest()
         local ok, err = pcall(function() Spawner.TestSetSkinSize(size, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
+end
+
+-- "Height" slider, Custom tab (2026-09-18, RedFalcon's height-slider idea, 3ft-8ft range) --
+-- same request-file bridge shape as Physique above, forwards straight to
+-- Spawner.ApplyActorHeightFeet (which handles the ground-compensation math itself).
+local CUSTOM_HEIGHT_REQUEST_PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_height_request.txt",
+    "Mods/LivingBase/custom_height_request.txt",
+    "custom_height_request.txt",
+}
+local function findCustomHeightRequestPath()
+    for _, p in ipairs(CUSTOM_HEIGHT_REQUEST_PATH_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); return p end
+    end
+    return nil
+end
+local function pollCustomHeightRequest()
+    local path = findCustomHeightRequestPath()
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+
+    local feet = content:match("^%s*([%d%.]+)%s*$")
+    if not feet then return end
+
+    if not restoreGate("Custom tab: height " .. feet) then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [height] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.ApplyActorHeightFeet(feet, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+    return true
 end
 
 -- "Skin Tone" swatch selector, Custom tab (2026-09-14, RedFalcon: "put in place of where Physique
@@ -1260,6 +1474,7 @@ local function pollCustomSkinToneRequest()
         local ok, err = pcall(function() Spawner.ApplyCustomTabSkinTone(toneName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Hair" section, Custom tab (2026-09-12, RedFalcon's HairCategories.xlsx-driven redesign) -- same
@@ -1304,6 +1519,7 @@ local function pollCustomHairRequest()
         local ok, err = pcall(function() Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 local CUSTOM_HAIR_COLOR_REQUEST_PATH_CANDIDATES = {
@@ -1340,6 +1556,7 @@ local function pollCustomHairColorRequest()
         local ok, err = pcall(function() Spawner.ApplyHairCategoryColor(categoryKey, idx, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Clothes" section item dropdowns, Custom tab (2026-09-14) -- same request-file bridge shape as
@@ -1388,6 +1605,7 @@ local function pollCustomClothesItemRequest()
         end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Outfit" dropdown, top of the Clothes section (2026-09-14) -- same shape, one payload
@@ -1432,6 +1650,7 @@ local function pollCustomClothesOutfitRequest()
         end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Make Ghost" button, Body section, Custom tab (2026-09-12) -- same request-file bridge shape as
@@ -1469,6 +1688,7 @@ local function pollCustomMakeGhostRequest()
         local ok, err = pcall(function() Spawner.MakeGhost(say, true) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Eye Color" swatch, Body section, Custom tab (2026-09-13, RedFalcon: "put 'Eye Color' underneath
@@ -1536,6 +1756,7 @@ local function pollCustomEyeRequest()
         end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 -- "Belts and Straps" section, Custom tab (2026-09-15) -- 6 new request-file bridges, same shape as
@@ -1584,6 +1805,7 @@ BeltStrapPolls.beltPiece = function()
         local ok, err = pcall(function() Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 BeltStrapPolls.beltSet = function()
@@ -1615,6 +1837,7 @@ BeltStrapPolls.beltSet = function()
         local ok, err = pcall(function() Spawner.ApplyBeltStrapSet(setName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 BeltStrapPolls.lantern = function()
@@ -1647,6 +1870,7 @@ BeltStrapPolls.lantern = function()
         local ok, err = pcall(function() Spawner.ToggleBeltLantern(on, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 BeltStrapPolls.socketAcc = function()
@@ -1666,8 +1890,14 @@ BeltStrapPolls.socketAcc = function()
     f:close()
     os.remove(path)
 
+    -- "READ" (2026-09-16, new "Detect Accessories" button, RedFalcon: "can we add a read
+    -- accessories button that will read the accessories in the sockets and populate them") -- a
+    -- pure read, no roll/clear performed first. RANDOMIZE/CLEAR now ALSO always re-read afterward
+    -- (RedFalcon: "when randomize is run, can it populate the fields" -- extended to Clear too, for
+    -- the same reason: leaving a stale prior selection showing after the items themselves were
+    -- cleared would be wrong in the same way) -- see the shared read-and-report block below.
     local action = content:match("^%s*(%a+)%s*$")
-    if action ~= "RANDOMIZE" and action ~= "CLEAR" then
+    if action ~= "RANDOMIZE" and action ~= "CLEAR" and action ~= "READ" then
         print("[LivingBase] [socket-acc] malformed request, ignored: '" .. tostring(content) .. "'\n")
         return
     end
@@ -1678,12 +1908,34 @@ BeltStrapPolls.socketAcc = function()
         local ok, err = pcall(function()
             if action == "RANDOMIZE" then
                 Spawner.RandomizeSocketAccessories(say)
-            else
+            elseif action == "CLEAR" then
                 Spawner.ClearSocketAccessories(say)
+            end
+            local results = Spawner.TestReadSocketAccessories(say)
+            local lines = {}
+            if results then
+                for socket, friendly in pairs(results) do
+                    lines[#lines + 1] = string.format("SOCKETACCESSORY:%s:%s", socket, friendly)
+                end
+            end
+            -- LANTERN (2026-09-18, RedFalcon: "the lantern detection doesnt see it when our
+            -- lantern is already there") -- the Lantern checkbox had ZERO live-detection wiring
+            -- anywhere at all, on either side: this status file never carried a LANTERN line, and
+            -- CustomMenu.cpp's g_lanternOn was write-only (only ever set by the user's own click).
+            -- Piggybacks on this SAME "Detect Accessories" cycle (the natural place, since it's
+            -- the exact socket the Lantern shares with a real accessory now) rather than a
+            -- separate poll -- one more line, same status file, same fire-and-forget convention.
+            local okLantern, lanternOn = pcall(function() return Spawner.TestReadLanternState(say) end)
+            lines[#lines + 1] = "LANTERN:" .. ((okLantern and lanternOn) and "1" or "0")
+            local outF = io.open("ue4ss/Mods/LivingBase/custom_socketacc_status.txt", "w")
+            if outF then
+                outF:write(table.concat(lines, "\n"))
+                outF:close()
             end
         end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 BeltStrapPolls.socketItem = function()
@@ -1715,6 +1967,7 @@ BeltStrapPolls.socketItem = function()
         local ok, err = pcall(function() Spawner.ApplySocketItemManual(socketName, friendlyName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
 end
 
 BeltStrapPolls.weaponSlot = function()
@@ -1746,35 +1999,440 @@ BeltStrapPolls.weaponSlot = function()
         local ok, err = pcall(function() Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say) end)
         if not ok then say("FAILED: " .. tostring(err)) end
     end)
+    return true
+end
+
+-- "Toggle AI" button, Custom tab Body section (2026-09-16) -- packed onto the SAME BeltStrapPolls
+-- table as everything above purely to avoid adding another top-level local (this file is also right
+-- at Lua's 200-local ceiling, see BeltStrapPolls' own header comment) -- unrelated to belts/straps
+-- otherwise.
+BeltStrapPolls.aiToggle = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_aitoggle_request.txt",
+        "Mods/LivingBase/custom_aitoggle_request.txt",
+        "custom_aitoggle_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+
+    local onStr = content:match("^%s*AITOGGLE%s*:%s*([01])%s*$")
+    if not onStr then
+        print("[LivingBase] [ai-toggle] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    local on = onStr == "1"
+
+    if not restoreGate("Custom tab: ai toggle " .. onStr) then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [ai-toggle] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.ToggleTargetAILogic(on, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- "Save Customizations" button, Custom tab (2026-09-16) -- fire-and-forget request, no payload
+-- needed (the file's mere existence IS the request, same convention as custom_zoom_request.txt) --
+-- the target to save is whatever's currently Spawner.lockedTarget, same as every other Custom tab
+-- action. Resolves the actor and hands off straight to Spawner.SaveCustomState, which does the
+-- actual identity lookup (join key = the target's own resolved Spawner.spawned label) and file
+-- write -- see that function's own header in spawner.lua for the full "why a separate file, why an
+-- explicit button" reasoning.
+BeltStrapPolls.saveCustomizations = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_save_request.txt",
+        "Mods/LivingBase/custom_save_request.txt",
+        "custom_save_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if f then f:close() end
+    os.remove(path)
+
+    if not restoreGate("Custom tab: save customizations") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [save-customizations] " .. tostring(m) .. "\n") end
+        local lt = Spawner.lockedTarget
+        if not (lt and lt.actor and lt.actor:IsValid()) then
+            say("no target locked -- nothing to save.")
+            return
+        end
+        local ok, err = pcall(function() Spawner.SaveCustomState(lt.actor, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- Pose scrub Play/Pause/Frame/Seek, Custom tab (2026-09-21, RedFalcon's frame-by-frame pose
+-- scrubber follow-up: Play ">"/Pause "||" buttons, "<"/">" frame-step buttons, and a scrub slider).
+-- Same fire-and-forget/single-payload request shapes as every other BeltStrapPolls entry; all four
+-- act on whatever Spawner.poseScrub is already tracking (armed by CUSTOM_POSES's own
+-- PoseScrubStartAndPlay above, or by lbposescrub) -- none of these take a target argument.
+BeltStrapPolls.scrubPlay = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_pose_scrub_play_request.txt",
+        "Mods/LivingBase/custom_pose_scrub_play_request.txt",
+        "custom_pose_scrub_play_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if f then f:close() end
+    os.remove(path)
+    if not restoreGate("Custom tab: pose scrub play") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.PoseScrubPlay(say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.scrubPause = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_pose_scrub_pause_request.txt",
+        "Mods/LivingBase/custom_pose_scrub_pause_request.txt",
+        "custom_pose_scrub_pause_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if f then f:close() end
+    os.remove(path)
+    if not restoreGate("Custom tab: pose scrub pause") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.PoseScrubPause(say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.scrubStep = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_pose_scrub_step_request.txt",
+        "Mods/LivingBase/custom_pose_scrub_step_request.txt",
+        "custom_pose_scrub_step_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local delta = tonumber(content:match("^%s*(-?%d+)%s*$"))
+    if not delta then
+        print("[LivingBase] [pose-scrub] malformed step request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: pose scrub step") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.PoseScrubStep(delta, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.scrubSeek = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_pose_scrub_seek_request.txt",
+        "Mods/LivingBase/custom_pose_scrub_seek_request.txt",
+        "custom_pose_scrub_seek_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local frame = tonumber(content:match("^%s*(%d+)%s*$"))
+    if not frame then
+        print("[LivingBase] [pose-scrub] malformed seek request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: pose scrub seek") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.PoseScrubSeek(frame, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- "Lights" section request pollers (2026-09-21, Photo tab mockup) -- 7 request files, one per
+-- control, each payload-encoded "<slot>:<value...>" (slot embedded rather than one file per light
+-- per control -- 3 lights x 7 controls would be 21 files for no real benefit). Same
+-- BeltStrapPolls-table packing as everything above (avoids new top-level locals).
+BeltStrapPolls.lightEnable = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_light_enable_request.txt",
+        "Mods/LivingBase/custom_light_enable_request.txt",
+        "custom_light_enable_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local slot, onStr = content:match("^%s*(%d+)%s*:%s*([01])%s*$")
+    if not slot then
+        print("[LivingBase] [light-enable] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: light enable/disable") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [light" .. slot .. "] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function()
+            if onStr == "1" then Spawner.EnableLight(slot, say) else Spawner.DisableLight(slot, say) end
+        end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.lightColor = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_light_color_request.txt",
+        "Mods/LivingBase/custom_light_color_request.txt",
+        "custom_light_color_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local slot, r, g, b = content:match("^%s*(%d+)%s*:%s*(%d+)%s*:%s*(%d+)%s*:%s*(%d+)%s*$")
+    if not slot then
+        print("[LivingBase] [light-color] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: light color") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [light" .. slot .. "] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.SetLightColor(slot, tonumber(r), tonumber(g), tonumber(b), say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- Shared body for the 4 plain "<slot>:<number>" light sliders (Brightness/Throw/ShieldDist/
+-- ShieldSize) -- same request shape, just a different request file and target Spawner function.
+-- A BeltStrapPolls table field, not a new top-level local (this file is also right at Lua's
+-- 200-local ceiling).
+BeltStrapPolls._lightNumeric = function(pathBase, setterName)
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/" .. pathBase,
+        "Mods/LivingBase/" .. pathBase,
+        pathBase,
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local slot, value = content:match("^%s*(%d+)%s*:%s*([%d%.]+)%s*$")
+    if not slot then
+        print("[LivingBase] [" .. setterName .. "] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: " .. setterName) then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [light" .. slot .. "] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner[setterName](slot, tonumber(value), say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.lightBrightness = function() BeltStrapPolls._lightNumeric("custom_light_brightness_request.txt", "SetLightIntensity") end
+BeltStrapPolls.lightThrow = function() BeltStrapPolls._lightNumeric("custom_light_throwdist_request.txt", "SetLightThrowDistance") end
+BeltStrapPolls.lightShieldDist = function() BeltStrapPolls._lightNumeric("custom_light_shielddist_request.txt", "SetLightShieldDistance") end
+BeltStrapPolls.lightShieldSize = function() BeltStrapPolls._lightNumeric("custom_light_shieldsize_request.txt", "SetLightShieldSize") end
+
+BeltStrapPolls.lightShieldVisible = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_light_shieldvisible_request.txt",
+        "Mods/LivingBase/custom_light_shieldvisible_request.txt",
+        "custom_light_shieldvisible_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local slot, onStr = content:match("^%s*(%d+)%s*:%s*([01])%s*$")
+    if not slot then
+        print("[LivingBase] [light-shieldvisible] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Custom tab: light shield visibility") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [light" .. slot .. "] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.SetLightShieldVisible(slot, onStr == "1", say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- Continuous status publish (2026-09-21) -- NOT gated behind a request/response dance, same
+-- "just write what's true right now" convention as main.lua's own publishSpawnMenuStatusIfChanged.
+-- Writes custom_lights_status.txt every tick a light is active, one line per field per slot --
+-- kept as its OWN small file rather than folded into spawn_menu_status.txt/MenuStatus.cpp, since
+-- lights aren't the "locked target" concept that shared status file is built around. Packed onto
+-- BeltStrapPolls (path constant included) rather than new top-level locals.
+BeltStrapPolls.LIGHTS_STATUS_PATH = "ue4ss/Mods/LivingBase/custom_lights_status.txt"
+-- 2026-09-21, RedFalcon: "if placement is cancelled or the light is deleted using the spawn
+-- tools, enable for that light should uncheck" -- Spawner.CancelPlacement (a NEW-mode cancel) and
+-- the generic despawn tools (Num+ lock + Despawn, etc.) both destroy the actor with zero awareness
+-- of Spawner.Lights at all -- patching every possible destroy call site individually would be
+-- fragile (miss one, get the same stale-checkbox bug from a different action). Self-healing here
+-- instead, checked every poll tick regardless of WHY the actor died: if entry.actor is no longer
+-- valid, clear the slot and report it inactive -- covers cancel/despawn/anything else uniformly.
+BeltStrapPolls.publishLightsStatus = function()
+    -- 2026-09-21 fix: a bare `:IsValid()` check here did NOT reliably catch a light despawned via
+    -- the general spawn tools (Num+ lock + Despawn) or a cancelled placement -- confirmed live, the
+    -- checkbox stayed checked until manually unchecked well after the actor was actually gone.
+    -- Spawner.DespawnActor (what every one of those paths ultimately calls) is GUARANTEED to
+    -- synchronously remove the actor from Spawner.spawned as part of destroying it -- checking
+    -- membership there instead is the same structural signal the rest of this codebase already
+    -- relies on (e.g. DespawnActor's own `if e.actor == actor` search), not dependent on whatever
+    -- `:IsValid()` does or doesn't reflect for this particular actor type.
+    local function isStillTracked(actor)
+        for _, e in ipairs(Spawner.spawned) do
+            if e.actor == actor then return true end
+        end
+        return false
+    end
+    for slot = 1, 3 do
+        local e = Spawner.Lights[slot]
+        if e and not isStillTracked(e.actor) then
+            Spawner.Lights[slot] = nil
+        end
+    end
+    local anyActive = false
+    for _, e in pairs(Spawner.Lights or {}) do
+        if e then anyActive = true; break end
+    end
+    if not anyActive then
+        pcall(function() os.remove(BeltStrapPolls.LIGHTS_STATUS_PATH) end)
+        return
+    end
+    local lines = {}
+    for slot = 1, 3 do
+        local e = Spawner.Lights[slot]
+        if e then
+            lines[#lines + 1] = string.format("LIGHT%d_ACTIVE=1", slot)
+            lines[#lines + 1] = string.format("LIGHT%d_COLOR=%d,%d,%d", slot, e.color.R, e.color.G, e.color.B)
+            lines[#lines + 1] = string.format("LIGHT%d_BRIGHTNESS=%.2f", slot, e.intensity)
+            lines[#lines + 1] = string.format("LIGHT%d_THROW=%.2f", slot, e.radius)
+            lines[#lines + 1] = string.format("LIGHT%d_SHIELDDIST=%.2f", slot, e.shieldDistance)
+            lines[#lines + 1] = string.format("LIGHT%d_SHIELDSIZE=%.2f", slot, e.shieldSize)
+            lines[#lines + 1] = string.format("LIGHT%d_SHIELDVIS=%d", slot, e.shieldVisible and 1 or 0)
+        else
+            lines[#lines + 1] = string.format("LIGHT%d_ACTIVE=0", slot)
+        end
+    end
+    local f = io.open(BeltStrapPolls.LIGHTS_STATUS_PATH, "w")
+    if f then
+        f:write(table.concat(lines, "\n"))
+        f:close()
+    end
 end
 
 if ExecuteWithDelay then
     local function customColorPollLoop()
         ExecuteWithDelay(400, function()
             pollCameraAutoReset()
-            pollCustomColorRequest()
-            -- Clothes item/outfit requests run BEFORE the Read Current handler (2026-09-14) --
-            -- CustomMenu.cpp's Outfit dropdown fires WriteClothesOutfitRequest + requestReadCurrent
-            -- together in the same click, so if both request files land in the same 400ms tick, the
-            -- outfit's own mesh changes must actually apply first, or the read would capture stale
-            -- (pre-outfit) state instead of reflecting what the outfit just set.
-            pollCustomClothesItemRequest()
-            pollCustomClothesOutfitRequest()
-            pollCustomSkinToneRequest()
-            pollCustomColorReadRequest()
+            -- Read Current is now run LAST and SKIPPED ENTIRELY for this tick if ANY mesh-mutating
+            -- request also ran in it (2026-09-16, RedFalcon: "i stripped an npc of all belts, then
+            -- added one back and it crashed" -- reproduced even AFTER reverting
+            -- pollCustomColorReadRequest's own internal staging back to one atomic burst, so the
+            -- earlier "interleaving between staged steps" theory alone doesn't explain it). A belt/
+            -- clothes/hair/etc apply and its own auto-triggered requestReadCurrent() land in the SAME
+            -- 400ms tick (CustomMenu.cpp fires both together on every pick), so even with Read
+            -- Current atomic, the mutation's own ExecuteInGameThread burst and the read's burst were
+            -- still running back-to-back with no real frame boundary between them -- exactly the
+            -- "dense burst of native reflection calls destabilizes UE4SS's own bridge" pattern this
+            -- project has hit before (see WINDROSE_MODDING_NOTES.md's TArray re-walk crash trap).
+            -- Deferring the read to the NEXT tick whenever a mutation just ran gives it a genuine
+            -- 400ms/one-tick gap to settle -- no new state needed: pollCustomColorReadRequest's own
+            -- request-file check naturally picks it up next tick since skipping it here leaves the
+            -- file on disk untouched.
+            local mutated = false
+            if pollCustomColorRequest() then mutated = true end
+            if pollCustomClothesItemRequest() then mutated = true end
+            if pollCustomClothesOutfitRequest() then mutated = true end
+            if pollCustomSkinToneRequest() then mutated = true end
+            if BeltStrapPolls.beltPiece() then mutated = true end
+            if BeltStrapPolls.beltSet() then mutated = true end
             pollCustomZoomRequest()
             pollCustomFaceViewRotateRequest()
-            pollCustomPhysiqueRequest()
-            pollCustomHairRequest()
-            pollCustomHairColorRequest()
-            pollCustomMakeGhostRequest()
-            pollCustomEyeRequest()
-            BeltStrapPolls.beltPiece()
-            BeltStrapPolls.beltSet()
-            BeltStrapPolls.lantern()
-            BeltStrapPolls.socketAcc()
-            BeltStrapPolls.socketItem()
-            BeltStrapPolls.weaponSlot()
+            if pollCustomPhysiqueRequest() then mutated = true end
+            if pollCustomHeightRequest() then mutated = true end
+            if pollCustomHairRequest() then mutated = true end
+            if pollCustomHairColorRequest() then mutated = true end
+            if pollCustomMakeGhostRequest() then mutated = true end
+            if pollCustomEyeRequest() then mutated = true end
+            if BeltStrapPolls.lantern() then mutated = true end
+            if BeltStrapPolls.socketAcc() then mutated = true end
+            if BeltStrapPolls.socketItem() then mutated = true end
+            if BeltStrapPolls.weaponSlot() then mutated = true end
+            BeltStrapPolls.aiToggle()
+            BeltStrapPolls.saveCustomizations()
+            BeltStrapPolls.scrubPlay()
+            BeltStrapPolls.scrubPause()
+            BeltStrapPolls.scrubStep()
+            BeltStrapPolls.scrubSeek()
+            BeltStrapPolls.lightEnable()
+            BeltStrapPolls.lightColor()
+            BeltStrapPolls.lightBrightness()
+            BeltStrapPolls.lightThrow()
+            BeltStrapPolls.lightShieldDist()
+            BeltStrapPolls.lightShieldSize()
+            BeltStrapPolls.lightShieldVisible()
+            BeltStrapPolls.publishLightsStatus()
+            if not mutated then
+                pollCustomColorReadRequest()
+            elseif findCustomColorReadRequestPath() then
+                print("[LivingBase] custom-read-current: deferred to next tick (a mesh-mutating request ran this tick).\n")
+            end
             customColorPollLoop()
         end)
     end
@@ -1899,12 +2557,13 @@ local function pollBarbieSpawnRequest()
                         Spawner.lockedTarget = { actor = actor, label = spawnLabel, class = classPath }
                         Spawner.StartTargetLockTick()
                     end)
-                    pcall(function()
-                        for _, p in ipairs({ "ue4ss/Mods/LivingBase/barbie_spawn_done.txt", "Mods/LivingBase/barbie_spawn_done.txt", "barbie_spawn_done.txt" }) do
-                            local doneF = io.open(p, "w")
-                            if doneF then doneF:write("1"); doneF:close(); break end
-                        end
-                    end)
+                    -- Auto-detect trigger MOVED to Spawner.ConfirmPlacement (2026-09-16, RedFalcon:
+                    -- "it is detecting info before it's stripped. Maybe wait to detect until
+                    -- officially placed") -- writing the done-file here, the instant the composite
+                    -- build finished, raced this same placement session's own underwear-strip work.
+                    -- Just flag this placement as a Barbie's own so ConfirmPlacement knows to fire
+                    -- the done-file write once the player actually finishes placing it.
+                    pcall(function() Spawner._placementIsBarbie = true end)
                 end, spawnLabel)
         end)
         if not ok then
@@ -2380,10 +3039,16 @@ local lastPublishedPitch, lastPublishedRoll = nil, nil
 -- request/response; read the SAME way Spawner.ApplyHairCategoryMesh/Color already do
 -- (comp:GetBodySex(), 2=Female). "" (unknown/no target) is treated as NOT female by the C++ side --
 -- see MenuStatus::TargetSex()'s own comment.
+-- isStatic (2026-09-16, RedFalcon: "set the ai toggle option to be disabled if a target is a statue
+-- or decor") -- reuses the SAME class-path checks isStaticLine (restore-pacing) and isStatueClass
+-- (follow-loop floor-lock) already independently apply elsewhere in this file/spawner.lua: a posed
+-- AnimatedActor/QuestStatic statue, or anything in Spawner.IsDecorClass's own Config.DECOR_CATEGORIES
+-- lookup, has no wandering AI to start/stop in the first place -- Spawner.SetAILogic's own
+-- StartLogic/StopLogic calls need a real AIController, which none of these ever have.
 local function currentLockedTargetInfo()
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then
-        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ""
+        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", false, false, false, false, 0, 0
     end
     local id = ""
     pcall(function() id = lt.actor:GetFullName() end)
@@ -2393,14 +3058,57 @@ local function currentLockedTargetInfo()
         local r = lt.actor:K2_GetActorRotation()
         x, y, z, yaw, pitch, roll = l.X, l.Y, l.Z, r.Yaw, r.Pitch, r.Roll
     end)
+    -- isCharacter (2026-09-21, RedFalcon: "keep the detect button disabled for any non character
+    -- objects. The animals and decor should not be able to have their customizations scanned...
+    -- same for monsterous as well") -- CompositeMeshComponent is the same customization system this
+    -- file already treats as the "is this a real human-ish character" signal (TargetSex()'s own
+    -- header: "most non-character actors simply have no sex concept at all" -- because they have no
+    -- CompositeMeshComponent at all). Animals, decor, and monstrous creatures never carry one, so
+    -- presence of a valid CompositeMeshComponent is a direct, general test -- no separate per-species
+    -- class list needed. Reuses the SAME lookup already being done for `sex` below rather than a
+    -- second pcall.
     local sex = ""
+    local isCharacter = false
     pcall(function()
         local comp = lt.actor.CompositeMeshComponent
         if comp and comp:IsValid() then
+            isCharacter = true
             sex = (tonumber(comp:GetBodySex()) == 2) and "F" or "M"
         end
     end)
-    return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll, sex
+    local isStatic = false
+    if lt.class then
+        if lt.class:find("AnimatedActor", 1, true) or lt.class:find("QuestStatic", 1, true) then
+            isStatic = true
+        elseif Spawner.IsDecorClass and Spawner.IsDecorClass(lt.class) then
+            isStatic = true
+        end
+    end
+    -- Live Controller override (2026-09-20, RedFalcon: "is there a way to enable the ai toggle for
+    -- these new mobile entries") -- the class-name heuristic above was written back when EVERY
+    -- QuestStatic-family class genuinely never had a Controller, so "QuestStatic" in the name was a
+    -- reliable enough proxy for "no AI to toggle." The new Mobile quest-NPC spawns (19av) are
+    -- QuestStatic-family classes given a REAL AIController via animClassPath/aiControllerClassPath,
+    -- so the name-only check wrongly greys out their AI Toggle button too. A live Controller check
+    -- is the actual ground truth (same "actor.Controller missing or invalid" read `lbtestblackboard`/
+    -- `lbtestaicontroller` already use) -- overrides the heuristic to "has AI" whenever a real
+    -- Controller is genuinely attached, regardless of class name. Never flips the OTHER way (a
+    -- missing controller doesn't force isStatic=true) -- decor and other non-statue classes never
+    -- had a controller to begin with and are already correctly `false` from the checks above.
+    if isStatic then
+        local ok, hasController = pcall(function()
+            local c = lt.actor.Controller
+            return c ~= nil and c:IsValid()
+        end)
+        if ok and hasController then isStatic = false end
+    end
+    -- Pose scrub status (2026-09-21) -- Spawner.PoseScrubGetStatus already scopes itself to
+    -- "only report active if this IS the currently locked actor" (see its own header), so this
+    -- just forwards lt.actor into it and passes the 4 results straight through.
+    local scrubActive, scrubPaused, scrubFrame, scrubNumFrames = false, false, 0, 0
+    pcall(function() scrubActive, scrubPaused, scrubFrame, scrubNumFrames = Spawner.PoseScrubGetStatus(lt.actor) end)
+    return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames
 end
 local lastPublishedWindowToggle = nil
 local lastPublishedFocusSteal = nil
@@ -2414,11 +3122,18 @@ local lastPublishedPlacementMode = nil
 -- the user just toggled it manually with Numpad 2).
 local lastPublishedPlacementActive = nil
 local lastPublishedSex = nil
+local lastPublishedIsStatic = nil
+local lastPublishedIsCharacter = nil
+-- Pose scrub publish-tracking (2026-09-21) -- packed onto a single table field rather than 4 more
+-- top-level locals (this file is also right at Lua's 200-local ceiling, same reasoning as
+-- BeltStrapPolls' own header comment).
+local lastPublishedScrub = { active = nil, paused = nil, frame = nil, numFrames = nil }
 local function publishSpawnMenuStatusIfChanged()
     local freebuild, restoring = Spawner._placementFreeBuild, restoreLockActive
     local placementMode = Spawner.placementMode or "MOVE"
     local placementActive = Spawner._placementActive and true or false
-    local target, id, x, y, z, yaw, pitch, roll, sex = currentLockedTargetInfo()
+    local target, id, x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames = currentLockedTargetInfo()
     if freebuild == lastPublishedFreeBuild and restoring == lastPublishedRestoring and target == lastPublishedTarget
         and id == lastPublishedId
         and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
@@ -2427,7 +3142,13 @@ local function publishSpawnMenuStatusIfChanged()
         and focusStealSeq == lastPublishedFocusSteal
         and placementMode == lastPublishedPlacementMode
         and placementActive == lastPublishedPlacementActive
-        and sex == lastPublishedSex then
+        and sex == lastPublishedSex
+        and isStatic == lastPublishedIsStatic
+        and isCharacter == lastPublishedIsCharacter
+        and scrubActive == lastPublishedScrub.active
+        and scrubPaused == lastPublishedScrub.paused
+        and scrubFrame == lastPublishedScrub.frame
+        and scrubNumFrames == lastPublishedScrub.numFrames then
         return
     end
     lastPublishedFreeBuild, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = freebuild, restoring, target, id
@@ -2438,6 +3159,12 @@ local function publishSpawnMenuStatusIfChanged()
     lastPublishedPlacementMode = placementMode
     lastPublishedPlacementActive = placementActive
     lastPublishedSex = sex
+    lastPublishedIsStatic = isStatic
+    lastPublishedIsCharacter = isCharacter
+    lastPublishedScrub.active = scrubActive
+    lastPublishedScrub.paused = scrubPaused
+    lastPublishedScrub.frame = scrubFrame
+    lastPublishedScrub.numFrames = scrubNumFrames
     local f = io.open(SPAWN_MENU_STATUS_PATH, "w")
     if not f then return end
     f:write("FREEBUILD=", freebuild and "1" or "0", "\n")
@@ -2451,10 +3178,16 @@ local function publishSpawnMenuStatusIfChanged()
     f:write("TARGET_PITCH=", string.format("%.2f", pitch), "\n")
     f:write("TARGET_ROLL=", string.format("%.2f", roll), "\n")
     f:write("TARGET_SEX=", sex, "\n")
+    f:write("TARGET_STATIC=", isStatic and "1" or "0", "\n")
+    f:write("TARGET_ISCHARACTER=", isCharacter and "1" or "0", "\n")
     f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
     f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
     f:write("PLACEMENT_MODE=", placementMode, "\n")
     f:write("PLACEMENT_ACTIVE=", placementActive and "1" or "0", "\n")
+    f:write("SCRUB_ACTIVE=", scrubActive and "1" or "0", "\n")
+    f:write("SCRUB_PAUSED=", scrubPaused and "1" or "0", "\n")
+    f:write("SCRUB_FRAME=", tostring(scrubFrame), "\n")
+    f:write("SCRUB_NUMFRAMES=", tostring(scrubNumFrames), "\n")
     f:close()
 end
 if ExecuteWithDelay then
@@ -2570,6 +3303,23 @@ local function scheduleRestore()
             restoreLockActive = false
         end
     end
+    -- Custom-tab cosmetic state (2026-09-16, "Save Customizations") restores AFTER persist.txt's
+    -- own restore genuinely finishes, not alongside it -- Spawner.RestoreCustomState needs every
+    -- Barbie/statue/walker already back in Spawner.spawned (with its resolved instanceLabel) to
+    -- re-find them by. Wrapping onComplete here (rather than editing Spawner.RestoreFromPersist's
+    -- own several internal onComplete call sites) guarantees this runs exactly once per real
+    -- completion, whatever internal path RestoreFromPersist took to get there.
+    local function afterRestore()
+        -- Spawner.RestoreCustomState is now STAGGERED across multiple ticks (2026-09-16, crashed
+        -- when it ran fully synchronously -- see its own header in spawner.lua), so it can no
+        -- longer be treated as done the instant this call returns -- unlockIfCurrent must wait for
+        -- its own onComplete callback instead of firing right after.
+        local ok, err = pcall(function() Spawner.RestoreCustomState(nil, unlockIfCurrent) end)
+        if not ok then
+            always("Restore: RestoreCustomState FAILED: " .. tostring(err))
+            unlockIfCurrent()
+        end
+    end
     local function fire(why)
         local delay = Config.RESTORE_SETTLE_MS or 4000
         always(string.format("Restore: %s; settling %dms.", why, delay))
@@ -2577,13 +3327,21 @@ local function scheduleRestore()
             ExecuteWithDelay(delay, function()
                 ExecuteInGameThread(function()
                     if Whistle then pcall(function() Whistle.ApplyOnLoad() end) end
-                    pcall(function() Spawner.RestoreFromPersist(unlockIfCurrent) end)
+                    local ok, err = pcall(function() Spawner.RestoreFromPersist(afterRestore) end)
+                    if not ok then
+                        always("Restore: RestoreFromPersist FAILED: " .. tostring(err))
+                        unlockIfCurrent()
+                    end
                 end)
             end)
         else
             ExecuteInGameThread(function()
                 if Whistle then pcall(function() Whistle.ApplyOnLoad() end) end
-                pcall(function() Spawner.RestoreFromPersist(unlockIfCurrent) end)
+                local ok, err = pcall(function() Spawner.RestoreFromPersist(afterRestore) end)
+                if not ok then
+                    always("Restore: RestoreFromPersist FAILED: " .. tostring(err))
+                    unlockIfCurrent()
+                end
             end)
         end
     end
@@ -2871,6 +3629,41 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestai", "lbtestai <ClassPath> <AIControllerClassPath> [friendly: 1/0, default 1]", "Spawns ClassPath with its AI controller overridden to AIControllerClassPath instead of its own default -- e.g. give a native Senkamati mob the Gatherer/Handyman wandering brain. Defaults to friendly=1 (copies a live crew's faction) so aggression doesn't confound the AI-brain test -- pass 0 to test hostile+overridden together on purpose. Watch for 'stands still, doesn't crash' -- that's the same known failure mode the Handyman-on-crew test hit (pawn lacks worker data the brain needs), not a new bug.")
 else
     log("lbtestai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestaianim <ClassPath> <AIControllerClassPath> <AnimBlueprintClassPath>
+-- [friendly: 1/0]" (2026-09-20) -- follow-up to lbtestai/lbtestanimclass for the "Mobile Marita"
+-- animation gap. See Spawner.TestSpawnWithAIAndAnim's own header for the real finding this tests:
+-- lbtestanimclass's bare AnimClass write only takes effect the FIRST time an actor's AnimInstance
+-- is ever constructed, so applying it AFTER spawn (as done previously) left Marita's live instance
+-- stuck on her native static AnimBP even though the AnimClass property itself updated correctly.
+-- This sets it inside the same pre-FinishSpawningActor window aiControllerClassPath already uses
+-- safely, so her Mesh's very first real AnimInstance construction should already use the walking
+-- AnimBP from the start.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestaianim", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestaianim] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local classArg = Parameters and Parameters[1]
+            local aiArg = Parameters and Parameters[2]
+            local animArg = Parameters and Parameters[3]
+            local friendlyArg = Parameters and Parameters[4]
+            local ok, err = pcall(function() Spawner.TestSpawnWithAIAndAnim(classArg, aiArg, animArg, friendlyArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestaianim <ClassPath> <AIControllerClassPath> <AnimBlueprintClassPath> [friendly: 1/0]")
+    registerCmdInfo("lbtestaianim", "lbtestaianim <ClassPath> <AIControllerClassPath> <AnimBlueprintClassPath> [friendly: 1/0, default 1]", "Like lbtestai, but ALSO pre-sets Mesh.AnimClass inside the deferred pre-FinishSpawningActor window (before the actor's first real AnimInstance is ever constructed) instead of after spawn -- tests whether that avoids the 'AnimClass property updated but the live AnimInstance never rebuilt' bug lbtestanimclass hit on an already-running actor.")
+else
+    log("lbtestaianim unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestmove" (2026-09-02) -- PURE READ follow-up to lbtestai's "slides instead
@@ -3570,6 +4363,271 @@ else
     log("lbdecorloot unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestmesh <StaticMeshPath> [zoffset]" (2026-09-20) -- ad-hoc preview spawn for a
+-- raw static mesh asset path, no config/roster entry needed. Same R5LootActor+SetLootMesh+MakeLootDecor
+-- wrapper the config-driven decor entries already use (see Spawner.TestSpawnMesh's own header comment).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestmesh", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestmesh] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local meshArg = Parameters and Parameters[1]
+            local zArg = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSpawnMesh(meshArg, zArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestmesh <StaticMeshPath> [zoffset]")
+    registerCmdInfo("lbtestmesh", "lbtestmesh <StaticMeshPath> [zoffset]", "Ad-hoc preview spawn for a raw static mesh path (no config/roster entry needed) -- wraps it in a R5LootActor and makes it inert decor, same mechanism the config-driven decor entries already use. Good for testing an asset before deciding to add it to the roster.")
+else
+    log("lbtestmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtesttiltlight [meshPath|goblet] [pitchDeg=90] [pivotOffsetZ|auto] [scale=1]
+-- [intensity=4.3] [radius=850] [r g b]" (2026-09-20) -- spawns a raw static mesh (defaults to
+-- SM_DishesGoblet_04), tilts the mesh visually, and attaches a lantern-style point light at the
+-- object's post-tilt top -- see Spawner.TestSpawnTiltedLitMesh's own header comment for the full
+-- mechanism. pivotOffsetZ (RedFalcon: "let me set how far from the pivot point the light is")
+-- overrides the auto-measured bounds height when given, always as a literal world-uu distance
+-- regardless of scale -- pass "auto" or omit to keep the measured value. scale (RedFalcon: using the
+-- mesh as a physical blocker, "can we scale it up 3x") resizes the mesh component itself (both the
+-- visible mesh and the collision a blocker actually needs, since they're the same StaticMeshComponent).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtesttiltlight", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtesttiltlight] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local p = Parameters or {}
+            local offsetArg = (p[3] and p[3]:lower() ~= "auto") and p[3] or nil
+            local ok, err = pcall(function()
+                Spawner.TestSpawnTiltedLitMesh(say, p[1], p[2], offsetArg, p[4], p[5], p[6], p[7], p[8], p[9])
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtesttiltlight [meshPath|goblet] [pitchDeg] [pivotOffsetZ|auto] [scale] [intensity] [radius] [r] [g] [b]")
+    registerCmdInfo("lbtesttiltlight", "lbtesttiltlight [meshPath|goblet] [pitchDeg=90] [pivotOffsetZ|auto] [scale=1] [intensity=4.3] [radius=850] [r] [g] [b]", "Spawns a raw static mesh (default SM_DishesGoblet_04), tilts it visually, scales it (mesh + collision), and attaches a point light at the object's post-tilt top. pivotOffsetZ overrides how far from the pivot (along the mesh's own axis, literal world uu) the light sits -- pass 'auto' or omit to measure it from the mesh's real upright bounding-box height. Run lbtesttiltlightclear to remove.")
+else
+    log("lbtesttiltlight unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtesttiltlightclear", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtesttiltlightclear] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestClearTiltedLitMesh(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtesttiltlightclear")
+    registerCmdInfo("lbtesttiltlightclear", "lbtesttiltlightclear", "Removes the mesh+light spawned by lbtesttiltlight.")
+else
+    log("lbtesttiltlightclear unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands for the "Lights" section (2026-09-21, Photo tab mockup) -- console-first proof
+-- of the 3-slot light+spill-shield system (Spawner.Lights) before any C++ UI work, same "prove the
+-- Lua layer live before wiring a panel to it" discipline this whole project always follows.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblighton", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblighton] " .. msg .. "\n") end
+            local ok, err = pcall(function() Spawner.EnableLight(Parameters and Parameters[1], say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblighton <1|2|3>")
+    registerCmdInfo("lblighton", "lblighton <1|2|3>", "Enables (spawns) that light slot and starts drag-placement, same follow flow as any other spawn.")
+else
+    log("lblighton unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightoff", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightoff] " .. msg .. "\n") end
+            local ok, err = pcall(function() Spawner.DisableLight(Parameters and Parameters[1], say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightoff <1|2|3>")
+    registerCmdInfo("lblightoff", "lblightoff <1|2|3>", "Disables (despawns) that light slot.")
+else
+    log("lblightoff unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightcolor", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightcolor] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local ok, err = pcall(function()
+                Spawner.SetLightColor(p[1], tonumber(p[2]), tonumber(p[3]), tonumber(p[4]), say)
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightcolor <1|2|3> <r> <g> <b>")
+    registerCmdInfo("lblightcolor", "lblightcolor <1|2|3> <r> <g> <b>", "Sets that light's color (0-255 each).")
+else
+    log("lblightcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightbright", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightbright] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local ok, err = pcall(function() Spawner.SetLightIntensity(p[1], tonumber(p[2]), say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightbright <1|2|3> <value>")
+    registerCmdInfo("lblightbright", "lblightbright <1|2|3> <10-3000>", "Sets that light's brightness (Intensity).")
+else
+    log("lblightbright unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightdist", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightdist] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local ok, err = pcall(function() Spawner.SetLightThrowDistance(p[1], tonumber(p[2]), say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightdist <1|2|3> <value>")
+    registerCmdInfo("lblightdist", "lblightdist <1|2|3> <300-2000>", "Sets that light's Throw Distance (AttenuationRadius).")
+else
+    log("lblightdist unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightshielddist", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightshielddist] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local ok, err = pcall(function() Spawner.SetLightShieldDistance(p[1], tonumber(p[2]), say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightshielddist <1|2|3> <value>")
+    registerCmdInfo("lblightshielddist", "lblightshielddist <1|2|3> <10-100>", "Sets how far that light's spill shield sits from the light.")
+else
+    log("lblightshielddist unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightshieldsize", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightshieldsize] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local ok, err = pcall(function() Spawner.SetLightShieldSize(p[1], tonumber(p[2]), say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightshieldsize <1|2|3> <value>")
+    registerCmdInfo("lblightshieldsize", "lblightshieldsize <1|2|3> <.5-5>", "Sets that light's spill shield scale (X/Y only, never taller).")
+else
+    log("lblightshieldsize unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lblightshield", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lblightshield] " .. msg .. "\n") end
+            local p = Parameters or {}
+            local visible = p[2] and p[2]:lower() ~= "off" and p[2]:lower() ~= "0"
+            local ok, err = pcall(function() Spawner.SetLightShieldVisible(p[1], visible, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lblightshield <1|2|3> <on|off>")
+    registerCmdInfo("lblightshield", "lblightshield <1|2|3> <on|off>", "Shows/hides that light's spill shield mesh (stays selectable/movable either way).")
+else
+    log("lblightshield unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestbuildingitem <DA_BI_path>" (2026-09-20) -- PURE EXPLORATORY TEST, see
+-- Spawner.TestSpawnBuildingItem's own header comment. Spawns the native /Script/R5.R5BuildingBlock
+-- class directly and tries assigning its BuildingItem to a given DA_BI_* Data Asset, to test whether
+-- that's the real mechanism every placed building decoration (torches, the goblet, etc.) uses.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbuildingitem", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbuildingitem] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local itemArg = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSpawnBuildingItem(itemArg, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbuildingitem <DA_BI_path>")
+    registerCmdInfo("lbtestbuildingitem", "lbtestbuildingitem <DA_BI_path>", "PURE EXPLORATORY TEST: spawns the native R5BuildingBlock class directly and tries assigning its BuildingItem to a given DA_BI_* Data Asset, to see if a real mesh appears. Run lbtestbuildingitemclear to remove.")
+else
+    log("lbtestbuildingitem unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestbuildingitemclear", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestbuildingitemclear] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestClearBuildingItem(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestbuildingitemclear")
+    registerCmdInfo("lbtestbuildingitemclear", "lbtestbuildingitemclear", "Removes the test actor spawned by lbtestbuildingitem.")
+else
+    log("lbtestbuildingitemclear unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbprobestone" (2026-08-17) -- TEMP DEV TOOL, see Spawner.ProbeStoneItemMesh's
 -- own comment. Read-only diagnostic for the "make a fresh inventoryDrops spawn actually show a
 -- mesh" follow-up -- prints whatever the Stone item's ItemMesh SoftObjectProperty actually is.
@@ -3802,6 +4860,205 @@ else
     log("lbdumpcpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbprobedefaultparams" (2026-09-16, RedFalcon: "is this info we can scan for in
+-- game?" -- see Spawner.TestDumpDefaultParams' own header for the full reasoning). PURE READ,
+-- confirms whether comp.DefaultParams.CustomizationData's nested arrays (GroupCategoryId/
+-- CompositeMeshGroupsByBodySex/CompositeMeshesParams) are walkable via UE4SS reflection at all,
+-- before any real diff logic gets built on top of this.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobedefaultparams", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobedefaultparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestDumpDefaultParams(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobedefaultparams")
+    registerCmdInfo("lbprobedefaultparams", "lbprobedefaultparams", "PURE READ: walks the nearest/locked actor's CompositeMeshComponent.DefaultParams.CustomizationData (category tags, allow-customization flag, per-sex composite mesh groups) -- confirms whether this archetype-baked default data is reflection-walkable at all.")
+else
+    log("lbprobedefaultparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestconstructvisual <path>" (2026-09-16, RedFalcon: "Can we use [a belt
+-- piece's own CompositeMeshData asset] to apply the whole set at once?... worst case we validate
+-- that at least" -- see Spawner.TestConstructVisualFromParams' own header for the full reasoning).
+-- GENUINELY UNTESTED, first-ever call to R5CompositeMeshComponent's ConstructVisualFromParams in
+-- this codebase -- confirms whether one call can live-rebuild a body part's base mesh AND its
+-- bundled socket accessories together, which this project's prior "composite pieces are build-time-
+-- only" conclusion says should NOT be possible, but this specific function has never actually been
+-- tried. Same shape as lbtestpose/lbtestmaterial -- one path argument, dotted suffix optional.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestconstructvisual", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestConstructVisualFromParams(arg1) end)
+            if not ok then print("[LivingBase] [lbtestconstructvisual] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestconstructvisual <path>")
+    registerCmdInfo("lbtestconstructvisual", "lbtestconstructvisual <path>", "EXPERIMENTAL: calls the nearest/locked actor's CompositeMeshComponent:ConstructVisualFromParams(<R5CompositeMeshParams asset path>) -- tests whether a belt/clothes piece's full set (base mesh + bundled socket accessories) can be rebuilt live in one call, instead of a manual per-slot swap.")
+else
+    log("lbtestconstructvisual unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeclassparams <classPath>" (2026-09-16, RedFalcon: "is it possible to
+-- automatically walk all the NPCs we have available for summoning, or is a probe needed on each" --
+-- see Spawner.TestProbeClassDefaultParams' own header for the full reasoning). PURE READ, zero
+-- spawning -- tests whether a summonable class's own CompositeMeshComponent.DefaultParams/
+-- CustomizationData can be read directly off its CDO, without ever spawning an instance.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeclassparams", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local function say(msg)
+                print("[LivingBase] [lbprobeclassparams] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.TestProbeClassDefaultParams(arg1, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeclassparams <classPath>")
+    registerCmdInfo("lbprobeclassparams", "lbprobeclassparams <classPath>", "PURE READ, ZERO SPAWNS: reads a summonable class's own CompositeMeshComponent.DefaultParams.CustomizationData (category tags + allow-customization flags) straight off its CDO, without ever spawning an instance -- tests whether the whole summon roster could be walked this way.")
+else
+    log("lbprobeclassparams unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbwalkroster [name]" (2026-09-16, RedFalcon: "yes, but make sure theres at
+-- least a second or two between each step as it can be a bit finnicky" -- then, after this first
+-- version crashed twice on Walker/Worker at the identical UE4SS.dll fault address: "how is it
+-- different from my spawning something" / "oh is a custom walker?" -- RedFalcon correctly caught
+-- the real bug. This ORIGINALLY called Spawner.Spawn(rawClassPath) directly, but NOTHING in the
+-- real Spawn Menu ever spawns that way -- every roster, even the "plain" statue ones, dispatches
+-- through its own dedicated Testbed.Spawn*ByName function (see SPAWN_MENU_STATUE_ROSTERS, just
+-- above -- SpawnStandingByName/SpawnSeatedByName/etc.), which do real AI-controller/composite setup
+-- a raw Spawner.Spawn call skips entirely. That mismatch -- not "AI-driven movers are inherently
+-- unstable" -- was almost certainly the actual crash cause. RedFalcon also scoped OUT anything
+-- that's a "custom walker built off an existing statue" (Config.TOWNSFOLK_CLASSES, all routed
+-- through SpawnWalkerByName's own reskin logic) or randomizes on spawn (Config.SENKAMATI_LOOKS) --
+-- leaving the 4 statue rosters (STANDING/SEATED/CHAIR/INTERACTIVE_STATUES) as the safe, plain,
+-- deterministic set: each row is a real, fixed class+recipe with no reskin/random layer on top,
+-- spawned the SAME way lbspawn/the Spawn Menu's own statue buttons already do thousands of times.
+--
+-- PACED spawn -> read -> despawn, staged as 3 SEPARATE ExecuteInGameThread calls per entry (not one
+-- dense burst -- that's what actually crashed the first version, confirmed via a before/after crash
+-- dump at the identical fault address). Spawner.transient=true for the spawn so none of these
+-- throwaway probes ever pollute persist.txt. Uses Spawner.ReadDefaultParamsSummary for the read step
+-- (extracted from the old WalkRosterClassParams' own inline logic, now spawn-method-agnostic).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbwalkroster", function(FullCommand, Parameters, Ar)
+            local rosterName = (Parameters and Parameters[1]) or "standing"
+            local function say(msg)
+                print("[LivingBase] [lbwalkroster] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ALIASES = {
+                standing = "STANDING_STATUES", seated = "SEATED_STATUES",
+                chair = "CHAIR_STATUES", interactive = "INTERACTIVE_STATUES",
+            }
+            local rosterKey = ALIASES[rosterName:lower()]
+            local def = rosterKey and SPAWN_MENU_STATUE_ROSTERS[rosterKey]
+            if not (def and def.list) then
+                say("unknown roster '" .. rosterName .. "' -- known: standing, seated, chair, interactive")
+                return true
+            end
+            local rows = def.list
+            say(string.format("walking roster '%s' -- %d entries, staged ~2s apart per step.", rosterName, #rows))
+
+            local INTRA_DELAY_MS = 2000
+            local i, succeeded = 0, 0
+            local doSpawn, doRead, doDespawn
+            local function step()
+                i = i + 1
+                if i > #rows then
+                    say(string.format("done -- walked %d entries (%d succeeded).", #rows, succeeded))
+                    return
+                end
+                local row = rows[i]
+                local shortName = spawnMenuStatueShortName(row.path)
+                say(string.format("[%d/%d] %s", i, #rows, shortName))
+                local actorRef = nil
+
+                doSpawn = function()
+                    ExecuteInGameThread(function()
+                        local prevTransient = Spawner.transient
+                        Spawner.transient = true
+                        local ok, actor = pcall(function() return def.fn(shortName) end)
+                        Spawner.transient = prevTransient
+                        if ok and actor and actor:IsValid() then
+                            actorRef = actor
+                            say("  spawned ok.")
+                        else
+                            say("  -> SPAWN FAILED, skipping (" .. tostring(actor) .. ").")
+                        end
+                    end)
+                    if ExecuteWithDelay then ExecuteWithDelay(INTRA_DELAY_MS, doRead) else doRead() end
+                end
+
+                doRead = function()
+                    if not actorRef then
+                        if ExecuteWithDelay then ExecuteWithDelay(INTRA_DELAY_MS, step) else step() end
+                        return
+                    end
+                    ExecuteInGameThread(function()
+                        local summary = Spawner.ReadDefaultParamsSummary(actorRef)
+                        local catSummary = {}
+                        for _, c in ipairs(summary.categories or {}) do
+                            catSummary[#catSummary + 1] = string.format("%s(fixed=%s)", c.tag, tostring(c.allowCustomization == false))
+                        end
+                        say(string.format("  -> DefaultParams=%s | categories: %s", tostring(summary.defaultParams), table.concat(catSummary, ", ")))
+                        if summary.defaultParams then succeeded = succeeded + 1 end
+                    end)
+                    if ExecuteWithDelay then ExecuteWithDelay(INTRA_DELAY_MS, doDespawn) else doDespawn() end
+                end
+
+                doDespawn = function()
+                    if actorRef then
+                        ExecuteInGameThread(function()
+                            local actor = actorRef
+                            if actor and actor:IsValid() then
+                                pcall(function() actor:K2_DestroyActor() end)
+                                for k, e in ipairs(Spawner.spawned) do
+                                    if e.actor == actor then table.remove(Spawner.spawned, k); break end
+                                end
+                                say("  despawned ok.")
+                            end
+                        end)
+                    end
+                    if ExecuteWithDelay then ExecuteWithDelay(INTRA_DELAY_MS, step) else step() end
+                end
+
+                doSpawn()
+            end
+            step()
+            return true
+        end)
+    end)
+    log("Console command registered: lbwalkroster [name]")
+    registerCmdInfo("lbwalkroster", "lbwalkroster [name]", "PACED: spawns each entry in a statue roster (standing/seated/chair/interactive) via the REAL Testbed.Spawn*ByName function, one at a time in 3 separately-timed steps (spawn/read/despawn, ~2s apart), reads its DefaultParams/CustomizationData, despawns, and moves on. Transient -- never written to persist.txt.")
+else
+    log("lbwalkroster unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbprobecpdsig" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCPDIndexSignature's
 -- own comment. Read-only diagnostic: dumps the parameter list for the CPD index-lookup functions.
 if RegisterConsoleCommandHandler then
@@ -3917,6 +5174,87 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestpose", "lbtestpose <path>", "Applies a specific real AnimSequence to the nearest spawned/locked actor via PlayAnimation -- see WINDROSE_MODDING_NOTES.md section 14 for what does and does not work.")
 else
     log("lbtestpose unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbposescrub <path>" / "lbposenext [n]" / "lbposeprev [n]" (2026-09-21,
+-- RedFalcon: "let's do it frame by frame so i can see how it looks"). lbposescrub loads the
+-- sequence in single-node mode and freezes it on frame 0; lbposenext/lbposeprev then step the
+-- SAME already-loaded sequence forward/back by n frames (default 1) via Spawner.PoseScrubStep --
+-- see that function's own header for the frame-time math and the frame-rate fallback.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbposescrub", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.PoseScrubStart(arg1) end)
+            if not ok then print("[LivingBase] [lbposescrub] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbposescrub <path>")
+    registerCmdInfo("lbposescrub", "lbposescrub <path>", "Loads an AnimSequence in single-node mode on the nearest/locked target and freezes it on frame 0, ready for lbposenext/lbposeprev.")
+else
+    log("lbposescrub unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbposenext", function(FullCommand, Parameters, Ar)
+            local n = tonumber(Parameters and Parameters[1]) or 1
+            local ok, err = pcall(function() Spawner.PoseScrubStep(n) end)
+            if not ok then print("[LivingBase] [lbposenext] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbposenext [n]")
+    registerCmdInfo("lbposenext", "lbposenext [n]", "Steps the active lbposescrub cursor forward n frames (default 1).")
+else
+    log("lbposenext unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbposeprev", function(FullCommand, Parameters, Ar)
+            local n = tonumber(Parameters and Parameters[1]) or 1
+            local ok, err = pcall(function() Spawner.PoseScrubStep(-n) end)
+            if not ok then print("[LivingBase] [lbposeprev] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbposeprev [n]")
+    registerCmdInfo("lbposeprev", "lbposeprev [n]", "Steps the active lbposescrub cursor backward n frames (default 1).")
+else
+    log("lbposeprev unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbposeplay" / "lbposepause" (2026-09-21, RedFalcon: "can we add a play
+-- command to unfreeze it?" / "and pause too") -- resume/re-freeze the active lbposescrub cursor's
+-- own playback in place, without restarting the sequence or losing position.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbposeplay", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.PoseScrubPlay() end)
+            if not ok then print("[LivingBase] [lbposeplay] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbposeplay")
+    registerCmdInfo("lbposeplay", "lbposeplay", "Resumes normal playback of the active lbposescrub sequence from its current position.")
+else
+    log("lbposeplay unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbposepause", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.PoseScrubPause() end)
+            if not ok then print("[LivingBase] [lbposepause] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbposepause")
+    registerCmdInfo("lbposepause", "lbposepause", "Freezes the active lbposescrub sequence in place, wherever it currently is.")
+else
+    log("lbposepause unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestmaterial <path>" (2026-08-26) -- same shape as lbtestpose/
@@ -4198,6 +5536,41 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestlanternlight", "lbtestlanternlight [intensity] [radius] [offX] [offY] [offZ] [pitch] [yaw] [roll] [r] [g] [b] [player] | lbtestlanternlight clear", "Attaches a real PointLightComponent to the nearest/locked actor's (or 'player') soc_LanternLight socket -- zero-lag skeletal attach. intensity/radius default to the real probed values (4.3/850); r/g/b (0-255, must be given all 3 together) default to the real probed color (255,255,255 -- plain white). offX/offY/offZ (socket-local uu) and pitch/yaw/roll (degrees) let you nudge/rotate it relative to the socket's own base transform, e.g. if it's pointing straight down or sitting too close to the body. 'clear' removes it. Pair with lbtestlanternmesh (or your own real lantern item) for the full look.")
 else
     log("lbtestlanternlight unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestlanternlightnosocket [player] | clear" (2026-09-20) -- diagnostic-only, see
+-- Spawner.TestAttachLanternLightNoSocket's own header comment. Isolates whether the lantern light's
+-- "doesn't shadow static objects" bug is specifically about the SOCKET attachment or about being
+-- parented under an ANIMATING SKELETON at all, by attaching the same light directly to the Mesh
+-- component root instead of soc_LanternLight.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestlanternlightnosocket", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestlanternlightnosocket] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local p1 = Parameters and Parameters[1]
+            local p1Lower = p1 and p1:lower()
+            local ok, err
+            if p1Lower == "clear" then
+                ok, err = pcall(function() Spawner.TestClearLanternLight(say) end)
+            else
+                local useSelf = (p1Lower == "player" or p1Lower == "self")
+                ok, err = pcall(function() Spawner.TestAttachLanternLightNoSocket(say, useSelf) end)
+            end
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestlanternlightnosocket [player] | clear")
+    registerCmdInfo("lbtestlanternlightnosocket", "lbtestlanternlightnosocket [player] | lbtestlanternlightnosocket clear", "DIAGNOSTIC: same light setup as lbtestlanternlight, but attached directly to the target's Mesh component (no socket) instead of soc_LanternLight -- isolates whether the 'doesn't shadow static objects' bug is about the socket specifically or about being parented under an animating skeleton at all. Shares the clear/removal with lbtestlanternlight.")
+else
+    log("lbtestlanternlightnosocket unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestlanternmesh [player|clear]" (2026-09-14, RedFalcon: "lets just do lantern
@@ -5526,6 +6899,61 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtesteye", "lbtesteye <Blue|Brown|Glowing|Green|Grey|Default>", "Swaps the eye material slot on actor.Mesh to one of the 5 discrete MI_EyeRound_<Color>_01 variants, or back to the plain native default. 'Glowing' (MI_EyeRound_Evil) is the only one with no CPD equivalent at all; Blue/Brown/Green/Grey usually visually match `lbtestcpdcolor`/`Config.CPD_EYE_COLOR_NAMES`'s own palette, but some NPCs have one of these assigned NATIVELY (their eyes aren't CPD-driven at all), so this is the only lever that reaches those -- restored 2026-09-14 after RedFalcon confirmed it live.")
 else
     log("lbtesteye unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestanimclass <AnimBlueprint class path>" (2026-09-18, RedFalcon's mobile-
+-- Marita experiment) -- swaps the locked/nearest target's Mesh AnimClass, safe bare-property-write
+-- mode only (see Spawner.TestSetAnimClass's own header for why the force-rebuild path is skipped).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestanimclass", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestanimclass] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local path = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestSetAnimClass(path, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestanimclass <AnimBlueprint class path>")
+    registerCmdInfo("lbtestanimclass", "lbtestanimclass <AnimBlueprint class path>", "Swaps the locked/nearest target's Mesh AnimClass (bare property write only, never the crash-prone SetAnimInstanceClass force-rebuild) -- e.g. give a QuestStatic NPC a real walker's locomotion AnimBP.")
+else
+    log("lbtestanimclass unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbsetscale scale|feet <value>" (2026-09-18) -- quick visualization test for a
+-- possible Custom-tab height slider, see Spawner.TestSetScale's own header comment for the
+-- scale<->height math (anchored on LongBen 1.2=7ft / Marita 0.95=5ft). Explicit unit param
+-- (RedFalcon: "to reduce confusion... in case i want to play with extremes") rather than guessing
+-- from magnitude.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbsetscale", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbsetscale] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local unit = Parameters and Parameters[1]
+            local value = Parameters and Parameters[2]
+            local ok, err = pcall(function() Spawner.TestSetScale(unit, value, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbsetscale scale|feet <value>")
+    registerCmdInfo("lbsetscale", "lbsetscale scale|feet <value>", "Sets the locked/nearest target's uniform actor scale. 'scale <value>' sets it directly; 'feet <value>' converts decimal feet to scale first (heightFt = 5.8333 * scale, i.e. scale 1.0 = 5'10\", anchored on LongBen 1.2=7ft and Marita 0.95=5ft). Test-only, not yet wired into a Custom tab slider or baseline diffing.")
+else
+    log("lbsetscale unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtesteyealpha <0-1>" (2026-09-12) -- see Spawner.TestEyeScleraAlpha's own

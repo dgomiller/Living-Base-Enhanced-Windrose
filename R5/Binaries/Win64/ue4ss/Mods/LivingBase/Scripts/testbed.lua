@@ -1420,6 +1420,42 @@ function Testbed.SpawnSeatedByName(name)      return statueByName(Config.SEATED_
 function Testbed.SpawnChairByName(name)       return statueByName(Config.CHAIR_STATUES,       "chairseat",   name) end
 function Testbed.SpawnInteractiveByName(name) return statueByName(Config.INTERACTIVE_STATUES, "interactive", name, playerYaw()) end
 
+-- Monsterous root category (2026-09-20) -- its own statue list, same statueByName/placeStatueEntry
+-- mechanism as the four People-tree statue rosters above (plain, no AI/anim override -- a frozen
+-- posed figure exactly like every other STANDING_STATUES entry). See Config.MONSTEROUS_STANDING's
+-- own comment for why this is a separate roster rather than folded into STANDING_STATUES.
+function Testbed.SpawnMonsterousByName(name) return statueByName(Config.MONSTEROUS_STANDING, "monsterous", name) end
+
+-- placeMobileQuestNPC(w, label) -- the "Mobile" counterpart to placeStatueEntry (2026-09-20,
+-- RedFalcon: "let's add (Mobile) versions of the default Named Quest NPCs"). Same spot/facing
+-- conventions as spawnPosed, but spawns via Spawner.Spawn's aiControllerClassPath + animClassPath
+-- (real AI-driven movement + real walk animation on the NPC's own actual class) instead of
+-- spawnPosed's plain no-AI placement -- see WINDROSE_MODDING_NOTES.md 19at/19au for why this only
+-- works on this QuestStatic-family roster, never a BP_AnimatedActor_* one. `w.label` is used
+-- verbatim as the spawn label (see Config.MOBILE_QUEST_NPCS' own comment on why this roster can't
+-- reuse Spawner.FriendlyLabels the way every other statue roster does).
+local function placeMobileQuestNPC(w, label)
+    local nm = statueEntryName(w)
+    local placeYaw = playerYaw()
+    local spot = frontSpot(300)
+    local floorZ = playerFloorZ()
+    log(string.format("%s [%s] %s", label, tostring(w.faction), nm))
+    local actor = Spawner.Spawn(w.path, w.label or nm, spot, nil,
+        Config.MOBILE_QUEST_NPC_AI_CONTROLLER, placeYaw, true, nil, nil, false,
+        Config.MOBILE_QUEST_NPC_ANIM_CLASS)
+    if actor and actor:IsValid() and floorZ then snapToFloor(actor, floorZ) end
+    return actor
+end
+
+function Testbed.SpawnMobileQuestNPCByName(name)
+    for _, w in ipairs(Config.MOBILE_QUEST_NPCS or {}) do
+        if statueEntryName(w):lower() == tostring(name):lower() then
+            return placeMobileQuestNPC(w, "mobilequest")
+        end
+    end
+    return nil, "no mobile quest NPC named '" .. tostring(name) .. "'"
+end
+
 -- Ship-look preview (2026-08-25) -- RedFalcon asked to see an ACTUAL Walker or Statue placed
 -- (not the plain Config.CREW_CLASS placeholder the ship-pivot test used, see spawner.lua's own
 -- "Ship-pivot placement test" section / WINDROSE_MODDING_NOTES.md §13) so real content can be

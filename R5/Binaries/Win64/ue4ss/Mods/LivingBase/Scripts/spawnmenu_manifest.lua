@@ -159,6 +159,25 @@ local function statue_path_and_label(treeLabel)
     end
 end
 
+-- Monsterous > Standing > <name> (2026-09-20) -- Config.MONSTEROUS_STANDING's own root category,
+-- deliberately separate from statue_path_and_label("Standing")'s People-tree branch (see that
+-- Config table's own comment). Rows carry an explicit `label` (Ghost Pirate) since a generic
+-- monster name is worth a real curated leaf from the start, not the raw class-name fallback every
+-- OTHER statue roster's mechanical default settles for.
+local function monsterous_standing_path_and_label(row)
+    return {"Monsterous", "Standing"}, row.label or short_class_name(row.path)
+end
+
+-- "Mobile" named-NPC spawns -> People.Named.<label> by default, or row.menuPath verbatim when a
+-- row needs its own home (Sailor -> People.Walkers, Ghost Pirate -> Monsterous.Walkers -- see
+-- Config.MOBILE_QUEST_NPCS' own comment). Always uses row.label as the leaf, never a class-name
+-- fallback -- this roster's whole design requires an explicit label per row (see that Config
+-- table's comment on why FriendlyLabels can't be reused here).
+local function mobile_quest_npc_path_and_label(row)
+    if row.menuPath then return row.menuPath, row.label end
+    return {"People", "Named"}, row.label
+end
+
 local function townsfolk_path_and_label(cls)
     return {"Townsfolk"}, cls.name
 end
@@ -267,9 +286,17 @@ end
 -- one's SPAWN_MENU_HANDLERS entry (main.lua) doesn't spawn anything -- it applies the pose to
 -- whatever's already targeted -- so there's nothing new for undo/despawn/persist.txt to track;
 -- see that handler's own comment.
+-- subCategory as a LIST (2026-09-21, RedFalcon's "additional poses" tab, config.lua's
+-- Config.CUSTOM_POSES header) -- the first rows needing more than one nesting level under
+-- topCategory ("Food and Meds" > "Drink"). Existing rows are unaffected: a plain string still
+-- appends exactly one segment, same as before.
 local function custom_poses_path_and_label(row)
     local path = {"Custom", "Poses", row.topCategory}
-    if row.subCategory and row.subCategory ~= "" then
+    if type(row.subCategory) == "table" then
+        for _, seg in ipairs(row.subCategory) do
+            path[#path + 1] = seg
+        end
+    elseif row.subCategory and row.subCategory ~= "" then
         path[#path + 1] = row.subCategory
     end
     return path, row.name
@@ -339,6 +366,8 @@ local function roster_descriptors(Config)
         {name = "SEATED_STATUES", rows = Config.SEATED_STATUES, path_and_label = statue_path_and_label("Seated")},
         {name = "CHAIR_STATUES", rows = Config.CHAIR_STATUES, path_and_label = statue_path_and_label("Chair")},
         {name = "INTERACTIVE_STATUES", rows = Config.INTERACTIVE_STATUES, path_and_label = statue_path_and_label("Interactive")},
+        {name = "MONSTEROUS_STANDING", rows = Config.MONSTEROUS_STANDING, path_and_label = monsterous_standing_path_and_label},
+        {name = "MOBILE_QUEST_NPCS", rows = Config.MOBILE_QUEST_NPCS, path_and_label = mobile_quest_npc_path_and_label},
         {name = "TOWNSFOLK_CLASSES", rows = Config.TOWNSFOLK_CLASSES, path_and_label = townsfolk_path_and_label},
         {name = "FACTION_VISITOR_LOOKS", rows = Config.FACTION_VISITOR_LOOKS, path_and_label = crew_path_and_label},
         {name = "DECOR", rows = decor_rows(Config), path_and_label = decor_path_and_label},

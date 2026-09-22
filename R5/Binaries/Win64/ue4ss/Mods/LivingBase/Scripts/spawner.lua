@@ -915,25 +915,15 @@ end
 -- Spawn's own presetInstanceLabel parameter), and persists the RESOLVED label as persist.txt's new
 -- field 13 so it survives a reload instead of being reassigned. See restoreOne for the read-back +
 -- old-format migration side of this.
+--
+-- Spawner.NextInstanceLabel/Spawner.NoteInstanceLabelUsed themselves are defined further DOWN this
+-- file (2026-09-16, moved from here) -- see that definition's own header for why: the ground-truth
+-- collision check it now does needs persistReadLines/parsePersistLine, both `local function`s
+-- declared later in this same chunk, and a plain earlier reference to them would have silently
+-- resolved to nil (Lua locals aren't visible before their own declaration) rather than the real
+-- functions. Being `Spawner.X` table fields, moving them costs nothing at any existing call site --
+-- table-field lookups resolve at CALL time, not declaration-order time.
 Spawner.instanceLabelCounts = Spawner.instanceLabelCounts or {}
--- Returns a fresh, session-unique "<baseLabel> N" string, incrementing a per-base-label counter.
-function Spawner.NextInstanceLabel(baseLabel)
-    baseLabel = tostring(baseLabel or "Object")
-    local n = (Spawner.instanceLabelCounts[baseLabel] or 0) + 1
-    Spawner.instanceLabelCounts[baseLabel] = n
-    return baseLabel .. " " .. n
-end
--- Given an ALREADY-RESOLVED "<base> N" label (e.g. read back from persist.txt on restore), bumps
--- the SAME counter table so a LATER NextInstanceLabel() call for that base can never reissue a
--- number already in use. No-op if `resolvedLabel` doesn't match the "<base> N" shape.
-function Spawner.NoteInstanceLabelUsed(resolvedLabel)
-    local base, numStr = tostring(resolvedLabel or ""):match("^(.*) (%d+)$")
-    if not base then return end
-    local n = tonumber(numStr)
-    if n and (not Spawner.instanceLabelCounts[base] or Spawner.instanceLabelCounts[base] < n) then
-        Spawner.instanceLabelCounts[base] = n
-    end
-end
 
 --------------------------------------------------------------------
 -- Spawner.Spawn(classPath, label [, atLocation])
@@ -953,7 +943,17 @@ end
 -- without guessing from class name. nil/false for every OTHER call site in this file (crew/
 -- townsfolk/decor/livestock/statues never pass this) -- they're walking by default, which is the
 -- correct default for ConfirmPlacement's own idle check below.
-function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook, presetInstanceLabel, markIdle)
+-- animClassPath (2026-09-20, added for "Mobile" named-NPC spawns -- see WINDROSE_MODDING_NOTES.md
+-- 19at/19au) -- optional AnimBlueprint class override, applied the SAME way aiControllerClassPath
+-- already is: written onto the actor's Mesh INSIDE the deferred pre-FinishSpawningActor window
+-- (composed into effPreFinish below), before the actor's own first real AnimInstance is ever
+-- constructed. This is deliberately NOT a plain post-spawn Spawner.SetAnimClass call -- that bare
+-- property write only takes effect the FIRST time an AnimInstance is built, so applying it AFTER
+-- FinishSpawningActor (once a native class's own construction has already built one) silently
+-- no-ops, exactly the bug that made Marita's animation gap look far harder than it was (19at).
+-- Persisted as persist.txt's own field 17 so a restored "Mobile" spawn keeps its walk animation
+-- too, not just its AI controller.
+function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClassPath, yaw, makeFriendly, compositeLook, presetInstanceLabel, markIdle, animClassPath)
     local cls = resolveClass(classPath)
     if not cls then
         always("SPAWN FAILED (class unresolved): " .. classPath)
@@ -1055,6 +1055,30 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         end
     end
 
+    -- animClassPath composition (2026-09-20) -- see this function's own header comment above.
+    -- Composed the SAME way the friendly/look block above already composes with any caller
+    -- preFinish -- calls whatever effPreFinish already resolved to first, then applies the anim
+    -- override. Resolved once here (not inside the closure) so a bad path is reported immediately
+    -- via always(), matching aiControllerClassPath's own resolve-and-warn pattern just above.
+    if animClassPath then
+        local animClass = resolveClass(animClassPath)
+        if not animClass then
+            always("Anim override class unresolved: " .. tostring(animClassPath))
+        else
+            local base = effPreFinish
+            effPreFinish = function(a)
+                if base then pcall(base, a) end
+                pcall(function()
+                    local mesh = a.Mesh
+                    if mesh and mesh:IsValid() then
+                        mesh.AnimationMode = 0  -- EAnimationMode::AnimationBlueprint
+                        mesh.AnimClass = animClass
+                    end
+                end)
+            end
+        end
+    end
+
     -- Resolve the FINAL, unique, persisted display label -- see the comment above this function.
     local finalLabel = presetInstanceLabel or Spawner.NextInstanceLabel(label)
 
@@ -1093,7 +1117,7 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         hasLook = hasLook and true or false, home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed,
         idle = markIdle and true or false })
     ledgerAppend(actor)
-    persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel)
+    persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel, animClassPath)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
         tostring(finalLabel), classPath, loc.X, loc.Y, loc.Z))
     -- Auto-target the probe (2026-08-18, RedFalcon's request): every LIVE placement becomes the
@@ -1211,6 +1235,116 @@ function Spawner.TestSpawnWithAIOverride(classPath, aiControllerClassPath, frien
     return true
 end
 
+-- Spawner.TestSpawnWithAIAndAnim(classPath, aiControllerClassPath, animClassPath, friendlyArg, say)
+-- -- "lbtestaianim" (2026-09-20, RedFalcon's own follow-up on the "Mobile Marita" investigation --
+-- see WINDROSE_MODDING_NOTES.md 19ar/19as). A live lbdumpanim comparison the night before found the
+-- REAL reason Marita kept sliding: it was never the "locomotion variables aren't pushed" theory --
+-- her Mesh.AnimClass PROPERTY correctly showed ABP_Human_NPC_C after lbtestanimclass, but her
+-- actual, already-CONSTRUCTED AnimInstance object never rebuilt to match it (RuntimeAnimInstance-
+-- Class stayed ABP_StandingNPC_Regular_AI_C in all 3 dumps taken over ~23 seconds) -- because
+-- lbtestanimclass's own SetAnimClass call deliberately uses the safe bare-property-write path
+-- (skipForceRebuild=true, avoiding SetAnimInstanceClass's confirmed crash history, see that
+-- function's own header) and a bare write only actually takes effect the FIRST time an actor's
+-- AnimInstance is ever constructed -- writing it AFTER she's already spawned and ticking on her
+-- native class just updates the property, leaving the existing instance untouched.
+--
+-- This tests the fix: write the SAME bare AnimClass property, but inside Spawner._DoEngineSpawn's
+-- existing preFinish window -- AFTER the actor/its components are constructed but BEFORE
+-- FinishSpawningActor triggers BeginPlay/the real visual+animation build (the exact window
+-- aiControllerClassPath already uses safely for deferred.AIControllerClass). If her Mesh's very
+-- FIRST AnimInstance ever constructed already uses the new class, there's no stale existing
+-- instance to leave behind -- no SetAnimInstanceClass force-rebuild needed at all, same safe
+-- bare-write mechanism, just applied one step earlier in the actor's lifecycle.
+function Spawner.TestSpawnWithAIAndAnim(classPath, aiControllerClassPath, animClassPath, friendlyArg, say)
+    say = say or function(m) print("[LivingBase] [test-ai-anim] " .. tostring(m) .. "\n") end
+    if not classPath or classPath == "" or not aiControllerClassPath or aiControllerClassPath == ""
+        or not animClassPath or animClassPath == "" then
+        say("Usage: lbtestaianim <ClassPath> <AIControllerClassPath> <AnimBlueprintClassPath> [friendly: 1/0, default 1]")
+        return false
+    end
+    local friendly = true
+    if friendlyArg == "0" or friendlyArg == false then friendly = false end
+    local animClass = resolveClass(animClassPath)
+    if not animClass then
+        say("AnimBlueprint class unresolved: " .. tostring(animClassPath))
+        return false
+    end
+    local preFinish = function(deferred)
+        -- AutoPossessAI check+force (2026-09-20, chasing the "AnimatedActor" statue family's
+        -- own 'valid AIControllerClass write, but actor.Controller comes back missing/invalid a
+        -- few seconds later' finding -- lbtestblackboard/lbtestaicontroller both confirmed this on
+        -- BP_AnimatedActor_Buccaneers_Merchant_04_C). deferred.AIControllerClass alone only
+        -- causes self-possession if AutoPossessAI isn't Disabled -- a class purpose-built for
+        -- static posed display (never meant to move) very plausibly defaults it to Disabled,
+        -- which would silently no-op our whole override regardless of the AnimClass fix. Log the
+        -- CLASS DEFAULT value before touching it (diagnostic), then force it to
+        -- PlacedInWorldOrSpawned (=2) so self-possession happens unconditionally -- same
+        -- pre-FinishSpawningActor window as the AIControllerClass/AnimClass writes, so if this
+        -- property behaves the same way those did, it should take.
+        pcall(function()
+            local apai = "?"
+            pcall(function() apai = tostring(deferred.AutoPossessAI) end)
+            always("[test-ai-anim] preFinish: class default AutoPossessAI=" .. apai .. " -- forcing to PlacedInWorldOrSpawned (2).")
+            deferred.AutoPossessAI = 2
+            -- Read-back verification (2026-09-20) -- the previous attempt only ever logged the
+            -- value BEFORE writing, never confirmed the write itself actually stuck. If this still
+            -- reads back as the old value, the property write silently failed/was rejected, which
+            -- is a materially different finding than "AutoPossessAI was the cause but our fix
+            -- didn't help."
+            local apaiAfter = "?"
+            pcall(function() apaiAfter = tostring(deferred.AutoPossessAI) end)
+            always("[test-ai-anim] preFinish: AutoPossessAI read back as " .. apaiAfter .. " after the write.")
+        end)
+        -- Class-hierarchy check (2026-09-20) -- more fundamental question skipped until now:
+        -- is this class even Pawn-derived at all? If BP_AnimatedActor_* is a plain AActor built
+        -- purely for frozen posed display, neither AIControllerClass nor AutoPossessAI would ever
+        -- do anything regardless of how they're written -- there'd be no possession machinery to
+        -- engage in the first place. Same IsA(...) pattern already proven safe elsewhere in this
+        -- file (see e.g. the ghost-highlight controller/volume checks), plus a plain leaf-to-root
+        -- GetSuperStruct() walk (same technique dumpObjectProperties uses) to see exactly what
+        -- this class actually derives from and where it diverges from the QuestStatic family.
+        pcall(function()
+            local pawnClass = StaticFindObject("/Script/Engine.Pawn")
+            local isPawn = "?"
+            if pawnClass and pawnClass:IsValid() then
+                pcall(function() isPawn = tostring(deferred:IsA(pawnClass)) end)
+            end
+            always("[test-ai-anim] preFinish: IsA(Pawn)=" .. tostring(isPawn))
+            local chain = {}
+            local cls = nil
+            pcall(function() cls = deferred:GetClass() end)
+            while cls and cls:IsValid() do
+                local nm = "?"
+                pcall(function() nm = cls:GetFName():ToString() end)
+                table.insert(chain, nm)
+                local nextCls = nil
+                pcall(function() nextCls = cls:GetSuperStruct() end)
+                cls = nextCls
+            end
+            always("[test-ai-anim] preFinish: class chain = " .. table.concat(chain, " -> "))
+        end)
+        local mesh = nil
+        pcall(function() mesh = deferred.Mesh end)
+        if not (mesh and mesh:IsValid()) then
+            always("[test-ai-anim] preFinish: no deferred.Mesh -- cannot set AnimClass this early.")
+            return
+        end
+        local ok = pcall(function()
+            mesh.AnimationMode = 0  -- EAnimationMode::AnimationBlueprint, matches every human NPC's native default
+            mesh.AnimClass = animClass
+        end)
+        always("[test-ai-anim] preFinish AnimClass pre-set " .. (ok and "ok" or "FAILED") .. " -> " .. tostring(animClassPath))
+    end
+    local actor = Spawner.Spawn(classPath, "AIAnimOverrideTest", nil, preFinish, aiControllerClassPath, nil, friendly, nil, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED.")
+        return false
+    end
+    say(string.format("Spawned %s with AI controller override + pre-set AnimClass (friendly=%s) -- Num+ it and run lbdumpanim once it's moving to check whether RuntimeAnimInstanceClass now matches from the start.",
+        tostring(classPath), tostring(friendly)))
+    return true
+end
+
 function Spawner.TestSpawnNoAI(classPath, say)
     say = say or function(m) print("[LivingBase] [test-spawnnoai] " .. tostring(m) .. "\n") end
     if not classPath or classPath == "" then
@@ -1228,6 +1362,39 @@ function Spawner.TestSpawnNoAI(classPath, say)
     if not frozeOk then
         say("WARNING: freeze did not report success (no valid AIController found?) -- treat as still active until confirmed otherwise.")
     end
+    return true
+end
+
+-- Spawner.TestSpawnMesh(meshPath, zoffset, say) — ad-hoc test spawn for a RAW static mesh path (no
+-- config/roster entry needed). Reuses the exact same R5LootActor-wrapper + SetLootMesh + MakeLootDecor
+-- pattern every config-driven decor entry with a `mesh` field already uses (see e.g. the Senkamati
+-- dish/artifact rows in fkeys.lua) -- just invoked directly from the console instead of through a
+-- roster row, for quickly previewing an asset path before deciding whether it's worth adding permanently.
+function Spawner.TestSpawnMesh(meshPath, zoffset, say)
+    say = say or function(m) print("[LivingBase] [test-spawnmesh] " .. tostring(m) .. "\n") end
+    if not meshPath or meshPath == "" then
+        say("Usage: lbtestmesh <StaticMeshPath> [zoffset]  e.g. lbtestmesh /Game/Environment/Gameplay/Building/BuildingDecoration/Dishes/SM_DishesCup_01.SM_DishesCup_01 20")
+        return false
+    end
+    local actor = Spawner.Spawn("/Script/R5.R5LootActor", "TestMesh", nil, nil, nil, nil, false, nil, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED (could not spawn R5LootActor wrapper).")
+        return false
+    end
+    local meshOk = Spawner.SetLootMesh(actor, meshPath)
+    if not meshOk then
+        say("Spawned wrapper but SetLootMesh FAILED for " .. tostring(meshPath) .. " -- check the path (needs the .AssetName suffix, e.g. \"...SM_Foo.SM_Foo\").")
+        return false
+    end
+    pcall(function() Spawner.MakeLootDecor(actor) end)
+    local z = tonumber(zoffset) or 20.0
+    if z ~= 0.0 then
+        pcall(function()
+            local loc = actor:K2_GetActorLocation()
+            actor:K2_SetActorLocation({ X = loc.X, Y = loc.Y, Z = loc.Z + z }, false, {}, true)
+        end)
+    end
+    say(string.format("Spawned test mesh: %s (zoffset=%s) -- tracked/despawnable like any lbspawn actor.", tostring(meshPath), tostring(z)))
     return true
 end
 
@@ -9817,7 +9984,15 @@ end
 -- Save/restore: record class+position+AI per spawn so we can re-create the
 -- crowd on world load (the game doesn't persist our runtime-spawned actors).
 --------------------------------------------------------------------
-function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instanceLabel)
+-- animClassPath (2026-09-20) -- field 17, the AnimBlueprint override "Mobile" quest-NPC spawns need
+-- to keep their real walk animation across a world reload (see Spawner.Spawn's own comment on this
+-- same param). Field 16 (lootMesh, Spawner.PersistUpdateLootMesh's own domain) is ALWAYS written
+-- here now too, even though persistAppend itself never populates it -- an explicit empty placeholder,
+-- not a gap -- so animClassPath lands at a stable field 17 regardless of whether that separate
+-- updater ever touches this particular line. PersistUpdateLootMesh sets bestParts[16] directly by
+-- index (not by string length), so this is a safe, non-colliding addition -- confirmed by reading
+-- that function before adding this.
+function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instanceLabel, animClassPath)
     if Spawner.restoring then return end
     -- TRANSIENT spawns (night raiders) are never saved. The game doesn't persist our actors
     -- anyway, so writing them here would resurrect a finished raid into the base on reload.
@@ -9849,13 +10024,14 @@ function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instance
     -- being the only non-zero rotation a fresh placement ever has. Only Spawner.PersistUpdatePose
     -- (live-edit rotate) or Spawner.SetLockedTargetTransform (Coords) ever write a non-zero value
     -- into these fields, after the fact.
+    local ac = animClassPath or ""
     migrateIfNeeded("persist.txt", OLD_PERSIST_PATHS)
     for _, p in ipairs(PERSIST_PATHS()) do
         local f = io.open(p, "a")
         if f then
-            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%.1f|%.1f\n",
+            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%.1f|%.1f|%s|%s\n",
                 classPath, loc.X, loc.Y, loc.Z, aiPath or "", yaw or 0.0,
-                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll, 0.0, 0.0))
+                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll, 0.0, 0.0, "", ac))
             f:close(); return
         end
     end
@@ -9914,6 +10090,55 @@ local function parsePersistLine(line)
     }
 end
 
+-- Spawner.NextInstanceLabel(baseLabel) -- returns a fresh "<baseLabel> N" string. The in-memory
+-- Spawner.instanceLabelCounts counter alone (its only source of truth before this fix) is ONLY
+-- primed as each persist.txt line is individually restored (Spawner.NoteInstanceLabelUsed, called
+-- from restoreOne) -- 2026-09-16, RedFalcon found two IDENTICAL persist.txt rows for
+-- "Hunter_M_Albion 1" (same class/position/label) after a session with several crashes that each
+-- interrupted a restore or a post-process pass partway through. If a restore never reaches a given
+-- line (exactly what an interrupting crash does), that line's own label never primes the counter --
+-- so a LATER fresh spawn of the same family/sex/origin, in a session where the counter was never
+-- primed for it, reissues the exact same "<base> 1" a still-persisted-but-never-restored row
+-- already owns. This defeats the whole point of Spawner.SaveCustomState/RestoreCustomState's own
+-- label-based identity (see that section's own header) -- two actors sharing one label means a
+-- fresh spawn can silently inherit an unrelated old actor's saved cosmetics.
+--
+-- Fix: cross-check the in-memory counter against the ACTUAL current persist.txt content (ground
+-- truth) every time, taking whichever is higher -- guarantees uniqueness regardless of how far any
+-- past restore actually got, at the cost of one extra file read per spawn (persist.txt is small;
+-- Spawner.PersistFindMatching already pays this same cost on every despawn).
+function Spawner.NextInstanceLabel(baseLabel)
+    baseLabel = tostring(baseLabel or "Object")
+    local n = Spawner.instanceLabelCounts[baseLabel] or 0
+    for _, line in ipairs(persistReadLines()) do
+        local parsed = parsePersistLine(line)
+        if parsed and parsed.instanceLabel then
+            local base, numStr = parsed.instanceLabel:match("^(.*) (%d+)$")
+            if base == baseLabel then
+                local existingN = tonumber(numStr)
+                if existingN and existingN > n then n = existingN end
+            end
+        end
+    end
+    n = n + 1
+    Spawner.instanceLabelCounts[baseLabel] = n
+    return baseLabel .. " " .. n
+end
+-- Given an ALREADY-RESOLVED "<base> N" label (e.g. read back from persist.txt on restore), bumps
+-- the SAME counter table so a LATER NextInstanceLabel() call for that base can never reissue a
+-- number already in use. No-op if `resolvedLabel` doesn't match the "<base> N" shape. Kept even
+-- though NextInstanceLabel no longer strictly NEEDS this priming (it re-derives the same ground
+-- truth from persist.txt itself every call) -- still cheap, and avoids a redundant persist.txt
+-- read for every restored line's own subsequent spawn within the SAME restore pass.
+function Spawner.NoteInstanceLabelUsed(resolvedLabel)
+    local base, numStr = tostring(resolvedLabel or ""):match("^(.*) (%d+)$")
+    if not base then return end
+    local n = tonumber(numStr)
+    if n and (not Spawner.instanceLabelCounts[base] or Spawner.instanceLabelCounts[base] < n) then
+        Spawner.instanceLabelCounts[base] = n
+    end
+end
+
 -- Find (without removing) the saved record nearest a class + position. Returns the parsed line
 -- (see parsePersistLine) and its line index, or nil if nothing matches. Shared by
 -- PersistRemoveMatching (which also deletes it) and by the despawn functions, which use this
@@ -9939,21 +10164,786 @@ function Spawner.PersistClear()
     persistWriteLines({})
 end
 
--- Drop the last saved record (F9 undo).
+-- Drop the last saved record (F9 undo). Also drops any matching custom_state.txt block for the
+-- SAME resolved label (2026-09-16 fix, RedFalcon: a fresh Barbie got a STALE previous actor's saved
+-- clothes/skin tone silently reapplied to it on spawn) -- `Spawner.NextInstanceLabel`'s own counter
+-- is pure in-memory/per-launch, reseeded only from whatever persist.txt rows still exist at world
+-- load; despawning (here or PersistRemoveMatching below) removes the persist.txt row but, before
+-- this fix, left the custom_state.txt block behind with nothing to ever reclaim it -- so the NEXT
+-- brand-new spawn that happens to recycle that exact "<label> N" (entirely possible once the
+-- original is gone and the counter is never re-primed past it) silently inherited the old actor's
+-- entire saved look via Spawner.RestoreCustomState's own label match. Removing the custom_state.txt
+-- block in lockstep with the persist.txt row closes that gap for anything despawned FROM NOW ON;
+-- see this file's own WINDROSE_MODDING_NOTES.md-style caveat -- any block already stale before this
+-- fix shipped needs a one-time manual cleanup of custom_state_<islandId>.txt.
 function Spawner.PersistRemoveLast()
     local lines = persistReadLines()
-    if #lines > 0 then table.remove(lines); persistWriteLines(lines) end
+    if #lines > 0 then
+        local removed = lines[#lines]
+        table.remove(lines)
+        persistWriteLines(lines)
+        local parsed = parsePersistLine(removed)
+        if parsed and parsed.instanceLabel and parsed.instanceLabel ~= "" then
+            Spawner.RemoveCustomStateForLabel(parsed.instanceLabel)
+        end
+    end
 end
 
 -- Drop the saved record matching a class + spawn position (the closest one). Order-
 -- independent, so it works even after the in-memory list was rebuilt from disk (Ctrl+R)
--- and no longer lines up with persist by index. `loc` is the spawn/home position.
+-- and no longer lines up with persist by index. `loc` is the spawn/home position. Also drops the
+-- matching custom_state.txt block -- see PersistRemoveLast's own header for why.
 function Spawner.PersistRemoveMatching(classPath, loc)
     if not (classPath and loc) then return false end
     local lines = persistReadLines()
-    local _, bestI = Spawner.PersistFindMatching(classPath, loc)
-    if bestI then table.remove(lines, bestI); persistWriteLines(lines); return true end
+    local parsed, bestI = Spawner.PersistFindMatching(classPath, loc)
+    if bestI then
+        table.remove(lines, bestI)
+        persistWriteLines(lines)
+        if parsed and parsed.instanceLabel and parsed.instanceLabel ~= "" then
+            Spawner.RemoveCustomStateForLabel(parsed.instanceLabel)
+        end
+        return true
+    end
     return false
+end
+
+--------------------------------------------------------------------
+-- "Save Customizations" (2026-09-16) -- a SEPARATE per-world file from persist.txt above
+-- (RedFalcon's own preference: keep persist.txt's already-fragile append-only field history
+-- untouched). Explicit save, not an auto-write on every Custom-tab edit (RedFalcon: "they can
+-- fiddle all they want, but it isn't persisted until saved") -- so there's no debounce/latency
+-- concern the way persist.txt's own un-debounced per-action rewrites have (spawner.lua's own
+-- comment on PersistUpdatePose's rotate-hold cost). Keyed by the SAME resolved `label`
+-- (Spawner.NextInstanceLabel, see that function's own comment above) every Spawner.spawned entry
+-- already carries -- statues/walkers/Barbies are ALL placed via the same Spawn Menu (RedFalcon:
+-- "statues and walkers are placed by us though, most are just native to the game with some
+-- tweaks"), so this one identity scheme covers everything; a target with no Spawner.spawned entry
+-- (a genuinely untouched native NPC) is out of scope -- nothing to key it by.
+--------------------------------------------------------------------
+-- Packed as FIELDS on one table (2026-09-16 fix, RedFalcon hit this live: "looks like we hit a
+-- 200 variable limit") -- same reasoning main.lua's own BeltStrapPolls table already documents:
+-- this file's main chunk was already right at Lua's hard 200-local ceiling, and every top-level
+-- `local` permanently occupies one of those 200 slots for the rest of the file. The 7 separate
+-- top-level locals this section originally introduced (OLD_CUSTOM_STATE_PATHS/
+-- CUSTOM_STATE_PATHS/customStateReadBlocks/customStateWriteBlocks/applyCustomStateLine/
+-- shortMeshName/sweepAttachedMeshes) pushed it over the limit; a single `local CS = {}` costs
+-- exactly one slot no matter how many fields get hung off it.
+local CS = {}
+CS.OLD_PATHS = {
+    "ue4ss/Mods/LivingBase/custom_state.txt",
+    "Mods/LivingBase/custom_state.txt",
+    "custom_state.txt",
+}
+CS.paths = function() return worldPaths("custom_state.txt", CS.OLD_PATHS) end
+
+-- INI-style blocks: "[label]" header line, then one "KEY:value" per line until the next "[" or
+-- EOF. Returns an ORDERED list of { label = "...", lines = { "KEY:...", ... } }.
+CS.readBlocks = function()
+    for _, p in ipairs(CS.paths()) do
+        local f = io.open(p, "r")
+        if f then
+            local blocks, current = {}, nil
+            for line in f:lines() do
+                local label = line:match("^%[(.-)%]$")
+                if label then
+                    current = { label = label, lines = {} }
+                    table.insert(blocks, current)
+                elseif current and line ~= "" then
+                    table.insert(current.lines, line)
+                end
+            end
+            f:close()
+            return blocks
+        end
+    end
+    return {}
+end
+
+-- Write-to-temp-then-swap (2026-09-17) -- same crash-safety fix as PresetDB.writeBlocks (see its
+-- own header comment for the full story: a mid-write crash was confirmed to have wiped
+-- npc_preset_scan.txt back to empty once already). The old version opened the real
+-- custom_state_<islandId>.txt directly in "w" mode, erasing it to zero bytes before a single
+-- block was rewritten -- a crash in that window would lose every target's saved customization,
+-- not just whichever one was being saved. Now writes the full new content to a sibling ".tmp"
+-- file first and only swaps it into the real path once the write has fully succeeded.
+CS.writeBlocks = function(blocks)
+    for _, p in ipairs(CS.paths()) do
+        local tmp = p .. ".tmp"
+        local f = io.open(tmp, "w")
+        if f then
+            for _, b in ipairs(blocks) do
+                f:write("[" .. b.label .. "]\n")
+                for _, l in ipairs(b.lines) do f:write(l .. "\n") end
+                f:write("\n")
+            end
+            f:close()
+            os.remove(p)
+            os.rename(tmp, p)
+            return
+        end
+    end
+end
+
+-- CS.findPersistedLine(label, prefix) -- (2026-09-16, RedFalcon: "now its not pulling any color
+-- information when detecting. It should read CPD info, then persist, then default in that order.")
+-- Middle tier between a live CPD read and the archetype-baked SavedCustomizationData default: looks
+-- up the target's OWN previously-Saved custom_state.txt block (by its resolved Spawner.spawned
+-- label -- the same join key SaveCustomState/RestoreCustomState already use) for a line starting
+-- with `prefix` (e.g. "COLOR:TORSO:", "HAIRCOLOR:Hairs:", "EYECOLOR:"). This is real, previously-
+-- intentional customization data (not a fabricated default), so it's the right thing to show when
+-- CPD comes up empty on a piece this project's own read-after-write investigation found often
+-- doesn't reflect a fresh write immediately (see TestReadCategoryColors' own header comment on the
+-- SavedCustomizationData fallback removal) -- reporting the ARCHETYPE default instead of the actor's
+-- own last-known-good saved value made a previously-customized piece look untouched. Returns the
+-- full matched line (caller parses its own value shape) or nil if there's no saved block for this
+-- label, or no line with this prefix in it.
+CS.findPersistedLine = function(label, prefix)
+    if not label or label == "" then return nil end
+    for _, b in ipairs(CS.readBlocks()) do
+        if b.label == label then
+            for _, line in ipairs(b.lines) do
+                if line:sub(1, #prefix) == prefix then return line end
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+-- CS.ResolveSequenceFrameInfo(seq, say) -- (2026-09-21) shared frame-rate/length detection,
+-- factored out of Spawner.PoseScrubStart so Spawner.ApplyFrozenPose (the world-load restore path,
+-- below) can compute the exact same frame timing without duplicating it. Tries the sequence's own
+-- real sampling-frame-rate struct first (Numerator/Denominator); on this build those fields did
+-- NOT come back as plain Lua numbers even when the struct itself resolved non-nil (some other
+-- non-numeric userdata, "TrivialObject") -- type-checked here so an unreadable rate falls through
+-- to the flat fps guess (Config.POSE_SCRUB_FALLBACK_FPS, default 30) instead of crashing. Returns
+-- fps, length, numFrames, frameTime.
+function CS.ResolveSequenceFrameInfo(seq, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    local length = nil
+    pcall(function() length = seq:GetPlayLength() end)
+    local fps = nil
+    local okRate, rate = pcall(function() return seq.SamplingFrameRate or seq.PlatformTargetFrameRate end)
+    if okRate and rate then
+        local okNum, num = pcall(function() return rate.Numerator end)
+        local okDen, den = pcall(function() return rate.Denominator end)
+        if okNum and okDen and type(num) == "number" and type(den) == "number" and den > 0 then
+            fps = num / den
+        end
+    end
+    if not fps or fps <= 0 then
+        fps = Config.POSE_SCRUB_FALLBACK_FPS or 30.0
+        say(string.format("could not read this sequence's real frame rate -- assuming %.0f fps (set Config.POSE_SCRUB_FALLBACK_FPS to override if this looks wrong).", fps))
+    end
+    length = (length and length > 0) and length or 1.0
+    local numFrames = math.max(1, math.floor(length * fps + 0.5))
+    local frameTime = length / numFrames
+    return fps, length, numFrames, frameTime
+end
+
+-- CS.LiveScrubFrame(st) -- (2026-09-21) computes the CURRENT frame of an actively-playing
+-- Spawner.poseScrub, WITHOUT reading anything back off the engine's own AnimInstance. First
+-- attempt read `mesh:GetAnimInstance().CurrentTime` back every status poll -- CONFIRMED WRONG
+-- live (2026-09-21, RedFalcon: "can you set the slider to the frame it was paused on" -- the log
+-- showed "paused at frame 0/36" after several real seconds of playback, meaning that read was
+-- silently returning something that never advanced, same class of "reads cleanly but the value is
+-- useless" gotcha this project has hit before with a struct field -- see the FFrameRate/
+-- TrivialObject fix in Spawner.PoseScrubStart's own history). Rather than chase whatever the
+-- correct property name/type actually is on this build, this just tracks wall-clock time directly
+-- in Lua (os.clock(), already proven reliable for sub-second timing elsewhere in this file) from
+-- the exact moment PoseScrubPlay/PoseScrubSeek last set st.playStartClock/st.playStartFrame,
+-- wrapping at the sequence's own real length so a looping clip's reported frame wraps the same way
+-- the animation itself visibly does.
+function CS.LiveScrubFrame(st)
+    if not (st.playStartClock and st.length and st.length > 0 and st.frameTime > 0) then
+        return st.frame
+    end
+    local elapsed = os.clock() - st.playStartClock
+    local t = ((st.playStartFrame or 0) * st.frameTime + elapsed) % st.length
+    return math.max(0, math.min(st.numFrames - 1, math.floor(t / st.frameTime + 0.5)))
+end
+
+-- Spawner.ApplyFrozenPose(actor, animSequencePath, frame, say) -- restore-side counterpart to a
+-- SAVED frozen scrub frame (2026-09-21, RedFalcon: "we will also want save to include if the pose
+-- is frozen or not, and if it is, what frame it is on" / "and load to return to that"). Deliberately
+-- does NOT touch/create Spawner.poseScrub -- a world-load restore can replay several actors' saved
+-- state in the same session, and poseScrub is a single global "whichever one the Custom tab's
+-- Play/Pause/Frame controls currently act on" cursor, not a per-actor registry; re-scrubbing THIS
+-- actor interactively later (lbposescrub, or picking a pose again in the Custom tab) naturally
+-- re-arms poseScrub against it same as any fresh scrub start. This just puts the mesh into the same
+-- single-node-frozen-at-an-exact-time state PoseScrubStart+PoseScrubStep would have left it in.
+function Spawner.ApplyFrozenPose(actor, animSequencePath, frame, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then say("no actor.Mesh on this actor"); return false end
+    local seq = resolveAsset(animSequencePath)
+    if not seq then say("UNRESOLVED path: " .. tostring(animSequencePath)); return false end
+    local okPlay = pcall(function() mesh:PlayAnimation(seq, false) end)
+    if not okPlay then say("PlayAnimation FAILED -- can't apply frozen pose to this target."); return false end
+    pcall(function() mesh:SetPlayRate(0.0) end)
+    local _, _, numFrames, frameTime = CS.ResolveSequenceFrameInfo(seq, say)
+    local clampedFrame = math.max(0, math.min(numFrames - 1, frame or 0))
+    local okPos = pcall(function() mesh:SetPosition(clampedFrame * frameTime, false) end)
+    say(string.format("frozen pose applied -- frame %d/%d%s", clampedFrame, numFrames - 1, okPos and "" or " -- SetPosition FAILED"))
+    return okPos
+end
+
+-- Spawner.BuildCustomStateLines(say) -- assembles the SAME flat KEY:value snapshot
+-- pollCustomColorReadRequest (main.lua) already builds for the Read Current status file, PLUS the
+-- 3 categories Read Current never covered (socket accessories/weapon slots, lantern, AI toggle).
+-- Deliberately excludes pure UI-availability signals (HAIRSLOT/CLOTHESSLOT/BELTAVAILABLE/
+-- BELTVISIBLE/SENKAMATI) -- those tell CustomMenu.cpp what to grey out, they aren't settable state
+-- to replay. LANTERN/AITOGGLE lines are only emitted when they differ from the native default
+-- (off / running) -- RedFalcon: "if there is no change, there's no need to reference it" -- an
+-- untouched target should produce zero lines for those two, not a redundant default value; every
+-- other category already reflects the target's actual current state either way (native or
+-- customized), same as Read Current itself has always shown.
+-- CS.lookupNpcLookClassification(actor) (2026-09-17) -- hung off the already-existing CS table (a
+-- field access, not a new top-level local -- this file sits right at Lua's 200-local ceiling, see
+-- CS's own comment further up). Looks up Config.NPC_LOOK_CLASSIFICATION (config.lua, generated by
+-- gen_npc_customization_reference.py from Other/randomized.xlsx) by the actor's resolved Spawn
+-- Menu label with its trailing instance number stripped (e.g. "BotC Musketeer 3" -> "BotC
+-- Musketeer"). NOTE: the earlier per-category Config.NPC_CUSTOM_REFERENCE "fixed" gate (2026-09-17,
+-- same day) was REMOVED after RedFalcon corrected a wrong assumption it was built on -- a
+-- Customization.UID.* category's bAllowCustomization=false does NOT mean this project's own
+-- tooling can't edit it (RedFalcon: "I can apply changes to her clothes and colors no problem" on
+-- Letty, whose Armor category reports fixed=true) -- that flag almost certainly only governs the
+-- GAME's OWN native customization station UI, which this whole Custom tab bypasses entirely via
+-- direct BuildedCompositeMeshes/CPD writes. It says nothing about whether a value differs from
+-- native default, so it's useless as a save/restore gate and was dropped. Classification
+-- ("randomized" -- the actual look rerolls every spawn, unrelated to that flag) is unaffected and
+-- stays in use below.
+CS.lookupNpcLookClassification = function(actor)
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then
+            local baseLabel = tostring(e.label or ""):match("^(.-)%s+%d+$") or e.label
+            return Config.NPC_LOOK_CLASSIFICATION and Config.NPC_LOOK_CLASSIFICATION[baseLabel]
+        end
+    end
+    return nil
+end
+
+-- CS.lookupNpcBaseline(actor) (2026-09-17) -- the actual per-category default-VALUE baseline
+-- (Config.NPC_CUSTOM_BASELINE, see its own header comment, config.lua) for whichever archetype
+-- `actor` is, resolved via its live DefaultParams path (Spawner.ReadDefaultParamsSummary) -- no
+-- instance-label bookkeeping needed. Returns nil if this actor's DefaultParams was never HOME-
+-- scanned with the raw-capturing probe, or has no matching entry at all -- callers must fall back
+-- to "always write" (current, unrestricted behavior) in that case.
+-- BUG FIX (2026-09-17, RedFalcon: "spawned and saved marita with no changes and it's still
+-- recording all this... should not be there") -- confirmed her scan data WAS captured correctly
+-- (npc_preset_scan.txt had every RAW value present), but this lookup never matched it: `summary.
+-- defaultParams` comes straight from `params:GetFullName()`, which returns "<ClassName>
+-- <PackagePath>" (e.g. "R5CompositeMeshComponentBaseParams /Game/..."), while
+-- gen_npc_customization_reference.py's own parser strips that class-name prefix before using the
+-- bare "/Game/..." path as the Config.NPC_CUSTOM_BASELINE key (matching the DEFAULTPARAMS: line's
+-- OWN already-established convention). The two never agreed on a format, so this lookup silently
+-- missed on every single actor, all the time -- every category fell through to "no baseline,
+-- always write", exactly matching what RedFalcon saw. Fixed by stripping the same prefix here.
+CS.lookupNpcBaseline = function(actor)
+    local ok, baseline = pcall(function()
+        local summary = Spawner.ReadDefaultParamsSummary(actor)
+        local key = summary.defaultParams and summary.defaultParams:match("^%S+%s+(.+)$")
+        return key and Config.NPC_CUSTOM_BASELINE and Config.NPC_CUSTOM_BASELINE[key]
+    end)
+    return ok and baseline or nil
+end
+
+function Spawner.BuildCustomStateLines(actor, say)
+    say = say or function(m) print("[LivingBase] [custom-state] " .. tostring(m) .. "\n") end
+    local lines = {}
+
+    -- "randomized" (2026-09-17, RedFalcon: "the randomized ones do share colors, so that
+    -- technically is the only thing that should be changeable on them") -- every OTHER look
+    -- category rerolls at build time on these archetypes, so treating a post-spawn read of them
+    -- as a deliberate edit would be exactly the "overwriting things that technically werent
+    -- changing" problem this whole reference exists to close. Skips straight to the
+    -- roster-independent overlay actions (belts/pose/sockets/weapons/lantern/AI) below -- Color
+    -- is still built normally, since it's the one look category confirmed worth keeping for them.
+    local skipLookCategories = (CS.lookupNpcLookClassification(actor) == "randomized")
+
+    -- baseline (2026-09-17, RedFalcon: "the goal was to get a default baseline on all the non
+    -- randomized spawns so that when a save is done and, say, I only changed her legs, the only
+    -- thing it does on reload is update her legs and nothing else" -- see
+    -- Config.NPC_CUSTOM_BASELINE/Spawner.CaptureRawCustomBaseline's own header comments for the
+    -- full design). nil for anything not yet HOME-scanned with the raw-capturing probe -- every
+    -- comparison below is written as "no baseline entry -> always keep the line", so an unscanned
+    -- archetype behaves exactly as it did before this feature existed.
+    local baseline = CS.lookupNpcBaseline(actor) or {}
+
+    -- Baked-default DIFFING (2026-09-16, RedFalcon: "i am finding that it populates a lot of
+    -- information that isn't actually changed... is it applying all of these on spawn no matter
+    -- what or does it filter it somehow?" -- it wasn't; every category got written regardless of
+    -- whether it was a real edit or just the archetype's own native look. Follow-up: "we can poll
+    -- some of the cooked information right?" -- yes: TestReadCategoryColors/TestReadHairColors/
+    -- TestReadEyeColor all already read SavedCustomizationData, the archetype's genuinely baked/
+    -- cooked default, as part of their own tier-3 fallback -- now also surfaced as bakedC1/2/3 /
+    -- bakedResults / a second return value specifically so THIS function can skip writing a line
+    -- for a value that's simply still native, never touched by the user). Colors ALSO now check
+    -- the newer, more authoritative Config.NPC_CUSTOM_BASELINE raw capture when one exists for
+    -- this archetype -- either source agreeing the value is unchanged is enough to skip the line.
+    local ok, results = pcall(function() return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES, say) end)
+    if ok and results then
+        for _, r in ipairs(results) do
+            local basedColor = baseline.colors and baseline.colors[r.key]
+            local matchesBaseline = basedColor and tostring(r.c1) == basedColor[1] and tostring(r.c2) == basedColor[2] and tostring(r.c3) == basedColor[3]
+            if not matchesBaseline and not (r.c1 == r.bakedC1 and r.c2 == r.bakedC2 and r.c3 == r.bakedC3) then
+                lines[#lines + 1] = string.format("COLOR:%s:%s:%s:%s", r.key,
+                    r.c1 and tostring(r.c1) or "-", r.c2 and tostring(r.c2) or "-", r.c3 and tostring(r.c3) or "-")
+            end
+        end
+    end
+
+    -- HEIGHT diffing (2026-09-18, RedFalcon: "the less we have to apply the better, i'm thinking
+    -- rules of scale") -- not a "look" category at all (unrelated to the randomized/hair/clothes
+    -- system), so this runs unconditionally, same as Color above. Native default comes straight off
+    -- the actor's own class CDO (CS.getClassDefaultScale, zero-spawn reflection, works for EVERY
+    -- archetype with no scanning ever needed) -- baseline.scale (the older RAWSCALE scan capture)
+    -- is only a fallback for the rare case the CDO read itself fails. CS.FEET_PER_SCALE_UNIT is a
+    -- table field (CS is already in scope everywhere in this file), not a `local` -- no
+    -- forward-reference issue reading it here even though it's assigned later in the file (near
+    -- Spawner.TestSetScale).
+    -- CORRECTED 2026-09-18 (RedFalcon: "clicking save did not add a height entry", then "the detect
+    -- isnt pulling scale") -- two bugs stacked here: (1) this originally only tried
+    -- actor:K2_GetActorScale3D() with no fallback, so a failed call silently skipped the whole
+    -- block; (2) even fixed, K2_GetActorScale3D reads the ACTOR/ROOT's scale, which this game never
+    -- actually uses for its own "short/tall NPC" system -- that's baked onto actor.Mesh instead (see
+    -- CS.setActorScaleGrounded's own header for the full story). Now reads
+    -- actor.Mesh:K2_GetComponentScale(), matching CS.getClassDefaultScale's own cdo.Mesh read and
+    -- Spawner.TestReadActorHeightFeet's own read -- all three agree on the same property now.
+    local okScale, curScale = pcall(function()
+        local mesh = actor and actor:IsValid() and actor.Mesh
+        local s = mesh and mesh:IsValid() and mesh:K2_GetComponentScale()
+        return s and s.Z
+    end)
+    if okScale and curScale then
+        local basedScale = CS.getClassDefaultScale(actor) or (baseline.scale and tonumber(baseline.scale))
+        if not (basedScale and math.abs(curScale - basedScale) < 0.001) then
+            lines[#lines + 1] = string.format("HEIGHT:%.4f", curScale * CS.FEET_PER_SCALE_UNIT)
+        end
+    end
+
+    -- Everything below this point is a "look" category (hair/skin/clothes) -- skipped entirely
+    -- for "randomized" archetypes (see skipLookCategories's own comment above); Color, read
+    -- above, is the one look category RedFalcon confirmed IS worth keeping for them.
+    if not skipLookCategories then
+    local okSize, size = pcall(function() return Spawner.TestReadSkinSize(say) end)
+    if okSize and size and size ~= baseline.physique then lines[#lines + 1] = "PHYSIQUE:" .. size end
+
+    local okHairColors, hairColors, bakedHairColors = pcall(function() return Spawner.TestReadHairColors(say) end)
+    if okHairColors and hairColors then
+        bakedHairColors = bakedHairColors or {}
+        for _, bp in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
+            local basedVal = baseline.hairColors and baseline.hairColors[bp]
+            if hairColors[bp] and hairColors[bp] ~= bakedHairColors[bp] and hairColors[bp] ~= basedVal then
+                lines[#lines + 1] = string.format("HAIRCOLOR:%s:%d", bp, hairColors[bp])
+            end
+        end
+    end
+
+    local okHairStyles, hairStyles, _, hairRaw = pcall(function() return Spawner.TestReadHairStyles(say) end)
+    if okHairStyles and hairStyles then
+        for _, bp in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
+            local basedMesh = baseline.hair and baseline.hair[bp]
+            local rawMatches = basedMesh and hairRaw and hairRaw[bp] == basedMesh
+            if hairStyles[bp] and not rawMatches then lines[#lines + 1] = string.format("HAIRSTYLE:%s:%s", bp, hairStyles[bp]) end
+        end
+    end
+
+    local okEyeColor, eyeColor, bakedEyeColor = pcall(function() return Spawner.TestReadEyeColor(say) end)
+    if okEyeColor and eyeColor ~= nil and eyeColor ~= bakedEyeColor and tostring(eyeColor) ~= baseline.eyeColor then
+        lines[#lines + 1] = "EYECOLOR:" .. tostring(eyeColor)
+    end
+
+    local okClothes, clothesStyles, _, clothesRaw = pcall(function() return Spawner.TestReadClothesStyles(say) end)
+    if okClothes and clothesStyles then
+        for _, bp in ipairs({ "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape", "Mask" }) do
+            local basedMesh = baseline.clothes and baseline.clothes[bp]
+            local rawMatches = basedMesh and clothesRaw and clothesRaw[bp] == basedMesh
+            if clothesStyles[bp] and not rawMatches then lines[#lines + 1] = string.format("CLOTHESITEM:%s:%s", bp, clothesStyles[bp]) end
+        end
+    end
+
+    local okSkinTone, skinTone, rawMaterial = pcall(function() return Spawner.TestReadSkinTone(say) end)
+    if okSkinTone and skinTone and rawMaterial ~= baseline.skinTone then lines[#lines + 1] = "SKINTONE:" .. skinTone end
+    end -- not skipLookCategories
+
+    -- TEMP crash-isolation skip (2026-09-16, RedFalcon: "the belts are a pretty common source. Can
+    -- we unlink those from detect and save and see if it stabilizes?") -- see
+    -- Config.TEMP_SKIP_BELTSTRAPS_READ's own header (config.lua) for the full reasoning/revert.
+    if not Config.TEMP_SKIP_BELTSTRAPS_READ then
+        local okBelt, beltStyles = pcall(function() return Spawner.TestReadBeltStrapStyles(say) end)
+        if okBelt and beltStyles then
+            for _, bp in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
+                local entry = beltStyles[bp]
+                local basedMesh = baseline.belts and baseline.belts[bp]
+                local rawMatches = basedMesh and entry and entry.rawMesh == basedMesh
+                if entry and entry.friendlyName and not rawMatches then
+                    lines[#lines + 1] = string.format("BELTPIECE:%s:%s", bp, entry.friendlyName)
+                end
+            end
+        end
+    end
+
+    -- Pose diffing (2026-09-17, RedFalcon: "we'll want to check pose too, if i change a pose i'll
+    -- want that reflected. If its an unknown pose, then don't record it as it'll be the default")
+    -- -- "Unknown" (no clip readable at all) was already never recorded; NOW a pose that IS
+    -- readable but matches the archetype's own baked baseline (baseline.pose, the raw clip name --
+    -- see Spawner.CaptureRawCustomBaseline's own RAWPOSE) is ALSO skipped, same "only what actually
+    -- changed" rule every other category already gets. No baseline recorded (unscanned archetype)
+    -- -> always write, matching current/prior behavior.
+    local okPose, poseName, poseLeaf = pcall(function() return Spawner.TestReadCurrentPoseName(say) end)
+    if okPose and poseName and poseName ~= "Unknown" and poseLeaf ~= baseline.pose then
+        lines[#lines + 1] = "POSE:" .. poseName
+        -- Frozen-frame state too (2026-09-21, RedFalcon: "we will also want save to include if the
+        -- pose is frozen or not, and if it is, what frame it is on" / "and load to return to
+        -- that"). Self-contained (repeats the pose name rather than relying on line ORDER with the
+        -- POSE line above) so CS.applyLine can resolve the sequence path on its own -- see that
+        -- function's own POSEFROZEN branch. Only emitted when the CURRENTLY ACTIVE Spawner.poseScrub
+        -- (if any) is for THIS actor and is genuinely paused -- a scrub left running/unrelated to
+        -- this actor writes nothing extra, same as every other "only real edits get a line" category.
+        local st = Spawner.poseScrub
+        if st and st.actor == actor and st.paused then
+            lines[#lines + 1] = string.format("POSEFROZEN:%s:%d", poseName, st.frame)
+        end
+    end
+
+    local okAcc, accResults = pcall(function() return Spawner.TestReadSocketAccessories(say) end)
+    if okAcc and accResults then
+        local okSweep, attachedMesh, attachedMeshList = pcall(function() return actor and CS.sweepAttachedMeshes(actor) end)
+        for socket, friendlyName in pairs(accResults) do
+            local basedMesh = baseline.accessories and baseline.accessories[socket]
+            -- soc_Lantern (2026-09-17) -- same filtered-list lookup as TestReadSocketAccessories/
+            -- CaptureRawCustomBaseline, since the single-value `attachedMesh` map could hold our
+            -- own lantern's mesh instead of the regular item's when both coexist at this socket.
+            local curMesh
+            if socket == BELT_LANTERN_SOCKET then
+                curMesh = okSweep and CS.filterOutLanternMeshes((attachedMeshList or {})[socket])[1]
+            else
+                curMesh = okSweep and attachedMesh and attachedMesh[socket]
+            end
+            local rawMatches = basedMesh and curMesh == basedMesh
+            if not rawMatches then
+                lines[#lines + 1] = string.format("SOCKETITEM:%s:%s", socket, friendlyName)
+            end
+        end
+        -- Removal (2026-09-17, RedFalcon: "how are we handling spots where an item is removed not
+        -- replaced" -- socket accessories are the one category where removal genuinely DESTROYS
+        -- the component (Spawner.RemoveSocketAttachment's own K2_DestroyComponent, unlike Clothes/
+        -- Hair/Belts, which only ever hide) -- so a removed socket item and one that never had
+        -- anything are indistinguishable from a live sweep alone. accResults above only ever lists
+        -- sockets with something CURRENTLY attached, so a baseline socket that's now empty would
+        -- never be visited by that loop at all -- walk baseline.accessories' own keys too and emit
+        -- the same "None" sentinel ApplySocketItemManual already understands wherever the baseline
+        -- had something but the live sweep doesn't.
+        if baseline.accessories then
+            for socket, basedMesh in pairs(baseline.accessories) do
+                if not accResults[socket] then
+                    lines[#lines + 1] = string.format("SOCKETITEM:%s:None", socket)
+                end
+            end
+        end
+    end
+
+    -- WEAPONSLOT diffing (2026-09-18, RedFalcon: "i did a save on marita. WEAPONSLOT:LeftPistol:
+    -- Pistol - Rusty - Belt was saved but its spawned with her. is this a miss?" -- yes: her
+    -- baseline already captures beltSlot_01_lSocket's native raw mesh via the SAME RAWACC sweep
+    -- every socket uses (socType-agnostic), this just never consulted it before. Uses
+    -- TestReadWeaponSlots' own new 2nd return (resolvedSockets) to find which real socket backs
+    -- each detected location, then diffs against baseline.accessories exactly like SOCKETITEM
+    -- does -- including the same removal symmetry (a baseline weapon no longer present writes
+    -- "None", matching ApplyWeaponSlotManual's own understood sentinel).
+    -- NOTE: this deliberately does NOT also add "removal" symmetry (a baseline weapon no longer
+    -- present -> "WEAPONSLOT:<key>:None") the way SOCKETITEM does -- that would need
+    -- WEAPON_GROUP_SOCKETS (the locationKey -> candidate-sockets table), which is a `local`
+    -- declared LATER in this file than this function and so isn't in scope here. Revisit if that
+    -- symmetry is ever actually needed -- not part of RedFalcon's report, which was specifically
+    -- about a native weapon being wrongly reported as changed, not about removal.
+    local okWeapons, weaponResults, weaponSockets = pcall(function() return Spawner.TestReadWeaponSlots(say) end)
+    if okWeapons and weaponResults then
+        -- Own dedicated sweep (2026-09-18) -- deliberately NOT reusing the SOCKETITEM section's
+        -- own `attachedMesh` local above: that one only exists inside its own `if okAcc and
+        -- accResults then ... end` block and is already out of scope by this point.
+        local okWeaponSweep, weaponAttachedMesh = pcall(function() return actor and CS.sweepAttachedMeshes(actor) end)
+        for locationKey, friendlyName in pairs(weaponResults) do
+            local sock = weaponSockets and weaponSockets[locationKey]
+            local basedMesh = sock and baseline.accessories and baseline.accessories[sock]
+            local rawMatches = basedMesh and okWeaponSweep and weaponAttachedMesh and sock and weaponAttachedMesh[sock] == basedMesh
+            if not rawMatches then
+                lines[#lines + 1] = string.format("WEAPONSLOT:%s:%s", locationKey, friendlyName)
+            end
+        end
+    end
+
+    -- Lantern diffing (2026-09-17, RedFalcon: "can you scan for the lantern slot as well" --
+    -- surfaced the same un-diffed gap Pose had just above: this only ever checked "is it currently
+    -- on", never whether the archetype's own native default ALREADY has one -- baseline.lantern
+    -- (see Spawner.CaptureRawCustomBaseline's own new RAWLANTERN) records the raw mesh at scan
+    -- time when one was natively present. If it was already there, it's not a real edit.
+    local okLantern, lanternOn = pcall(function() return Spawner.TestReadLanternState(say) end)
+    if okLantern and lanternOn and not baseline.lantern then lines[#lines + 1] = "LANTERN:1" end
+
+    local okAI, aiRunning = pcall(function() return Spawner.TestReadAILogicState(say) end)
+    if okAI and not aiRunning then lines[#lines + 1] = "AITOGGLE:0" end
+
+    -- Hand items too (2026-09-21, RedFalcon's Left/Right Hand item dropdowns) -- no baseline diff
+    -- exists for these yet (ik_weapon_lSocket/rSocket were never part of the RAWACC baseline sweep
+    -- either, same gap TestReadHandItems' own header notes for Read Current) -- always emitted
+    -- when resolved, same "always write what's actually there" approach every genuinely NEW
+    -- category in this function starts with.
+    local okHands, handItems = pcall(function() return Spawner.TestReadHandItems(say) end)
+    if okHands and handItems then
+        if handItems.Left then lines[#lines + 1] = "HANDITEM:Left:" .. handItems.Left end
+        if handItems.Right then lines[#lines + 1] = "HANDITEM:Right:" .. handItems.Right end
+    end
+
+    return lines
+end
+
+-- Spawner.RemoveCustomStateForLabel(label) -- keeps custom_state.txt in lockstep with persist.txt
+-- (2026-09-16 fix): called from PersistRemoveLast/PersistRemoveMatching (spawner.lua, above) so a
+-- despawned actor's saved cosmetic block never outlives its persist.txt row and gets wrongly
+-- inherited by a later, unrelated spawn that happens to recycle the same "<label> N" (see those
+-- two functions' own header comment for the full story). Safe no-op if nothing matches.
+function Spawner.RemoveCustomStateForLabel(label)
+    if not label or label == "" then return end
+    local blocks = CS.readBlocks()
+    local changed = false
+    for i = #blocks, 1, -1 do
+        if blocks[i].label == label then
+            table.remove(blocks, i)
+            changed = true
+        end
+    end
+    if changed then CS.writeBlocks(blocks) end
+end
+
+-- Spawner.SaveCustomState(actor, say) -- "Save Customizations" button handler. Finds `actor`'s own
+-- Spawner.spawned entry (the join key is its resolved `label`), builds its full state snapshot via
+-- BuildCustomStateLines, and replaces/appends that target's own `[label]` block in
+-- custom_state_<islandId>.txt. Returns false (and says why) if `actor` isn't a tracked spawn at
+-- all -- nothing to key it by, out of scope by design (see this section's own header comment).
+function Spawner.SaveCustomState(actor, say)
+    say = say or function(m) print("[LivingBase] [save-customizations] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then
+        say("no actor to save.")
+        return false
+    end
+    local label = nil
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label; break end
+    end
+    if not label then
+        say("not a tracked spawn (never placed via the Spawn Menu) -- nothing to key this save by, skipped.")
+        return false
+    end
+    local lines = Spawner.BuildCustomStateLines(actor, say)
+    local blocks = CS.readBlocks()
+    local replaced = false
+    for _, b in ipairs(blocks) do
+        if b.label == label then b.lines = lines; replaced = true; break end
+    end
+    if not replaced then
+        table.insert(blocks, { label = label, lines = lines })
+    end
+    CS.writeBlocks(blocks)
+    say(string.format("saved %d customization line(s) for '%s'.", #lines, label))
+    return true
+end
+
+-- CS.applyLine(actor, line, say) -- the restore-side twin of BuildCustomStateLines: given one
+-- saved "KEY:..." line, calls the EXACT SAME Apply* function the live Custom tab already uses for
+-- that category (main.lua's own request handlers are the reference for each call shape). Every
+-- Apply* function here (other than SetAILogic, which takes an explicit actor) resolves its target
+-- via findNearestSpawnInFront's Spawner.lockedTarget bypass -- see that function's own header,
+-- above -- so Spawner.RestoreCustomState temporarily points the lock at `actor` before calling
+-- this, meaning NONE of these Apply functions needed any signature changes for this feature.
+-- CS.applyLine(actor, line, say) -- DIRECT-ACTOR, no targeting involved (2026-09-16, RedFalcon:
+-- "this targeting piece could cause issues. What I would prefer is a restore function that did not
+-- require targeting... this seems more like a workaround than a true process. none of our other
+-- functions, such as the senkamati prep requires targeting"). Every Apply/Test function below now
+-- takes `actor` as its own trailing actorOverride parameter (see resolveTargetOrActor's own header,
+-- just after findNearestSpawnInFront) and resolves straight to it -- no Spawner.lockedTarget, no
+-- Spawner.TargetLockDistanceCheck leash, no proximity/cone search at all. This REPLACES the earlier
+-- design where RestoreCustomState temporarily pointed Spawner.lockedTarget at the actor and let
+-- these same functions re-derive it through the normal interactive picker -- that picker's own
+-- distance leash silently released the lock when the player was far from the actor being restored,
+-- misapplying saved poses/customizations onto whatever NPC was nearest the player instead (found
+-- 2026-09-16: "it applied the stored pose on the wrong npc... its on the merchant").
+CS.applyLine = function(actor, line, say)
+    local key = line:match("^(%u+):")
+    if not key then return end
+
+    if key == "COLOR" then
+        local catKey, v1, v2, v3 = line:match("^COLOR:(%u+):([%d%-]+):([%d%-]+):([%d%-]+)$")
+        if not catKey then return end
+        local row = nil
+        for _, r in ipairs(Config.CUSTOM_TAB_CLOTH_CATEGORIES or {}) do
+            if r.key == catKey then row = r; break end
+        end
+        if not row then return end
+        local function slot(v) return (v == "-") and nil or tonumber(v) end
+        pcall(function() Spawner.TestSetCPDPaletteColor(row.bodyPart, slot(v1), slot(v2), slot(v3), say, actor) end)
+    elseif key == "PHYSIQUE" then
+        local size = line:match("^PHYSIQUE:(.+)$")
+        if size then pcall(function() Spawner.TestSetSkinSize(size, say, actor) end) end
+    elseif key == "SKINTONE" then
+        local toneName = line:match("^SKINTONE:(.+)$")
+        if toneName then pcall(function() Spawner.ApplyCustomTabSkinTone(toneName, say, actor) end) end
+    elseif key == "HAIRSTYLE" then
+        local cat, name = line:match("^HAIRSTYLE:([%a]+):(.+)$")
+        if cat then pcall(function() Spawner.ApplyHairCategoryMesh(cat, name, say, actor) end) end
+    elseif key == "HAIRCOLOR" then
+        local cat, idxStr = line:match("^HAIRCOLOR:([%a]+):(%d+)$")
+        local idx = idxStr and tonumber(idxStr)
+        if cat and idx then pcall(function() Spawner.ApplyHairCategoryColor(cat, idx, say, actor) end) end
+    elseif key == "EYECOLOR" then
+        local val = line:match("^EYECOLOR:(.+)$")
+        if val == "GLOWING" then
+            pcall(function() Spawner.TestSetEyeColor("Glowing", say, actor) end)
+        elseif val then
+            local idx = tonumber(val)
+            if idx then
+                pcall(function()
+                    Spawner.TestSetEyeColor("Default", say, actor)
+                    Spawner.TestSetBaseCPDFloat(15, idx, say, actor)
+                end)
+            end
+        end
+    elseif key == "CLOTHESITEM" then
+        local bp, name = line:match("^CLOTHESITEM:(%a+):(.+)$")
+        if bp then
+            pcall(function()
+                if name == "(Remove)" then
+                    Spawner.RemoveClothesItem(bp, say, actor)
+                else
+                    Spawner.ApplyClothesItem(bp, name, say, actor)
+                end
+            end)
+        end
+    elseif key == "BELTPIECE" then
+        local pieceType, name = line:match("^BELTPIECE:(%a+):(.+)$")
+        if pieceType then pcall(function() Spawner.ApplyBeltStrapPiece(pieceType, name, say, actor) end) end
+    elseif key == "POSE" then
+        local poseName = line:match("^POSE:(.+)$")
+        if poseName then
+            for _, row in ipairs(Config.CUSTOM_POSES or {}) do
+                if row.name == poseName then
+                    pcall(function() Spawner.TestApplyPoseByPath(row.path, actor) end)
+                    break
+                end
+            end
+        end
+    elseif key == "POSEFROZEN" then
+        -- Self-contained (poseName:frame), independent of the POSE line's own order -- see
+        -- BuildCustomStateLines' own POSEFROZEN comment. Re-applies the sequence AND freezes it at
+        -- the saved frame via Spawner.ApplyFrozenPose, superseding whatever the plain POSE line
+        -- just above (if present in the same block) started playing.
+        local poseName, frameStr = line:match("^POSEFROZEN:(.+):(%d+)$")
+        local frame = frameStr and tonumber(frameStr)
+        if poseName and frame then
+            for _, row in ipairs(Config.CUSTOM_POSES or {}) do
+                if row.name == poseName then
+                    pcall(function() Spawner.ApplyFrozenPose(actor, row.path, frame, say) end)
+                    break
+                end
+            end
+        end
+    elseif key == "SOCKETITEM" then
+        local socket, name = line:match("^SOCKETITEM:([%w_]+):(.+)$")
+        if socket then pcall(function() Spawner.ApplySocketItemManual(socket, name, say, actor) end) end
+    elseif key == "HANDITEM" then
+        local hand, name = line:match("^HANDITEM:(%a+):(.+)$")
+        local socket = (hand == "Left") and "ik_weapon_lSocket" or (hand == "Right") and "ik_weapon_rSocket" or nil
+        if socket then pcall(function() Spawner.ApplySocketItemManual(socket, name, say, actor) end) end
+    elseif key == "WEAPONSLOT" then
+        local locKey, name = line:match("^WEAPONSLOT:([%a]+):(.+)$")
+        if locKey then pcall(function() Spawner.ApplyWeaponSlotManual(locKey, name, say, actor) end) end
+    elseif key == "LANTERN" then
+        local v = line:match("^LANTERN:([01])$")
+        if v then pcall(function() Spawner.ToggleBeltLantern(v == "1", say, actor) end) end
+    elseif key == "AITOGGLE" then
+        local v = line:match("^AITOGGLE:([01])$")
+        if v then pcall(function() Spawner.SetAILogic(actor, v == "1") end) end
+    elseif key == "HEIGHT" then
+        local feet = line:match("^HEIGHT:([%d%.]+)$")
+        if feet then pcall(function() Spawner.ApplyActorHeightFeet(feet, say, actor) end) end
+    end
+    -- Unknown prefixes are silently skipped -- forward-compatible with the line vocabulary
+    -- growing later without needing an old custom_state.txt to be re-saved.
+end
+
+-- Spawner.RestoreCustomState(say, onComplete) -- called once, right after Spawner.RestoreFromPersist's
+-- own restore genuinely completes (see main.lua's fire()/afterRestore, which wraps the onComplete
+-- callback) -- by then every Barbie/statue/walker in Spawner.spawned already exists again with its
+-- resolved `label`. For each saved block, finds the matching Spawner.spawned entry by label and
+-- replays every line straight onto that actor via CS.applyLine's own actorOverride parameter.
+--
+-- DIRECT-ACTOR, no targeting involved (2026-09-16, RedFalcon: "this targeting piece could cause
+-- issues. What I would prefer is a restore function that did not require targeting... this seems
+-- more like a workaround than a true process. none of our other functions, such as the senkamati
+-- prep requires targeting"). This used to temporarily point Spawner.lockedTarget at the actor and
+-- let every underlying Apply/Test function re-derive it through the normal interactive
+-- findNearestSpawnInFront picker -- that picker's own Spawner.TargetLockDistanceCheck doesn't just
+-- skip a stale lock, it RELEASES it (Spawner.lockedTarget = nil) the moment the player is more than
+-- Config.TARGET_LOCK_MAX_DIST (~15m) from the locked actor, which is very likely true somewhere
+-- during a world-load restore -- and every apply after that point silently fell through to "nearest
+-- actor in front of the player" instead, misapplying saved poses/customizations onto an unrelated
+-- nearby NPC (confirmed 2026-09-16: "it applied the stored pose on the wrong npc... its on the
+-- merchant"). Fixed at the root instead of papering over the lock's leash: every Apply/Test function
+-- CS.applyLine calls now takes the actor directly (see resolveTargetOrActor, right after
+-- findNearestSpawnInFront) -- no lock, no distance/cone search, no Spawner.lockedTarget touched at
+-- all during a restore.
+--
+-- STAGGERED (2026-09-16, RedFalcon: "this time it crashed while loading" -- a fresh crash, right
+-- after restoring 26 lines for one actor then diving straight into 26 more for the next, all inside
+-- one already-dense synchronous burst). This is the SAME "dense burst of native reflection calls
+-- destabilizes UE4SS's own bridge" pattern this project has hit repeatedly (see
+-- WINDROSE_MODDING_NOTES.md's TArray re-walk crash trap, and the Read Current same-tick-adjacency
+-- fix in main.lua) -- restoring several actors' full cosmetic state back to back with zero pacing is
+-- easily the densest native-call burst in the whole restore chain. The existing mover-restore path
+-- (spawnList, above) already established the fix for exactly this shape of problem: one heavy item's
+-- worth of native setup per ExecuteWithDelay tick, not all of them in one frame. Applying the same
+-- idiom here, one BLOCK (one actor's full saved state) per tick, using the same
+-- Config.RESTORE_STAGGER_MS cadence already proven safe for comparably heavy per-mover work.
+-- onComplete lets the caller (main.lua's afterRestore) wait for the WHOLE staggered chain before
+-- releasing the restore lock -- this used to run fully synchronously so the caller could just call it
+-- and move on; now it can't, since the work spans multiple frames.
+function Spawner.RestoreCustomState(say, onComplete)
+    say = say or function(m) print("[LivingBase] [restore-customstate] " .. tostring(m) .. "\n") end
+    local blocks = CS.readBlocks()
+    if #blocks == 0 then if onComplete then onComplete() end; return end
+    local i = 0
+    local function step()
+        i = i + 1
+        if i > #blocks then
+            if onComplete then onComplete() end
+            return
+        end
+        local b = blocks[i]
+        ExecuteInGameThread(function()
+            local entry = nil
+            for _, e in ipairs(Spawner.spawned) do
+                if e.label == b.label then entry = e; break end
+            end
+            if entry and entry.actor and entry.actor:IsValid() then
+                for _, line in ipairs(b.lines) do
+                    CS.applyLine(entry.actor, line, say)
+                end
+                say(string.format("restored %d customization line(s) for '%s'.", #b.lines, b.label))
+            else
+                say("could not find a spawned actor labeled '" .. tostring(b.label) .. "' to restore -- skipped.")
+            end
+        end)
+        if ExecuteWithDelay then
+            ExecuteWithDelay(Config.RESTORE_STAGGER_MS or 350, step)
+        else
+            step()
+        end
+    end
+    step()
 end
 
 -- After a Ctrl+R hot-reload the in-memory list is gone but the spawned actors are still
@@ -9982,14 +10972,6 @@ function Spawner.RetrackOrphans()
                     pcall(function()
                         local l = a:K2_GetActorLocation(); home = { X = l.X, Y = l.Y, Z = l.Z }
                     end)
-                    -- Readable label from the class path (same short-name idiom used everywhere else
-                    -- in this file, e.g. EditNearestInFront's `short`) instead of the generic
-                    -- "RETRACKED" placeholder this had before (2026-08-13) -- a plain "RETRACKED"
-                    -- toast/log line told you NOTHING about which object it actually was, which only
-                    -- became visible once Target Lock started surfacing `label` directly in its own
-                    -- toast right after an lbreload (RetrackOrphans is what re-populates Spawner.spawned
-                    -- after a hot-reload wipes it -- see findNearestSpawnInFront's own call site above).
-                    local label = (cls and tostring(cls):match("([%w_]+)%.[%w_]+$")) or "unknown"
                     -- idle (2026-08-24 fix, same regression/reasoning as restoreOne's own markIdle
                     -- comment above -- RedFalcon: "idles lose the ai lock after moving") -- an
                     -- orphan re-tracked after an lbreload/Ctrl+R has no `look`/reskinTarget of its
@@ -9997,12 +10979,27 @@ function Spawner.RetrackOrphans()
                     -- carries it), so cross-reference persist.txt by class+position -- the SAME
                     -- record restoreOne itself would read on a real world-load restore -- purely to
                     -- recover its reskinTarget for the same "::true$" check.
-                    local idle = false
-                    if cls and home then
-                        local persisted = Spawner.PersistFindMatching(cls, home)
-                        idle = (persisted and persisted.look and persisted.look.reskinTarget
-                            and tostring(persisted.look.reskinTarget):match("::true$")) and true or false
-                    end
+                    local persisted = nil
+                    if cls and home then persisted = Spawner.PersistFindMatching(cls, home) end
+                    local idle = (persisted and persisted.look and persisted.look.reskinTarget
+                        and tostring(persisted.look.reskinTarget):match("::true$")) and true or false
+                    -- Real resolved instanceLabel FIRST (2026-09-16 fix, RedFalcon: "the merchant is
+                    -- initially referred to as [BotC  Merchant 4 1], but my changes created a section
+                    -- called [BP_AnimatedActor_BotC_Merchant_04], so they are not properly connected"
+                    -- -- persistFindMatching, called right above for the idle flag, ALREADY carries
+                    -- this actor's real saved `instanceLabel` field (parsePersistLine's own field 13),
+                    -- it just wasn't being used here). Before this fix, an lbreload always assigned a
+                    -- crude class-derived fallback label ("BP_AnimatedActor_BotC_Merchant_04", no
+                    -- instance suffix) to EVERY re-tracked orphan, regardless of what its real label
+                    -- had been -- Spawner.SaveCustomState correctly looks up THIS actor's current
+                    -- Spawner.spawned label to key its saved block, so a Save made after any lbreload
+                    -- silently created a brand-new, disconnected block under the wrong name instead of
+                    -- updating the actor's real "[BotC  Merchant 4 1]" one. Falls back to the old
+                    -- class-derived label (same short-name idiom used everywhere else in this file,
+                    -- e.g. EditNearestInFront's `short`) only when there's genuinely no persist.txt
+                    -- record to recover a real label from.
+                    local label = (persisted and persisted.instanceLabel)
+                        or (cls and tostring(cls):match("([%w_]+)%.[%w_]+$")) or "unknown"
                     table.insert(Spawner.spawned,
                         { actor = a, label = label, class = cls, home = home, idle = idle })
                     n = n + 1
@@ -10017,17 +11014,19 @@ end
 -- Re-spawn one persisted line. Returns (actor, classPath, look) or nil. Does NOT run the
 -- restore hook — post-processing is deferred until the world is stable (see below).
 local function restoreOne(line)
-    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel|pitch|roll|lootMesh
+    -- split: class|x|y|z|ai|yaw|friendly|lookParams|lookArchetype|sex|bodyTypes|reskinTarget|instanceLabel|pitch|roll|lootMesh|animClass
     -- (reskinTarget is a 2026-08-11 addition/field 12, instanceLabel a 2026-08-16 one/field 13,
-    -- pitch/roll a 2026-08-18 one/fields 14-15, lootMesh a 2026-08-19 one/field 16 -- any of these
-    -- can be absent/nil on an older line, same graceful-degradation contract as parsePersistLine
-    -- above.)
+    -- pitch/roll a 2026-08-18 one/fields 14-15, lootMesh a 2026-08-19 one/field 16, animClass a
+    -- 2026-09-20 one/field 17 (the "Mobile" named-NPC AnimBlueprint override, see Spawner.Spawn's
+    -- own comment on this param) -- any of these can be absent/nil on an older line, same
+    -- graceful-degradation contract as parsePersistLine above.)
     local parts = {}
     for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
     local cls, x, y, z, ai, yw, fr = parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
     local lp, la, ls, lb, lr, storedLabel = parts[8], parts[9], parts[10], parts[11], parts[12], parts[13]
     local pitch, roll = tonumber(parts[14]) or 0.0, tonumber(parts[15]) or 0.0
     local lootMesh = parts[16]
+    local animClassPath = (parts[17] and parts[17] ~= "") and parts[17] or nil
     if not (cls and x and y and z) then return end
     local loc = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) }
     local aiPath = (ai and ai ~= "") and ai or nil
@@ -10089,13 +11088,40 @@ local function restoreOne(line)
     -- restored its AI after a relocate). Same "::true$" detection the idle-freeze fix a few lines
     -- below already uses on this exact reskinTarget string -- reused here instead of duplicated, so
     -- the two can never drift out of sync with each other.
-    local markIdle = look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") and true or false
+    --
+    -- savedAiOff (2026-09-16, RedFalcon: "the AI state needs to be checked and applied at spawn. So
+    -- if a walker had its AI disabled, when it spawns in the next load, it should have that set
+    -- immediately or else it would mess up placement" -- like the Senkamati witch idle, above).
+    -- Before this fix, an AI-disabled walker/Barbie's AITOGGLE:0 line only got replayed by
+    -- Spawner.RestoreCustomState -- which runs AFTER persist.txt's own restore fully completes AND
+    -- the multi-second post-process settle, staggered one saved block per tick on top of that. In
+    -- that whole window, the actor respawns with its REAL AI controller attached (persist.txt's own
+    -- `aiPath` field is unchanged by an AI toggle) and walks under normal AI control the entire time
+    -- -- by the time AITOGGLE:0 finally lands, it's already wandered away from its saved spot. Checked
+    -- HERE, using the SAME resolvedLabel custom_state.txt is keyed by, so the disable can be applied
+    -- the instant the actor exists (see the post-spawn block below) instead of settling seconds
+    -- later. ORed into markIdle too -- an AI-disabled restored actor should behave exactly like a
+    -- frozen Senkamati for ConfirmPlacement/CancelPlacement's own idle check as well, so a later
+    -- placement drag doesn't wrongly turn its AI back on.
+    local savedAiOff = false
+    if resolvedLabel and resolvedLabel ~= "" then
+        local aiLine = CS.findPersistedLine(resolvedLabel, "AITOGGLE:")
+        savedAiOff = aiLine == "AITOGGLE:0"
+    end
+    local markIdle = savedAiOff or (look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") and true or false)
     local ok, a = pcall(function()
-        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel, markIdle)
+        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel, markIdle, animClassPath)
     end)
     if ok and a and a:IsValid() then
         if needsMigration then
             pcall(function() Spawner.PersistUpdateLabel(cls, loc, resolvedLabel) end)
+        end
+        -- Disable AI IMMEDIATELY, same frame as the spawn (2026-09-16, see savedAiOff's own comment
+        -- above) -- before the very first AI tick has a chance to move this actor off its saved spot.
+        -- Spawner.RestoreCustomState will also replay this same AITOGGLE:0 line much later, which is
+        -- now a harmless no-op re-confirmation, not the only place it ever gets applied.
+        if savedAiOff then
+            pcall(function() Spawner.SetAILogic(a, false) end)
         end
         -- DECORATIONS restore as scenery: freeze physics + enable collision RIGHT NOW (same frame as the
         -- spawn, before the first physics tick). Otherwise a prop whose mesh grazes the terrain gets
@@ -10154,6 +11180,16 @@ local function restoreOne(line)
         end
         return a, cls, look
     end
+    -- FAILURE BRANCH (2026-09-20, RedFalcon: "not everyone spawned in this time and theres an
+    -- error in the log" -- 5 of 6 saved entries silently vanished on a restore with ZERO trace
+    -- anywhere, because this function previously had no failure branch at all: a thrown Lua error
+    -- (ok=false) or a nil/invalid actor just fell off the end of this function with nothing logged.
+    -- Combined with spawnList's own per-entry line being VERBOSE-gated (see that fix, same entry),
+    -- there was no way to tell a genuine spawn failure apart from "everything's fine" from the log
+    -- alone -- always() here (unconditional, not log()) closes that gap for good.
+    always(string.format("Restore FAILED for '%s' (class=%s) -- %s",
+        tostring(resolvedLabel), tostring(cls), ok and "Spawner.Spawn returned nil/invalid" or ("error: " .. tostring(a))))
+    return nil
 end
 
 -- Post-processing (de-corrupt, MakePassive, goat perception-strip) does COMPONENT SURGERY.
@@ -10212,8 +11248,15 @@ local function scheduleRestorePostProcess(restored, staticsCount, moversCount, o
             finish()
             return
         end
+        -- Same snapshot-before-scheduling fix as spawnList's own step() above (2026-09-18) -- `j`
+        -- was a shared upvalue read directly inside the deferred ExecuteInGameThread closure, so a
+        -- backed-up queue could let `j` advance past the value this particular callback was meant
+        -- to use before it actually ran. Guarded here (unlike spawnList's) so it never crashed, but
+        -- would have silently skipped that actor's post-processing (de-corrupt/MakePassive/goat
+        -- strip) under the exact same timing conditions.
+        local idx = j
         ExecuteInGameThread(function()
-            local e = restored[j]
+            local e = restored[idx]
             if e and e.actor and e.actor:IsValid() then
                 pcall(Spawner.restoreHook, e.actor, e.class, e.look)
             end
@@ -10260,6 +11303,25 @@ function Spawner.RestoreFromPersist(onComplete)
     Spawner._lastRestore = now
     Spawner.restoring = true
     Spawner._ledgerBuffer = {}      -- batch ledger writes; flushed when the restore finishes
+    -- Prune stale entries BEFORE restoring (2026-09-16, RedFalcon: "went to the main menu and back
+    -- into the world and customization did not happen"). Spawner.spawned is only ever cleared by
+    -- Spawner.DespawnAll, an explicit user action -- a menu round-trip within the same game process
+    -- (no exe restart) never touches it, so every actor from the PREVIOUS world session is now
+    -- destroyed (level unloaded) but its now-invalid entry just sits in the table forever, ahead of
+    -- the fresh entries THIS restore is about to insert. Spawner.RestoreCustomState's own
+    -- "first match by label" lookup found that stale, invalid entry FIRST and reported "could not
+    -- find a spawned actor labeled '...' -- skipped" even though a freshly-restored, perfectly valid
+    -- entry with the SAME label existed later in the same table. Pruning invalid entries right here,
+    -- before a fresh restore starts appending new ones, means any label lookup afterward can only
+    -- ever find the current session's real actor -- harmless no-op on a normal first load (nothing
+    -- stale to prune yet) and doesn't touch Ctrl+R's own RetrackOrphans path (that only ever runs
+    -- when Spawner.spawned is already empty).
+    for i = #Spawner.spawned, 1, -1 do
+        local entry = Spawner.spawned[i]
+        if not (entry.actor and entry.actor:IsValid()) then
+            table.remove(Spawner.spawned, i)
+        end
+    end
     -- Always log: marks that the restore actually BEGAN. If a crash log shows this line,
     -- the crash is ours; if it shows only "player pawn ready", the crash is before us.
     print("[LivingBase] Restore: starting, " .. tostring(#lines) .. " saved entries.\n")
@@ -10297,18 +11359,47 @@ function Spawner.RestoreFromPersist(onComplete)
     -- Only MOVERS get post-processing (statues/decorations match no restoreHook branch), so only
     -- collect them — a statics-heavy base skips a no-op post-process pass over every one.
     local postList = {}
+    -- successCount (2026-09-20, RedFalcon: "not everyone spawned in this time and theres an error
+    -- in the log") -- onDone used to just be a plain callback with no idea how many of `list`
+    -- actually produced a live actor; the final "Restored N statics + M movers" line downstream
+    -- printed #statics/#movers (how many lines were CLASSIFIED going in), not how many actually
+    -- spawned -- so a partial/silent restore failure (5 of 6 entries vanishing with no trace, this
+    -- same session) still printed a falsely reassuring "success" count. onDone now receives the
+    -- real tally.
     local function spawnList(list, interval, collect, onDone)
         local i = 0
+        local successCount = 0
         local function step()
             i = i + 1
-            if i > #list then onDone(); return end
+            if i > #list then onDone(successCount); return end
+            -- Snapshot BEFORE scheduling (2026-09-18, RedFalcon: "long ben doesnt always spawn all
+            -- the time and i do see an error in the log" -- traced to
+            -- "spawner.lua:11036: attempt to index a nil value (field '?')"). `i` used to be read
+            -- DIRECTLY inside the ExecuteInGameThread closure below -- a shared upvalue with `step`
+            -- itself, not a per-call snapshot. ExecuteWithDelay(interval, step) fires the NEXT step
+            -- (incrementing `i` again) immediately after QUEUING this callback, without waiting for
+            -- it to actually run -- if ExecuteInGameThread's callback is even slightly delayed
+            -- (very plausible mid-world-load, with heavy asset loading competing for the same
+            -- queue), several step() calls can advance `i` past #list before any of the queued
+            -- callbacks fire. Each one then reads whichever value `i` happens to hold AT THAT POINT,
+            -- not the index it was scheduled for -- `list[i]` comes back nil once `i` has raced past
+            -- the list's end, silently dropping that entry's restore (exactly why this was
+            -- intermittent and timing-dependent, not a deterministic one-Ben-always-skipped bug).
+            -- Capturing `idx` here gives each queued closure its own fixed value, immune to `i`
+            -- advancing further in the meantime.
+            local idx = i
             ExecuteInGameThread(function()
-                -- Always log BEFORE the spawn: a native crash inside the engine leaves no
-                -- trace otherwise, and "which entry died" is the whole question.
-                local raw = list[i]:match("^([^|]*)") or "?"
-                log(string.format("Restore %d/%d -> %s", i, #list, raw:match("([^/%.]+)$") or raw))
-                local a, cls, look = restoreOne(list[i])
-                if a and collect then postList[#postList + 1] = { actor = a, class = cls, look = look } end
+                -- always(), not log() (2026-09-20 fix, same entry as restoreOne's own new failure
+                -- branch) -- this line was VERBOSE-gated, so even the "which entry is this" trace
+                -- was silent by default. Always log BEFORE the spawn: a native crash inside the
+                -- engine leaves no trace otherwise, and "which entry died" is the whole question.
+                local raw = list[idx]:match("^([^|]*)") or "?"
+                always(string.format("Restore %d/%d -> %s", idx, #list, raw:match("([^/%.]+)$") or raw))
+                local a, cls, look = restoreOne(list[idx])
+                if a then
+                    successCount = successCount + 1
+                    if collect then postList[#postList + 1] = { actor = a, class = cls, look = look } end
+                end
             end)
             ExecuteWithDelay(interval, step)
         end
@@ -10324,8 +11415,8 @@ function Spawner.RestoreFromPersist(onComplete)
         end
     end
 
-    spawnList(statics, Config.RESTORE_STATIC_STAGGER_MS or 40, false, function()
-        spawnList(movers, Config.RESTORE_STAGGER_MS or 250, true, function()
+    spawnList(statics, Config.RESTORE_STATIC_STAGGER_MS or 40, false, function(staticSuccesses)
+        spawnList(movers, Config.RESTORE_STAGGER_MS or 250, true, function(moverSuccesses)
             Spawner.restoring = false
             Spawner.LedgerFlush()   -- one write for the whole restore, not one per spawn
             -- Progress info only, NOT "done" -- post-processing (component surgery on every
@@ -10334,8 +11425,16 @@ function Spawner.RestoreFromPersist(onComplete)
             -- which releases main.lua's restoreLockActive key-gate) now fires from
             -- scheduleRestorePostProcess's onFinished callback below, once post-processing is
             -- ACTUALLY done -- not here, where it used to fire prematurely.
-            print(string.format("[LivingBase] Restored %d statues + %d movers; post-processing in %ds.\n",
-                #statics, #movers, math.floor((Config.RESTORE_POSTPROCESS_MS or 8000) / 1000)))
+            -- REAL success counts now (2026-09-20 fix), not #statics/#movers (how many lines were
+            -- CLASSIFIED going in) -- those two numbers matching doesn't mean anything actually
+            -- spawned; see this entry's own header comment on staticSuccesses/moverSuccesses.
+            print(string.format("[LivingBase] Restored %d/%d statues + %d/%d movers; post-processing in %ds.\n",
+                staticSuccesses, #statics, moverSuccesses, #movers, math.floor((Config.RESTORE_POSTPROCESS_MS or 8000) / 1000)))
+            if staticSuccesses < #statics or moverSuccesses < #movers then
+                always(string.format(
+                    "Restore: %d of %d saved entries FAILED to spawn -- see the 'Restore FAILED' lines above for which ones and why.",
+                    (#statics - staticSuccesses) + (#movers - moverSuccesses), #statics + #movers))
+            end
             -- Toast, not just a log line (2026-08-11, RedFalcon's request) -- marks the start of the
             -- (now genuinely tracked, see scheduleRestorePostProcess's wait-for-async comment)
             -- post-processing phase, so "base restored and ready" isn't the first visible sign
@@ -10692,6 +11791,85 @@ local function findNearestSpawnInFront(maxDist, ignoreLock)
     if not bestI then return nil, nil, nil, px, py, pz, fx, fy end
     return bestI, Spawner.spawned[bestI], bestD, px, py, pz, fx, fy
 end
+
+-- resolveTargetOrActor(actorOverride, maxDist) -- shared by every Custom-tab Apply/Test function
+-- (2026-09-16, RedFalcon: "this targeting piece could cause issues... I would prefer a restore
+-- function that did not require targeting and could handle what we need in a single call... this
+-- seems more like a workaround than a true process"). Spawner.RestoreCustomState used to resolve
+-- its target the SAME way every console command/CustomMenu.cpp click does: temporarily point
+-- Spawner.lockedTarget at the actor and let each Apply/Test function re-derive it via
+-- findNearestSpawnInFront. That picker ALSO runs Spawner.TargetLockDistanceCheck, which doesn't
+-- just skip a stale lock -- it RELEASES it (Spawner.lockedTarget = nil) the moment the player is
+-- more than Config.TARGET_LOCK_MAX_DIST from the locked actor, something very likely during a
+-- world-load restore. That silently misapplied a saved pose onto an unrelated nearby NPC instead of
+-- the actor it was actually saved for. RedFalcon's ask (matching how Spawner.SetAILogic/
+-- Spawner.ApplyPose already work -- both take the actor directly, no picker at all): give the
+-- restore path a genuine direct-actor call, not a workaround built on the interactive-targeting
+-- picker. This is that direct path -- when actorOverride is a valid actor, returns it immediately
+-- in the SAME (index, entry) shape findNearestSpawnInFront itself returns, with NO lock, NO
+-- distance/cone check, and no dependency on Spawner.lockedTarget at all; every EXISTING caller
+-- passes nothing extra and falls through to the exact same findNearestSpawnInFront lookup as
+-- before, completely unaffected.
+local function resolveTargetOrActor(actorOverride, maxDist)
+    if actorOverride and actorOverride.IsValid and actorOverride:IsValid() then
+        local entry = nil
+        for _, e in ipairs(Spawner.spawned) do
+            if e.actor == actorOverride then entry = e; break end
+        end
+        entry = entry or { actor = actorOverride, label = "actor" }
+        return true, entry
+    end
+    return findNearestSpawnInFront(maxDist)
+end
+
+-- Spawner.TestSetAnimClass(animClassPath, say, actorOverride) -- "lbtestanimclass" (2026-09-18,
+-- RedFalcon's mobile-Marita experiment: give a QuestStatic NPC's Mesh the same locomotion AnimBP a
+-- real walker uses, e.g. ABP_Human_NPC_C, instead of her own static ABP_StandingNPC_Regular_AI_C).
+-- Thin target-resolving wrapper over Spawner.SetAnimClass -- ALWAYS passes skipForceRebuild=true
+-- (the bare property write), never the default SetAnimInstanceClass force-rebuild path, which has
+-- caused hard, uncatchable native crashes on at least one other class (see SetAnimClass's own
+-- header, WINDROSE_MODDING_NOTES.md 19x). Safe here specifically because the target is already
+-- confirmed running in BlueprintMode (any QuestStatic NPC is) -- SetAnimClass's own header notes a
+-- bare property write is sufficient once AnimationMode is already BlueprintMode. MUST stay below
+-- resolveTargetOrActor's own declaration just above -- it's a `local function`, only visible to
+-- code lexically after it (same forward-reference gotcha this file keeps hitting; this exact
+-- function briefly lived up near SetAnimClass itself, ~line 3131, and failed live with "attempt to
+-- call a nil value (global 'resolveTargetOrActor')" before being moved here).
+function Spawner.TestSetAnimClass(animClassPath, say, actorOverride)
+    say = say or function(m) print("[LivingBase] [test-animclass] " .. tostring(m) .. "\n") end
+    if not animClassPath or animClassPath == "" then
+        say("usage: lbtestanimclass <full /Game/... AnimBlueprint class path>")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    return Spawner.SetAnimClass(actor, animClassPath, true)
+end
+
+-- Spawner._lastApplied{Colors,HairColors,EyeColor} -- (2026-09-16, RedFalcon: "could we not just
+-- read from the menu?" -- after confirming via lbdumpcpd, a completely independent pre-existing
+-- diagnostic, that CustomPrimitiveData.Data genuinely comes back with 0 entries on this actor's
+-- torso piece right after a successful-looking SetCustomPrimitiveDataVector4 write. Two independent
+-- reflection reads agreeing it's empty means the problem isn't in any read function's own logic --
+-- something about the write (or this UE4SS binding) isn't actually growing the live array, so no
+-- amount of read-side fallback ordering can ever recover a value that was never really written where
+-- we're looking for it. RedFalcon's fix is the right one: we ALREADY KNOW exactly what we just told
+-- the engine to set -- record that directly at the moment of a successful Apply, instead of trying to
+-- round-trip it back out through a read mechanism that's proven unreliable on at least this actor.
+-- Keyed by the target's resolved Spawner.spawned `label` (the same join key Save/RestoreCustomState
+-- already use), so it stays correct across which specific actor instance is currently in front of the
+-- player. NOT persisted to disk itself -- it's a live "what did we just successfully apply this
+-- session" cache, cleared implicitly by an lbreload/game restart same as everything else in
+-- Spawner.spawned; custom_state.txt (CS.findPersistedLine, tier 3 below) is still the durable record.
+Spawner._lastAppliedColors = Spawner._lastAppliedColors or {}         -- [label][categoryKey] = {c1,c2,c3}
+Spawner._lastAppliedHairColors = Spawner._lastAppliedHairColors or {} -- [label][bodyPartKey] = idx
+Spawner._lastAppliedEyeColor = Spawner._lastAppliedEyeColor or {}     -- [label] = idx or "GLOWING"
 
 -- Spawner.ApplySexChangeToNearest(say) -- backing function for the `lbsexchange` console command
 -- (main.lua). RedFalcon: "it only has to work on spawned ones" -- reuses the SAME "nearest
@@ -11067,7 +12245,7 @@ end
 -- ("AM_"-prefixed) may resolve and "apply" without erroring but won't necessarily play correctly
 -- through this mechanism, since montages have their own section/notify playback this was never
 -- built to drive. Try the plain sequence variant first if both exist for a given activity.
-function Spawner.TestApplyPoseByPath(pathArg)
+function Spawner.TestApplyPoseByPath(pathArg, actorOverride)
     if not pathArg or pathArg == "" then
         print("[LivingBase] [test-posepath] usage: lbtestpose <full /Game/... asset path, dotted suffix optional>\n")
         return false
@@ -11079,7 +12257,7 @@ function Spawner.TestApplyPoseByPath(pathArg)
     end
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         print(string.format(
             "[LivingBase] [test-posepath] nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.\n",
@@ -11089,6 +12267,318 @@ function Spawner.TestApplyPoseByPath(pathArg)
 
     print("[LivingBase] [test-posepath] target=" .. tostring(e.label or "actor") .. " | path=" .. path .. "\n")
     return Spawner.ApplyPose(e.actor, path)
+end
+
+-- Spawner.PoseScrubStart(pathArg, actorOverride, say) -- "lbposescrub <path>" (2026-09-21,
+-- RedFalcon: "let's do it frame by frame so i can see how it looks" -- wants to step through an
+-- AnimSequence one frame at a time instead of only ever seeing it looping or frozen on frame 0).
+-- Reuses the exact single-node-playback mechanism Spawner.ApplyPose already proved safe
+-- (PlayAnimation -> single-node mode, SetPosition to hold an exact time) and adds a persistent
+-- scrub cursor (Spawner.poseScrub) so lbposenext/lbposeprev can step it afterward without
+-- re-resolving the target or re-applying the sequence each time.
+--
+-- Frame rate: tries the sequence's own real sampling-frame-rate struct first (Numerator/
+-- Denominator) and only falls back to a flat guess (Config.POSE_SCRUB_FALLBACK_FPS, default 30)
+-- if that property isn't readable on this build -- says so out loud either way, since a silently
+-- wrong fps would make "one frame" step the wrong amount of time with no visible sign why.
+function Spawner.PoseScrubStart(pathArg, actorOverride, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    if not pathArg or pathArg == "" then
+        say("usage: lbposescrub <full /Game/... AnimSequence path, dotted suffix optional>")
+        return false
+    end
+    local path = pathArg
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then say("no actor.Mesh on this actor"); return false end
+
+    local seq = resolveAsset(path)
+    if not seq then say("UNRESOLVED path: " .. tostring(path)); return false end
+
+    -- PlayAnimation always starts playing at normal rate -- SetPlayRate(0) right after is what
+    -- actually holds it still for scrubbing (there's no "load but don't play" option on it).
+    -- bLooping=true (2026-09-21, RedFalcon: "i'd like the played animation looped") -- set on THIS
+    -- call rather than relying on PoseScrubPlay's own SetLooping(true) alone, since that's the
+    -- native parameter PlayAnimation actually uses to build the AnimSingleNodeInstance in the first
+    -- place; irrelevant while frozen at rate 0 (a paused scrub never reaches the end to loop), but
+    -- correct from the very first Play afterward instead of depending on a post-hoc property write.
+    local okPlay = pcall(function() mesh:PlayAnimation(seq, true) end)
+    if not okPlay then say("PlayAnimation FAILED -- can't start scrubbing this sequence on this target."); return false end
+    pcall(function() mesh:SetPlayRate(0.0) end)
+
+    local fps, length, numFrames, frameTime = CS.ResolveSequenceFrameInfo(seq, say)
+
+    Spawner.poseScrub = {
+        actor = actor, mesh = mesh, seq = seq, path = path,
+        fps = fps, length = length, numFrames = numFrames, frameTime = frameTime,
+        frame = 0, paused = true,
+    }
+    pcall(function() mesh:SetPosition(0.0, false) end)
+    say(string.format("scrubbing %s -- %d frames @ %.2ffps (%.2fs total). Frame 0/%d. Use lbposenext/lbposeprev to step.",
+        tostring(path), numFrames, fps, length, numFrames - 1))
+    return true
+end
+
+-- Spawner.PoseScrubStartAndPlay(pathArg, actorOverride, say) -- (2026-09-21, RedFalcon: "when a
+-- pose is selected in the custom tab, it launches using lbposescrub in play mode") -- the Custom
+-- tab's pose picker uses this instead of the plain looping Spawner.ApplyPose so the resulting
+-- playback stays scrub-trackable (Spawner.poseScrub) the instant it starts, ready for the Custom
+-- tab's own Play/Pause/Frame controls without a separate "arm scrubbing" step first.
+function Spawner.PoseScrubStartAndPlay(pathArg, actorOverride, say)
+    if not Spawner.PoseScrubStart(pathArg, actorOverride, say) then return false end
+    return Spawner.PoseScrubPlay(say)
+end
+
+-- Spawner.PoseScrubStep(delta, say) -- "lbposenext [n]"/"lbposeprev [n]" -- advances the active
+-- Spawner.poseScrub cursor by `delta` frames (clamped to the sequence's own [0, numFrames-1]
+-- range) and jumps the mesh straight to that exact time via SetPosition. No Play() call involved,
+-- so it never auto-advances between manual steps.
+function Spawner.PoseScrubStep(delta, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    local st = Spawner.poseScrub
+    if not st then say("no active scrub -- run lbposescrub <path> first."); return false end
+    if not (st.actor and st.actor:IsValid()) or not (st.mesh and st.mesh:IsValid()) then
+        say("scrub target/mesh is no longer valid -- run lbposescrub again.")
+        Spawner.poseScrub = nil
+        return false
+    end
+    local newFrame = math.max(0, math.min(st.numFrames - 1, st.frame + delta))
+    st.frame = newFrame
+    st.paused = true
+    local t = newFrame * st.frameTime
+    local okPos = pcall(function() st.mesh:SetPosition(t, false) end)
+    say(string.format("frame %d/%d (t=%.3fs)%s", newFrame, st.numFrames - 1, t, okPos and "" or " -- SetPosition FAILED"))
+    return okPos
+end
+
+-- Spawner.PoseScrubSeek(frame, say) -- absolute-position twin of PoseScrubStep (2026-09-21, for
+-- the Custom tab's own scrub slider, which reports an absolute target frame rather than a signed
+-- delta). Does NOT force `paused = true` the way Step does -- the slider is meant to work while
+-- playing too (a live seek), so it only clamps/jumps position without otherwise touching play state.
+function Spawner.PoseScrubSeek(frame, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    local st = Spawner.poseScrub
+    if not st then say("no active scrub -- run lbposescrub <path> first."); return false end
+    if not (st.actor and st.actor:IsValid()) or not (st.mesh and st.mesh:IsValid()) then
+        say("scrub target/mesh is no longer valid -- run lbposescrub again.")
+        Spawner.poseScrub = nil
+        return false
+    end
+    local newFrame = math.max(0, math.min(st.numFrames - 1, frame or 0))
+    st.frame = newFrame
+    -- Re-baseline the wall-clock playback tracker (2026-09-21) -- if this seek happens WHILE
+    -- playing, CS.LiveScrubFrame needs a fresh start point or it would keep computing position from
+    -- the OLD pre-seek baseline, undoing the jump on the very next status poll.
+    if not st.paused then
+        st.playStartClock = os.clock()
+        st.playStartFrame = newFrame
+    end
+    local t = newFrame * st.frameTime
+    local okPos = pcall(function() st.mesh:SetPosition(t, false) end)
+    say(string.format("seek frame %d/%d (t=%.3fs)%s", newFrame, st.numFrames - 1, t, okPos and "" or " -- SetPosition FAILED"))
+    return okPos
+end
+
+-- Spawner.PoseScrubPlay(say) -- "lbposeplay" (2026-09-21, RedFalcon: "can we add a play command
+-- to unfreeze it?"). Resumes normal single-node playback from wherever the scrub cursor currently
+-- sits, by handing SetPlayRate back to 1.0 -- PlayAnimation already put the mesh in single-node
+-- mode and started it playing at the very start of Spawner.PoseScrubStart; SetPlayRate(0.0) is
+-- the only thing that had been holding it frozen since, so this is the direct undo of that, not a
+-- fresh PlayAnimation call (which would restart from frame 0 instead of the current position).
+function Spawner.PoseScrubPlay(say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    local st = Spawner.poseScrub
+    if not st then say("no active scrub -- run lbposescrub <path> first."); return false end
+    if not (st.actor and st.actor:IsValid()) or not (st.mesh and st.mesh:IsValid()) then
+        say("scrub target/mesh is no longer valid -- run lbposescrub again.")
+        Spawner.poseScrub = nil
+        return false
+    end
+    pcall(function() st.mesh:SetLooping(true) end)
+    local okRate = pcall(function() st.mesh:SetPlayRate(1.0) end)
+    st.playStartClock = os.clock()
+    st.playStartFrame = st.frame
+    st.paused = false
+    say(string.format("playing from frame %d/%d%s", st.frame, st.numFrames - 1, okRate and "" or " -- SetPlayRate FAILED"))
+    return okRate
+end
+
+-- Spawner.PoseScrubPause(say) -- "lbposepause" -- the direct inverse of PoseScrubPlay: freezes
+-- playback again via SetPlayRate(0.0) without touching the current position at all (no
+-- SetPosition call), so it holds wherever it happened to be when paused rather than snapping back
+-- to a frame boundary. lbposenext/lbposeprev remain the only things that move the cursor onto an
+-- exact frame afterward.
+function Spawner.PoseScrubPause(say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    local st = Spawner.poseScrub
+    if not st then say("no active scrub -- run lbposescrub <path> first."); return false end
+    if not (st.actor and st.actor:IsValid()) or not (st.mesh and st.mesh:IsValid()) then
+        say("scrub target/mesh is no longer valid -- run lbposescrub again.")
+        Spawner.poseScrub = nil
+        return false
+    end
+    -- Snapshot the live position into st.frame BEFORE flipping paused (2026-09-21) -- while
+    -- playing, st.frame is otherwise stale (only PoseScrubStep/Start/Play ever wrote it); see
+    -- CS.LiveScrubFrame's own header for why this uses wall-clock tracking instead of reading the
+    -- engine's own AnimInstance back.
+    if not st.paused then st.frame = CS.LiveScrubFrame(st) end
+    local okRate = pcall(function() st.mesh:SetPlayRate(0.0) end)
+    st.paused = true
+    say(string.format("paused at frame %d/%d%s", st.frame, st.numFrames - 1, okRate and "" or " -- SetPlayRate FAILED"))
+    return okRate
+end
+
+-- Spawner.PoseScrubGetStatus(lockedActor) -- (2026-09-21) status snapshot for the Custom tab's
+-- Play/Pause/Frame controls (main.lua's publishSpawnMenuStatusIfChanged). Only reports "active"
+-- when the scrub cursor's own actor IS `lockedActor` -- a scrub left running on a target that's no
+-- longer selected shouldn't keep some OTHER newly-locked target's controls lit up. While playing,
+-- uses CS.LiveScrubFrame's wall-clock tracking (rather than trusting the last manually-set `frame`)
+-- so the reported frame/slider position actually tracks real-time playback. Returns
+-- active, paused, frame, numFrames.
+function Spawner.PoseScrubGetStatus(lockedActor)
+    local st = Spawner.poseScrub
+    if not (st and st.actor and st.actor:IsValid() and lockedActor and st.actor == lockedActor) then
+        return false, false, 0, 0
+    end
+    if not st.paused then
+        st.frame = CS.LiveScrubFrame(st)
+    end
+    return true, st.paused, st.frame, st.numFrames
+end
+
+-- Spawner.TestReadCurrentPoseName(say) -- (2026-09-16, RedFalcon: "bring over the poses... a
+-- textbox that displays the current pose or say Unknown for ones that cant be determined") -- the
+-- read-back half of the new "Poses and Actions" windowshade.
+--
+-- FIRST VERSION read mesh.AnimationData["AnimToPlay"] (the same field dumpAnimInfo's own
+-- "CURRENTLY PLAYING" line uses) -- CONFIRMED WRONG live (2026-09-16, RedFalcon: "i set him to
+-- lean just now, and this line is the active animation" -- a fresh lbprobedump on the SAME actor,
+-- right after applying a different pose via this exact system, showed AnimSingleNodeInstance's own
+-- `CurrentAsset` as the Lean clip while AnimationData.AnimToPlay was still reporting the ORIGINAL
+-- native idle). AnimationData is evidently only the construction-time seed value and is never kept
+-- in sync afterward -- Spawner.ApplyPose's own PlayAnimation call (and, before that, whatever
+-- native construction script set it) never touches it again once the runtime AnimSingleNodeInstance
+-- takes over. `CurrentAsset` is the actual live property driving single-node playback, confirmed
+-- readable via a plain top-level bracket-index (RedFalcon's own probe dump printed it cleanly,
+-- same safe class as mesh.AnimClass/mesh.AnimationMode -- it's a top-level UObject-reference
+-- property on the AnimInstance itself, not a nested struct field like AnimationData.AnimToPlay
+-- was, so none of that field's own crash history applies here).
+--
+-- No separate AnimationMode check needed either -- a BlueprintMode-driven AnimInstance (the vast
+-- majority of native NPCs, still running their own AnimBP class) simply has no `CurrentAsset`
+-- property declared at all, so the bracket-index below naturally comes back nil/unreadable there.
+--
+-- Fallback chain widened (2026-09-16, RedFalcon: "if CurrentAsset doesn't exist or is not in the
+-- list, then grab the bit after the '.' and display that. If there is no CurrentAsset at all, then
+-- grab AnimToPlay and do the same. That way it may help me locate unknown poses") -- previously any
+-- unmatched clip (or a target with no CurrentAsset at all) just showed "Unknown", telling RedFalcon
+-- nothing about what pose is ACTUALLY playing when he's trying to catalog a new one into
+-- Other\Poses.xlsx. `GetFName():ToString()` already returns exactly "the bit after the ." (an
+-- asset's own short name, no package path, no leading ClassName) -- the same format
+-- val:GetFullName() would need a manual split to reach, so no extra string-work is needed here.
+-- Order: try AnimSingleNodeInstance.CurrentAsset first (the live, kept-in-sync value -- see this
+-- function's own header above for why AnimationData.AnimToPlay alone was proven stale); only if
+-- THAT property doesn't exist/resolve at all does this fall back to AnimationData.AnimToPlay
+-- (construction-time-only, but still better than nothing on a target whose AnimInstance isn't a
+-- UAnimSingleNodeInstance at all). Whichever source resolves a clip, an unmatched name is shown
+-- RAW (instead of "Unknown") so it can be located in Poses.xlsx/config.lua by hand; "Unknown" is
+-- now reserved for "no clip readable from EITHER source" only.
+-- Spawner.TestReadCurrentPoseName(say) -- 2nd return `leafName` (2026-09-17, RedFalcon: "we'll
+-- want to check pose too, if i change a pose i'll want that reflected. If its an unknown pose,
+-- then don't record it as it'll be the default" -- Pose was never part of the baked-default
+-- diffing system at all, unlike Color/Physique/Clothes/etc, so it always wrote a line regardless
+-- of whether the pose was ever actually changed). `leafName` is the raw clip name this function
+-- already resolves internally BEFORE matching it against Config.CUSTOM_POSES for a friendly name
+-- -- the same "raw, not friendly" baseline value every other category's own new 3rd/2nd return
+-- already uses, so a native default pose can be diffed reliably even if it doesn't match any
+-- catalog row (the exact "unknown pose" case RedFalcon called out -- see BuildCustomStateLines'
+-- own POSE section for how "Unknown" specifically is still never recorded).
+function Spawner.TestReadCurrentPoseName(say)
+    say = say or function(m) print("[LivingBase] [read-pose] " .. tostring(m) .. "\n") end
+    -- Checkpoint breadcrumbs (2026-09-16, RedFalcon: "it crashed as i was setting things" -- a real
+    -- native AV inside UE4SS.dll, confirmed via minidump, silently cut a Read Current cycle off
+    -- somewhere in steps 8a/8b/8c with no further log output at all -- pcall can't catch a native AV,
+    -- so these exist purely to narrow WHICH of this function's own native calls it was, next time it
+    -- recurs). This function is the newest and structurally closest to a call shape that has
+    -- crashed this project before (mesh.AnimationData's own struct-drilling, see this function's own
+    -- header history) -- GetAnimInstance()/bracket-index on the returned object are a DIFFERENT,
+    -- previously-proven-safe class of call (dumpAnimInfo already uses GetAnimInstance() safely), but
+    -- "safe every other time" is exactly what a genuinely intermittent native crash looks like.
+    --
+    -- checkpoint(), NOT the file-global `log()` (2026-09-16 fix, RedFalcon: "game just crashed while
+    -- doing a second read because it didnt pull the belts and straps on my first read" --
+    -- investigating turned up EVERY checkpoint below had been silently no-op'ing the whole time:
+    -- `log()` only prints when Config.VERBOSE is true, and it's false in this deployment, so none of
+    -- this diagnostic effort had ever actually reached the log file). Unconditional print, scoped to
+    -- just this function so the rest of the file's `log()` calls keep their existing behavior.
+    local function checkpoint(m) print("[LivingBase] " .. tostring(m) .. "\n") end
+    checkpoint("read-pose: checkpoint A (resolving target).")
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return "Unknown" end
+    checkpoint("read-pose: checkpoint B (reading actor.Mesh).")
+    local mesh = nil
+    pcall(function() mesh = e.actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then return "Unknown" end
+
+    local function leafNameOf(val)
+        if val == nil or type(val) ~= "userdata" then return nil end
+        local okValid, valid = pcall(function() return val:IsValid() end)
+        if not (okValid and valid) then return nil end
+        local okName, name = pcall(function() return val:GetFName():ToString() end)
+        if okName and name and name ~= "" then return name end
+        return nil
+    end
+
+    local leafName, source = nil, nil
+    checkpoint("read-pose: checkpoint C (calling mesh:GetAnimInstance()).")
+    local inst = nil
+    pcall(function() inst = mesh:GetAnimInstance() end)
+    checkpoint("read-pose: checkpoint D (GetAnimInstance returned).")
+    if inst and inst:IsValid() then
+        checkpoint("read-pose: checkpoint E (reading inst[\"CurrentAsset\"]).")
+        pcall(function() leafName = leafNameOf(inst["CurrentAsset"]) end)
+        checkpoint("read-pose: checkpoint F (CurrentAsset read returned).")
+        if leafName then source = "CurrentAsset" end
+    end
+    if not leafName then
+        checkpoint("read-pose: checkpoint G (reading mesh.AnimationData).")
+        pcall(function()
+            local animData = mesh.AnimationData
+            if animData ~= nil then
+                leafName = leafNameOf(animData["AnimToPlay"])
+            end
+        end)
+        checkpoint("read-pose: checkpoint H (AnimationData read returned).")
+        if leafName then source = "AnimationData.AnimToPlay" end
+    end
+
+    if not leafName then
+        say("no readable clip via CurrentAsset or AnimationData.AnimToPlay.")
+        return "Unknown"
+    end
+
+    for _, row in ipairs(Config.CUSTOM_POSES or {}) do
+        local rowLeaf = row.path:match("([^/]+)$")
+        if rowLeaf == leafName then
+            say("matched pose (" .. source .. "): " .. row.name)
+            return row.name, leafName
+        end
+    end
+    say("clip '" .. leafName .. "' (via " .. source .. ") doesn't match any known Config.CUSTOM_POSES entry -- showing raw name.")
+    return leafName, leafName
 end
 
 -- Spawner.TestApplyPoseWithFx(animPathArg, fxPathArg) -- combined pose+FX tester (2026-08-25),
@@ -11343,7 +12833,7 @@ end
 -- mesh-resolve + nearest/locked-actor-resolve dance instead of duplicating it). Returns actor, name,
 -- meshPath, mesh, isStatic, compCls, body on success; nil (and has already called say() with the
 -- reason) on failure.
-local function resolveMeshAndActorForFill(meshPathArg, say)
+local function resolveMeshAndActorForFill(meshPathArg, say, actorOverride)
     local meshPath = meshPathArg
     if not meshPath:match("%.[%w_]+$") then
         local last = meshPath:match("([^/]+)$")
@@ -11351,7 +12841,7 @@ local function resolveMeshAndActorForFill(meshPathArg, say)
     end
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return nil
@@ -13509,7 +14999,7 @@ Spawner._beltLanternLightComp = Spawner._beltLanternLightComp or nil
 -- same "snap then nudge" pattern Config.KNOWN_ATTACHMENT_TRANSFORMS-driven code elsewhere in this
 -- file already uses for mesh placement. offX/offY/offZ are in socket-LOCAL space (uu); pitch/yaw/
 -- roll are a plain relative Rotator offset (degrees) layered on the socket's own base rotation.
-function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, offXArg, offYArg, offZArg, pitchArg, yawArg, rollArg, rArg, gArg, bArg)
+function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, offXArg, offYArg, offZArg, pitchArg, yawArg, rollArg, rArg, gArg, bArg, actorOverride)
     say = say or function(m) print("[LivingBase] [test-lanternlight] " .. tostring(m) .. "\n") end
     local intensity = tonumber(intensityArg) or BELT_LANTERN_LIGHT_DEFAULT_INTENSITY
     local radius = tonumber(radiusArg) or BELT_LANTERN_LIGHT_DEFAULT_RADIUS
@@ -13538,7 +15028,7 @@ function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, o
         name = "player"
     else
         local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-        local bestI, e = findNearestSpawnInFront(maxDist)
+        local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
         if not bestI then
             say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlanternlight %s %s player'.", tostring(intensity), tostring(radius), maxDist))
             return false
@@ -13606,6 +15096,23 @@ function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, o
     pcall(function() lightComp.Intensity = intensity end)
     pcall(function() lightComp.AttenuationRadius = radius end)
     pcall(function() lightComp.LightColor = color end)
+    -- Same VSM shadow fix later found for lbtesttiltlight's goblet light (2026-09-20, RedFalcon:
+    -- "can we take this learning and apply it to the lantern light?" -- this light never got either
+    -- fix originally, so it has the identical "casts shadows from pawns only, never static objects"
+    -- bug). Movable mobility + the REAL "cast dynamic shadow" property (CastDynamicShadows, not the
+    -- nonexistent bCastDynamicShadow this project mistakenly used elsewhere) + explicitly allowing
+    -- Virtual Shadow Maps for static (non-skeletal) primitives too -- see
+    -- feedback_vsm_skeletal_only_shadow_fix memory for the full story, found by probing a real native
+    -- torch light (R5BalancedPointLightComponent) and diffing its properties against ours.
+    pcall(function() lightComp:SetMobility(2) end)
+    pcall(function() lightComp.CastShadows = true end)
+    pcall(function() lightComp.CastDynamicShadows = true end)
+    pcall(function() lightComp.bUseVSMOnlyForSkeletalMeshes = false end)
+    -- One more real property off the same torch-light dump (2026-09-20, all 4 properties above
+    -- confirmed correctly set via readback, yet still not shadowing static objects) -- a genuine R5
+    -- engine-fork-specific flag (not stock UE naming), which sounds exactly like it could gate
+    -- whether a light is considered for shadow/interaction purposes against other primitives at all.
+    pcall(function() lightComp.bR5GeneratePrimitiveInteractions = true end)
 
     local attached = pcall(function() lightComp:K2_AttachToComponent(body, FName(BELT_LANTERN_LIGHT_SOCKET), 2, 2, 2, false) end)
     if attached and (offX ~= 0.0 or offY ~= 0.0 or offZ ~= 0.0) then
@@ -13623,32 +15130,992 @@ function Spawner.TestAttachLanternLight(say, useSelf, intensityArg, radiusArg, o
 
     if attached then Spawner._beltLanternLightComp = lightComp end
 
-    say(string.format("target=%s | socket=%s | PointLightComponent attach=%s | intensityUnits(before->0)=%s | intensity=%s radius=%s color=(%s,%s,%s) | offset=(%s,%s,%s) rot=(P%s,Y%s,R%s) | zero-lag socket attach, no tick loop.",
+    -- Readback (2026-09-20) -- same discipline as lbtesttiltlight's own diagnostics: confirm the VSM
+    -- shadow fix actually stuck rather than trusting the write pcalls alone.
+    local roMobility, roCastShadows, roCastDynShadows, roVsmSkelOnly, roR5Interact = nil, nil, nil, nil, nil
+    pcall(function() roMobility = lightComp.Mobility end)
+    pcall(function() roCastShadows = lightComp.CastShadows end)
+    pcall(function() roCastDynShadows = lightComp.CastDynamicShadows end)
+    pcall(function() roVsmSkelOnly = lightComp.bUseVSMOnlyForSkeletalMeshes end)
+    pcall(function() roR5Interact = lightComp.bR5GeneratePrimitiveInteractions end)
+
+    say(string.format("target=%s | socket=%s | PointLightComponent attach=%s | intensityUnits(before->0)=%s | intensity=%s radius=%s color=(%s,%s,%s) | offset=(%s,%s,%s) rot=(P%s,Y%s,R%s) | Mobility=%s CastShadows=%s CastDynamicShadows=%s VSMSkeletalOnly=%s R5GeneratePrimitiveInteractions=%s | zero-lag socket attach, no tick loop.",
         name, BELT_LANTERN_LIGHT_SOCKET, tostring(attached), tostring(unitsBefore), tostring(intensity), tostring(radius),
         tostring(color.R), tostring(color.G), tostring(color.B),
-        tostring(offX), tostring(offY), tostring(offZ), tostring(pitch), tostring(yaw), tostring(roll)))
+        tostring(offX), tostring(offY), tostring(offZ), tostring(pitch), tostring(yaw), tostring(roll),
+        tostring(roMobility), tostring(roCastShadows), tostring(roCastDynShadows), tostring(roVsmSkelOnly), tostring(roR5Interact)))
     return attached
 end
 
--- Spawner.TestClearLanternLight(say) -- companion to TestAttachLanternLight, destroys the attached
--- light component. Components can't be K2_DestroyActor'd (that's actor-level) -- DestroyComponent is
--- the real per-component equivalent.
-function Spawner.TestClearLanternLight(say)
-    say = say or function(m) print("[LivingBase] [test-lanternlight] " .. tostring(m) .. "\n") end
-    local c = Spawner._beltLanternLightComp
-    Spawner._beltLanternLightComp = nil
-    if c and c:IsValid() then
-        -- FIXED (2026-09-14, RedFalcon: "clear also doesnt seem to be working") -- this used to call
-        -- c:DestroyComponent(c), passing the component itself where DestroyComponent actually wants a
-        -- plain bool (bPromoteChildren) -- a wrong-type argument that silently failed under pcall,
-        -- leaving the component alive. DestroyComponent(false) is the same proven-safe call already
-        -- used elsewhere in this file (Spawner.ClearHoverEffect's own sibling, ~4742).
-        local ok = pcall(function() c:DestroyComponent(false) end)
-        if not ok then pcall(function() c:SetVisibility(false, false) end) end
-        say("lantern light removed.")
+-- Spawner.TestAttachLanternLightNoSocket(say, useSelf, actorOverride) -- "lbtestlanternlightnosocket
+-- [player]" (2026-09-20, diagnostic-only). RedFalcon's own lantern light (attached to the
+-- soc_LanternLight BONE SOCKET on an animating character) still doesn't shadow static objects even
+-- with every property now confirmed identical to the goblet's own light (which DOES work, attached
+-- to a stationary static mesh component) -- Mobility/CastShadows/CastDynamicShadows/
+-- bUseVSMOnlyForSkeletalMeshes/bR5GeneratePrimitiveInteractions all read back matching. The one real
+-- structural difference left is WHAT it's attached to: a moving bone socket on an animating skeleton,
+-- vs. a motionless static mesh. This isolates that: SAME light setup, attached DIRECTLY to the
+-- target's own Mesh component ROOT (FName(""), no socket name at all) instead of soc_LanternLight --
+-- if THIS also fails to shadow static objects, that confirms "animating skeletal parent" itself is
+-- the real blocker (likely a Virtual Shadow Map per-frame cache-invalidation issue for a light riding
+-- on a moving skeleton, not fixable via any component property); if it WORKS, the socket attachment
+-- specifically was somehow the problem instead.
+function Spawner.TestAttachLanternLightNoSocket(say, useSelf, actorOverride)
+    say = say or function(m) print("[LivingBase] [test-lanternlight-nosocket] " .. tostring(m) .. "\n") end
+    local actor, name
+    if useSelf then
+        actor = getPlayerPawnAsActor()
+        if not (actor and actor:IsValid()) then
+            say("could not resolve the player's own pawn.")
+            return false
+        end
+        name = "player"
     else
-        say("no lantern light currently attached.")
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+        if not bestI then
+            say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlanternlightnosocket player'.", maxDist))
+            return false
+        end
+        actor = e.actor
+        name = tostring(e.label or "actor")
     end
+
+    local body = nil
+    pcall(function() body = actor.Mesh end)
+    if not (body and body:IsValid()) then
+        say(name .. " has no Mesh component.")
+        return false
+    end
+
+    pcall(function() Spawner.TestClearLanternLight(function() end) end)
+
+    local lightCls = StaticFindObject("/Script/Engine.PointLightComponent")
+    if not (lightCls and lightCls:IsValid()) then
+        say("PointLightComponent class did not resolve.")
+        return false
+    end
+    local lightComp = nil
+    pcall(function()
+        lightComp = actor:AddComponentByClass(lightCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (lightComp and lightComp:IsValid()) then
+        say("AddComponentByClass(PointLightComponent) failed.")
+        return false
+    end
+
+    pcall(function() lightComp:SetVisibility(false, false) end)
+    pcall(function() lightComp.IntensityUnits = 0 end)
+    pcall(function() lightComp.Intensity = BELT_LANTERN_LIGHT_DEFAULT_INTENSITY end)
+    pcall(function() lightComp.AttenuationRadius = BELT_LANTERN_LIGHT_DEFAULT_RADIUS end)
+    pcall(function() lightComp.LightColor = BELT_LANTERN_LIGHT_DEFAULT_COLOR end)
+    pcall(function() lightComp:SetMobility(2) end)
+    pcall(function() lightComp.CastShadows = true end)
+    pcall(function() lightComp.CastDynamicShadows = true end)
+    pcall(function() lightComp.bUseVSMOnlyForSkeletalMeshes = false end)
+    pcall(function() lightComp.bR5GeneratePrimitiveInteractions = true end)
+
+    -- The one deliberate difference from TestAttachLanternLight: attach directly to the Mesh
+    -- component itself, no socket name at all, positioned up near head height so it's easy to see.
+    local attached = pcall(function() lightComp:K2_AttachToComponent(body, FName(""), 2, 2, 2, false) end)
+    if attached then
+        pcall(function() lightComp:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = 150.0 }, false, {}, false) end)
+    end
+    pcall(function() lightComp:SetVisibility(true, false) end)
+    pcall(function() lightComp:MarkRenderStateDirty() end)
+
+    if attached then Spawner._beltLanternLightComp = lightComp end
+
+    say(string.format("target=%s | attached DIRECTLY to Mesh (no socket) | attach=%s | now check whether static objects near %s get a real shadow from this light -- run lbtestlanternlightclear (or lbtestlanternlight clear) to remove.",
+        name, tostring(attached), name))
+    return attached
+end
+
+-- Spawner.TestClearLanternLight(say, actorOverride) -- companion to TestAttachLanternLight, destroys
+-- the attached light component. Components can't be K2_DestroyActor'd (that's actor-level) --
+-- DestroyComponent is the real per-component equivalent.
+--
+-- REWRITTEN (2026-09-21) -- same root cause and same fix shape as Spawner.TestClearLanternMesh's own
+-- rewrite (see that function's own header comment for the full "removing a lantern is not recorded
+-- when hitting save" story): relied on Spawner._beltLanternLightComp, a single actor-agnostic session
+-- global, stale/wrong across a multi-actor Custom tab session. Now does its own live per-actor sweep
+-- for a PointLightComponent attached at soc_LanternLight instead.
+function Spawner.TestClearLanternLight(say, actorOverride)
+    say = say or function(m) print("[LivingBase] [test-lanternlight] " .. tostring(m) .. "\n") end
+    Spawner._beltLanternLightComp = nil
+    local actor = actorOverride
+    if not (actor and actor:IsValid()) then
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = resolveTargetOrActor(nil, maxDist)
+        if bestI then actor = e.actor end
+    end
+    if not (actor and actor:IsValid()) then
+        say("no target to clear the lantern light from.")
+        return true
+    end
+    local n = 0
+    local cls = StaticFindObject("/Script/Engine.PointLightComponent")
+    if cls and cls:IsValid() then
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local count = 0
+        if comps then
+            pcall(function() count = comps:GetArrayNum() end)
+            if count == 0 then pcall(function() count = #comps end) end
+        end
+        for i = 1, count do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock == BELT_LANTERN_LIGHT_SOCKET then
+                    -- Same wrong-argument fix as before (2026-09-14) -- DestroyComponent wants a
+                    -- plain bool (bPromoteChildren), not the component itself.
+                    local ok = pcall(function() c:DestroyComponent(false) end)
+                    if not ok then pcall(function() c:SetVisibility(false, false) end) end
+                    n = n + 1
+                end
+            end
+        end
+    end
+    if n > 0 then say("lantern light removed.") else say("no lantern light currently attached.") end
+    return true
+end
+
+-- Spawner.TestSpawnTiltedLitMesh(say, meshPath, pitchArg, intensityArg, radiusArg, rArg, gArg, bArg)
+-- -- "lbtesttiltlight [meshPath|goblet] [pitchDeg=90] [intensity=4.3] [radius=850] [r g b]"
+-- (2026-09-20, RedFalcon: wants SM_DishesGoblet_04 spawned, tilted 90 on Y, with a lantern-style
+-- light at the TOP of the object -- specifically wherever "top" ends up AFTER the tilt, following
+-- the object's own rotation, not the pre-tilt upright position (RedFalcon corrected an earlier
+-- version of this that anchored the light to a fixed world-vertical spot instead: "I want the light
+-- to follow the top of the item... attach to spot that is the top of the item after its been turned").
+--
+-- R5LootActor (the same wrapper Spawner.TestSpawnMesh/SetLootMesh already use for a raw static mesh
+-- path) has its visual MeshComponent as a CHILD of a separate RootComponent (confirmed by
+-- Spawner.MakeLootDecor's own header: "Leaves CollisionComponent (root) and MeshComponent alone").
+-- The light is attached DIRECTLY to that MeshComponent (same SnapToTarget + K2_SetRelativeLocation
+-- offset pattern Spawner.TestAttachLanternLight already proved out for the belt lantern) -- since the
+-- offset is set in the mesh's own LOCAL frame, it rides along with whatever rotation the mesh carries,
+-- landing at the real post-tilt top. The offset magnitude itself is still measured from the mesh's
+-- real UPRIGHT bounding-box height (read via the same GetActorBounds 4-arg out-param form
+-- actorBoundsBottomZ uses, taken BEFORE the tilt is applied, since a tilted box's own world-aligned
+-- extent would just report the smaller sideways footprint) -- only WHEN it's measured matters, not
+-- where it ends up attached.
+-- Defaults live as Spawner table fields, not file-level locals -- spawner.lua's top-level chunk was
+-- already near Lua's 200-local ceiling ("too many local variables... in main function", confirmed
+-- live 2026-09-20), so every new file-scope `local` here risks tipping it over for the WHOLE file.
+Spawner._tiltLightActor = Spawner._tiltLightActor or nil
+Spawner._tiltLightComp = Spawner._tiltLightComp or nil
+-- REAL mechanism, confirmed working 2026-09-20 (see [[project_building_block_reflection_discovery]]
+-- memory / lbtestbuildingitem) -- every placed building decoration is really a native
+-- /Script/R5.R5BuildingBlock actor whose look comes from its BuildingItem property (a DA_BI_* Data
+-- Asset -- non-spawnable on its own, confirmed via "SPAWN FAILED" on the _C class path). Setting
+-- BuildingItem alone does nothing (it's CPF_RepNotify -- only fires through network replication,
+-- which a plain Lua property write bypasses); the real trick is calling BuildingItem's RepNotify
+-- callback, actor:OnRep_BuildingItem(), manually afterward. Default now points at the Data Asset
+-- itself (no "_C"), not the mesh path this used before.
+Spawner.TILT_LIGHT_DEFAULT_MESH = "/Game/Gameplay/Building/BuildingDecoration/DA_BI_DishesPlate_01.DA_BI_DishesPlate_01"
+Spawner.TILT_LIGHT_DEFAULT_PITCH = 90.0
+Spawner.TILT_LIGHT_DEFAULT_INTENSITY = 500.0
+Spawner.TILT_LIGHT_DEFAULT_RADIUS = 850.0
+Spawner.TILT_LIGHT_DEFAULT_COLOR = { R = 255, G = 255, B = 255, A = 255 }
+Spawner.TILT_LIGHT_FALLBACK_TOP_OFFSET = 30.0
+
+function Spawner.TestClearTiltedLitMesh(say)
+    say = say or function(m) print("[LivingBase] [test-tiltlight] " .. tostring(m) .. "\n") end
+    local c = Spawner._tiltLightComp
+    Spawner._tiltLightComp = nil
+    if c and c:IsValid() then
+        pcall(function() c:DestroyComponent(false) end)
+    end
+    local a = Spawner._tiltLightActor
+    Spawner._tiltLightActor = nil
+    if a and a:IsValid() then
+        pcall(function() a:K2_DestroyActor() end)
+    end
+    say("tilted test mesh + light cleared.")
+    return true
+end
+
+function Spawner.TestSpawnTiltedLitMesh(say, meshPath, pitchArg, offsetArg, scaleArg, intensityArg, radiusArg, rArg, gArg, bArg)
+    say = say or function(m) print("[LivingBase] [test-tiltlight] " .. tostring(m) .. "\n") end
+    if not meshPath or meshPath == "" or meshPath:lower() == "goblet" or meshPath:lower() == "plate" then
+        meshPath = Spawner.TILT_LIGHT_DEFAULT_MESH
+    end
+    local pitch = tonumber(pitchArg) or Spawner.TILT_LIGHT_DEFAULT_PITCH
+    -- Explicit pivot-distance override (2026-09-20, RedFalcon: "let me set how far from the pivot
+    -- point the light is") -- when given, treated as a literal WORLD-space uu distance regardless of
+    -- mesh scale (see the scale/offset math below); a bare "auto"/empty/omitted arg keeps the
+    -- previous measure-from-bounds behavior instead.
+    local offsetOverride = tonumber(offsetArg)
+    -- Mesh scale (2026-09-20, RedFalcon: using this as a physical blocker, wants it 3x bigger).
+    local scale = tonumber(scaleArg) or 1.0
+    if scale == 0.0 then scale = 1.0 end
+    local intensity = tonumber(intensityArg) or Spawner.TILT_LIGHT_DEFAULT_INTENSITY
+    local radius = tonumber(radiusArg) or Spawner.TILT_LIGHT_DEFAULT_RADIUS
+    local colorR, colorG, colorB = tonumber(rArg), tonumber(gArg), tonumber(bArg)
+    local color = (colorR and colorG and colorB) and { R = colorR, G = colorG, B = colorB, A = 255 } or Spawner.TILT_LIGHT_DEFAULT_COLOR
+
+    pcall(function() Spawner.TestClearTiltedLitMesh(function() end) end)
+
+    -- Three routes, in order of preference (2026-09-20):
+    --   1. A DA_BI_* Data Asset path -> the REAL mechanism (see this section's own header comment):
+    --      spawn native R5BuildingBlock, set BuildingItem, manually call OnRep_BuildingItem().
+    --   2. A "_C"-suffixed class path -> spawn that class directly (rare: a real standalone
+    --      spawnable decoration Blueprint, if one ever turns up for some other asset).
+    --   3. Anything else (a raw SM_ mesh path with no DA_BI_/BP wrapper at all) -> generic
+    --      StaticMeshActor + SetStaticMesh, kept as a last-resort fallback (shadow-casting NOT
+    --      guaranteed to work through this path, unlike routes 1/2 which use the game's own real
+    --      decoration machinery).
+    local isDataAsset = meshPath:match("DA_BI_") ~= nil
+    local isClassPath = (not isDataAsset) and meshPath:match("_C$") ~= nil
+    local actor, mc
+
+    local function findStaticMeshComponent(a)
+        local found = nil
+        pcall(function()
+            local mcClass = StaticFindObject("/Script/Engine.StaticMeshComponent")
+            if mcClass and mcClass:IsValid() then
+                local comps
+                pcall(function() comps = a:GetComponentsByClass(mcClass) end)
+                if not comps then pcall(function() comps = a:K2_GetComponentsByClass(mcClass) end) end
+                if comps and comps[1] then
+                    local c = comps[1]
+                    pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                    if c and c:IsValid() then found = c end
+                end
+            end
+        end)
+        return found
+    end
+
+    if isDataAsset then
+        actor = Spawner.Spawn("/Script/R5.R5BuildingBlock", "TiltLitMesh", nil, nil, nil, nil, false, nil, nil, false)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED for /Script/R5.R5BuildingBlock -- see ue4ss.log SPAWN FAILED line.")
+            return false
+        end
+        local item = resolveClass(meshPath)
+        if not (item and item:IsValid()) then
+            say("Spawned R5BuildingBlock, but could not resolve the item asset " .. tostring(meshPath) .. ".")
+            pcall(function() actor:K2_DestroyActor() end)
+            return false
+        end
+        pcall(function() actor.BuildingItem = item end)
+        -- The real trick: BuildingItem is CPF_RepNotify -- a plain property write never fires its
+        -- OnRep_BuildingItem callback (that only happens through network replication), so the actual
+        -- mesh build never runs without calling it explicitly.
+        pcall(function() actor:OnRep_BuildingItem() end)
+        -- Its own property name, known directly from the jmap reflection dump rather than a class
+        -- sweep -- the component's real class is /Script/R5.R5FoliageMeshComponent, not the plain
+        -- engine StaticMeshComponent findStaticMeshComponent() looks for.
+        pcall(function() mc = actor.StaticMeshComponent end)
+    elseif isClassPath then
+        actor = Spawner.Spawn(meshPath, "TiltLitMesh", nil, nil, nil, nil, false, nil, nil, false)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED for real decoration class " .. tostring(meshPath) .. ".")
+            return false
+        end
+        -- Find its own StaticMeshComponent by CLASS sweep rather than guessing a property name --
+        -- same proven GetComponentsByClass/K2_GetComponentsByClass pattern Spawner.MakeMovable
+        -- already uses, since a decoration Blueprint's mesh component name isn't known in advance.
+        mc = findStaticMeshComponent(actor)
+    else
+        actor = Spawner.Spawn("/Script/Engine.StaticMeshActor", "TiltLitMesh", nil, nil, nil, nil, false, nil, nil, false)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED (could not spawn StaticMeshActor).")
+            return false
+        end
+        mc = findStaticMeshComponent(actor)
+        if not (mc and mc:IsValid()) then
+            say("Spawned StaticMeshActor, but could not resolve its own StaticMeshComponent.")
+            pcall(function() actor:K2_DestroyActor() end)
+            return false
+        end
+        pcall(function() Spawner.MakeMovable(actor) end)
+        local mesh = resolveClass(meshPath)
+        if not (mesh and mesh:IsValid()) then
+            say("Spawned StaticMeshActor, but could not RESOLVE the mesh asset " .. tostring(meshPath) .. " at all -- check the path.")
+            pcall(function() actor:K2_DestroyActor() end)
+            return false
+        end
+        local setOk, setErr = pcall(function() mc:SetStaticMesh(mesh) end)
+        if not setOk then
+            say(string.format("Spawned StaticMeshActor, but SetStaticMesh THREW for %s: %s", tostring(meshPath), tostring(setErr)))
+            pcall(function() actor:K2_DestroyActor() end)
+            return false
+        end
+        pcall(function() mc:SetVisibility(false, false) end)
+        pcall(function() mc:SetVisibility(true, false) end)
+        pcall(function() mc:MarkRenderStateDirty() end)
+    end
+
+    -- A freshly spawned prop's mesh commonly comes in at Static mobility -- fine for a plain decor
+    -- look, but a Static primitive doesn't correctly receive/cast real-time shadows from a light that
+    -- ITSELF was only just added at runtime with no baked lighting data. Same proven fix
+    -- Spawner.MakeMovable already uses elsewhere in this file for "a runtime-spawned mesh doesn't
+    -- behave right" bugs -- EComponentMobility::Movable = 2.
+    pcall(function() Spawner.MakeMovable(actor) end)
+
+    if not (mc and mc:IsValid()) then
+        say("Spawned, but could not resolve a StaticMeshComponent -- no scale, tilt, or light applied.")
+        return true
+    end
+    -- 2026-09-21, RedFalcon: "when i grab the light to move it, it grabs the light and moves it and
+    -- leaves the plate where it was" -- Spawner.MakeMovable's own component sweep (called just above)
+    -- only checks for StaticMeshComponent/SkeletalMeshComponent by class; the DA_BI_ route's real
+    -- mesh component is a DIFFERENT, R5-custom class (/Script/R5.R5FoliageMeshComponent -- see this
+    -- function's own `isDataAsset` branch comment), which that sweep never matches, and it likely
+    -- isn't the actor's own root component either (a real building-block actor probably keeps a
+    -- separate structural root with a swappable mesh child) -- so MakeMovable never reaches it and it
+    -- stays at whatever Static mobility the building system defaults new pieces to, silently ignoring
+    -- the follow-loop's runtime actor moves while the light (added fresh, explicitly Movable a few
+    -- lines below) tracks correctly and visibly drifts away from the now-stationary-looking mesh.
+    -- Setting mobility directly on the ALREADY-RESOLVED `mc` reference sidesteps the class-sweep gap
+    -- entirely -- guaranteed to hit the right component regardless of its exact class name.
+    pcall(function() mc:SetMobility(2) end)
+    pcall(function() mc.CastShadow = true end)
+    pcall(function() mc.bCastDynamicShadow = true end)
+    pcall(function() mc.DetailMode = 0 end)
+    -- Force Block collision explicitly (originally fixed 2026-09-20 for "I can walk through it too"
+    -- against the old R5LootActor route, whose collision defaults to an OVERLAP/query pickup trigger
+    -- by design). StaticMeshActor should default to Block already, but this is kept as a cheap,
+    -- explicit safety net rather than trusting an assumed default -- same proven
+    -- SetCollisionEnabled(3)=QueryAndPhysics + SetCollisionResponseToAllChannels(2)=Block idiom this
+    -- file already uses elsewhere for "make this component actually solid." Applied to both the
+    -- visible mesh and the actor's root in case they differ.
+    pcall(function() mc:SetCollisionEnabled(3) end)
+    pcall(function() mc:SetCollisionResponseToAllChannels(2) end)
+    pcall(function()
+        local root = actor:K2_GetRootComponent()
+        if root and root:IsValid() then
+            pcall(function() root:SetCollisionEnabled(3) end)
+            pcall(function() root:SetCollisionResponseToAllChannels(2) end)
+        end
+    end)
+    -- 2026-09-21, RedFalcon: "is it possible for the light to have the plate scale sideways but
+    -- not taller?" / "just when scale is increased only increase the two directions" -- X/Y only,
+    -- Z always stays 1.0 (unscaled height). SetRelativeScale3D already takes independent X/Y/Z, so
+    -- no new parameter is needed -- the existing `scale` arg just no longer touches Z. Scaling
+    -- happens around the component's own pivot, not its position, so this doesn't shift the plate
+    -- either -- it grows/shrinks sideways in place, height untouched.
+    if scale ~= 1.0 then
+        pcall(function() mc:SetRelativeScale3D({ X = scale, Y = scale, Z = 1.0 }) end)
+    end
+
+    -- Measure the mesh's real upright height BEFORE tilting -- actor is still unrotated here, so
+    -- GetActorBounds' world-aligned box genuinely reflects the object's own (now-scaled) height, not
+    -- the smaller footprint a 90-degree-tilted box would report. Skipped when offsetOverride was given.
+    local topOffsetZ = Spawner.TILT_LIGHT_FALLBACK_TOP_OFFSET
+    if offsetOverride then
+        topOffsetZ = offsetOverride
+    else
+        pcall(function()
+            local origin, extent = {}, {}
+            local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+            local loc = actor:K2_GetActorLocation()
+            if ok and origin.Z and extent.Z and loc and loc.Z then
+                topOffsetZ = (origin.Z + extent.Z) - loc.Z
+            end
+        end)
+    end
+    -- Both topOffsetZ values above (auto-measured OR offsetOverride) are meant as a literal WORLD-uu
+    -- distance from the pivot -- but the light below attaches as mc's own CHILD, so UE will multiply
+    -- its RelativeLocation.Z by mc's own Z-SCALE automatically when composing world position.
+    -- 2026-09-21 fix: mc's Z-scale is now ALWAYS 1.0 (RedFalcon: "only increase the two
+    -- directions" -- see the X/Y-only SetRelativeScale3D above), no longer `scale` itself, so
+    -- dividing by `scale` here would now OVER-correct (shrinking the offset by a factor the parent
+    -- never actually applies on Z anymore). No division needed at all -- UE multiplying by a 1.0
+    -- Z-scale is a no-op, so the measured/requested world-uu distance is already correct as-is.
+    local lightRelativeZ = topOffsetZ
+
+    -- Tilt the visual mesh -- the light attaches to THIS component below, so it inherits the tilt
+    -- and ends up at the real post-rotation top, not a fixed world-vertical spot.
+    pcall(function() mc:K2_SetRelativeRotation({ Pitch = pitch, Yaw = 0.0, Roll = 0.0 }, false, {}, false) end)
+
+    local lightCls = StaticFindObject("/Script/Engine.PointLightComponent")
+    if not (lightCls and lightCls:IsValid()) then
+        say("Spawned + tilted, but PointLightComponent class did not resolve -- no light attached.")
+        return true
+    end
+    local lightComp = nil
+    pcall(function()
+        lightComp = actor:AddComponentByClass(lightCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (lightComp and lightComp:IsValid()) then
+        say("Spawned + tilted, but AddComponentByClass(PointLightComponent) failed -- no light attached.")
+        return true
+    end
+
+    pcall(function() lightComp:SetVisibility(false, false) end)
+    -- Movable + explicit CastShadows (2026-09-20, same "goblet doesn't block the light" symptom as
+    -- the mesh's own mobility fix above) -- a runtime-added light with no baked lighting data needs
+    -- Movable mobility to get real-time shadows at all; CastShadows is written explicitly too rather
+    -- than trusting whatever the CDO default happens to be.
+    pcall(function() lightComp:SetMobility(2) end)
+    pcall(function() lightComp.CastShadows = true end)
+    -- Two more levers (2026-09-20, RedFalcon: "through the walls... my goal is to only glow through
+    -- the rim" -- direct-shadow occlusion is now correctly configured but light was still visible
+    -- through solid geometry). bCastDynamicShadow is a separate sub-flag from the master CastShadows
+    -- switch and isn't guaranteed to default true just because CastShadows is true on a freshly
+    -- AddComponentByClass'd component -- set explicitly rather than assumed. IndirectLightingIntensity
+    -- zeroed to rule out Lumen/GI bounce light reading as "leaking through the wall" -- UE5's software
+    -- Lumen has a well-known weakness with thin geometry (a goblet's walls) letting INDIRECT bounce
+    -- light through even when DIRECT shadowing is working correctly; zeroing this isolates the visible
+    -- glow to direct light only, which should actually respect the mesh's shadow occlusion.
+    --
+    -- REAL FIX (2026-09-20), found by probing a genuinely working native torch light
+    -- (R5BalancedPointLightComponent on BP_PointLight_TorchFire, via lbprobe child + lbprobedump --
+    -- see project_building_block_reflection_discovery memory): `bCastDynamicShadow` above was simply
+    -- the WRONG property name -- the real one, confirmed off a live working light, is
+    -- `CastDynamicShadows` (plural, matching CastShadows/CastStaticShadows). More importantly, that
+    -- same dump showed `bUseVSMOnlyForSkeletalMeshes = false` explicitly set on the real torch light
+    -- -- this game's renderer uses Virtual Shadow Maps (`bUseDFSWithVSM = true`, real UE5.6 feature),
+    -- and that property name matches our EXACT symptom ("people cast shadows, objects don't") almost
+    -- perfectly: a freshly AddComponentByClass'd light very likely defaults this to true (full-quality
+    -- VSM reserved for characters only, a sensible perf default), silently excluding every static prop
+    -- from ever receiving a real shadow from it regardless of any other property. Also restored
+    -- IndirectLightingIntensity to the real light's own value (1.0, not 0) now that the actual bug is
+    -- fixed -- zeroing it was a shot in the dark from before this was found.
+    pcall(function() lightComp.CastDynamicShadows = true end)
+    pcall(function() lightComp.bUseVSMOnlyForSkeletalMeshes = false end)
+    pcall(function() lightComp.bUseDFSWithVSM = true end)
+    pcall(function() lightComp.bR5GeneratePrimitiveInteractions = true end)
+    pcall(function() lightComp.IndirectLightingIntensity = 1.0 end)
+    pcall(function() lightComp.IntensityUnits = 0 end)
+    pcall(function() lightComp.Intensity = intensity end)
+    pcall(function() lightComp.AttenuationRadius = radius end)
+    pcall(function() lightComp.LightColor = color end)
+
+    local attached = pcall(function() lightComp:K2_AttachToComponent(mc, FName(""), 2, 2, 2, false) end)
+    if attached then
+        pcall(function() lightComp:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = lightRelativeZ }, false, {}, false) end)
+    end
+    pcall(function() lightComp:SetVisibility(true, false) end)
+    pcall(function() lightComp:MarkRenderStateDirty() end)
+
+    if attached then
+        Spawner._tiltLightActor = actor
+        Spawner._tiltLightComp = lightComp
+    end
+
+    -- Readback diagnostics (2026-09-20, RedFalcon: "goblet is still not working" after the mobility/
+    -- CastShadows fix -- rather than guess a THIRD blind fix, read back what these pcall-wrapped
+    -- writes actually left behind so the next report is real data, not another guess) -- every write
+    -- above is pcall'd and silently swallows failure, so "I set CastShadows=true" and "CastShadows IS
+    -- true" are two different claims; this confirms which one is actually happening live.
+    local mcMobility, mcCastShadow, mcDynShadow, mcDetailMode, mcMeshName, mcVisible, lightMobility, lightCastShadows, lightDynShadow, lightIndirect = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+    pcall(function() mcMobility = mc.Mobility end)
+    pcall(function() mcCastShadow = mc.CastShadow end)
+    pcall(function() mcDynShadow = mc.bCastDynamicShadow end)
+    pcall(function() mcDetailMode = mc.DetailMode end)
+    pcall(function() mcVisible = mc:IsVisible() end)
+    -- Confirms whether SetStaticMesh actually stuck (2026-09-20, RedFalcon: "the actual goblet cant
+    -- be seen" even though SetStaticMesh reported success) -- reads the mesh BACK off the component
+    -- instead of trusting the write's own pcall success, same discipline as the mobility/shadow
+    -- readbacks above.
+    pcall(function()
+        local sm = mc.StaticMesh
+        if not (sm and sm:IsValid()) then pcall(function() sm = mc:GetStaticMesh() end) end
+        if sm and sm:IsValid() then pcall(function() mcMeshName = sm:GetFName():ToString() end) end
+    end)
+    pcall(function() lightMobility = lightComp.Mobility end)
+    pcall(function() lightCastShadows = lightComp.CastShadows end)
+    pcall(function() lightDynShadow = lightComp.CastDynamicShadows end)
+    pcall(function() lightIndirect = lightComp.IndirectLightingIntensity end)
+    local lightVsmSkelOnly = nil
+    pcall(function() lightVsmSkelOnly = lightComp.bUseVSMOnlyForSkeletalMeshes end)
+
+    say(string.format("mesh=%s | scale=%s | tilt(pitch)=%s | pivotOffsetZ=%s (%s, worldUU) | light attach=%s | intensity=%s radius=%s color=(%s,%s,%s) | mesh Mobility=%s CastShadow=%s DynShadow=%s DetailMode=%s Visible=%s ActualMesh=%s | light Mobility=%s CastShadows=%s CastDynamicShadows=%s VSMSkeletalOnly=%s IndirectIntensity=%s | run lbtesttiltlightclear to remove.",
+        tostring(meshPath), tostring(scale), tostring(pitch), tostring(topOffsetZ), offsetOverride and "manual" or "auto-measured", tostring(attached), tostring(intensity), tostring(radius),
+        tostring(color.R), tostring(color.G), tostring(color.B),
+        tostring(mcMobility), tostring(mcCastShadow), tostring(mcDynShadow), tostring(mcDetailMode), tostring(mcVisible), tostring(mcMeshName), tostring(lightMobility), tostring(lightCastShadows), tostring(lightDynShadow), tostring(lightVsmSkelOnly), tostring(lightIndirect)))
+    return true
+end
+
+------------------------------------------------------------------
+-- Spawner.Lights[1..3] -- the "Photo tab" Lights section (2026-09-21 design, RedFalcon's own
+-- mockup + spec). Three independent light+spill-shield rigs, each a real spawn (placed via the
+-- exact same drag/follow placement system every other spawn uses) but NEVER written to
+-- persist.txt -- "not persistent," matching a lighting rig set up fresh each session.
+--
+-- PIVOT: the plate (mc) is the actor's root/pivot, lightComp is offset from it -- exactly
+-- Spawner.TestSpawnTiltedLitMesh's own proven structure. A "light as pivot" inversion (rotating
+-- the actor would swing the plate around the light instead) was tried first via
+-- actor:SetRootComponent(lightComp)/K2_SetRootComponent, but NEITHER spelling ever actually
+-- succeeded in live testing (confirmed every single time) -- dropped 2026-09-21 (RedFalcon: "let's
+-- just do it the same as lbtesttiltlight and let the plate be the pivot point again") rather than
+-- keep carrying dead branching for a path that's never taken. Rotating a light rig now pivots
+-- around the plate, same as lbtesttiltlight already does.
+Spawner.Lights = Spawner.Lights or {}
+
+Spawner.LIGHT_DEFAULT_MESH = Spawner.TILT_LIGHT_DEFAULT_MESH
+Spawner.LIGHT_DEFAULT_COLOR = { R = 255, G = 255, B = 255, A = 255 }
+Spawner.LIGHT_DEFAULT_INTENSITY = 1000.0
+Spawner.LIGHT_DEFAULT_RADIUS = 500.0
+Spawner.LIGHT_DEFAULT_SHIELD_DISTANCE = 15.0
+Spawner.LIGHT_DEFAULT_SHIELD_SIZE = 1.0
+-- 2026-09-21, RedFalcon: "then the distance needs to be farther. lets try the 600. coz 450 is
+-- right in the players face" -- Config.PLACEMENT_FREEBUILD_START_DIST_UU (450) is right in the
+-- player's face specifically for a light spawn; own constant rather than reusing the decor one,
+-- since they're tuned for different things.
+Spawner.LIGHT_START_DIST_UU = 600.0
+
+-- CS.IsLightActor(actor) -- (2026-09-21) is this actor one of the tracked Spawner.Lights rigs?
+-- Used by Spawner.StartPlacementPreview/StartRelocatePreview's own floor-lock decision (RedFalcon:
+-- "treat it as if floor clipping is on, so that it can be lifted into the air") to exempt lights
+-- from the decor/statue floor-snap behavior, scoped to lights only rather than flipping the global
+-- free-build toggle (which would affect every other spawn in the session too).
+function CS.IsLightActor(actor)
+    if not actor then return false end
+    for _, entry in pairs(Spawner.Lights or {}) do
+        if entry.actor == actor then return true end
+    end
+    return false
+end
+
+-- CS.SpawnPlateMeshActor(meshPath, actorLabel, say) -- the SAME 3-route mesh resolution
+-- (DA_BI_ Data Asset / real "_C" decoration class / generic StaticMeshActor fallback)
+-- Spawner.TestSpawnTiltedLitMesh already uses, kept as its OWN separate copy here (not shared)
+-- so an edit to one can never regress the other's already-tuned, proven-working behavior. Hung
+-- off the existing CS table rather than a new top-level local/function -- this file sits right at
+-- Lua's 200-local ceiling (see CS's own header comment).
+function CS.SpawnPlateMeshActor(meshPath, actorLabel, say)
+    local isDataAsset = meshPath:match("DA_BI_") ~= nil
+    local isClassPath = (not isDataAsset) and meshPath:match("_C$") ~= nil
+    local actor, mc
+
+    local function findStaticMeshComponent(a)
+        local found = nil
+        pcall(function()
+            local mcClass = StaticFindObject("/Script/Engine.StaticMeshComponent")
+            if mcClass and mcClass:IsValid() then
+                local comps
+                pcall(function() comps = a:GetComponentsByClass(mcClass) end)
+                if not comps then pcall(function() comps = a:K2_GetComponentsByClass(mcClass) end) end
+                if comps and comps[1] then
+                    local c = comps[1]
+                    pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                    if c and c:IsValid() then found = c end
+                end
+            end
+        end)
+        return found
+    end
+
+    -- Spawner.Spawn always appends a persist.txt line for what it spawns -- fine for every other
+    -- roster, but the Lights section is explicitly "not persistent" (RedFalcon's own spec). Rather
+    -- than touch Spawner.Spawn itself (used everywhere else exactly BECAUSE it persists), strip
+    -- the line it just wrote right after each call, same removal function
+    -- Spawner.RemoveCustomStateForLabel's own callers already use for exactly this kind of cleanup.
+    -- The actor stays in Spawner.spawned (in-memory) so it's still targetable/movable through every
+    -- normal system -- only the on-disk persist.txt record is removed.
+    if isDataAsset then
+        actor = Spawner.Spawn("/Script/R5.R5BuildingBlock", actorLabel, nil, nil, nil, nil, false, nil, nil, false)
+        pcall(function() Spawner.PersistRemoveLast() end)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED for /Script/R5.R5BuildingBlock.")
+            return nil, nil
+        end
+        local item = resolveClass(meshPath)
+        if not (item and item:IsValid()) then
+            say("Spawned R5BuildingBlock, but could not resolve the item asset " .. tostring(meshPath) .. ".")
+            pcall(function() actor:K2_DestroyActor() end)
+            return nil, nil
+        end
+        pcall(function() actor.BuildingItem = item end)
+        pcall(function() actor:OnRep_BuildingItem() end)
+        pcall(function() mc = actor.StaticMeshComponent end)
+    elseif isClassPath then
+        actor = Spawner.Spawn(meshPath, actorLabel, nil, nil, nil, nil, false, nil, nil, false)
+        pcall(function() Spawner.PersistRemoveLast() end)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED for real decoration class " .. tostring(meshPath) .. ".")
+            return nil, nil
+        end
+        mc = findStaticMeshComponent(actor)
+    else
+        actor = Spawner.Spawn("/Script/Engine.StaticMeshActor", actorLabel, nil, nil, nil, nil, false, nil, nil, false)
+        pcall(function() Spawner.PersistRemoveLast() end)
+        if not (actor and actor:IsValid()) then
+            say("Spawn FAILED (could not spawn StaticMeshActor).")
+            return nil, nil
+        end
+        mc = findStaticMeshComponent(actor)
+        if not (mc and mc:IsValid()) then
+            say("Spawned StaticMeshActor, but could not resolve its own StaticMeshComponent.")
+            pcall(function() actor:K2_DestroyActor() end)
+            return nil, nil
+        end
+        local mesh = resolveClass(meshPath)
+        if not (mesh and mesh:IsValid()) then
+            say("Spawned StaticMeshActor, but could not RESOLVE the mesh asset " .. tostring(meshPath) .. ".")
+            pcall(function() actor:K2_DestroyActor() end)
+            return nil, nil
+        end
+        local setOk = pcall(function() mc:SetStaticMesh(mesh) end)
+        if not setOk then
+            say("Spawned StaticMeshActor, but SetStaticMesh FAILED for " .. tostring(meshPath) .. ".")
+            pcall(function() actor:K2_DestroyActor() end)
+            return nil, nil
+        end
+        pcall(function() mc:SetVisibility(false, false) end)
+        pcall(function() mc:SetVisibility(true, false) end)
+        pcall(function() mc:MarkRenderStateDirty() end)
+    end
+
+    if not (mc and mc:IsValid()) then
+        say("Spawned, but could not resolve a mesh component for the plate/shield.")
+        return actor, nil
+    end
+    return actor, mc
+end
+
+-- Spawner.EnableLight(slot, say) -- "Enable" checkbox, Light 1/2/3 (RedFalcon: "Treat enabling as
+-- a spawn and disabling as a despawn. Allow placement like a spawn with drag and drop.") -- builds
+-- the light+shield rig with every default from the spec, then starts the SAME drag/follow
+-- placement session every other spawn uses (Spawner.StartPlacementPreview) -- including the
+-- face-the-player rotation feature (beginFollowLoop's own "NEW" placement branch), matching
+-- "follows body rotation like the other spawns."
+function Spawner.EnableLight(slot, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    slot = tonumber(slot)
+    if not (slot and slot >= 1 and slot <= 3) then say("invalid light slot: " .. tostring(slot)); return false end
+    if Spawner.Lights[slot] then say("Light " .. slot .. " is already enabled."); return false end
+
+    local actor, mc = CS.SpawnPlateMeshActor(Spawner.LIGHT_DEFAULT_MESH, "Light" .. slot, say)
+    if not (actor and actor:IsValid()) then return false end
+    if not (mc and mc:IsValid()) then
+        pcall(function() actor:K2_DestroyActor() end)
+        say("could not resolve a mesh component for the spill shield -- aborting.")
+        return false
+    end
+
+    pcall(function() Spawner.MakeMovable(actor) end)
+    pcall(function() mc:SetMobility(2) end)
+    -- 2026-09-21, RedFalcon: "it appears for a second and then disappears" / "its shooting really
+    -- far off" -- the log showed a real actor DESTROYED itself a few seconds after spawn while
+    -- being dragged (Target lock released: target despawned). This project has hit the exact same
+    -- symptom family before (see Spawner.SetDecorSolid's own header: "a buried, physics-simulating
+    -- prop got shoved upward by depenetration") -- a mesh coming off R5BuildingBlock's native
+    -- construction can inherit live physics simulation, and forcibly teleporting it every follow-
+    -- loop tick while it's overlapping other geometry lets the physics engine "correct" the overlap
+    -- by shoving it away, hard enough to eventually fly out of the loaded world and get cleaned up.
+    -- Explicit SetSimulatePhysics(false), same fix SetDecorSolid already uses for this.
+    pcall(function() mc:SetSimulatePhysics(false) end)
+    -- 2026-09-21 fix, RedFalcon: "if i disable the plate and reenable it it stops blocking light" /
+    -- "disable spill shield, which doesnt seem like its blocking the light anymore" -- CastShadow
+    -- was incorrectly set to false here, carried over from an earlier, DIFFERENT (and reverted)
+    -- idea about the generic tilt-light tool not wanting its marker to cast an unrelated shadow.
+    -- A "spill shield" needs the OPPOSITE -- its entire purpose is to actually block/shape light,
+    -- so it needs real shadow-casting, same as Spawner.TestSpawnTiltedLitMesh's own plate already
+    -- has. "Show Spill Shield" unchecked (SetVisibility(false)) already naturally stops a hidden
+    -- primitive from casting a shadow at all (bCastHiddenShadow defaults false) -- no separate
+    -- CastShadow toggle needed for the passthrough behavior, this was simply the wrong default.
+    pcall(function() mc.CastShadow = true end)
+    pcall(function() mc.bCastDynamicShadow = true end)
+    pcall(function() mc.DetailMode = 0 end)
+    pcall(function() mc:SetCollisionEnabled(3) end)
+    pcall(function() mc:SetCollisionResponseToAllChannels(2) end)
+
+    local lightCls = StaticFindObject("/Script/Engine.PointLightComponent")
+    if not (lightCls and lightCls:IsValid()) then
+        say("PointLightComponent class did not resolve -- aborting.")
+        pcall(function() actor:K2_DestroyActor() end)
+        return false
+    end
+    local lightComp = nil
+    pcall(function()
+        lightComp = actor:AddComponentByClass(lightCls, true, {
+            Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+            Translation = { X = 0.0, Y = 0.0, Z = 0.0 },
+            Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+        }, false)
+    end)
+    if not (lightComp and lightComp:IsValid()) then
+        say("AddComponentByClass(PointLightComponent) FAILED -- aborting.")
+        pcall(function() actor:K2_DestroyActor() end)
+        return false
+    end
+
+    pcall(function() lightComp:SetVisibility(false, false) end)
+    pcall(function() lightComp:SetMobility(2) end)
+    pcall(function() lightComp.CastShadows = true end)
+    pcall(function() lightComp.CastDynamicShadows = true end)
+    pcall(function() lightComp.bUseVSMOnlyForSkeletalMeshes = false end)
+    pcall(function() lightComp.bUseDFSWithVSM = true end)
+    pcall(function() lightComp.bR5GeneratePrimitiveInteractions = true end)
+    pcall(function() lightComp.IndirectLightingIntensity = 1.0 end)
+    pcall(function() lightComp.IntensityUnits = 0 end)
+    pcall(function() lightComp.Intensity = Spawner.LIGHT_DEFAULT_INTENSITY end)
+    pcall(function() lightComp.AttenuationRadius = Spawner.LIGHT_DEFAULT_RADIUS end)
+    pcall(function() lightComp.LightColor = Spawner.LIGHT_DEFAULT_COLOR end)
+    pcall(function() lightComp:SetVisibility(true, false) end)
+    pcall(function() lightComp:MarkRenderStateDirty() end)
+
+    -- 2026-09-21, RedFalcon: "i dont think the light always places correctly in reference to the
+    -- plate. let's just do it the same as lbtesttiltlight and let the plate be the pivot point
+    -- again." -- the pivot-inversion attempt (light as actor root, via SetRootComponent/
+    -- K2_SetRootComponent) never actually succeeded in live testing (both spellings failed every
+    -- single time), so this drops it entirely rather than keep carrying dead branching for a path
+    -- that's never once taken. Back to EXACTLY Spawner.TestSpawnTiltedLitMesh's own proven
+    -- structure: mc (the plate) stays the actor's root/pivot, lightComp attaches to it as a child,
+    -- offset by Spill Shield Distance along local Z (matching that function's own light-offset
+    -- axis, confirmed correct against RedFalcon's own working `lbtesttiltlight goblet 90 15 1 1000
+    -- 500`). Rotating the actor now pivots around the plate again, same as that tool -- the
+    -- light-as-pivot idea from the original mockup spec is traded for reliability here.
+    local attached = pcall(function() lightComp:K2_AttachToComponent(mc, FName(""), 2, 2, 2, false) end)
+    if attached then
+        pcall(function() lightComp:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = Spawner.LIGHT_DEFAULT_SHIELD_DISTANCE }, false, {}, false) end)
+    else
+        say("lightComp:K2_AttachToComponent(mc) FAILED -- light may not be positioned correctly.")
+    end
+    -- 2026-09-21, RedFalcon: "the plate is suppose to be rotated 90 degrees" -- same pitch this
+    -- mesh needs in Spawner.TestSpawnTiltedLitMesh (Spawner.TILT_LIGHT_DEFAULT_PITCH = 90.0) to
+    -- stand it up correctly instead of lying flat as authored. Applied AFTER the attach calls
+    -- above, not before -- both use a SnapToTarget rule (the "2,2,2" args) that collapses
+    -- RelativeRotation to identity the moment attachment happens, so setting it earlier would just
+    -- get silently wiped out (same "snap then nudge" ordering this file already documents
+    -- elsewhere for exactly this reason).
+    pcall(function() mc:K2_SetRelativeRotation({ Pitch = 90.0, Yaw = 0.0, Roll = 0.0 }, false, {}, false) end)
+    pcall(function() mc:SetRelativeScale3D({ X = Spawner.LIGHT_DEFAULT_SHIELD_SIZE, Y = Spawner.LIGHT_DEFAULT_SHIELD_SIZE, Z = 1.0 }) end)
+    pcall(function() mc:SetVisibility(true, false) end)
+    pcall(function() mc:MarkRenderStateDirty() end)
+
+    Spawner.Lights[slot] = {
+        actor = actor, lightComp = lightComp, plateComp = mc,
+        color = { R = Spawner.LIGHT_DEFAULT_COLOR.R, G = Spawner.LIGHT_DEFAULT_COLOR.G, B = Spawner.LIGHT_DEFAULT_COLOR.B },
+        intensity = Spawner.LIGHT_DEFAULT_INTENSITY,
+        radius = Spawner.LIGHT_DEFAULT_RADIUS,
+        shieldDistance = Spawner.LIGHT_DEFAULT_SHIELD_DISTANCE,
+        shieldSize = Spawner.LIGHT_DEFAULT_SHIELD_SIZE,
+        shieldVisible = true,
+    }
+
+    -- Close start distance (2026-09-21) -- StartPlacementPreview's own fallback default is
+    -- Config.PLACEMENT_START_DIST_UU (1800uu, the decor/statue default) unless an explicit distance
+    -- is passed. Spawner.LIGHT_START_DIST_UU is its own tuned constant (600uu), not the shared
+    -- free-build one (450uu was "right in the player's face" for a light specifically).
+    pcall(function() Spawner.StartPlacementPreview(actor, Spawner.LIGHT_START_DIST_UU) end)
+    say(string.format("Light %d enabled -- drag into position (root swap %s).", slot, rootSwapOk and "OK" or "FAILED, pivot will be the plate not the light"))
+    return true
+end
+
+-- Spawner.DisableLight(slot, say) -- "Disable" (unchecking Enable). Uses Spawner.DespawnActor (the
+-- same general despawn every other spawn uses) rather than a bare K2_DestroyActor -- it also
+-- cleans up the actor's Spawner.spawned entry and releases any target lock on it. Its own
+-- PersistRemoveMatching call is a safe no-op here (CS.SpawnPlateMeshActor already stripped this
+-- light's persist.txt line at spawn time), so this doesn't reintroduce persistence.
+function Spawner.DisableLight(slot, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    slot = tonumber(slot)
+    local entry = slot and Spawner.Lights[slot]
+    if not entry then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    if Spawner._placementActive and Spawner._placementActor == entry.actor then
+        pcall(function() Spawner.CancelPlacement() end)
+    end
+    pcall(function() Spawner.DespawnActor(entry.actor) end)
+    Spawner.Lights[slot] = nil
+    say("Light " .. slot .. " disabled.")
+    return true
+end
+
+-- Spawner.SetLightColor(slot, r, g, b, say) -- 2026-09-21 fix, RedFalcon: "color change, brightness,
+-- and throw dont take effect right away, only if i make a change like disable spill shield" --
+-- MarkRenderStateDirty alone wasn't enough to refresh a LIVE light property, same finding as the
+-- belt lantern saga (spawner.lua's own BELT_LANTERN_LIGHT history): the real fix there was a
+-- genuine SetVisibility(false) -> ...writes... -> SetVisibility(true) transition, not a single
+-- "already visible" SetVisibility(true) or MarkRenderStateDirty call on their own. Applied here and
+-- to SetLightIntensity/SetLightThrowDistance below for the exact same reason.
+function Spawner.SetLightColor(slot, r, g, b, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.color = { R = r, G = g, B = b }
+    pcall(function() entry.lightComp:SetVisibility(false, false) end)
+    local ok = pcall(function() entry.lightComp.LightColor = { R = r, G = g, B = b, A = 255 } end)
+    pcall(function() entry.lightComp:SetVisibility(true, false) end)
+    pcall(function() entry.lightComp:MarkRenderStateDirty() end)
+    say(string.format("color set to (%d,%d,%d): %s", r, g, b, tostring(ok)))
+    return ok
+end
+
+-- Spawner.SetLightIntensity(slot, value, say) -- "Brightness" slider, 10-3000.
+function Spawner.SetLightIntensity(slot, value, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.intensity = value
+    pcall(function() entry.lightComp:SetVisibility(false, false) end)
+    local ok = pcall(function() entry.lightComp.Intensity = value end)
+    pcall(function() entry.lightComp:SetVisibility(true, false) end)
+    pcall(function() entry.lightComp:MarkRenderStateDirty() end)
+    say(string.format("intensity set to %s: %s", tostring(value), tostring(ok)))
+    return ok
+end
+
+-- Spawner.SetLightThrowDistance(slot, value, say) -- "Throw Distance" slider (AttenuationRadius),
+-- 300-2000.
+function Spawner.SetLightThrowDistance(slot, value, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.radius = value
+    pcall(function() entry.lightComp:SetVisibility(false, false) end)
+    local ok = pcall(function() entry.lightComp.AttenuationRadius = value end)
+    pcall(function() entry.lightComp:SetVisibility(true, false) end)
+    pcall(function() entry.lightComp:MarkRenderStateDirty() end)
+    say(string.format("throw distance set to %s: %s", tostring(value), tostring(ok)))
+    return ok
+end
+
+-- Spawner.SetLightShieldDistance(slot, value, say) -- "Spill Shield Distance", 10-100 -- how far
+-- the light sits from the plate, along the plate's own local Z (matching
+-- Spawner.TestSpawnTiltedLitMesh's proven axis -- see EnableLight's own header for the full
+-- reasoning). The plate (mc) is the pivot -- lightComp carries the offset.
+function Spawner.SetLightShieldDistance(slot, value, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.shieldDistance = value
+    local ok = pcall(function() entry.lightComp:K2_SetRelativeLocation({ X = 0.0, Y = 0.0, Z = value }, false, {}, false) end)
+    say(string.format("shield distance set to %s: %s", tostring(value), tostring(ok)))
+    return ok
+end
+
+-- Spawner.SetLightShieldSize(slot, value, say) -- "Spill Shield Size", .5-5 -- X/Y-only scale,
+-- same "not taller" convention Spawner.TestSpawnTiltedLitMesh's own scale already uses.
+function Spawner.SetLightShieldSize(slot, value, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.plateComp and entry.plateComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.shieldSize = value
+    local ok = pcall(function() entry.plateComp:SetRelativeScale3D({ X = value, Y = value, Z = 1.0 }) end)
+    say(string.format("shield size set to %s: %s", tostring(value), tostring(ok)))
+    return ok
+end
+
+-- Spawner.SetLightShieldVisible(slot, visible, say) -- "Show Spill Shield" checkbox, default ON.
+-- SetVisibility only -- collision/targeting stay live either way (RedFalcon: "not visible to allow
+-- passthough, but selectable by the spawn tool to move it" -- the same visibility-vs-collision
+-- separation already established for this project).
+function Spawner.SetLightShieldVisible(slot, visible, say)
+    say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    local entry = Spawner.Lights[tonumber(slot) or -1]
+    if not (entry and entry.plateComp and entry.plateComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
+    entry.shieldVisible = visible and true or false
+    local ok = pcall(function() entry.plateComp:SetVisibility(entry.shieldVisible, false) end)
+    say(string.format("shield visibility set to %s: %s", tostring(entry.shieldVisible), tostring(ok)))
+    return ok
+end
+
+-- Spawner.TestSpawnBuildingItem(itemPath, say) -- "lbtestbuildingitem <DA_BI_path>" (2026-09-20,
+-- RedFalcon's own probe of a real placed torch, BP_BuildingBlock_FloorTorch_C, found its visible
+-- geometry sits on a component named `StaticMeshComponent` but of CLASS `R5FoliageMeshComponent` (a
+-- custom R5 subclass, not a plain engine StaticMeshComponent -- likely why lbtesttiltlight's own
+-- plain-engine SetStaticMesh attempt silently never took), and that its real class is the NATIVE
+-- `/Script/R5.R5BuildingBlock` (BP_BuildingBlock_FloorTorch_C is a thin Blueprint subclass adding
+-- only the light/audio/FX components on top) driven by a `BuildingItem` property pointing at a real
+-- `R5BuildingItem` Data Asset (`DA_BI_FloorTorch` for the torch -- the exact same DA_BI_* family the
+-- goblet's own `DA_BI_DishesGoblet_04` belongs to, confirmed non-spawnable as an Actor class on its
+-- own). This is a PURE EXPLORATORY TEST, not yet a real feature: spawns the generic native
+-- R5BuildingBlock class directly and tries setting its BuildingItem to a given DA_BI_* asset, then
+-- reports whether a real mesh shows up on its own StaticMeshComponent afterward -- unknown going in
+-- whether setting BuildingItem alone triggers a build, or whether a separate build/rebuild call is
+-- needed. Prove this out via console BEFORE folding it into lbtesttiltlight, same "prove the Lua
+-- layer first" discipline this whole project already follows.
+Spawner._testBuildingBlockActor = Spawner._testBuildingBlockActor or nil
+
+function Spawner.TestClearBuildingItem(say)
+    say = say or function(m) print("[LivingBase] [test-buildingitem] " .. tostring(m) .. "\n") end
+    local a = Spawner._testBuildingBlockActor
+    Spawner._testBuildingBlockActor = nil
+    if a and a:IsValid() then
+        pcall(function() a:K2_DestroyActor() end)
+    end
+    say("test building-block actor cleared.")
+    return true
+end
+
+function Spawner.TestSpawnBuildingItem(itemPath, say)
+    say = say or function(m) print("[LivingBase] [test-buildingitem] " .. tostring(m) .. "\n") end
+    if not itemPath or itemPath == "" then
+        say("Usage: lbtestbuildingitem <DA_BI_...Path>  e.g. lbtestbuildingitem /Game/Gameplay/Building/BuildingDecoration/DA_BI_DishesGoblet_04.DA_BI_DishesGoblet_04")
+        return false
+    end
+    pcall(function() Spawner.TestClearBuildingItem(function() end) end)
+
+    local actor = Spawner.Spawn("/Script/R5.R5BuildingBlock", "TestBuildingItem", nil, nil, nil, nil, false, nil, nil, false)
+    if not (actor and actor:IsValid()) then
+        say("Spawn FAILED for /Script/R5.R5BuildingBlock itself -- see ue4ss.log SPAWN FAILED line.")
+        return false
+    end
+    Spawner._testBuildingBlockActor = actor
+
+    local item = resolveClass(itemPath)
+    if not (item and item:IsValid()) then
+        say("Spawned R5BuildingBlock, but could not resolve the item asset " .. tostring(itemPath) .. ".")
+        return true
+    end
+
+    local setOk, setErr = pcall(function() actor.BuildingItem = item end)
+    local readbackItem = nil
+    pcall(function() readbackItem = actor.BuildingItem end)
+
+    -- REAL mechanism, found via jmap reflection dump (2026-09-20, not a guess) -- `BuildingItem` is
+    -- flagged CPF_RepNotify in R5BuildingBlock's own class data, and its RepNotify callback,
+    -- `OnRep_BuildingItem` (private, native, 0 params -- confirmed via the same dump), is listed
+    -- right there in the class's own `children`. A RepNotify callback only fires through the ENGINE'S
+    -- REPLICATION system when a property changes over the network -- a plain Lua property write like
+    -- `actor.BuildingItem = item` never goes through replication at all, so the callback that
+    -- actually builds the mesh never ran on its own. Calling it explicitly here instead of guessing
+    -- function names. UE4SS's reflection-based call mechanism (ProcessEvent under the hood) can
+    -- invoke a private UFUNCTION directly -- "private" only restricts Blueprint graph access, not
+    -- reflection-based invocation.
+    local rebuildTried = {}
+    local ok = pcall(function() actor:OnRep_BuildingItem() end)
+    rebuildTried[#rebuildTried + 1] = "OnRep_BuildingItem=" .. tostring(ok)
+
+    local mc = nil
+    pcall(function()
+        local mcClass = StaticFindObject("/Script/Engine.StaticMeshComponent")
+        if mcClass and mcClass:IsValid() then
+            local comps
+            pcall(function() comps = actor:GetComponentsByClass(mcClass) end)
+            if not comps then pcall(function() comps = actor:K2_GetComponentsByClass(mcClass) end) end
+            if comps and comps[1] then
+                local c = comps[1]
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() then mc = c end
+            end
+        end
+    end)
+    local meshName, meshClassName = nil, nil
+    if mc then
+        pcall(function() meshClassName = mc:GetClass():GetFName():ToString() end)
+        pcall(function()
+            local sm = mc.StaticMesh
+            if not (sm and sm:IsValid()) then pcall(function() sm = mc:GetStaticMesh() end) end
+            if sm and sm:IsValid() then meshName = sm:GetFName():ToString() end
+        end)
+    end
+
+    say(string.format("R5BuildingBlock spawned=true | BuildingItem set(ok=%s,err=%s) readback=%s | rebuild fns tried: [%s] | StaticMeshComponent found=%s class=%s mesh=%s | run lbtestbuildingitemclear to remove.",
+        tostring(setOk), tostring(setErr), tostring(readbackItem ~= nil), table.concat(rebuildTried, ", "), tostring(mc ~= nil), tostring(meshClassName), tostring(meshName)))
     return true
 end
 
@@ -13666,9 +16133,7 @@ local BELT_LANTERN_MESH_PATH = "/Game/Character/Common/Accessoires/SM_Accessorie
 local BELT_LANTERN_GLASS_MESH_PATH = "/Game/Character/Common/Accessoires/SM_Accessories_LanternGlass_01.SM_Accessories_LanternGlass_01"
 local BELT_LANTERN_GLASS_ON_MATERIAL_PATH = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Materials/MI_Belt_Glass_LanternOn.MI_Belt_Glass_LanternOn"
 
-Spawner._beltLanternMeshComps = Spawner._beltLanternMeshComps or nil
-
-function Spawner.TestAttachLanternMesh(say, useSelf)
+function Spawner.TestAttachLanternMesh(say, useSelf, actorOverride)
     say = say or function(m) print("[LivingBase] [test-lanternmesh] " .. tostring(m) .. "\n") end
     local actor, name
     if useSelf then
@@ -13680,7 +16145,7 @@ function Spawner.TestAttachLanternMesh(say, useSelf)
         name = "player"
     else
         local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-        local bestI, e = findNearestSpawnInFront(maxDist)
+        local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
         if not bestI then
             say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first, or use 'lbtestlanternmesh player'.", maxDist))
             return false
@@ -13704,7 +16169,7 @@ function Spawner.TestAttachLanternMesh(say, useSelf)
     end
 
     -- Remove any previous test mesh set first (one at a time, same convention as the light/actor tools).
-    pcall(function() Spawner.TestClearLanternMesh(function() end) end)
+    pcall(function() Spawner.TestClearLanternMesh(function() end, actor) end)
 
     local smcCls = StaticFindObject("/Script/Engine.StaticMeshComponent")
     if not (smcCls and smcCls:IsValid()) then
@@ -13748,27 +16213,81 @@ function Spawner.TestAttachLanternMesh(say, useSelf)
     local bodyComp = attachOne(BELT_LANTERN_MESH_PATH, nil)
     local glassComp = attachOne(BELT_LANTERN_GLASS_MESH_PATH, BELT_LANTERN_GLASS_ON_MATERIAL_PATH)
 
-    Spawner._beltLanternMeshComps = { bodyComp, glassComp }
     local okCount = (bodyComp and 1 or 0) + (glassComp and 1 or 0)
     say(string.format("target=%s | %d/2 lantern mesh piece(s) attached to '%s'.", name, okCount, BELT_LANTERN_SOCKET))
     return okCount > 0
 end
 
--- Spawner.TestClearLanternMesh(say) -- companion to TestAttachLanternMesh, destroys both attached
--- mesh components.
-function Spawner.TestClearLanternMesh(say)
+-- Spawner.TestClearLanternMesh(say, actorOverride) -- companion to TestAttachLanternMesh, destroys
+-- the attached mesh components.
+--
+-- REWRITTEN (2026-09-21, RedFalcon: "removing a lantern is not recorded when hitting save. When I
+-- remove a lantern the custom txt says LANTERN:1") -- root cause traced to THIS function, not the
+-- save/diff logic (Spawner.TestReadLanternState does a genuine live sweep and was already correct).
+-- The old version destroyed whatever was in Spawner._beltLanternMeshComps -- a SINGLE, actor-agnostic
+-- session global, only ever populated by TestAttachLanternMesh's OWN most recent call. Any workflow
+-- touching more than one actor's lantern in one session (exactly what the Custom tab's target-switch
+-- lets you do), or restoring a lantern via CS.applyLine on world load and THEN toggling it off without
+-- an intervening TestAttachLanternMesh call on that same actor, left this global stale/pointing at the
+-- wrong actor (or nil) -- so "remove" silently destroyed nothing on the REAL target, the mesh stayed
+-- physically attached, and TestReadLanternState (a genuine live re-sweep) kept truthfully reporting
+-- "on" on the next save. Fixed to do its OWN live, per-actor sweep instead -- same proven
+-- K2_GetComponentsByClass + GetAttachSocketName + CS.LANTERN_KNOWN_MESHES pattern
+-- Spawner.RemoveSocketAttachment already uses (that function SKIPS lantern pieces when clearing a
+-- coexisting regular item at the same socket; this one does the mirror image, destroying ONLY the
+-- pieces that match CS.LANTERN_KNOWN_MESHES) -- so removal now always matches whatever is ACTUALLY
+-- attached to the given actor right now, not a stale cached reference.
+function Spawner.TestClearLanternMesh(say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-lanternmesh] " .. tostring(m) .. "\n") end
-    local comps = Spawner._beltLanternMeshComps
     Spawner._beltLanternMeshComps = nil
+    local actor = actorOverride
+    if not (actor and actor:IsValid()) then
+        local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+        local bestI, e = resolveTargetOrActor(nil, maxDist)
+        if bestI then actor = e.actor end
+    end
+    if not (actor and actor:IsValid()) then
+        say("no target to clear the lantern mesh from.")
+        return true
+    end
     local n = 0
-    if comps then
-        for _, c in ipairs(comps) do
-            if c and c:IsValid() then
-                -- Same wrong-argument fix as TestClearLanternLight -- DestroyComponent wants a bool
-                -- (bPromoteChildren), not the component itself.
-                local ok = pcall(function() c:DestroyComponent(false) end)
-                if not ok then pcall(function() c:SetVisibility(false, false) end) end
-                n = n + 1
+    for _, classPath in ipairs({ "/Script/Engine.StaticMeshComponent" }) do
+        local cls = StaticFindObject(classPath)
+        if cls and cls:IsValid() then
+            local comps = nil
+            pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            local count = 0
+            if comps then
+                pcall(function() count = comps:GetArrayNum() end)
+                if count == 0 then pcall(function() count = #comps end) end
+            end
+            for i = 1, count do
+                local c = nil
+                pcall(function() c = comps[i] end)
+                if c == nil then pcall(function() c = comps:Get(i) end) end
+                pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+                if c and c:IsValid() then
+                    local sock = ""
+                    pcall(function()
+                        local fn = c:GetAttachSocketName()
+                        if fn then sock = fn:ToString() end
+                    end)
+                    -- Inlined mesh-name read (2026-09-21) -- the shared `lanternMeshNameOf` local
+                    -- helper is declared LATER in this file than this function, so calling it here
+                    -- would hit this project's own documented Lua forward-reference scoping gotcha
+                    -- (feedback_lua_forward_reference_check) -- same logic, just duplicated in place.
+                    local meshName = nil
+                    pcall(function()
+                        local sm = c.StaticMesh
+                        if not (sm and sm:IsValid()) and c.GetStaticMesh then pcall(function() sm = c:GetStaticMesh() end) end
+                        if sm and sm:IsValid() then meshName = sm:GetFName():ToString() end
+                    end)
+                    if sock == BELT_LANTERN_SOCKET and CS.LANTERN_KNOWN_MESHES[meshName] then
+                        local ok = pcall(function() c:K2_DestroyComponent(actor) end)
+                        if not ok then pcall(function() c:SetVisibility(false, false) end) end
+                        n = n + 1
+                    end
+                end
             end
         end
     end
@@ -13796,21 +16315,25 @@ local BELT_LANTERN_SET_LIGHT_R = 255.0
 local BELT_LANTERN_SET_LIGHT_G = 180.0
 local BELT_LANTERN_SET_LIGHT_B = 90.0
 
-function Spawner.TestAttachLanternSet(say, useSelf)
+function Spawner.TestAttachLanternSet(say, useSelf, actorOverride)
     say = say or function(m) print("[LivingBase] [test-lanternset] " .. tostring(m) .. "\n") end
-    local meshOk = Spawner.TestAttachLanternMesh(say, useSelf)
+    local meshOk = Spawner.TestAttachLanternMesh(say, useSelf, actorOverride)
     local lightOk = Spawner.TestAttachLanternLight(say, useSelf, BELT_LANTERN_SET_LIGHT_INTENSITY,
         BELT_LANTERN_SET_LIGHT_RADIUS, BELT_LANTERN_SET_LIGHT_OFFSET_X, 0.0, 0.0, 0.0, 0.0, 0.0,
-        BELT_LANTERN_SET_LIGHT_R, BELT_LANTERN_SET_LIGHT_G, BELT_LANTERN_SET_LIGHT_B)
+        BELT_LANTERN_SET_LIGHT_R, BELT_LANTERN_SET_LIGHT_G, BELT_LANTERN_SET_LIGHT_B, actorOverride)
     say(string.format("lantern set: mesh=%s light=%s", tostring(meshOk), tostring(lightOk)))
     return meshOk and lightOk
 end
 
--- Spawner.TestClearLanternSet(say) -- companion to TestAttachLanternSet, clears both mesh and light.
-function Spawner.TestClearLanternSet(say)
+-- Spawner.TestClearLanternSet(say, actorOverride) -- companion to TestAttachLanternSet, clears both
+-- mesh and light. actorOverride added 2026-09-21 (see TestClearLanternMesh's own header comment) --
+-- without it this silently fell back to whatever findNearestSpawnInFront/resolveTargetOrActor picks
+-- from the player's own aim, which may not be the actor the Custom tab's Lantern toggle was actually
+-- meant for.
+function Spawner.TestClearLanternSet(say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-lanternset] " .. tostring(m) .. "\n") end
-    Spawner.TestClearLanternMesh(say)
-    Spawner.TestClearLanternLight(say)
+    Spawner.TestClearLanternMesh(say, actorOverride)
+    Spawner.TestClearLanternLight(say, actorOverride)
     return true
 end
 
@@ -17152,14 +19675,14 @@ end
 -- Whiskers, Eyebrows is a genuine sex-paired family (real Female art exists, see Config.
 -- HAIR_CATEGORY_ITEMS' own Eyebrows rows) -- same reasoning/exemption as Hairs, kept as its own
 -- named exception rather than folded into the "== Hairs" check so it stays legible.
-function Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say)
+function Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [hair-cat] " .. tostring(m) .. "\n") end
     if not categoryKey or categoryKey == "" or not friendlyName or friendlyName == "" then
         say("usage: internal call requires categoryKey + friendlyName")
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -17309,7 +19832,7 @@ end
 -- three (RedFalcon: "Sets will apply the color to all 3 types"). colorSlots=1 for all 4 of these
 -- categories (Config.CPD_BODYPART_COLOR_INFO) -- Color1/2/3 all get the SAME value, matching the
 -- established "write the same value to all 3 slots to be safe" rule used elsewhere in this file.
-function Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say)
+function Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say, actorOverride)
     say = say or function(m) print("[LivingBase] [hair-cat-color] " .. tostring(m) .. "\n") end
     local idx = tonumber(paletteIdx)
     if idx == nil then
@@ -17317,7 +19840,7 @@ function Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say)
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -17347,6 +19870,12 @@ function Spawner.ApplyHairCategoryColor(categoryKey, paletteIdx, say)
         local okSet, errSet = pcall(function() comp:SetCustomPrimitiveDataVector4(3, vec4) end)
         say(string.format("%s: SetCustomPrimitiveDataVector4(3, {%d,%d,%d,0}) = %s%s", bodyPartKey, idx, idx, idx,
             tostring(okSet), (not okSet) and (" err=" .. tostring(errSet)) or ""))
+        -- Cache exactly what we just applied (2026-09-16, RedFalcon: "could we not just read from the
+        -- menu?" -- see Spawner._lastAppliedColors' own header) -- wins over any later CPD read-back.
+        if okSet and e.label then
+            Spawner._lastAppliedHairColors[e.label] = Spawner._lastAppliedHairColors[e.label] or {}
+            Spawner._lastAppliedHairColors[e.label][bodyPartKey] = idx
+        end
         return okSet
     end
 
@@ -17386,6 +19915,7 @@ end
 function Spawner.TestReadHairColors(say)
     say = say or function(m) print("[LivingBase] [read-haircolor] " .. tostring(m) .. "\n") end
     local results = {}
+    local bakedResults = {}
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then
@@ -17436,7 +19966,15 @@ function Spawner.TestReadHairColors(say)
     for _, bodyPartKey in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
         local comp = findHairFamilyComponent(actor, bodyPartKey)
         local idx = nil
-        if comp and comp:IsValid() then
+        -- Tier 0: our own in-memory "last applied this session" cache (2026-09-16, RedFalcon: "could
+        -- we not just read from the menu?" -- see Spawner._lastAppliedColors' own header) -- wins over
+        -- a live CPD read, which lbdumpcpd independently confirmed can come back empty even right
+        -- after a successful-looking write.
+        local cachedIdx = e.label and Spawner._lastAppliedHairColors[e.label] and Spawner._lastAppliedHairColors[e.label][bodyPartKey]
+        if cachedIdx then
+            idx = cachedIdx
+            say(string.format("%s: using last-applied-this-session cache, idx=%d", bodyPartKey, idx))
+        elseif comp and comp:IsValid() then
             local okRead, dataArr = pcall(function() return comp.CustomPrimitiveData.Data end)
             local n = 0
             if okRead and dataArr then
@@ -17457,12 +19995,27 @@ function Spawner.TestReadHairColors(say)
         else
             say(string.format("%s: no component found.", bodyPartKey))
         end
+        -- THREE-TIER fallback order (2026-09-16, RedFalcon: "read CPD info, then persist, then
+        -- default in that order" -- see Spawner.TestReadCategoryColors' own header comment for the
+        -- full story of why: SavedCustomizationData is the NPC's ARCHETYPE-BAKED default, reporting
+        -- it on any CPD miss silently overrode a real customization; removing it outright then went
+        -- too far the other way and made Read Current blank for a piece that WAS already saved).
+        -- Tier 2 (CS.findPersistedLine) is our own previously-Saved custom_state.txt value for this
+        -- target+category; tier 3 (baked default) only applies when there's no CPD AND no prior save.
+        if not idx then
+            local persistedLine = CS.findPersistedLine(e.label, "HAIRCOLOR:" .. bodyPartKey .. ":")
+            local pIdxStr = persistedLine and persistedLine:match("^HAIRCOLOR:" .. bodyPartKey .. ":(%d+)$")
+            if pIdxStr then
+                idx = tonumber(pIdxStr)
+                say(string.format("%s: CPD empty -- using own persisted save, idx=%d", bodyPartKey, idx))
+            end
+        end
         if not idx then
             local ordinal = BODYPART_ORDINAL[bodyPartKey]
             local slots = ordinal and savedColorsByBodyPart[ordinal]
             if slots and slots[1] then
                 idx = math.floor(slots[1] + 0.5)
-                say(string.format("%s: CPD empty -- using SavedCustomizationData fallback, Color1=%s -> idx=%d", bodyPartKey, tostring(slots[1]), idx))
+                say(string.format("%s: CPD and persist both empty -- using baked default, Color1=%s -> idx=%d", bodyPartKey, tostring(slots[1]), idx))
             end
         end
         -- Third-tier fallback, everything but Hairs itself (2026-09-12, RedFalcon: "its not
@@ -17481,8 +20034,19 @@ function Spawner.TestReadHairColors(say)
             say(string.format("%s: no independent color found -- defaulting to Hairs' own color (idx=%d).", bodyPartKey, idx))
         end
         if idx and idx >= 0 then results[bodyPartKey] = idx end
+        -- bakedResults (2026-09-16, RedFalcon: "we can poll some of the cooked information right?")
+        -- -- same reasoning as TestReadCategoryColors' own bakedC1/2/3 fields: surface the archetype's
+        -- baked default alongside the resolved value so BuildCustomStateLines can skip writing a line
+        -- for a native, never-customized hair color. Independent of the tiered `idx` resolution above
+        -- (a fresh ordinal lookup), so it reflects the TRUE baked value even when `idx` itself came
+        -- from the cache/persist/Hairs-default tiers rather than SavedCustomizationData.
+        local ordinal = BODYPART_ORDINAL[bodyPartKey]
+        local bakedSlots = ordinal and savedColorsByBodyPart[ordinal]
+        if bakedSlots and bakedSlots[1] then
+            bakedResults[bodyPartKey] = math.floor(bakedSlots[1] + 0.5)
+        end
     end
-    return results
+    return results, bakedResults
 end
 
 -- Spawner.TestReadHairStyles(say) -- pure-read counterpart to ApplyHairCategoryMesh above, for the
@@ -17495,17 +20059,37 @@ end
 -- "<pkg>.<AssetName>", so the AssetName IS the trailing segment after the last '.') -- returns that
 -- row's own friendlyName, matching exactly what the dropdown itself would show. No "Sets" entry --
 -- same reasoning as TestReadHairColors, Sets isn't a real body part to read a mesh off of.
+-- Returns TWO tables: `results` (bodyPartKey -> matched friendlyName, absent when hidden/unmatched,
+-- unchanged) and `available` (bodyPartKey -> true/false, 2026-09-16, RedFalcon: "let's extend this
+-- to the hair, facial hair and belts and straps" -- same "grey out selectors for a slot this target
+-- genuinely doesn't have, not just a slot that's hidden" feature Clothes just got). Deliberately
+-- reuses findHairFamilyComponent's OWN existence check (comp ~= nil), rather than a fresh
+-- BuildedCompositeMeshes-by-BodyPart-ordinal lookup the way Clothes/Belts do -- findHairFamilyComponent
+-- already searches by CLASS+mesh-name-pattern across every SkeletalMeshComponent on the actor
+-- (see its own header comment), which is the ONLY search that also finds a Barbie's facial hair
+-- added fresh via Spawner.AddBarbieFacialHair (never goes through BuildedCompositeMeshes at all) --
+-- a raw composite-ordinal check would wrongly report "unavailable" for those. This is also exactly
+-- the same lookup Spawner.ApplyHairCategoryMesh itself uses to find its OWN write target, so
+-- `available` here tracks the real "would a swap find something to swap" condition precisely.
+-- Spawner.TestReadHairStyles(say) -- 3rd return `rawMesh` (2026-09-17, same "raw baseline
+-- reference" need as TestReadClothesStyles' own new 3rd return -- see that function's header).
+-- Stores the NORMALIZED mesh name (normalizeHairMeshName, collapsing the 4 real Default/
+-- SuspendHat/SuspendBandana/SuspendHeadband variants to one placeholder) rather than the raw
+-- string, so a hat being worn/removed on an otherwise-untouched target doesn't look like a
+-- deliberate hairstyle edit against this baseline.
 function Spawner.TestReadHairStyles(say)
     say = say or function(m) print("[LivingBase] [read-hairstyle] " .. tostring(m) .. "\n") end
     local results = {}
+    local available = {}
+    local rawMesh = {}
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
-        return results
+        return results, available, rawMesh
     end
     local actor = e.actor
-    if not (actor and actor:IsValid()) then say("no actor"); return results end
+    if not (actor and actor:IsValid()) then say("no actor"); return results, available, rawMesh end
 
     local function assetNameOf(path)
         if not path then return nil end
@@ -17514,6 +20098,7 @@ function Spawner.TestReadHairStyles(say)
 
     for _, bodyPartKey in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
         local comp = findHairFamilyComponent(actor, bodyPartKey)
+        available[bodyPartKey] = (comp ~= nil and comp:IsValid())
         local curName = nil
         local visible = true
         if comp and comp:IsValid() then
@@ -17526,12 +20111,22 @@ function Spawner.TestReadHairStyles(say)
         end
         -- Hidden (2026-09-14, the new "(Remove)" hair option -- Spawner.RemoveHairOnActor hides
         -- rather than destroys the component, same "hide, not clear the mesh, re-dressable
-        -- afterward" discipline as Clothes removal) reads as "not there", same rule
-        -- Spawner.TestReadClothesStyles already applies -- otherwise Read Current would show a
-        -- removed style as if it were still worn.
-        if not curName or not visible then
+        -- afterward" discipline as Clothes removal) originally read as plain "not there" so Read
+        -- Current wouldn't show a removed style as if it were still worn -- REVISED 2026-09-17
+        -- (RedFalcon: "how are we handling spots where an item is removed not replaced" -- it
+        -- wasn't: "not there" is indistinguishable from "never had a value", so Save never wrote a
+        -- line for an explicit removal and Restore had no way to re-hide it on reload). Now reports
+        -- the SAME "(Remove)" sentinel ApplyHairCategoryMesh already understands, same fix as
+        -- Spawner.TestReadClothesStyles' own comment -- still shows as "removed", not the stale
+        -- worn style, but is now a real, save/restore-able value instead of silence.
+        if comp and comp:IsValid() and not visible then
+            results[bodyPartKey] = "(Remove)"
+            rawMesh[bodyPartKey] = "REMOVED"
+            say(string.format("%s: hidden (removed).", bodyPartKey))
+        elseif not curName or not visible then
             say(string.format("%s: no component/mesh found or currently hidden.", bodyPartKey))
         else
+            rawMesh[bodyPartKey] = normalizeHairMeshName(curName)
             local matched = nil
             for _, row in ipairs(Config.HAIR_CATEGORY_ITEMS) do
                 if row.bodyPart == bodyPartKey then
@@ -17570,7 +20165,7 @@ function Spawner.TestReadHairStyles(say)
             end
         end
     end
-    return results
+    return results, available, rawMesh
 end
 
 -- applyHeadgearHairFit(actor, sourceAssetPath, say) -- (2026-09-14, RedFalcon: first "we need to
@@ -18781,7 +21376,13 @@ do
 -- Spawner.SetBodyPartMesh's own inline walk so the new Belt/Sling/Strap/Frog apply/remove functions
 -- and the "is the Senkamati necklace currently in the Sling slot" check below can find/read the
 -- live EquippedMesh component without re-deriving this TArray walk a third time.
+-- Checkpoint breadcrumbs (2026-09-16, same crash-isolation effort as TestReadBeltStrapStyles' own
+-- header -- this is the function it calls per piece type, so it's an equally likely crash site).
+-- Unconditional print (not the file-global VERBOSE-gated `log()`), but rate-limited to only the
+-- FIRST call per Read Current pass in practice since TestReadBeltStrapStyles' own checkpoints 2/3
+-- already bracket each call -- these add per-ARRAY-INDEX granularity inside it specifically.
 local function findBeltStrapComponent(actor, bodyPart)
+    local function cp(m) print("[LivingBase] [find-beltstrap] " .. tostring(m) .. "\n") end
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
     if not (comp and comp:IsValid()) then return nil end
@@ -18791,8 +21392,10 @@ local function findBeltStrapComponent(actor, bodyPart)
     local n = 0
     pcall(function() n = list:GetArrayNum() end)
     if n == 0 then pcall(function() n = #list end) end
+    cp("bodyPart=" .. tostring(bodyPart) .. " n=" .. tostring(n) .. " -- entering array walk.")
     local wantBodyPart = tonumber(bodyPart)
     for i = 1, n do
+        cp("index " .. i .. "/" .. n .. " -- reading element.")
         local el = nil
         pcall(function() el = list[i] end)
         if el == nil then pcall(function() el = list:Get(i) end) end
@@ -18800,14 +21403,80 @@ local function findBeltStrapComponent(actor, bodyPart)
         if el then
             local bp = nil
             pcall(function() bp = el.BodyPart end)
+            cp("index " .. i .. " -- BodyPart=" .. tostring(bp) .. ".")
             if tonumber(bp) == wantBodyPart then
                 local target = nil
                 pcall(function() target = el.EquippedMesh end)
-                if target and target:IsValid() then return target end
+                local targetValid = false
+                pcall(function() targetValid = target ~= nil and target:IsValid() end)
+                cp("index " .. i .. " -- matched, EquippedMesh read -- valid=" .. tostring(targetValid) .. ".")
+                if targetValid then return target end
             end
         end
     end
+    cp("bodyPart=" .. tostring(bodyPart) .. " -- walk finished, no match.")
     return nil
+end
+
+-- buildBeltStrapMap(actor) -- (2026-09-16 crash fix) walks BuildedCompositeMeshes ONCE and returns
+-- a { [bodyPartNum] = target } map for every real entry, instead of the 4 SEPARATE full re-walks
+-- Spawner.TestReadBeltStrapStyles used to do by calling findBeltStrapComponent once per piece type.
+-- Root-caused via the new checkpoint breadcrumbs: a live crash dump showed index 4 of an 11-entry
+-- array read cleanly during the Belt walk, then crash on that EXACT SAME index microseconds later
+-- during the very next (Sling) walk -- nothing else changed in between, just the same TArray
+-- indexed again in rapid succession. That's the signature of the UE4SS Lua/native bridge itself
+-- going unstable under repeated re-indexing of one array in a tight loop, not a bad property or a
+-- bad index -- all 4 crash dumps gathered so far share the exact same UE4SS.dll exception address
+-- despite firing from genuinely different call sites (pose read, belts read, clothes read), which
+-- is consistent with a shared generic indexing primitive rather than any one specific bug. Doing
+-- ONE pass instead of four is both a real algorithmic improvement (O(n) instead of O(4n)) and
+-- directly removes the exact repeated-re-index pattern the crash was caught in.
+--
+-- Per-index checkpoints added (2026-09-16, RedFalcon: "it crashed saving customizations" -- on the
+-- OFFICIAL/reverted UE4SS build, with the g_hasDetected gate temporarily bypassed too, ruling out
+-- both the UE4SS-update theory and the detect-gate theory as the SOLE explanation) -- the crash
+-- landed here, inside THIS function's own single-pass walk, with zero of findBeltStrapComponent's
+-- own checkpoints ever printing (that function is no longer called by the main per-piece loop, see
+-- this function's own replacement of it above) -- meaning a single walk of this array can ALSO
+-- crash, not just the repeated re-walk findBeltStrapComponent's own checkpoints originally caught.
+-- Mirrors that function's exact per-index checkpoint granularity so the NEXT crash pinpoints
+-- exactly which index/step, the same way that one did.
+local function buildBeltStrapMap(actor)
+    local function cp(m) print("[LivingBase] [beltstrap-map] " .. tostring(m) .. "\n") end
+    local map = {}
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then return map end
+    local list = nil
+    pcall(function() list = comp.BuildedCompositeMeshes end)
+    if not list then return map end
+    local n = 0
+    pcall(function() n = list:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #list end) end
+    cp("n=" .. tostring(n) .. " -- entering array walk.")
+    for i = 1, n do
+        cp("index " .. i .. "/" .. n .. " -- reading element.")
+        local el = nil
+        pcall(function() el = list[i] end)
+        if el == nil then pcall(function() el = list:Get(i) end) end
+        pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+        if el then
+            local bp = nil
+            pcall(function() bp = el.BodyPart end)
+            cp("index " .. i .. " -- BodyPart=" .. tostring(bp) .. ".")
+            local bpNum = tonumber(bp)
+            if bpNum then
+                local target = nil
+                pcall(function() target = el.EquippedMesh end)
+                local targetValid = false
+                pcall(function() targetValid = target ~= nil and target:IsValid() end)
+                cp("index " .. i .. " -- EquippedMesh read -- valid=" .. tostring(targetValid) .. ".")
+                if targetValid then map[bpNum] = target end
+            end
+        end
+    end
+    cp("walk finished, " .. n .. " entries scanned.")
+    return map
 end
 
 -- clearAccessoriesForRemovedPiece(pieceType, say) -- (2026-09-15, RedFalcon: "if a belt or strap is
@@ -18854,7 +21523,7 @@ end
 -- special-case code of its own.
 -- RedFalcon (2026-09-15): Belt/Sling/Strap/Frog are fully INDEPENDENT here -- no "Sling/Strap
 -- require Belt" cross-forcing like the older lbtestbeltroll rule; each is a plain one-slot replace.
-function Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say)
+function Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [beltstraps] " .. tostring(m) .. "\n") end
     local bodyPart = BODY_PART_ENUM_BY_NAME[pieceType]
     if not bodyPart then
@@ -18862,7 +21531,7 @@ function Spawner.ApplyBeltStrapPiece(pieceType, friendlyName, say)
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -18943,12 +21612,16 @@ end
 -- Spawner.ToggleBeltLantern(on, say) -- Custom tab Lantern toggle (2026-09-15). Thin wrapper over
 -- the existing TestAttachLanternSet/TestClearLanternSet -- useSelf=false always, so it targets the
 -- nearest/locked actor like every other Custom-tab operation, never the player's own pawn.
-function Spawner.ToggleBeltLantern(on, say)
+function Spawner.ToggleBeltLantern(on, say, actorOverride)
     say = say or function(m) print("[LivingBase] [beltstraps-lantern] " .. tostring(m) .. "\n") end
     if on then
-        return Spawner.TestAttachLanternSet(say, false)
+        return Spawner.TestAttachLanternSet(say, false, actorOverride)
     end
-    return Spawner.TestClearLanternSet(say)
+    -- FIXED (2026-09-21, see TestClearLanternMesh's own header comment) -- this used to drop
+    -- actorOverride entirely on the "off" path, falling back to whatever the player happens to be
+    -- aiming at instead of the actual Custom tab target -- the real root cause of "removing a
+    -- lantern is not recorded when hitting save."
+    return Spawner.TestClearLanternSet(say, actorOverride)
 end
 
 -- Spawner.RemoveSocketAttachment(socketName, say) -- destroys whatever component (skeletal or
@@ -18957,16 +21630,39 @@ end
 -- Spawner.RemoveAllSocketAttachments (which sweeps EVERY soc_/weapon socket at once, fragment-
 -- matched) -- this only ever touches the one exact socket name given, so picking "None" on one
 -- dropdown row never disturbs any other socket's own item.
-function Spawner.RemoveSocketAttachment(socketName, say)
+-- lanternMeshNameOf(c) (2026-09-17) -- reads a component's own mesh short name, JUST enough to
+-- check it against CS.LANTERN_KNOWN_MESHES -- factored out so RemoveSocketAttachment can skip
+-- destroying our own lantern pieces when clearing soc_Lantern for a coexisting regular item (see
+-- CS.LANTERN_KNOWN_MESHES' own header comment for the full "both should be allowed at the same
+-- time" story). A plain local, not CS-hung, since it's only ever used from this one function.
+local function lanternMeshNameOf(c)
+    local meshName = nil
+    pcall(function()
+        local sk = nil
+        pcall(function() sk = c.SkeletalMesh end)
+        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then pcall(function() sk = c:GetSkeletalMeshAsset() end) end
+        if not (sk and sk:IsValid()) then pcall(function() sk = c.StaticMesh end) end
+        if not (sk and sk:IsValid()) and c.GetStaticMesh then pcall(function() sk = c:GetStaticMesh() end) end
+        if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+    end)
+    return meshName
+end
+
+function Spawner.RemoveSocketAttachment(socketName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [remove-socket] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
     end
     local actor = e.actor
     local removed = 0
+    -- soc_Lantern (2026-09-17, RedFalcon: "both should be allowed at the same time") -- clearing/
+    -- replacing a REGULAR item at this one socket must never destroy our own lantern's mesh/glass
+    -- pieces sitting at the exact same socket -- skip anything matching CS.LANTERN_KNOWN_MESHES
+    -- here specifically. Every other socket is unaffected.
+    local isLanternSocket = (socketName == BELT_LANTERN_SOCKET)
     local function sweep(classPath)
         local cls = StaticFindObject(classPath)
         if not (cls and cls:IsValid()) then return end
@@ -18989,8 +21685,11 @@ function Spawner.RemoveSocketAttachment(socketName, say)
                     if fn then sock = fn:ToString() end
                 end)
                 if sock == socketName then
-                    pcall(function() c:K2_DestroyComponent(actor) end)
-                    removed = removed + 1
+                    local skip = isLanternSocket and CS.LANTERN_KNOWN_MESHES[lanternMeshNameOf(c)]
+                    if not skip then
+                        pcall(function() c:K2_DestroyComponent(actor) end)
+                        removed = removed + 1
+                    end
                 end
             end
         end
@@ -19039,12 +21738,20 @@ function Spawner.ClearSocketAccessories(say)
                 end)
                 if sock ~= "" then
                     local sockLower = sock:lower()
-                    if not sockLower:find("soc_lantern", 1, true) then
+                    -- soc_LanternLight (2026-09-17) -- still fully skipped, always -- it's the
+                    -- lantern's own light component, never a regular accessory socket at all.
+                    -- soc_Lantern ITSELF is no longer blanket-skipped (RedFalcon: "treat it the
+                    -- same as the others" -- it can now carry a real accessory) -- only OUR own
+                    -- known lantern mesh there is protected (see CS.LANTERN_KNOWN_MESHES), so
+                    -- Clear Accessories still can't destroy a live lantern, but a coexisting
+                    -- regular item at that socket clears normally like every other socket.
+                    if not sockLower:find("soc_lanternlight", 1, true) then
                         local matched = false
                         for _, frag in ipairs({ "_backsocket", "soc_", "swordslot", "rapierslot", "beltslot" }) do
                             if sockLower:find(frag, 1, true) then matched = true; break end
                         end
-                        if matched then
+                        local skip = matched and sock == BELT_LANTERN_SOCKET and CS.LANTERN_KNOWN_MESHES[lanternMeshNameOf(c)]
+                        if matched and not skip then
                             pcall(function() c:K2_DestroyComponent(actor) end)
                             removed = removed + 1
                         end
@@ -19108,21 +21815,32 @@ end
 -- friendlyName ONLY -- deliberately ignores that row's own `sockets` eligibility list (that
 -- restriction only matters for Spawner.TestGenerateSocketItems' own random roll, not a manual pick).
 -- "None" removes whatever is currently on that one socket via Spawner.RemoveSocketAttachment.
-function Spawner.ApplySocketItemManual(socketName, friendlyName, say)
+function Spawner.ApplySocketItemManual(socketName, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [socket-manual] " .. tostring(m) .. "\n") end
     if friendlyName == "None" then
-        return Spawner.RemoveSocketAttachment(socketName, say)
+        return Spawner.RemoveSocketAttachment(socketName, say, actorOverride)
     end
     local row = nil
     for _, r in ipairs(Config.SOCKETITEMS_ITEMS or {}) do
         if r.friendlyName == friendlyName then row = r; break end
     end
+    -- Config.SOCKETITEMS_TOOLS fallback (2026-09-21) -- the Custom tab's Left/Right Hand item
+    -- dropdowns (Weapons/Tools/Bottles/Other) are backed by this separate table (Other\
+    -- SocketItems.xlsx's "Tools" tab), not SOCKETITEMS_ITEMS -- checked second so an existing
+    -- SOCKETITEMS_ITEMS entry always wins on a name collision (there are none currently, see that
+    -- table's own header comment, but this keeps the existing Belt/Sling/Strap/Frog Accessories
+    -- grid's own behavior completely unchanged either way).
+    if not row then
+        for _, r in ipairs(Config.SOCKETITEMS_TOOLS or {}) do
+            if r.friendlyName == friendlyName then row = r; break end
+        end
+    end
     if not row then
         say("no item entry named '" .. tostring(friendlyName) .. "'")
         return false
     end
-    Spawner.RemoveSocketAttachment(socketName, function() end)
-    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say)
+    Spawner.RemoveSocketAttachment(socketName, function() end, actorOverride)
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say, actorOverride)
     if not actor then return false end
     local exists = false
     pcall(function() exists = body:DoesSocketExist(FName(socketName)) end)
@@ -19158,7 +21876,7 @@ local WEAPON_GROUP_LOCATION = { Sheath = "Sheath", Back = "Back", LeftPistol = "
 -- each only fits one specific real backsocket/lSocket -- e.g. an axe only fits Axe2h_backsocket,
 -- never Halberd_backsocket) -- except the two Pistol dropdowns, where the socket is just whichever
 -- side the dropdown itself represents.
-function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say)
+function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [weapon-manual] " .. tostring(m) .. "\n") end
     local group = WEAPON_GROUP_SOCKETS[locationKey]
     if not group then
@@ -19166,7 +21884,7 @@ function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say)
         return false
     end
     for _, sock in ipairs(group) do
-        Spawner.RemoveSocketAttachment(sock, function() end)
+        Spawner.RemoveSocketAttachment(sock, function() end, actorOverride)
     end
     if friendlyName == "None" then
         say(locationKey .. ": cleared.")
@@ -19199,7 +21917,7 @@ function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say)
         return false
     end
 
-    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say)
+    local actor, name, meshPath, mesh, isStatic, compCls, body = resolveMeshAndActorForFill(row.asset, say, actorOverride)
     if not actor then return false end
     local exists = false
     pcall(function() exists = body:DoesSocketExist(FName(targetSocket)) end)
@@ -19208,6 +21926,106 @@ function Spawner.ApplyWeaponSlotManual(locationKey, friendlyName, say)
         return false
     end
     return attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls, body, targetSocket, say)
+end
+
+-- Spawner.TestReadWeaponSlots(say) -- read-back for the 4 Accessories weapon dropdowns
+-- (2026-09-16, Save Customizations). Same by-socket sweep as Spawner.TestReadSocketAccessories
+-- (sweepAttachedMeshes, factored out above), just narrowed to WEAPON_GROUP_SOCKETS' own real
+-- sockets and resolved against Config.SOCKETITEMS_WEAPONS -- the exact reverse of what
+-- Spawner.ApplyWeaponSlotManual does going the other way. Returns a table keyed by locationKey
+-- (Sheath/Back/LeftPistol/RightPistol) -> friendlyName, only for slots with something recognized
+-- attached.
+-- Spawner.TestReadWeaponSlots(say) -- 2nd return `resolvedSockets` (2026-09-18, RedFalcon: "i did
+-- a save on marita. WEAPONSLOT:LeftPistol:Pistol - Rusty - Belt was saved but its spawned with
+-- her. is this a miss?" -- yes: her baseline already captures beltSlot_01_lSocket's native raw
+-- mesh via the SAME RAWACC sweep every other socket uses (that sweep doesn't discriminate by
+-- socType), but BuildCustomStateLines never had a socket name to look it up BY for WEAPONSLOT --
+-- only the location key/friendly name). `resolvedSockets[locationKey]` is the ONE real socket
+-- (from WEAPON_GROUP_SOCKETS) that actually matched, so a caller can diff against
+-- baseline.accessories[sock] the exact same way SOCKETITEM already does, without needing
+-- WEAPON_GROUP_SOCKETS in scope itself (it's a local declared further down this file than
+-- BuildCustomStateLines sits).
+function Spawner.TestReadWeaponSlots(say)
+    say = say or function(m) print("[LivingBase] [read-weaponslots] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return nil end
+    local attachedMesh = CS.sweepAttachedMeshes(e.actor)
+
+    local results = {}
+    local resolvedSockets = {}
+    for locationKey, sockets in pairs(WEAPON_GROUP_SOCKETS) do
+        for _, sock in ipairs(sockets) do
+            local meshName = attachedMesh[sock]
+            if meshName then
+                for _, row in ipairs(Config.SOCKETITEMS_WEAPONS or {}) do
+                    if CS.shortMeshName(row.asset) == meshName then
+                        results[locationKey] = row.friendlyName
+                        resolvedSockets[locationKey] = sock
+                        break
+                    end
+                end
+            end
+            if results[locationKey] then break end
+        end
+    end
+    say(string.format("detected %d weapon slot item(s).", (function() local n = 0; for _ in pairs(results) do n = n + 1 end; return n end)()))
+    return results, resolvedSockets
+end
+
+-- Spawner.TestReadLanternState(say) -- read-back for the Lantern checkbox (2026-09-16, Save
+-- Customizations). REVISED 2026-09-17 (RedFalcon: "some of them have an item in the lantern spot...
+-- both should be allowed at the same time") -- now that soc_Lantern can carry a real accessory
+-- alongside our own lantern, "is ANYTHING attached at this socket" is no longer a safe on/off
+-- check -- checks specifically for CS.LANTERN_KNOWN_MESHES within the full occupant LIST
+-- (attachedMeshList, the sweep's 2nd return) instead, so a coexisting regular item never produces
+-- a false "lantern on".
+function Spawner.TestReadLanternState(say)
+    say = say or function(m) print("[LivingBase] [read-lantern] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return false end
+    local _, attachedMeshList = CS.sweepAttachedMeshes(e.actor)
+    local on = false
+    for _, m in ipairs((attachedMeshList or {})[BELT_LANTERN_SOCKET] or {}) do
+        if CS.LANTERN_KNOWN_MESHES[m] then on = true; break end
+    end
+    say("lantern: " .. (on and "on" or "off"))
+    return on
+end
+
+-- Spawner.TestReadAILogicState(say) -- read-back for the "Toggle AI" checkbox (2026-09-16, Save
+-- Customizations). Reuses the EXACT StateTreeComponent/BrainComponent/StateTree -> st:IsRunning()
+-- check Spawner.PrepareCameraSubjectPose's own "is a walker currently frozen" probe already proved
+-- live -- true means AI logic is running normally, false means it was stopped via
+-- Spawner.SetAILogic(actor, false) (the Custom tab's own "Toggle AI" button). A target with no
+-- AIController at all (a statue) has nothing to toggle, so this reports true (nothing to restore)
+-- rather than false.
+function Spawner.TestReadAILogicState(say)
+    say = say or function(m) print("[LivingBase] [read-aitoggle] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then return true end
+    local actor = e.actor
+    local ctrl = nil
+    pcall(function() ctrl = actor.Controller end)
+    if not (ctrl and ctrl:IsValid()) then pcall(function() ctrl = actor:GetR5AIController() end) end
+    if not (ctrl and ctrl:IsValid()) then return true end
+    local st = nil
+    for _, n in ipairs({ "StateTreeComponent", "BrainComponent", "StateTree" }) do
+        if not st then
+            pcall(function()
+                local c = ctrl[n]
+                if c and c:IsValid() then st = c end
+            end)
+        end
+    end
+    local running = true
+    if st and st:IsValid() then
+        pcall(function() running = st:IsRunning() end)
+    end
+    say("AI logic: " .. (running and "running" or "stopped"))
+    return running
 end
 
 -- Spawner.TestReadBeltStrapStyles(say) -- Read Current's own belts/straps half (2026-09-15,
@@ -19223,10 +22041,33 @@ end
 -- convention as Spawner.TestReadClothesStyles.
 function Spawner.TestReadBeltStrapStyles(say)
     say = say or function(m) print("[LivingBase] [read-beltstraps] " .. tostring(m) .. "\n") end
+    -- Checkpoint breadcrumbs (2026-09-16, RedFalcon: "game just crashed... it didnt pull the belts
+    -- and straps correctly on a detect" -- 3 separate crash dumps now ALL share the exact same
+    -- exception address in UE4SS.dll, and the log (with the VERBOSE-gate bug fixed, see
+    -- pollCustomColorReadRequest's own header) shows "starting step 8b/8 (belts and straps)" then
+    -- NOTHING at all for the crash that finally got isolated -- this function itself never calls
+    -- `say()` on success (unlike TestReadClothesStyles/TestReadHairStyles), so it was previously
+    -- invisible in the log even when it ran fine, making it impossible to tell "ran silently" from
+    -- "crashed silently" without these). Reproduced right after a big-batch Outfit "Remove All"
+    -- (several BuildedCompositeMeshes entries hidden/swapped + a hair re-fit) -- plausibly a stale
+    -- component reference read right after that batch of mutations, not a bug in this function's
+    -- OWN logic in isolation (findClothesSlotEntry, the structurally identical walk
+    -- TestReadClothesStyles uses, ran clean on the SAME actor moments earlier in the SAME cycle).
+    local function checkpoint(m) print("[LivingBase] [read-beltstraps] " .. tostring(m) .. "\n") end
+    checkpoint("checkpoint 0 (resolving target).")
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then return nil end
     local actor = e.actor
+    checkpoint("checkpoint 1 (target resolved, building belt/strap map in ONE pass).")
+    -- ONE walk of BuildedCompositeMeshes for all 4 piece types (2026-09-16 crash fix -- see
+    -- buildBeltStrapMap's own header for the full root-cause story: calling findBeltStrapComponent
+    -- once per piece type re-walked the SAME array 4 times, and a live crash dump caught index 4
+    -- reading cleanly on the first walk then crashing on that EXACT SAME index microseconds later
+    -- on the very next walk -- the UE4SS bridge itself going unstable under repeated re-indexing of
+    -- one array in a tight loop, not a bad property/index).
+    local beltMap = buildBeltStrapMap(actor)
+    checkpoint("checkpoint 1b (map built, entering per-piece loop).")
 
     local function shortMeshName(path)
         if not path then return nil end
@@ -19235,11 +22076,24 @@ function Spawner.TestReadBeltStrapStyles(say)
 
     local result = {}
     for _, pieceType in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
-        local comp = findBeltStrapComponent(actor, BODY_PART_ENUM_BY_NAME[pieceType])
+        checkpoint("checkpoint 2." .. pieceType .. " (looking up in beltMap).")
+        local comp = beltMap[BODY_PART_ENUM_BY_NAME[pieceType]]
+        checkpoint("checkpoint 3." .. pieceType .. " (map lookup done, comp=" .. (comp and "found" or "nil") .. ").")
         local visible = false
         pcall(function() visible = comp ~= nil and comp:IsVisible() == true end)
-        local entry = { visible = visible }
+        checkpoint("checkpoint 4." .. pieceType .. " (IsVisible check returned: " .. tostring(visible) .. ").")
+        -- `available` (2026-09-16, RedFalcon: "let's extend this to the hair, facial hair and belts
+        -- and straps" -- same "grey out selectors for a slot this target genuinely doesn't have, not
+        -- just a slot that's hidden" feature Clothes just got) -- `comp ~= nil` alone, deliberately
+        -- NOT gated on `visible`: a HIDDEN belt (comp exists, IsVisible()==false, e.g. after picking
+        -- "None") is still a real BuildedCompositeMeshes entry Spawner.ApplyBeltStrapPiece CAN swap
+        -- to a different style -- only a target with NO such entry at all can never have this piece
+        -- selector do anything. `visible` itself is UNCHANGED and keeps driving the Accessories
+        -- grid's own socket-dependency gating (Pistols need the belt actually WORN, not just present).
+        local available = (comp ~= nil)
+        local entry = { visible = visible, available = available }
         if visible then
+            checkpoint("checkpoint 5." .. pieceType .. " (visible -- reading SkeletalMesh).")
             local meshName = nil
             pcall(function()
                 local sk = nil
@@ -19247,6 +22101,11 @@ function Spawner.TestReadBeltStrapStyles(say)
                 if not (sk and sk:IsValid()) and comp.GetSkeletalMeshAsset then pcall(function() sk = comp:GetSkeletalMeshAsset() end) end
                 if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
             end)
+            checkpoint("checkpoint 6." .. pieceType .. " (SkeletalMesh read returned: " .. tostring(meshName) .. ").")
+            -- rawMesh (2026-09-17) -- the raw baseline reference need, same as TestReadClothesStyles'
+            -- own new 3rd return -- added straight onto this entry table rather than a new return
+            -- value, since this function already returns one table-of-tables shape.
+            entry.rawMesh = meshName
             if meshName then
                 for _, r in ipairs(Config.BELTSTRAPS_PIECES or {}) do
                     if r.type == pieceType and (meshName == shortMeshName(r.maleMesh) or meshName == shortMeshName(r.femaleMesh)) then
@@ -19255,17 +22114,235 @@ function Spawner.TestReadBeltStrapStyles(say)
                     end
                 end
             end
+        elseif available then
+            -- "None" sentinel (2026-09-17, RedFalcon: "how are we handling spots where an item is
+            -- removed not replaced" -- it wasn't: a hidden-but-present piece and a piece with no
+            -- component at all both left entry.friendlyName nil, so Save never wrote a line for an
+            -- explicit removal. Matches ApplyBeltStrapPiece's own "None" intercept exactly (belts
+            -- use "None" as their remove sentinel, not "(Remove)" like Clothes/Hair).
+            entry.friendlyName = "None"
+            entry.rawMesh = "REMOVED"
         end
         result[pieceType] = entry
+        checkpoint("checkpoint 7." .. pieceType .. " (piece done).")
     end
+    checkpoint("checkpoint 8 (all 4 pieces done, returning).")
     return result
 end
 end -- do (see this section's own opening comment re: the 200-local ceiling)
 
--- CLOTHES_SLOT_KEYS -- the 7 real slots this feature covers, matching Config.CLOTHES_ITEMS' own
+-- Spawner.ToggleTargetAILogic(on, say) -- "Toggle AI" button, Custom tab Body section (2026-09-16,
+-- RedFalcon: "Add a 'Toggle AI' button underneath the 'Make Ghost' warning that sets and disables AI
+-- Processing"). Thin GUI wrapper over the already-existing Spawner.SetAILogic (StartLogic/StopLogic
+-- on the target's own AIController -- the SAME mechanism the crew-follow feature already uses to
+-- silence a StateTree's own move-order stomping, not a new one) targeting the nearest/locked actor,
+-- same convention as every other Custom-tab action in this file.
+function Spawner.ToggleTargetAILogic(on, say)
+    say = say or function(m) print("[LivingBase] [ai-toggle] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local ok = Spawner.SetAILogic(e.actor, on)
+    say(string.format("AI processing %s -- %s", on and "ENABLED" or "DISABLED", tostring(ok)))
+    return ok
+end
+
+-- Spawner.TestReadSocketAccessories(say) -- "Detect Accessories" button, Belts and Straps
+-- Accessories windowshade (2026-09-16, RedFalcon: "can we add a read accessories button that will
+-- read the accessories in the sockets and populate them. Also when randomize is run, can it populate
+-- the fields"). Sweeps every real socket named in Config.SOCKETITEMS_SOCKETS (both soc_* and weapon
+-- sockets) on the nearest/locked actor, reads whatever mesh is CURRENTLY attached there (same
+-- SkeletalMeshComponent/StaticMeshComponent sweep pattern Spawner.RemoveAllSocketAttachments already
+-- uses), and reverse-matches that mesh's own short name against Config.SOCKETITEMS_ITEMS (soc
+-- sockets) or Config.SOCKETITEMS_WEAPONS (weapon sockets) to recover the real friendly name. Returns
+-- a plain {[realSocketName] = friendlyName, ...} table (nil entries -- nothing attached, or an
+-- attached mesh that doesn't match any known catalog row -- are simply absent, not included) --
+-- deliberately NOT declared inside this file's own 200-local-ceiling `do...end` block above, since it
+-- needs no new top-level locals of its own (a plain `function Spawner.X` table-field assignment costs
+-- nothing against that budget; only its own internal, function-scoped locals exist, on a completely
+-- separate 200-local budget).
+-- Placed at module scope rather than pulled into main.lua's own poll handler because BOTH the new
+-- "Detect Accessories" button AND "Randomize Accessories"/its Clear X want the exact same read
+-- afterward -- main.lua's pollSocketAcc poller calls this once, unconditionally, after whichever of
+-- the 3 actions (RANDOMIZE/CLEAR/READ) it just ran.
+-- CS.shortMeshName(path)/CS.sweepAttachedMeshes(actor) -- factored out (2026-09-16, Save
+-- Customizations) so Spawner.TestReadSocketAccessories, Spawner.TestReadWeaponSlots, and
+-- Spawner.TestReadLanternState all share ONE by-socket attached-mesh sweep instead of three
+-- copies of the same K2_GetComponentsByClass walk. The sweep itself is already fully generic --
+-- it records EVERY attached skeletal/static mesh component by its own socket name, regardless of
+-- what that socket is for; only the caller decides which sockets/name-pools matter. Fields on the
+-- shared CS table (declared far above, near Spawner.SaveCustomState) rather than top-level locals
+-- for the SAME 200-local-ceiling reason documented there -- also fixes a real forward-reference
+-- bug this file's own local-scoping rules would otherwise cause: Spawner.TestReadWeaponSlots/
+-- TestReadLanternState (defined ABOVE this point in the file) call these too, which a plain
+-- `local function` here could never satisfy (a local isn't visible before its own declaration) --
+-- table-field assignment has no such ordering requirement, since it resolves at CALL time.
+CS.shortMeshName = function(path)
+    if not path then return nil end
+    return path:match("([^/%.]+)%.[%w_]+$") or path:match("([^/]+)$")
+end
+-- CS.LANTERN_KNOWN_MESHES / CS.filterOutLanternMeshes (2026-09-17, RedFalcon: "some of them have an
+-- item in the lantern spot... insert a Lantern dropdown... have the detector ignore the lantern
+-- parts when checking whats in that slot as often they can coexist" -- soc_Lantern is being
+-- un-excluded from Config.SOCKETITEMS_SOCKETS so it can carry a REAL regular item, same as every
+-- other soc_* socket, but our OWN lantern feature (Spawner.TestAttachLanternMesh) ALSO attaches at
+-- that exact socket -- RedFalcon: "both should be allowed at the same time", so detection/removal
+-- for one must never mistake or destroy the other. Named here by their real asset names
+-- (BELT_LANTERN_MESH_PATH/BELT_LANTERN_GLASS_MESH_PATH's own short names) since that's the one
+-- thing that actually distinguishes "our lantern" from "a real accessory that just happens to be
+-- at this socket" -- component identity/creation-order isn't reliable across a reload.
+CS.LANTERN_KNOWN_MESHES = { ["SM_Accessories_Lantern_01"] = true, ["SM_Accessories_LanternGlass_01"] = true }
+CS.filterOutLanternMeshes = function(list)
+    local out = {}
+    for _, m in ipairs(list or {}) do
+        if not CS.LANTERN_KNOWN_MESHES[m] then out[#out + 1] = m end
+    end
+    return out
+end
+-- 2nd return `attachedMeshList` (2026-09-17) -- attachedMesh (1st return, UNCHANGED) keeps its
+-- original one-mesh-per-socket "last one wins" shape, since every existing caller relies on that
+-- and multi-occupancy was never a real concern anywhere except soc_Lantern. attachedMeshList
+-- additionally records EVERY mesh seen at each socket (a real list), needed wherever soc_Lantern's
+-- own coexistence has to be resolved correctly instead of arbitrarily picking whichever component
+-- this sweep happened to visit last.
+CS.sweepAttachedMeshes = function(actor)
+    local attachedMesh = {}
+    local attachedMeshList = {}
+    local function sweep(classPath)
+        local cls = StaticFindObject(classPath)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then
+            pcall(function() n = comps:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #comps end) end
+        end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local sock = ""
+                pcall(function()
+                    local fn = c:GetAttachSocketName()
+                    if fn then sock = fn:ToString() end
+                end)
+                if sock ~= "" then
+                    local meshName = nil
+                    pcall(function()
+                        local sk = nil
+                        pcall(function() sk = c.SkeletalMesh end)
+                        if not (sk and sk:IsValid()) and c.GetSkeletalMeshAsset then pcall(function() sk = c:GetSkeletalMeshAsset() end) end
+                        if not (sk and sk:IsValid()) then pcall(function() sk = c.StaticMesh end) end
+                        if not (sk and sk:IsValid()) and c.GetStaticMesh then pcall(function() sk = c:GetStaticMesh() end) end
+                        if sk and sk:IsValid() then meshName = sk:GetFName():ToString() end
+                    end)
+                    if meshName then
+                        attachedMesh[sock] = meshName
+                        attachedMeshList[sock] = attachedMeshList[sock] or {}
+                        table.insert(attachedMeshList[sock], meshName)
+                    end
+                end
+            end
+        end
+    end
+    sweep("/Script/Engine.SkeletalMeshComponent")
+    sweep("/Script/Engine.StaticMeshComponent")
+    return attachedMesh, attachedMeshList
+end
+
+function Spawner.TestReadSocketAccessories(say)
+    say = say or function(m) print("[LivingBase] [read-accessories] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local attachedMesh, attachedMeshList = CS.sweepAttachedMeshes(e.actor)
+
+    local results = {}
+    for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
+        -- soc_Lantern (2026-09-17, RedFalcon: "some of them have an item in the lantern spot...
+        -- both should be allowed at the same time") -- our own lantern feature can occupy this
+        -- exact socket alongside a real accessory, so the plain single-value `attachedMesh` map
+        -- (arbitrary "last one wins" when 2+ things share a socket) isn't reliable here -- use the
+        -- full occupant list and skip our own known lantern meshes before picking a candidate.
+        -- Every other socket is unaffected -- unchanged single-value lookup, since real multi-
+        -- occupancy was never a concern anywhere else.
+        local meshName
+        if s.socket == BELT_LANTERN_SOCKET then
+            local candidates = CS.filterOutLanternMeshes((attachedMeshList or {})[s.socket])
+            meshName = candidates[1]
+        else
+            meshName = attachedMesh[s.socket]
+        end
+        if meshName then
+            local pool = (s.socType == "soc") and Config.SOCKETITEMS_ITEMS
+                or (s.socType == "weapon") and Config.SOCKETITEMS_WEAPONS
+                or nil
+            if pool then
+                for _, row in ipairs(pool) do
+                    if CS.shortMeshName(row.asset) == meshName then
+                        results[s.socket] = row.friendlyName
+                        break
+                    end
+                end
+            end
+        end
+    end
+    say(string.format("detected %d accessory socket item(s).", (function() local n = 0; for _ in pairs(results) do n = n + 1 end; return n end)()))
+    return results
+end
+
+-- Spawner.TestReadHandItems(say) -- (2026-09-21) the read-back half of the Custom tab's Left/Right
+-- Hand item dropdowns. ik_weapon_lSocket/ik_weapon_rSocket are real IK weapon-attach sockets but
+-- deliberately NOT part of Config.SOCKETITEMS_SOCKETS (that table is belt/sling/strap ACCESSORY
+-- sockets only) -- TestReadSocketAccessories' own sweep never visits them, so this is a small,
+-- separate read using the same CS.sweepAttachedMeshes primitive. Friendly-name resolution checks
+-- Config.SOCKETITEMS_ITEMS then Config.SOCKETITEMS_TOOLS (the same two-table order
+-- Spawner.ApplySocketItemManual's own lookup uses, see that function's header for why there's no
+-- ambiguity) -- an unresolved mesh (something not in either table) reports nil for that hand,
+-- same "no match, no line" convention as CLOTHESITEM/BELTPIECE. Returns {Left=name or nil,
+-- Right=name or nil}.
+function Spawner.TestReadHandItems(say)
+    say = say or function(m) print("[LivingBase] [read-handitems] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return nil
+    end
+    local attachedMesh = CS.sweepAttachedMeshes(e.actor)
+    local function resolveFriendly(meshName)
+        if not meshName then return nil end
+        for _, r in ipairs(Config.SOCKETITEMS_ITEMS or {}) do
+            if CS.shortMeshName(r.asset) == meshName then return r.friendlyName end
+        end
+        for _, r in ipairs(Config.SOCKETITEMS_TOOLS or {}) do
+            if CS.shortMeshName(r.asset) == meshName then return r.friendlyName end
+        end
+        return nil
+    end
+    return { Left = resolveFriendly(attachedMesh["ik_weapon_lSocket"]), Right = resolveFriendly(attachedMesh["ik_weapon_rSocket"]) }
+end
+
+-- CLOTHES_SLOT_KEYS -- the 8 real slots this feature covers, matching Config.CLOTHES_ITEMS' own
 -- keys (and BODY_PART_ENUM_BY_NAME's spelling) exactly. Shared by every function below rather than
 -- re-listing it per function.
-local CLOTHES_SLOT_KEYS = { "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape" }
+-- Mask ADDED (2026-09-16, RedFalcon: "add it back in, as some of the pregen NPCs have it, same as
+-- waist already being there despite not being able to use it") -- treated exactly like Waist/Cape:
+-- included here so TestReadClothesStyles/ApplyClothesItem/RemoveClothesItem/RemoveAllClothes all
+-- cover it for free, but gen_clothes_lua.py's own Config.CLOTHES_OUTFITS generation deliberately
+-- keeps Mask OUT of outfit bundles (see that script's OUTFIT_BODY_PARTS comment) -- the original
+-- exclusion reason (Mask permanently suspends Mustache/Beard/Whiskers) is still real for a bulk
+-- multi-slot outfit apply, just not for a single per-slot row a player picks deliberately.
+local CLOTHES_SLOT_KEYS = { "Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape", "Mask" }
 
 -- detectSenkamatiSex(actor) -- is the target's OWN base body a Senkamati skeleton at all, and if so
 -- which sex (2026-09-14, RedFalcon: "the female senkamati should not be allowed to change torso and
@@ -19456,7 +22533,7 @@ end
 -- Config.CLOTHES_UNLOCK_ALL escape hatch as the old tree's own Mechanism A -- unlocking is "no
 -- restrictions at all," not just "show unreviewed content," matching that established precedent
 -- rather than inventing a stricter always-on rule.
-function Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say)
+function Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [clothes] " .. tostring(m) .. "\n") end
     local items = Config.CLOTHES_ITEMS and Config.CLOTHES_ITEMS[bodyPartKey]
     if not items then
@@ -19473,7 +22550,7 @@ function Spawner.ApplyClothesItem(bodyPartKey, friendlyName, say)
     end
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -19603,14 +22680,23 @@ end
 -- function's header): the substitution only exists to avoid leaving a RESTRICTED target bare,
 -- so once lbunlockclothes has been run there's nothing to guard against and Legs/female-Torso
 -- removal goes back to a true hide, same as every other slot.
-function Spawner.RemoveClothesItem(bodyPartKey, say)
+-- actorOverride (2026-09-17, RedFalcon: "how are we handling spots where an item is removed not
+-- replaced" -- fixing the READ-side gap surfaced a matching gap here: CS.applyLine (Restore) needs
+-- to intercept the "(Remove)" sentinel a saved CLOTHESITEM line can now carry, same as main.lua's
+-- own pollCustomClothesItemRequest already does live -- but this function never accepted an
+-- actorOverride at all, unlike every other Apply/Remove function this project's own
+-- resolveTargetOrActor pattern already covers, so a Restore call would have removed the item from
+-- the nearest/locked actor instead of the one actually being restored. Added following that exact
+-- established pattern; threaded through both underwear-substitution branches below too so a
+-- Restore-triggered removal on either of those slots lands on the right actor as well.
+function Spawner.RemoveClothesItem(bodyPartKey, say, actorOverride)
     say = say or function(m) print("[LivingBase] [clothes] " .. tostring(m) .. "\n") end
     if not BODY_PART_ENUM_BY_NAME[bodyPartKey] then
         say("no such clothing slot: " .. tostring(bodyPartKey))
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -19620,9 +22706,9 @@ function Spawner.RemoveClothesItem(bodyPartKey, say)
 
     if bodyPartKey == "Legs" and not unlocked then
         if detectSenkamatiSex(actor) == "Female" then
-            return Spawner.ApplyClothesItem("Legs", "Senkamati Shaman Feather Legs 1", say)
+            return Spawner.ApplyClothesItem("Legs", "Senkamati Shaman Feather Legs 1", say, actor)
         end
-        return Spawner.ApplyClothesItem("Legs", "Character Underwear Legs", say)
+        return Spawner.ApplyClothesItem("Legs", "Character Underwear Legs", say, actor)
     end
     if bodyPartKey == "Torso" and not unlocked then
         local isFemale = false
@@ -19632,9 +22718,9 @@ function Spawner.RemoveClothesItem(bodyPartKey, say)
         end)
         if isFemale then
             if detectSenkamatiSex(actor) == "Female" then
-                return Spawner.ApplyClothesItem("Torso", "Senkamati Shaman Feather Torso 1", say)
+                return Spawner.ApplyClothesItem("Torso", "Senkamati Shaman Feather Torso 1", say, actor)
             end
-            return Spawner.ApplyClothesItem("Torso", "Character Underwear Torso", say)
+            return Spawner.ApplyClothesItem("Torso", "Character Underwear Torso", say, actor)
         end
     end
 
@@ -19692,6 +22778,58 @@ function Spawner.RemoveAllClothes(say)
     return anyOk
 end
 
+-- Spawner.WriteBarbieDefaultCustomState(actor, say) -- writes a freshly-placed Barbie's own [label]
+-- block directly into custom_state_<islandId>.txt, with ZERO live composite-mesh reads, instead of
+-- calling Spawner.SaveCustomState (2026-09-19, RedFalcon: "we know exactly what they are spawning
+-- with... they are supposed to be naked except for underwear, so we add that to the custom persist
+-- right away instead of calling save"). A fresh Barbie's post-placement look is fully deterministic:
+-- pollForBuildThenUndress's own Spawner.RemoveClothingOnActor(actor, "all", name) call always hides
+-- every real clothing slot and, for Torso/Legs specifically, substitutes the sex-appropriate
+-- underwear piece (unless Config.CLOTHES_UNLOCK_ALL) -- the exact same "stripped" state every single
+-- time, nothing to actually read off the actor to learn. This is what SaveCustomState/
+-- BuildCustomStateLines would eventually compute for a Barbie anyway, just without ever touching
+-- BuildedCompositeMeshes on an actor whose composite build is still mid-settle from the strip burst
+-- that just ran -- the exact read that was crashing (see WINDROSE_MODDING_NOTES.md 19ah/19ai's own
+-- "Barbie auto-save TEMPORARILY DISABLED" note -- this REPLACES that disabled call, doesn't restore
+-- it). CLOTHESITEM:<slot>:(Remove) and BELTPIECE:<type>:None replay through the EXACT SAME
+-- Spawner.RemoveClothesItem/ApplyBeltStrapPiece calls CS.applyLine already dispatches to (unchanged)
+-- -- Torso/Legs still correctly resolve to underwear (or the Female Senkamati substitution) on
+-- restore, since that choice is made fresh from the actor's OWN live sex/archetype at restore time,
+-- never baked into the saved line itself.
+function Spawner.WriteBarbieDefaultCustomState(actor, say)
+    say = say or function(m) print("[LivingBase] [save-customizations] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then
+        say("no actor to save.")
+        return false
+    end
+    local label = nil
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label; break end
+    end
+    if not label then
+        say("not a tracked spawn (never placed via the Spawn Menu) -- nothing to key this save by, skipped.")
+        return false
+    end
+    local lines = {}
+    for _, bodyPartKey in ipairs(CLOTHES_SLOT_KEYS) do
+        table.insert(lines, "CLOTHESITEM:" .. bodyPartKey .. ":(Remove)")
+    end
+    for _, pieceType in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
+        table.insert(lines, "BELTPIECE:" .. pieceType .. ":None")
+    end
+    local blocks = CS.readBlocks()
+    local replaced = false
+    for _, b in ipairs(blocks) do
+        if b.label == label then b.lines = lines; replaced = true; break end
+    end
+    if not replaced then
+        table.insert(blocks, { label = label, lines = lines })
+    end
+    CS.writeBlocks(blocks)
+    say(string.format("wrote default (stripped) state (%d line(s)) for '%s'.", #lines, label))
+    return true
+end
+
 -- Spawner.TestReadClothesStyles(say) -- pure-read counterpart to ApplyClothesItem, for the Custom
 -- tab's "Read Current" button (2026-09-14, RedFalcon: "make it realtime like the other items, and
 -- all items detected along with the color" -- the color half of this already exists via
@@ -19702,25 +22840,800 @@ end
 -- trailing segment after the last '.') -- SAME reverse-lookup shape as Spawner.TestReadHairStyles.
 -- A hidden (removed) slot or a mesh not in the catalog leaves that slot's own entry absent from the
 -- results table rather than guessing.
-function Spawner.TestReadClothesStyles(say)
-    say = say or function(m) print("[LivingBase] [read-clothes] " .. tostring(m) .. "\n") end
-    local results = {}
+-- Returns TWO tables: `results` (bodyPartKey -> matched friendlyName, same as always -- absent
+-- when hidden/unmatched) and `available` (bodyPartKey -> true/false, 2026-09-16, RedFalcon: "if a
+-- target doesnt have a swappable item in the hat slot, Grey out the hat selectors" -- distinct from
+-- `results` being absent: a slot can be PRESENT (has a real BuildedCompositeMeshes entry, so
+-- Spawner.SetBodyPartMesh/ApplyClothesItem CAN swap it) but currently hidden/holding a custom mesh
+-- with no catalog match (results[key] absent) -- greying out the whole row only makes sense for the
+-- FORMER case (findClothesSlotEntry found no component for this BodyPart AT ALL, e.g. a Gatherer
+-- simply has no Headgear entry in her composite), which SetBodyPartMesh can never create out of
+-- thin air (same "swap only, never add" limit RemoveClothesItem's own header comment already
+-- documents) -- that's what `available` reports, independent of the mesh's current visibility/name.
+-- Spawner.TestDumpDefaultParams(say) -- "lbprobedefaultparams" (2026-09-16, RedFalcon: "is this
+-- info we can scan for in game?" -- after sharing the uasset JSON for a Buccaneer Merchant showing
+-- her CompositeMeshComponent.DefaultParams DataAsset has a "Customization.UID.Armor" category with
+-- `bAllowCustomization: false` and exactly ONE fixed CompositeMeshesParams group -- i.e. the
+-- archetype's genuinely hardcoded default outfit, unlike Hairs/Eyebrows which list many possible
+-- groups (a random pool, not a single default)). `comp.DefaultParams` itself is ALREADY proven
+-- live-readable (used throughout this file for Barbie sex-swaps/outfit rebuilds), and so is walking
+-- INTO its CustomizationData array (GroupCategoryId.TagName, bAllowCustomization -- both confirmed
+-- live below).
+--
+-- CRASHED (2026-09-16, first version): the ORIGINAL body of this function also walked ONE level
+-- deeper into each entry's CompositeMeshGroupsByBodySex, treating it as a plain TArray of {Key,
+-- Value} struct pairs (matching how the uasset-JSON export tool renders it for JSON's sake) --
+-- GetArrayNum()/bracket-indexing into it crashed the game outright, with zero further log output
+-- past the entry-count line (a real native access violation bypassing every pcall, not a catchable
+-- Lua error). This matches this file's own PRE-EXISTING documented history elsewhere: comments near
+-- Spawner.AddBarbieFacialHair and Spawner.TestBuildCustomOutfit already call this exact field "TMap-
+-- shaped" and record THREE independent prior live attempts to read/write it (an Editor-authored
+-- CompositeMeshGroupsByBodySex map, and two live facial-hair fixes) all failing or crashing for
+-- reasons never root-caused -- a real TMap's raw memory layout is not a TArray's, and reading it as
+-- one is undefined behavior. REMOVED that inner walk entirely -- this function now only reads what's
+-- CONFIRMED safe (the outer CustomizationData array + each entry's tag/flag). Getting the per-sex
+-- composite mesh group list for a fixed (bAllowCustomization=false) category needs the OFFLINE
+-- uasset-JSON-export route instead (the same technique already used to hardcode Marita's own 6-piece
+-- BASELINE table in Spawner.TestBuildCustomOutfit) -- not a live read.
+function Spawner.TestDumpDefaultParams(say)
+    say = say or function(m) print("[LivingBase] [probe-defaultparams] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
-        return results
+        return false
     end
     local actor = e.actor
-    if not (actor and actor:IsValid()) then say("no actor"); return results end
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    say("target=" .. tostring(e.label or "actor"))
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on actor"); return false end
+
+    local params = nil
+    pcall(function() params = comp.DefaultParams end)
+    if not (params and params:IsValid()) then say("comp.DefaultParams not readable/valid"); return false end
+    local paramsName = "?"
+    pcall(function() paramsName = params:GetFullName() end)
+    say("DefaultParams = " .. paramsName)
+
+    local custData = nil
+    local okRead = pcall(function() custData = params.CustomizationData end)
+    if not (okRead and custData) then
+        say("params.CustomizationData not readable -- chain stops here, this approach needs a different property/route.")
+        return false
+    end
+    local n = 0
+    pcall(function() n = custData:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #custData end) end
+    say(string.format("CustomizationData: %d entries", n))
+
+    for i = 1, n do
+        local entry = nil
+        pcall(function() entry = custData[i] end)
+        if entry == nil then pcall(function() entry = custData:Get(i) end) end
+        pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
+        if entry then
+            local allowCustomization = nil
+            pcall(function() allowCustomization = entry.bAllowCustomization end)
+            -- FName-typed fields print as opaque "FNameUserdata: <hex>" under plain tostring() --
+            -- :ToString() is needed to get the real text (same distinction this project has hit
+            -- before with other FName-returning properties/functions).
+            local tagName = "?"
+            pcall(function()
+                local catId = entry.GroupCategoryId
+                if catId then
+                    local tn = catId.TagName
+                    if tn then
+                        local okStr, s = pcall(function() return tn:ToString() end)
+                        tagName = (okStr and s) and s or tostring(tn)
+                    end
+                end
+            end)
+            say(string.format("[%d] GroupCategoryId.TagName=%s bAllowCustomization=%s", i, tagName, tostring(allowCustomization)))
+            -- CompositeMeshGroupsByBodySex deliberately NOT read here -- confirmed to crash the game
+            -- when treated as a plain TArray (see this function's own header). Do not re-add a walk
+            -- into it without a genuinely new, proven-safe technique for reading a live TMap first.
+        end
+    end
+    say("done.")
+    return true
+end
+
+-- Spawner.TestProbeClassDefaultParams(classPathArg, say) -- "lbprobeclassparams <classPath>"
+-- (2026-09-16, RedFalcon: "if we wanted to make a preset database of all the NPCs we have available
+-- for summoning, is it possible to automatically walk all the NPCs... or is a probe needed on each"
+-- -- see Spawner.TestDumpDefaultParams' own header for why comp.DefaultParams/CustomizationData are
+-- ALREADY confirmed safely readable, just never tried on a class's CDO instead of a live spawned
+-- instance). This tests exactly that: can we read a summonable class's OWN CompositeMeshComponent.
+-- DefaultParams (and walk its CustomizationData, same as the live version) WITHOUT spawning
+-- anything at all -- the SAME technique the very first uasset JSON RedFalcon shared already proved
+-- works OFFLINE, just attempted here live via UE4SS's own StaticFindObject on the CDO's own
+-- addressable path (package.Default__ClassName_C -- confirmed real via that same JSON's own
+-- "ClassDefaultObject" entry). classPathArg is the class's own /Game/.../BP_X.BP_X_C path (same
+-- shape every Config.*_CLASSES table already uses) -- the CDO path is derived from it, not typed
+-- separately. If this works across a genuinely never-spawned class, the ENTIRE summon roster's
+-- category tags/flags could be walked in one batch pass with zero spawning at all.
+function Spawner.TestProbeClassDefaultParams(classPathArg, say)
+    say = say or function(m) print("[LivingBase] [probe-classparams] " .. tostring(m) .. "\n") end
+    if not classPathArg or classPathArg == "" then
+        say("usage: lbprobeclassparams <full /Game/... class path, e.g. .../BP_NPC_Handyman_Gatherer.BP_NPC_Handyman_Gatherer_C>")
+        return false
+    end
+    local pkg, className = classPathArg:match("^(.+)%.([%w_]+)$")
+    if not (pkg and className) then
+        say("could not split '" .. classPathArg .. "' into package.ClassName -- expected a dotted class path.")
+        return false
+    end
+    local cdoPath = pkg .. ".Default__" .. className
+    say("resolving CDO at: " .. cdoPath)
+    local cdo = nil
+    pcall(function() cdo = StaticFindObject(cdoPath) end)
+    if not (cdo and cdo:IsValid()) then
+        say("StaticFindObject could not resolve the CDO -- either this class has never been loaded (would need at least one real spawn to force-load it), or the naming guess is wrong for this class.")
+        return false
+    end
+    say("CDO resolved ok: " .. cdoPath)
+
+    local comp = nil
+    pcall(function() comp = cdo.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then
+        say("cdo.CompositeMeshComponent not readable/valid on this class's CDO.")
+        return false
+    end
+    local params = nil
+    pcall(function() params = comp.DefaultParams end)
+    if not (params and params:IsValid()) then
+        say("cdo.CompositeMeshComponent.DefaultParams not readable/valid.")
+        return false
+    end
+    local paramsName = "?"
+    pcall(function() paramsName = params:GetFullName() end)
+    say("DefaultParams (read from CDO, zero spawns) = " .. paramsName)
+
+    local custData = nil
+    local okRead = pcall(function() custData = params.CustomizationData end)
+    if not (okRead and custData) then
+        say("params.CustomizationData not readable -- stops here for this class.")
+        return true
+    end
+    local n = 0
+    pcall(function() n = custData:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #custData end) end
+    say(string.format("CustomizationData: %d entries", n))
+    for i = 1, n do
+        local entry = nil
+        pcall(function() entry = custData[i] end)
+        if entry == nil then pcall(function() entry = custData:Get(i) end) end
+        pcall(function() if entry ~= nil and type(entry) == "userdata" and entry.get then entry = entry:get() end end)
+        if entry then
+            local allowCustomization = nil
+            pcall(function() allowCustomization = entry.bAllowCustomization end)
+            local tagName = "?"
+            pcall(function()
+                local catId = entry.GroupCategoryId
+                if catId then
+                    local tn = catId.TagName
+                    if tn then
+                        local okStr, s = pcall(function() return tn:ToString() end)
+                        tagName = (okStr and s) and s or tostring(tn)
+                    end
+                end
+            end)
+            say(string.format("[%d] GroupCategoryId.TagName=%s bAllowCustomization=%s", i, tagName, tostring(allowCustomization)))
+        end
+    end
+    say("done -- ALL of the above happened with zero spawns, zero despawns.")
+    return true
+end
+
+-- Spawner.ReadDefaultParamsSummary(actor) -- PURE READ, no spawning, no despawning. Extracted
+-- (2026-09-16) from what used to be Spawner.WalkRosterClassParams' own inline read step, once that
+-- function's actual SPAWNING approach was found to be the wrong one: it called Spawner.Spawn(raw
+-- classPath) directly, but RedFalcon caught that NOTHING in the real Spawn Menu ever spawns this
+-- way -- literally every roster (even the "plain" statue ones) dispatches through its own dedicated
+-- Testbed.Spawn*ByName function (SpawnStandingByName/SpawnWalkerByName/etc.), which do real
+-- AI-controller/composite setup a raw Spawner.Spawn call skips entirely. That mismatch, not "AI-
+-- driven movers are inherently unstable," was the actual cause of two crashes at the identical
+-- UE4SS.dll fault address on Walker/Worker. The real fix moves the spawn/despawn ORCHESTRATION to
+-- main.lua (where Testbed is actually require()'d -- spawner.lua can't require it too without a
+-- circular require, since testbed.lua itself requires spawner.lua), using the correct Testbed
+-- function per roster. This function stays here as the one reusable piece that doesn't care how the
+-- actor came to exist: given ANY already-spawned, already-valid actor, read its
+-- CompositeMeshComponent.DefaultParams.CustomizationData the same way lbprobeclassparams/
+-- lbprobedefaultparams already do, and return a plain {defaultParams=, categories={{tag=,
+-- allowCustomization=},...}} table.
+function Spawner.ReadDefaultParamsSummary(actor)
+    local entry = {}
+    if not (actor and actor:IsValid()) then return entry end
+    pcall(function()
+        local comp = actor.CompositeMeshComponent
+        if comp and comp:IsValid() then
+            local params = comp.DefaultParams
+            if params and params:IsValid() then
+                pcall(function() entry.defaultParams = params:GetFullName() end)
+                local custData = nil
+                pcall(function() custData = params.CustomizationData end)
+                if custData then
+                    local n = 0
+                    pcall(function() n = custData:GetArrayNum() end)
+                    if n == 0 then pcall(function() n = #custData end) end
+                    entry.categories = {}
+                    for j = 1, n do
+                        local ce = nil
+                        pcall(function() ce = custData[j] end)
+                        if ce == nil then pcall(function() ce = custData:Get(j) end) end
+                        pcall(function() if ce ~= nil and type(ce) == "userdata" and ce.get then ce = ce:get() end end)
+                        if ce then
+                            local allow = nil
+                            pcall(function() allow = ce.bAllowCustomization end)
+                            local tag = "?"
+                            pcall(function()
+                                local catId = ce.GroupCategoryId
+                                if catId then
+                                    local tn = catId.TagName
+                                    if tn then
+                                        local okS, s = pcall(function() return tn:ToString() end)
+                                        tag = (okS and s) and s or tostring(tn)
+                                    end
+                                end
+                            end)
+                            entry.categories[#entry.categories + 1] = { tag = tag, allowCustomization = allow }
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    return entry
+end
+
+-- Spawner.PresetDB -- a small, dedicated, PERSISTENT file for the roster-preset scans the HOME key
+-- builds (2026-09-17, RedFalcon: "I strongly recommend we create a new file for this info since the
+-- UE4SS log is transient" -- correct call: UE4SS.log truncates on every relaunch, and scrolling
+-- back through it to rebuild a 144-entry roster survey by hand doesn't scale). Same INI-block
+-- read/write shape as CS (custom_state.txt) above, just NOT world-scoped -- a class's
+-- DefaultParams/category data has nothing to do with which save you're in, so one global file
+-- covers every world. Hung off the already-existing `Spawner` global (a field access, not a new
+-- top-level `local`) rather than getting its own `local PresetDB = {}` -- this file sits right at
+-- Lua's 200-local ceiling (see CS's own comment above) and a bare new top-level local here broke
+-- the whole file from loading on the first pass. The `local PresetDB = Spawner.PresetDB` alias
+-- below is wrapped in its own `do...end` for the same reason -- it frees its slot at the closing
+-- `end`, and every function defined inside keeps working afterward as a closure over the real
+-- `Spawner.PresetDB` table (only the lexical alias name goes out of scope, not the value).
+do
+Spawner.PresetDB = {}
+local PresetDB = Spawner.PresetDB
+PresetDB.PATH_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/npc_preset_scan.txt",
+    "Mods/LivingBase/npc_preset_scan.txt",
+    "npc_preset_scan.txt",
+}
+PresetDB._resolvedPath = nil
+PresetDB.resolvePath = function()
+    if PresetDB._resolvedPath ~= nil then return PresetDB._resolvedPath end
+    for _, p in ipairs(PresetDB.PATH_CANDIDATES) do
+        local f = io.open(p, "a")
+        if f then f:close(); PresetDB._resolvedPath = p; break end
+    end
+    PresetDB._resolvedPath = PresetDB._resolvedPath or false
+    return PresetDB._resolvedPath
+end
+-- Same "[label]" header + "KEY:value" lines shape as CS.readBlocks/writeBlocks (custom_state.txt) --
+-- intentionally duplicated rather than shared, since this file isn't world-scoped and CS.paths()
+-- always resolves through worldPaths().
+PresetDB.readBlocks = function()
+    local p = PresetDB.resolvePath()
+    if not p then return {} end
+    local f = io.open(p, "r")
+    if not f then return {} end
+    local blocks, current = {}, nil
+    for line in f:lines() do
+        local label = line:match("^%[(.-)%]$")
+        if label then
+            current = { label = label, lines = {} }
+            table.insert(blocks, current)
+        elseif current and line ~= "" then
+            table.insert(current.lines, line)
+        end
+    end
+    f:close()
+    return blocks
+end
+-- Write-to-temp-then-swap (2026-09-17, RedFalcon: "I think it overwrites the previous file" --
+-- confirmed real: a crash cluster mid-session (09:37-38) landed right in the old version's
+-- io.open(p,"w")-then-write-every-block window, truncating the file and losing every scan up to
+-- that point -- BotC Merchant 1-4/Bucc Merchant 1-3 never made it back in, even though RedFalcon
+-- remembers scanning them). The OLD version opened the real path directly in "w" mode, which
+-- erases it to zero bytes BEFORE a single block is rewritten -- a crash anywhere in that window
+-- (however unlikely per-call) loses the ENTIRE accumulated history, not just the newest entry,
+-- unlike livingbase_debug.log's own append-only design (see that log's own "a crash must lose
+-- nothing" comment). Fixed the same way any crash-safe file swap is done: write the FULL new
+-- content to a sibling ".tmp" file first, close it, THEN replace the real path -- a crash during
+-- the write only ever corrupts the .tmp file, never the real one, which is never touched until
+-- the write has already fully succeeded. os.rename on this platform's Lua runtime does NOT
+-- silently replace an existing destination (unlike POSIX rename()) -- it fails outright -- so
+-- os.remove(p) must run first; the sliver of time between that remove and the rename is the only
+-- remaining risk window, and it is calls, not lines-of-a-loop, wide.
+PresetDB.writeBlocks = function(blocks)
+    local p = PresetDB.resolvePath()
+    if not p then return end
+    local tmp = p .. ".tmp"
+    local f = io.open(tmp, "w")
+    if not f then return end
+    f:write("; Auto-generated by the HOME-key roster probe (Spawner.TestReadDefaultParamsOnTarget).\n")
+    f:write("; One block per scanned NPC/statue: its DefaultParams asset path, then one CATEGORY line\n")
+    f:write("; per customization group (fixed=true means bAllowCustomization=false -- not editable).\n")
+    f:write("; Re-scanning the same target (same Spawn Menu label) replaces its block in place.\n\n")
+    for _, b in ipairs(blocks) do
+        f:write("[" .. b.label .. "]\n")
+        for _, l in ipairs(b.lines) do f:write(l .. "\n") end
+        f:write("\n")
+    end
+    f:close()
+    os.remove(p)
+    os.rename(tmp, p)
+end
+-- Replace-or-append one target's block by its resolved Spawn Menu label (same join key everything
+-- else in this file uses -- NextInstanceLabel/CS/etc.). `rawLines` (2026-09-17, optional) -- the
+-- RAW*:... lines from Spawner.CaptureRawCustomBaseline, appended after the CATEGORY lines -- see
+-- that function's own header for why this replaced the original CATEGORY fixed-flag approach as
+-- the actual diff baseline.
+PresetDB.record = function(label, summary, rawLines)
+    if not label or label == "" then return false end
+    local lines = {}
+    lines[#lines + 1] = "DEFAULTPARAMS:" .. tostring(summary.defaultParams or "?")
+    for _, c in ipairs(summary.categories or {}) do
+        lines[#lines + 1] = string.format("CATEGORY:%s:%s", c.tag, tostring(c.allowCustomization == false))
+    end
+    for _, l in ipairs(rawLines or {}) do
+        lines[#lines + 1] = l
+    end
+    pcall(function() lines[#lines + 1] = "SCANNED:" .. os.date("%Y-%m-%d %H:%M:%S") end)
+
+    local blocks = PresetDB.readBlocks()
+    local found = false
+    for _, b in ipairs(blocks) do
+        if b.label == label then
+            b.lines = lines
+            found = true
+            break
+        end
+    end
+    if not found then
+        table.insert(blocks, { label = label, lines = lines })
+    end
+    PresetDB.writeBlocks(blocks)
+    return true
+end
+end -- do (Spawner.PresetDB)
+
+-- Spawner.CaptureRawCustomBaseline(actor, say) (2026-09-17) -- the actual "default baseline"
+-- RedFalcon asked for, after correcting two wrong turns in this same feature: not a fixed/
+-- customizable FLAG (useless -- doesn't reflect whether OUR tooling can edit something, just the
+-- game's own native customization station), but the real, RAW, base-level identifier -- mesh/
+-- material name, not a friendly display name -- for every look category Read Current covers, PLUS
+-- accessories (belt/strap pieces, socket items, weapon slots). Captured on a genuinely fresh,
+-- never-touched HOME-scanned actor so it can be diffed against a live read at Save time -- only a
+-- category that's actually DIFFERENT from this baseline is worth saving/replaying (RedFalcon: "if
+-- I only changed her legs, the only thing it does on reload is update her legs and nothing else").
+-- Raw rather than friendly-name specifically because a friendly name depends on a Config.*_ITEMS
+-- catalog lookup succeeding AND staying stable -- the raw mesh/material name is what the game
+-- itself actually stores, immune to any future catalog rename/reorganization. Returns a flat list
+-- of "RAW...:..." lines, same KEY:value convention every other file in this project already uses.
+-- Relies on the SAME nearest/locked-actor resolution every TestRead* function already does
+-- internally (no actor param threaded through to them -- none of the read-side functions accept
+-- one, only the apply-side ones do, see resolveTargetOrActor's own header) -- `actor` here is only
+-- used for the one read (CS.sweepAttachedMeshes) that already takes an explicit actor.
+function Spawner.CaptureRawCustomBaseline(actor, say)
+    say = say or function(m) print("[LivingBase] [raw-baseline] " .. tostring(m) .. "\n") end
+    local lines = {}
+
+    local okColors, colorResults = pcall(function() return Spawner.TestReadCategoryColors(Config.CUSTOM_TAB_CLOTH_CATEGORIES, say) end)
+    if okColors and colorResults then
+        for _, r in ipairs(colorResults) do
+            if r.c1 or r.c2 or r.c3 then
+                lines[#lines + 1] = string.format("RAWCOLOR:%s:%s:%s:%s", r.key,
+                    r.c1 and tostring(r.c1) or "-", r.c2 and tostring(r.c2) or "-", r.c3 and tostring(r.c3) or "-")
+            end
+        end
+    end
+
+    local okSize, size = pcall(function() return Spawner.TestReadSkinSize(say) end)
+    if okSize and size then lines[#lines + 1] = "RAWPHYSIQUE:" .. size end
+
+    -- RAWSCALE (2026-09-18, RedFalcon's height-slider idea) -- some archetypes (LongBen 1.2,
+    -- Marita 0.95) carry a native non-1.0 actor scale as part of their own baked-in look, same as
+    -- any other native default -- capture it so a Height edit only writes a HEIGHT: line when the
+    -- target's scale genuinely differs from ITS OWN archetype default, not just from 1.0.
+    if actor and actor:IsValid() then
+        local okScale, scaleVal = pcall(function()
+            local s = actor:K2_GetActorScale3D()
+            return s and s.Z
+        end)
+        if okScale and scaleVal then lines[#lines + 1] = "RAWSCALE:" .. tostring(scaleVal) end
+    end
+
+    local okHairColors, hairColors = pcall(function() return Spawner.TestReadHairColors(say) end)
+    if okHairColors and hairColors then
+        for _, bp in ipairs({ "Hairs", "Beard", "Mustache", "Whiskers", "Eyebrows" }) do
+            if hairColors[bp] then lines[#lines + 1] = string.format("RAWHAIRCOLOR:%s:%d", bp, hairColors[bp]) end
+        end
+    end
+
+    local okHairStyles, _, _, hairRaw = pcall(function() return Spawner.TestReadHairStyles(say) end)
+    if okHairStyles and hairRaw then
+        for bp, meshName in pairs(hairRaw) do
+            lines[#lines + 1] = string.format("RAWHAIR:%s:%s", bp, meshName)
+        end
+    end
+
+    local okEyeColor, eyeColor = pcall(function() return Spawner.TestReadEyeColor(say) end)
+    if okEyeColor and eyeColor ~= nil then lines[#lines + 1] = "RAWEYECOLOR:" .. tostring(eyeColor) end
+
+    local okClothes, _, _, clothesRaw = pcall(function() return Spawner.TestReadClothesStyles(say) end)
+    if okClothes and clothesRaw then
+        for bp, meshName in pairs(clothesRaw) do
+            lines[#lines + 1] = string.format("RAWCLOTHES:%s:%s", bp, meshName)
+        end
+    end
+
+    local okSkinTone, _, rawMaterial = pcall(function() return Spawner.TestReadSkinTone(say) end)
+    if okSkinTone and rawMaterial then lines[#lines + 1] = "RAWSKINTONE:" .. rawMaterial end
+
+    if not Config.TEMP_SKIP_BELTSTRAPS_READ then
+        local okBelt, beltStyles = pcall(function() return Spawner.TestReadBeltStrapStyles(say) end)
+        if okBelt and beltStyles then
+            for _, bp in ipairs({ "Belt", "Sling", "Strap", "Frog" }) do
+                local entry = beltStyles[bp]
+                if entry and entry.rawMesh then
+                    lines[#lines + 1] = string.format("RAWBELT:%s:%s", bp, entry.rawMesh)
+                end
+            end
+        end
+    end
+
+    if actor and actor:IsValid() then
+        local okAcc, attachedMesh, attachedMeshList = pcall(function() return CS.sweepAttachedMeshes(actor) end)
+        if okAcc and attachedMesh then
+            for _, s in ipairs(Config.SOCKETITEMS_SOCKETS or {}) do
+                -- soc_Lantern (2026-09-17, RedFalcon: "some of them have an item in the lantern
+                -- spot... both should be allowed at the same time" -- soc_Lantern is no longer
+                -- excluded from Config.SOCKETITEMS_SOCKETS, so this loop now sees it too. Same
+                -- filtered-list approach as TestReadSocketAccessories -- never record our own
+                -- lantern's mesh as if it were the regular RAWACC baseline for that socket.
+                local meshName
+                if s.socket == BELT_LANTERN_SOCKET then
+                    meshName = CS.filterOutLanternMeshes((attachedMeshList or {})[s.socket])[1]
+                else
+                    meshName = attachedMesh[s.socket]
+                end
+                if meshName then
+                    lines[#lines + 1] = string.format("RAWACC:%s:%s", s.socket, meshName)
+                end
+            end
+            -- RAWLANTERN (2026-09-17, RedFalcon: "can you scan for the lantern slot as well") --
+            -- checks the full occupant list for a KNOWN lantern mesh specifically (same check
+            -- Spawner.TestReadLanternState uses), not just "is attachedMesh[socket] present" --
+            -- that single-value map could now hold a coexisting regular item's name instead of the
+            -- lantern's own, once soc_Lantern is no longer excluded above.
+            for _, m in ipairs((attachedMeshList or {})[BELT_LANTERN_SOCKET] or {}) do
+                if CS.LANTERN_KNOWN_MESHES[m] then
+                    lines[#lines + 1] = "RAWLANTERN:" .. m
+                    break
+                end
+            end
+        end
+    end
+
+    -- RAWPOSE (2026-09-17, RedFalcon: "we'll want to check pose too... if its an unknown pose,
+    -- then don't record it as it'll be the default") -- the raw clip leaf name, not the friendly
+    -- Config.CUSTOM_POSES name, same "raw not friendly" reasoning as every other category here.
+    -- "Unknown" (nothing readable at all) is deliberately never captured -- there is nothing to
+    -- diff against, and BuildCustomStateLines' own POSE section already treats an unresolvable
+    -- current read the same way.
+    local okPose, _, poseLeaf = pcall(function() return Spawner.TestReadCurrentPoseName(say) end)
+    if okPose and poseLeaf then lines[#lines + 1] = "RAWPOSE:" .. poseLeaf end
+
+    return lines
+end
+
+-- Spawner.TestReadDefaultParamsOnTarget(say) -- "lbprobetargetparams", bound to the HOME key
+-- (2026-09-16, RedFalcon: "to make things easier on me, can we make a key run the command" -- for
+-- the manual, one-at-a-time roster-preset-building workflow this project settled on after the
+-- automated lbwalkroster batch approach proved unreliable, even after fixing the wrong-spawn-
+-- mechanism bug). Resolves the nearest/locked actor the SAME way every other Custom-tab/console
+-- Test* function does, then reports its CompositeMeshComponent.DefaultParams.CustomizationData via
+-- Spawner.ReadDefaultParamsSummary -- the same data lbprobeclassparams/lbwalkroster's own read step
+-- already print, just reachable with one keypress on whatever's already spawned/targeted instead of
+-- typing a console command each time. 2026-09-17: also records every successful scan into
+-- npc_preset_scan.txt via PresetDB, so the roster survey survives a UE4SS.log truncation/relaunch
+-- instead of only ever existing as scrollback.
+function Spawner.TestReadDefaultParamsOnTarget(say)
+    say = say or function(m) print("[LivingBase] [probe-targetparams] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    say("target=" .. tostring(e.label or "actor"))
+    local summary = Spawner.ReadDefaultParamsSummary(e.actor)
+    if not summary.defaultParams then
+        say("no CompositeMeshComponent.DefaultParams readable on this actor.")
+        return false
+    end
+    say("DefaultParams = " .. summary.defaultParams)
+    for i, c in ipairs(summary.categories or {}) do
+        say(string.format("[%d] %s (fixed=%s)", i, c.tag, tostring(c.allowCustomization == false)))
+    end
+    local rawLines = Spawner.CaptureRawCustomBaseline(e.actor, say)
+    say(string.format("captured %d raw baseline value(s).", #rawLines))
+    local okRec = Spawner.PresetDB.record(e.label, summary, rawLines)
+    say(okRec and ("saved to npc_preset_scan.txt [" .. tostring(e.label) .. "].") or "NOT saved -- no usable label for this target.")
+    return true
+end
+
+-- Spawner.TestConstructVisualFromParams(paramsPathArg, say) -- "lbtestconstructvisual <path>"
+-- (2026-09-16, RedFalcon: "Can we use [a belt piece's own R5CompositeMeshParams DataAsset, e.g.
+-- DA_Armor_Regular_Hunter_Belt_01_CompositeMeshData] to apply the whole set at once?... worst case
+-- we validate that at least"). This whole question exists because this project's OWN prior,
+-- hard-won conclusion (Spawner.ApplyComposite's own "CONCLUDED DEAD" note, and everywhere else
+-- composite pieces get called "confirmed build-time-only") says reassigning a params object on an
+-- ALREADY-SPAWNED actor never triggers a rebuild -- which is exactly why the current belt-piece
+-- swap only touches the base SkeletalMesh directly and never brings along a piece's own bundled
+-- socket accessories (bags/bandoleers/knife/etc, all baked into the SAME CompositeMeshData asset's
+-- own "Attachments" list, confirmed via the uasset JSON RedFalcon shared). BUT: `lbprobedump` on
+-- R5CompositeMeshComponent lists a real, callable `ConstructVisualFromParams` function that has
+-- never been tried anywhere in this codebase -- its name is exactly what a live "rebuild this one
+-- piece (base mesh + attachments) from its own params, right now" call would be named. GENUINELY
+-- UNTESTED ENGINE SURFACE, same discipline as every other first-time native call this session:
+-- (1) confirm the function actually exists on this class via ForEachFunction (pure read, zero risk)
+-- BEFORE attempting the call at all, (2) write a breadcrumb to the PERSISTENT RefLog (survives a
+-- crash, unlike ue4ss.log which resets on relaunch) immediately before the one risky call, so even a
+-- full crash with zero further output tells us exactly which call did it, (3) report the call's own
+-- success/failure honestly -- a clean pcall return does NOT by itself prove the visual actually
+-- rebuilt; check in-game whether the accessories genuinely appear.
+--
+-- CONCLUDED DEAD (2026-09-16). Three escalating attempts, all clean (no crash, no Lua error):
+-- (1) a bare ConstructVisualFromParams(params) call -- no visible change. (2) bracketed with
+-- StartCharacterEdit()/EndCharacterEdit(true) (EndCharacterEdit needed the bool explicit -- UE4SS
+-- doesn't fill in a UFUNCTION's own default arg, same class of gotcha as SetLeaderPoseComponent
+-- needing every param spelled out) -- still no visible change. (3) added a before/after
+-- BuildedCompositeMeshes snapshot around the whole bracket to settle whether ANYTHING changed
+-- internally even if it never rendered -- confirmed genuinely, definitively NOT: entry count and the
+-- Belt slot's own EquippedMesh name (SK_Belt_01_Male) were BYTE-IDENTICAL before and after applying
+-- a completely different belt piece (Hunter_Belt_01, whose own baked default is SK_Belt_03_Male).
+-- This isn't a stale-render-state problem this project's own proven visibility-toggle fix could work
+-- around -- the underlying data array itself never moved. Confirms, independently, this project's
+-- earlier "composite pieces are build-time-only" conclusion: NONE of ConstructVisualFromParams/
+-- StartCharacterEdit/EndCharacterEdit can force a live per-piece rebuild after construction, in any
+-- combination tried. Do not re-attempt this approach without a genuinely new technique -- the
+-- per-slot manual system (raw SkeletalMesh swap + per-socket manual attach) remains the only proven
+-- way to change equipment live, and should NOT be sunset in favor of this.
+function Spawner.TestConstructVisualFromParams(paramsPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-constructvisual] " .. tostring(m) .. "\n") end
+    if not paramsPathArg or paramsPathArg == "" then
+        say("usage: lbtestconstructvisual <R5CompositeMeshParams asset path, dotted suffix optional> -- e.g. a belt piece's own CompositeMeshData, applied to the nearest/locked actor's CompositeMeshComponent.")
+        return false
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    say("target=" .. tostring(e.label or "actor"))
+
+    local comp = nil
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then say("no CompositeMeshComponent on actor"); return false end
+
+    local path = paramsPathArg
+    if not path:match("%.[%w_]+$") then
+        local last = path:match("([^/]+)$")
+        if last then path = path .. "." .. last end
+    end
+    local params = resolveAsset(path)
+    if not (params and params:IsValid()) then
+        say("could not resolve " .. path)
+        return false
+    end
+    say("resolved params = " .. path)
+
+    -- Read-only reflection FIRST, same ForEachFunction walk dumpCompositeFunctions/
+    -- ProbeNiagaraFunctions already use safely -- confirm each function is real on THIS class before
+    -- attempting any call at all, rather than guessing blind.
+    local function hasFunction(name)
+        local found = false
+        pcall(function()
+            local cls = comp:GetClass()
+            while cls and cls:IsValid() and not found do
+                cls:ForEachFunction(function(fn)
+                    local n = "?"
+                    pcall(function() n = fn:GetFName():ToString() end)
+                    if n == name then found = true end
+                end)
+                local nextCls
+                pcall(function() nextCls = cls:GetSuperStruct() end)
+                cls = nextCls
+            end
+        end)
+        return found
+    end
+    if not hasFunction("ConstructVisualFromParams") then
+        say("ConstructVisualFromParams not found anywhere in this class's hierarchy -- aborting before any risky call.")
+        return false
+    end
+
+    -- DIAGNOSTIC before/after snapshot (2026-09-16, RedFalcon: "no dice still" -- after the FULL
+    -- StartCharacterEdit -> ConstructVisualFromParams -> EndCharacterEdit(true) bracket completed
+    -- with zero Lua errors, but STILL no visible change). Before trying another blind mutation,
+    -- settle a real question this raises: did any of this change the underlying DATA at all (just
+    -- never got rendered), or is it a complete no-op end to end? Same safe TArray-walk
+    -- lbdumpcpd/TestReadCategoryColors already use on BuildedCompositeMeshes -- reports entry count
+    -- and the Belt body part's own current EquippedMesh name, once before and once after the whole
+    -- bracket, so a genuine data change (even an invisible one) is distinguishable from a true no-op.
+    local function snapshotBelt(label)
+        local list = nil
+        pcall(function() list = comp.BuildedCompositeMeshes end)
+        local n = 0
+        if list then
+            pcall(function() n = list:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #list end) end
+        end
+        local beltMesh = "?"
+        for i = 1, n do
+            local el = nil
+            pcall(function() el = list[i] end)
+            if el == nil then pcall(function() el = list:Get(i) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            if el then
+                local bp = nil
+                pcall(function() bp = tonumber(el.BodyPart) end)
+                if bp == BODY_PART_ENUM_BY_NAME.Belt then
+                    pcall(function()
+                        local mesh = el.EquippedMesh
+                        if mesh and mesh:IsValid() then
+                            local sk = mesh.SkeletalMesh
+                            if not (sk and sk:IsValid()) and mesh.GetSkeletalMeshAsset then sk = mesh:GetSkeletalMeshAsset() end
+                            if sk and sk:IsValid() then beltMesh = sk:GetFName():ToString() end
+                        end
+                    end)
+                end
+            end
+        end
+        say(string.format("%s: BuildedCompositeMeshes=%d entries, Belt EquippedMesh=%s", label, n, beltMesh))
+    end
+    snapshotBelt("BEFORE")
+    -- BRACKETED (2026-09-16, RedFalcon: after a bare ConstructVisualFromParams call completed
+    -- cleanly with NO visible change -- "no crash, but no visible change either" -- consistent with
+    -- it writing to some internal working state that never gets committed on its own). StartCharacterEdit/
+    -- EndCharacterEdit are two more real functions on this same class (confirmed via lbprobedump's
+    -- own function list) whose names strongly suggest a "begin edit -> mutate -> commit" transaction
+    -- shape -- exactly what a live customization rebuild would need. Also genuinely untested; each
+    -- call gets its own existence check + breadcrumb + pcall, same discipline as the main call, so a
+    -- crash on any ONE of the three still tells us exactly which one did it.
+    local hasStart = hasFunction("StartCharacterEdit")
+    local hasEnd = hasFunction("EndCharacterEdit")
+    say(string.format("StartCharacterEdit present=%s, EndCharacterEdit present=%s", tostring(hasStart), tostring(hasEnd)))
+
+    if hasStart then
+        Spawner.RefLog("constructvisual", "about to call comp:StartCharacterEdit() on " .. tostring(e.label))
+        say("about to call comp:StartCharacterEdit() -- if nothing follows, THIS crashed.")
+        local okStart, errStart = pcall(function() comp:StartCharacterEdit() end)
+        say(string.format("StartCharacterEdit call = %s%s", tostring(okStart), (not okStart) and (" err=" .. tostring(errStart)) or ""))
+    end
+
+    Spawner.RefLog("constructvisual", "about to call comp:ConstructVisualFromParams(" .. path .. ") on " .. tostring(e.label))
+    say("about to call comp:ConstructVisualFromParams(params) -- if nothing follows, THIS crashed.")
+    local ok, err = pcall(function() comp:ConstructVisualFromParams(params) end)
+    say(string.format("ConstructVisualFromParams call = %s%s", tostring(ok), (not ok) and (" err=" .. tostring(err)) or ""))
+
+    if hasEnd then
+        -- EndCharacterEdit takes 1 required parameter -- UE4SS does not fill in a UFUNCTION's own
+        -- default arg value the way a real Blueprint/C++ call site would (same class of gotcha this
+        -- project hit before with SetLeaderPoseComponent needing every param explicit) -- confirmed
+        -- live 2026-09-16 ("UFunction expected 1 parameters, received 0"). Guessing `true` first (a
+        -- commit/apply-changes flag is the most likely single bool a "end edit" call would take).
+        Spawner.RefLog("constructvisual", "about to call comp:EndCharacterEdit(true) on " .. tostring(e.label))
+        say("about to call comp:EndCharacterEdit(true) -- if nothing follows, THIS crashed.")
+        local okEnd, errEnd = pcall(function() comp:EndCharacterEdit(true) end)
+        say(string.format("EndCharacterEdit call = %s%s", tostring(okEnd), (not okEnd) and (" err=" .. tostring(errEnd)) or ""))
+    end
+
+    snapshotBelt("AFTER")
+    if ok then
+        say("all calls completed without a Lua error -- check VISUALLY now: did the base mesh AND its bundled accessories (bags/bandoleer/knife/etc) actually appear/update?")
+    end
+    return ok
+end
+
+-- Spawner.TestReadClothesStyles(say) -- 3rd return `rawMesh` (2026-09-17, RedFalcon: "I need the
+-- equivalent of read current written to a file, but likely more base level than the friendly
+-- name" -- for a per-archetype baseline reference that survives a Config.CLOTHES_ITEMS catalog
+-- change and doesn't depend on a friendly-name match succeeding at all). `rawMesh[bodyPartKey]` is
+-- the actual live SkeletalMesh asset name (e.g. "SK_Armor_Regular_Merchant_Torso_01"), populated
+-- from the SAME single BuildedCompositeMeshes walk this function already does -- existing callers
+-- (BuildCustomStateLines, main.lua's Read Current poll) only ever capture the first 2 return
+-- values, so this is purely additive.
+function Spawner.TestReadClothesStyles(say)
+    say = say or function(m) print("[LivingBase] [read-clothes] " .. tostring(m) .. "\n") end
+    local results = {}
+    local available = {}
+    local rawMesh = {}
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = findNearestSpawnInFront(maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return results, available, rawMesh
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return results, available, rawMesh end
 
     local function assetNameOf(path)
         if not path then return nil end
         return path:match("%.([^%.]+)$") or path:match("([^/]+)$")
     end
 
+    -- ONE walk of BuildedCompositeMeshes for all 8 clothes slots (2026-09-16 crash fix, RedFalcon:
+    -- "it seems like the belts are a pretty common source" -- turned out clothes reading has the
+    -- EXACT same vulnerability: with belts/straps reading skipped entirely, a crash still landed
+    -- right between reading "Cape" and "Mask" here -- the 7th/8th of 8 SEPARATE findClothesSlotEntry
+    -- calls, each independently re-walking this SAME array from scratch, the identical "repeated
+    -- re-indexing of one UE4SS-wrapped TArray in a tight loop" pattern already root-caused and fixed
+    -- for belts/straps (see buildBeltStrapMap's own header, spawner.lua ~19336, and
+    -- WINDROSE_MODDING_NOTES.md 3u) -- just with MORE repetitions (8 vs 4), and reproduced twice now
+    -- at this exact Cape->Mask boundary. Defined LOCAL to this function (not a new top-level local
+    -- -- this file is already at Lua's 200-local ceiling, and buildBeltStrapMap itself sits inside a
+    -- do...end block that's already closed by this point in the file, so it can't be reused
+    -- directly) -- costs nothing against that budget, since a nested function's own locals live on
+    -- THIS call's separate per-invocation budget, not the main chunk's.
+    local function buildClothesSlotMap()
+        local function cp(m) print("[LivingBase] [clothes-slot-map] " .. tostring(m) .. "\n") end
+        local map = {}
+        local comp = nil
+        pcall(function() comp = actor.CompositeMeshComponent end)
+        if not (comp and comp:IsValid()) then return map end
+        local list = nil
+        pcall(function() list = comp.BuildedCompositeMeshes end)
+        if not list then return map end
+        local n = 0
+        pcall(function() n = list:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #list end) end
+        cp("n=" .. tostring(n) .. " -- entering array walk.")
+        for i = 1, n do
+            cp("index " .. i .. "/" .. n .. " -- reading element.")
+            local el = nil
+            pcall(function() el = list[i] end)
+            if el == nil then pcall(function() el = list:Get(i) end) end
+            pcall(function() if el ~= nil and type(el) == "userdata" and el.get then el = el:get() end end)
+            if el then
+                local bp = nil
+                pcall(function() bp = el.BodyPart end)
+                cp("index " .. i .. " -- BodyPart=" .. tostring(bp) .. ".")
+                local bpNum = tonumber(bp)
+                if bpNum then
+                    local target = nil
+                    pcall(function() target = el.EquippedMesh end)
+                    local targetValid = false
+                    pcall(function() targetValid = target ~= nil and target:IsValid() end)
+                    cp("index " .. i .. " -- EquippedMesh read -- valid=" .. tostring(targetValid) .. ".")
+                    if targetValid then map[bpNum] = target end
+                end
+            end
+        end
+        cp("walk finished, " .. n .. " entries scanned.")
+        return map
+    end
+    local clothesSlotMap = buildClothesSlotMap()
+
     for _, bodyPartKey in ipairs(CLOTHES_SLOT_KEYS) do
-        local target = findClothesSlotEntry(actor, bodyPartKey)
+        local target = clothesSlotMap[BODY_PART_ENUM_BY_NAME[bodyPartKey]]
+        available[bodyPartKey] = (target ~= nil)
         local curName = nil
         local visible = true
         if target then
@@ -19731,9 +23644,24 @@ function Spawner.TestReadClothesStyles(say)
                 if sk and sk:IsValid() then curName = sk:GetFName():ToString() end
             end)
         end
-        if not curName or not visible then
+        -- "(Remove)" sentinel (2026-09-17, RedFalcon: "how are we handling spots where an item is
+        -- removed not replaced" -- it wasn't: a hidden-but-present slot and a slot with no
+        -- component at all both fell into this SAME silent branch, so Save never wrote a line for
+        -- an explicit removal and Restore had no way to know to re-hide it. `target ~= nil` (a
+        -- real BuildedCompositeMeshes entry exists -- RemoveClothesItem hides, never destroys, see
+        -- its own header) means this WAS deliberately removed, distinct from `target == nil`
+        -- (no such slot on this archetype at all, correctly still silent -- `available[bodyPartKey]`
+        -- already tracks that case for the UI). Matches the EXACT sentinel ApplyClothesItem already
+        -- understands (its own `friendlyName == "(Remove)"` intercept), so this is not a new wire
+        -- value, just the read side finally reporting one that already existed on the apply side.
+        if target and not visible then
+            results[bodyPartKey] = "(Remove)"
+            rawMesh[bodyPartKey] = "REMOVED"
+            say(string.format("%s: hidden (removed).", bodyPartKey))
+        elseif not curName or not visible then
             say(string.format("%s: no component/mesh found or currently hidden.", bodyPartKey))
         else
+            rawMesh[bodyPartKey] = curName
             local matched = nil
             for _, row in ipairs(Config.CLOTHES_ITEMS[bodyPartKey] or {}) do
                 local candidates = {}
@@ -19754,7 +23682,7 @@ function Spawner.TestReadClothesStyles(say)
             end
         end
     end
-    return results
+    return results, available, rawMesh
 end
 
 -- Spawner.TestPreviewPiece(bodyPartArg, meshPathArg, say) -- "lbtestpiece" (2026-09-04, RedFalcon:
@@ -20439,10 +24367,10 @@ end
 -- palette-texture asset type, confirmed present in M_Common_Cloth's own NameMap) to get the actual
 -- RGB. Pass BotC's own real values onto Gatherer's own actor for the cleanest possible confirmation
 -- test, rather than an arbitrary guess.
-function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Idx, say)
+function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Idx, say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-cpdcolor] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -20520,6 +24448,20 @@ function Spawner.TestSetCPDPaletteColor(bodyPart, color1Idx, color2Idx, color3Id
     local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataVector4(3, vec4) end)
     say(string.format("SetCustomPrimitiveDataVector4(3, {%d,%d,%d,0}) = %s%s", m, s, d, tostring(okSet),
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    -- Cache exactly what we just applied (2026-09-16, RedFalcon: "could we not just read from the
+    -- menu?" -- see Spawner._lastAppliedColors' own header for the full reasoning) -- Save/Read
+    -- Current's own tier-1 lookup, ahead of any CPD read-back, so a fresh Apply is captured even on
+    -- pieces where CPD genuinely never reflects the write.
+    if okSet and e.label then
+        local catKey = nil
+        for _, r in ipairs(Config.CUSTOM_TAB_CLOTH_CATEGORIES or {}) do
+            if r.bodyPart == wantBodyPart then catKey = r.key; break end
+        end
+        if catKey then
+            Spawner._lastAppliedColors[e.label] = Spawner._lastAppliedColors[e.label] or {}
+            Spawner._lastAppliedColors[e.label][catKey] = { m, s, d }
+        end
+    end
     say("done -- check visually now, no reload needed.")
     return okSet
 end
@@ -20761,7 +24703,18 @@ function Spawner.TestReadCategoryColors(categories, say)
         local mesh = meshByBodyPart[row.bodyPart]
         local c1, c2, c3 = nil, nil, nil
         local fromCpd = false
-        if mesh and mesh.IsValid and mesh:IsValid() then
+        -- Tier 0: our own in-memory "last applied this session" cache (2026-09-16, RedFalcon: "could
+        -- we not just read from the menu?" -- see Spawner._lastAppliedColors' own header). Wins over
+        -- EVERYTHING else, including a live CPD read -- we know for certain this is what was just
+        -- requested, whereas CPD has been confirmed (via lbdumpcpd, independently) to sometimes not
+        -- reflect a write at all on some pieces.
+        local cached = e.label and Spawner._lastAppliedColors[e.label] and Spawner._lastAppliedColors[e.label][row.key]
+        if cached then
+            c1, c2, c3 = cached[1], cached[2], cached[3]
+            fromCpd = true -- reuses the "don't fall through to persist/default" branch below
+            say(string.format("%s (bodyPart=%s): using last-applied-this-session cache -> c1=%s c2=%s c3=%s",
+                row.key, tostring(row.bodyPart), tostring(c1), tostring(c2), tostring(c3)))
+        elseif mesh and mesh.IsValid and mesh:IsValid() then
             local dataArr = nil
             local okRead = pcall(function() dataArr = mesh.CustomPrimitiveData.Data end)
             if dataArr then
@@ -20779,18 +24732,50 @@ function Spawner.TestReadCategoryColors(categories, say)
         else
             say(string.format("%s (bodyPart=%s): no valid EquippedMesh for this BodyPart", row.key, tostring(row.bodyPart)))
         end
-        -- CPD wins whenever it has ANYTHING (it's what Apply itself writes, so it must win right
-        -- after an Apply click) -- only fall back to the native SavedCustomizationData snapshot
-        -- when CPD came up completely empty, e.g. a vanilla piece never touched by this tool.
+        -- THREE-TIER fallback order (2026-09-16, RedFalcon: first "remember that they have a baked
+        -- in color scheme so we dont want to be pulling that" -- SavedCustomizationData is the NPC's
+        -- own ARCHETYPE-BAKED default, not a live snapshot, so it was made the reported value on ANY
+        -- CPD miss, silently overriding a real customization CPD genuinely doesn't seem to reflect
+        -- back on this class of piece even right after a successful write. Then, once that fallback
+        -- was removed outright: "now its not pulling any color information when detecting" -- Read
+        -- Current went completely blank for a piece that WAS already customized (a real prior Save
+        -- exists), not just a genuinely-untouched native one. RedFalcon's own fix: "read CPD info,
+        -- then persist, then default in that order.") -- tier 2 (CS.findPersistedLine) is our own
+        -- previously-Saved custom_state.txt value for this exact target+category -- real, intentional
+        -- data, so it's the right thing to show/re-save when CPD has nothing. Tier 3 (the archetype
+        -- baked default) is the final fallback, reached only when there's no CPD AND no prior save --
+        -- correct there, since at that point the piece genuinely IS just its native look.
         if not fromCpd then
-            local slots = savedColorsByBodyPart[row.bodyPart]
-            if slots then
-                c1, c2, c3 = slots[1], slots[2], slots[3]
-                say(string.format("%s (bodyPart=%s): falling back to SavedCustomizationData -> c1=%s c2=%s c3=%s",
-                    row.key, tostring(row.bodyPart), tostring(c1), tostring(c2), tostring(c3)))
+            local persistedLine = CS.findPersistedLine(e.label, "COLOR:" .. row.key .. ":")
+            if persistedLine then
+                local pv1, pv2, pv3 = persistedLine:match("^COLOR:" .. row.key .. ":([%d%-]+):([%d%-]+):([%d%-]+)$")
+                local function slot(v) return (v == "-") and nil or tonumber(v) end
+                if pv1 then
+                    c1, c2, c3 = slot(pv1), slot(pv2), slot(pv3)
+                    say(string.format("%s (bodyPart=%s): CPD empty -- using own persisted save -> c1=%s c2=%s c3=%s",
+                        row.key, tostring(row.bodyPart), tostring(c1), tostring(c2), tostring(c3)))
+                end
+            end
+            if not (c1 or c2 or c3) then
+                local slots = savedColorsByBodyPart[row.bodyPart]
+                if slots then
+                    c1, c2, c3 = slots[1], slots[2], slots[3]
+                    say(string.format("%s (bodyPart=%s): CPD and persist both empty -- using baked default -> c1=%s c2=%s c3=%s",
+                        row.key, tostring(row.bodyPart), tostring(c1), tostring(c2), tostring(c3)))
+                end
             end
         end
-        results[#results + 1] = { key = row.key, c1 = c1, c2 = c2, c3 = c3 }
+        -- bakedC1/2/3 (2026-09-16, RedFalcon: "we can poll some of the cooked information right?" --
+        -- asked after finding Save Customizations writes a COLOR line for EVERY category, even ones
+        -- that are just this actor's native archetype look, never touched by the user). We already
+        -- read this exact archetype-baked value (savedColorsByBodyPart, above) for the tier-3
+        -- fallback -- surfacing it here too lets Spawner.BuildCustomStateLines compare "what's
+        -- currently showing" against "what this archetype natively looks like" and skip writing a
+        -- line when they match, without duplicating the read. Read Current's own GUI display is
+        -- unaffected -- it still shows c1/c2/c3 as before; only the save path uses these new fields.
+        local bakedSlots = savedColorsByBodyPart[row.bodyPart]
+        results[#results + 1] = { key = row.key, c1 = c1, c2 = c2, c3 = c3,
+            bakedC1 = bakedSlots and bakedSlots[1], bakedC2 = bakedSlots and bakedSlots[2], bakedC3 = bakedSlots and bakedSlots[3] }
     end
     return results
 end
@@ -20980,10 +24965,10 @@ end
 -- material SLOT on the base body mesh itself (MI_Eye, confirmed in every probe-mesh dump tonight
 -- sitting alongside the skin/hair/mouth materials on CharacterMesh0), not a separate
 -- BuildedCompositeMeshes entry with its own BodyPart, so the bodyPart-lookup tool can't reach it.
-function Spawner.TestSetBaseCPDFloat(idx, value, say)
+function Spawner.TestSetBaseCPDFloat(idx, value, say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-basecpd] " .. tostring(m) .. "\n") end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -21005,6 +24990,12 @@ function Spawner.TestSetBaseCPDFloat(idx, value, say)
     local okSet, errSet = pcall(function() target:SetCustomPrimitiveDataFloat(wantIdx, wantValue) end)
     say(string.format("actor.Mesh:SetCustomPrimitiveDataFloat(%d, %.2f) = %s%s", wantIdx, wantValue, tostring(okSet),
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    -- Cache exactly what we just applied, index 15 only -- eye color (2026-09-16, RedFalcon: "could
+    -- we not just read from the menu?" -- see Spawner._lastAppliedColors' own header). Every other
+    -- caller of this generic float-write tool uses a different index and isn't eye-color-related.
+    if okSet and wantIdx == 15 and e.label then
+        Spawner._lastAppliedEyeColor[e.label] = math.floor(wantValue + 0.5)
+    end
     say("done -- check visually now, no reload needed.")
     return okSet
 end
@@ -21145,7 +25136,7 @@ local EYE_COLOR_VARIANTS = {
 -- has no CPD equivalent at all (see the header above) so it's deliberately absent from this map.
 local EYE_MATERIAL_TO_CPD_INDEX = { Blue = 5, Brown = 0, Green = 3, Grey = 6 }
 local EYE_DEFAULT_PATH = "/Game/Character/Shaders/InstanceMaterials/Eyes/MI_Eye.MI_Eye"
-function Spawner.TestSetEyeColor(colorName, say)
+function Spawner.TestSetEyeColor(colorName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-eye] " .. tostring(m) .. "\n") end
     if not colorName then
         local names = {}
@@ -21167,7 +25158,7 @@ function Spawner.TestSetEyeColor(colorName, say)
         end
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -21211,8 +25202,225 @@ function Spawner.TestSetEyeColor(colorName, say)
     local okSet, errSet = pcall(function() target:SetMaterial(eyeSlot, newMat) end)
     say(string.format("SetMaterial(%d, %s) = %s%s", eyeSlot, (isDefault and "Default" or colorName), tostring(okSet),
         (not okSet) and (" err=" .. tostring(errSet)) or ""))
+    -- Cache exactly what we just applied, Glowing only (2026-09-16, RedFalcon: "could we not just
+    -- read from the menu?" -- see Spawner._lastAppliedColors' own header). A "Default" call here is
+    -- always immediately followed by a numeric TestSetBaseCPDFloat(15, ...) write in the real Custom
+    -- tab flow (see CS.applyLine's own EYECOLOR handling), which overwrites this same cache slot with
+    -- the real numeric value -- nothing to cache for Default on its own.
+    if okSet and matched == "Evil" and e.label then
+        Spawner._lastAppliedEyeColor[e.label] = "GLOWING"
+    end
     say("done -- check visually now, no reload needed.")
     return okSet
+end
+
+-- CS.getClassDefaultScale(actor) (2026-09-18, RedFalcon: "the less we have to apply the better,
+-- i'm thinking rules of scale" -- originally read cdo.RootComponent.RelativeScale3D, matched
+-- against RedFalcon's own FModel dump of Marita's Blueprint CDO showing "RelativeScale3D": 0.95.
+-- CORRECTED same day (RedFalcon: "the detect isnt pulling scale") -- Long Ben's Detect read came
+-- back as scale 1.0 (his root) even though he was never resized, when his real, ALREADY-CONFIRMED
+-- native scale is 1.2 -- per this project's own earlier investigation (`lbheight`,
+-- project_livingbase_spawn_menu.md memory, RedFalcon: "Marita is shorter... I think she may be at a
+-- different scale" -- CapsuleComponent stays a FIXED gameplay-collision size regardless of visual
+-- size in this game; a "short"/"tall" NPC variant is achieved by scaling the MESH component only,
+-- confirmed live: default mesh scale 1,1,1, Marita's 0.95,0.95,0.95), the baked scale genuinely
+-- lives on cdo.Mesh, not cdo.RootComponent -- the FModel JSON snippet RedFalcon pasted just didn't
+-- show which component it belonged to, and RootComponent was the wrong guess. Scale is still a
+-- CLASS-level default either way -- readable straight off the actor's own class CDO, on demand,
+-- with ZERO scanning/rescanning ever needed. Same zero-spawn CDO reflection technique already
+-- proven in Spawner.TestProbeClassDefaultParams (StaticFindObject on the
+-- "package.Default__ClassName" addressable path). Returns nil (not 1.0) on any failure so callers
+-- can fall back to their own default/baseline.
+CS.getClassDefaultScale = function(actor)
+    local cls = nil
+    pcall(function() cls = actor and actor:IsValid() and actor:GetClass() end)
+    if not (cls and cls:IsValid()) then return nil end
+    local fullName = nil
+    pcall(function() fullName = cls:GetPathName() end)
+    if not fullName then return nil end
+    local pkg, className = fullName:match("^(.+)%.([%w_]+)$")
+    if not (pkg and className) then return nil end
+    local cdo = nil
+    pcall(function() cdo = StaticFindObject(pkg .. ".Default__" .. className) end)
+    if not (cdo and cdo:IsValid()) then return nil end
+    local mesh = nil
+    pcall(function() mesh = cdo.Mesh end)
+    if not (mesh and mesh:IsValid()) then return nil end
+    local scaleVal = nil
+    pcall(function()
+        local s = mesh.RelativeScale3D
+        scaleVal = s and s.X
+    end)
+    return scaleVal
+end
+
+-- CS.FEET_PER_SCALE_UNIT (2026-09-18) -- height<->scale conversion, fit through LongBen (1.2 scale,
+-- assumed 7ft) and Marita (0.95 scale, assumed 5ft). That line collapses to a flat proportional
+-- relationship -- heightFt = 5.83333(5'10") * scale -- so a scale-1.0 actor is 5'10" under this
+-- model; no separate male/female base was kept since Ben/Marita are different sexes and still land
+-- on the exact same line. Hung off CS (not a new top-level `local`) -- this file is already at the
+-- Lua 200-local ceiling (see this file's own recurring header comment on that constraint).
+CS.FEET_PER_SCALE_UNIT = 5 + 10 / 12
+
+-- CS.setActorScaleGrounded(actor, newScale, say) (2026-09-18).
+--
+-- CORRECTED 2026-09-18 (RedFalcon: "the detect isnt pulling scale" -- traced back to the whole
+-- feature scaling the wrong component). This used to call actor:K2_SetActorScale3D(...), scaling
+-- the ACTOR/ROOT -- but this game's own native "short/tall NPC variant" system (confirmed by this
+-- project's own earlier `lbheight` investigation, project_livingbase_spawn_menu.md memory:
+-- CapsuleComponent stays a FIXED gameplay-collision size regardless of visual size; a short NPC is
+-- achieved by scaling the MESH component only, e.g. Marita's confirmed 0.95/0.95/0.95) bakes scale
+-- onto actor.Mesh, not the root. Scaling the root instead of Mesh visibly resized the target (root
+-- scale cascades down to Mesh via normal parent-child inheritance) but was invisible to any read of
+-- Mesh's own scale, and stacked on top of a native NPC's own baked Mesh-scale rather than replacing
+-- it. Now scales actor.Mesh directly via SetRelativeScale3D (proven binding, used pervasively
+-- elsewhere in this file) -- matching both CS.getClassDefaultScale's own read (cdo.Mesh) and
+-- Spawner.TestReadActorHeightFeet's own read (actor.Mesh:K2_GetComponentScale()), so all three
+-- (native-default baseline, live read, live write) now agree on the same property.
+--
+-- Grounding also had to change shape: the OLD version measured actor.Mesh's own WORLD LOCATION
+-- (K2_GetComponentLocation()) before/after -- valid when the ACTOR/ROOT was being scaled (Mesh's
+-- world position shifts as a child of a scaling parent), but now that Mesh itself is the thing being
+-- scaled, its own component location is its own origin/pivot -- which by definition never moves from
+-- its OWN scale changing, only the geometry/bones AROUND it do. Switched to a live BONE/SOCKET query
+-- instead (mesh:GetSocketLocation(FName("root")) -- GetSocketLocation is the one call already
+-- CONFIRMED working in this R5 build, see Spawner._computeHeadCenterPose's own header; GetBoneLocation
+-- never returned a usable result here), which correctly reflects how far the "root" bone (baked near
+-- ground level on a standard humanoid rig) shifts as the mesh scales around its own pivot -- still a
+-- live transform read, still immune to the original stale-bounds problem, just now querying
+-- something that actually moves when THIS SPECIFIC component's own scale changes.
+-- UPRIGHT-ONLY GATE (2026-09-18, RedFalcon: "i can no longer rotate along the x or y axies. I think
+-- you misunderstood my ask. I never wanted X or Y reset, just that if X and Y were 0 when scaling,
+-- then ensure the z height matched. otherwise just leave it and let it resize from the center.") --
+-- the compensation was firing UNCONDITIONALLY regardless of the actor's own pitch/roll, which both
+-- doesn't make sense for a tilted/posed actor (world-Z isn't "up" relative to them anymore) and was
+-- apparently fighting whatever else establishes a deliberate pitch/roll tilt. Now reads the actor's
+-- CURRENT rotation first -- Pitch and Roll are the X/Y rotation axes RedFalcon means (Yaw, the
+-- Z-axis turn, is unrelated to standing upright and is never checked here) -- and only runs the
+-- feet-tracking/Z-shift logic when both are ~0 (a normal standing pose). Off-axis (posed/tilted)
+-- targets just get the plain scale applied with no location correction at all, resizing purely
+-- around their own current pivot as before this whole grounding feature existed.
+CS.setActorScaleGrounded = function(actor, newScale, say)
+    local loc = nil
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    if not loc then return false end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then return false end
+    local isUpright = false
+    pcall(function()
+        local rot = actor:K2_GetActorRotation()
+        isUpright = rot and math.abs(rot.Pitch) < 0.01 and math.abs(rot.Roll) < 0.01
+    end)
+    local feetZBefore = nil
+    if isUpright then
+        pcall(function()
+            local w = mesh:GetSocketLocation(FName("root"))
+            feetZBefore = w and w.Z
+        end)
+    end
+    local okSet = pcall(function() mesh:SetRelativeScale3D({ X = newScale, Y = newScale, Z = newScale }) end)
+    if not okSet then return false end
+    if feetZBefore then
+        local feetZAfter = nil
+        pcall(function()
+            local w = mesh:GetSocketLocation(FName("root"))
+            feetZAfter = w and w.Z
+        end)
+        if feetZAfter then
+            local delta = feetZBefore - feetZAfter
+            if delta ~= 0 then
+                local newLoc = { X = loc.X, Y = loc.Y, Z = loc.Z + delta }
+                pcall(function() actor:K2_SetActorLocation(newLoc, false, {}, true) end)
+            end
+        end
+    end
+    return true
+end
+
+-- Spawner.TestSetScale(unit, value, say, actorOverride) (2026-09-18, quick visualization test for
+-- RedFalcon's height-slider idea). `unit` is explicit ("scale" or "feet", RedFalcon: "to reduce
+-- confusion" over an earlier magnitude-guessing version) so extreme test values on either side
+-- (e.g. a 0.3 scale, or a 9ft giant) never get misread as the other unit.
+function Spawner.TestSetScale(unit, value, say, actorOverride)
+    say = say or function(m) print("[LivingBase] [test-scale] " .. tostring(m) .. "\n") end
+    local num = tonumber(value)
+    local u = unit and unit:lower()
+    if not num or (u ~= "scale" and u ~= "feet") then
+        say("usage: lbsetscale scale <value> | lbsetscale feet <value> -- e.g. lbsetscale scale 1.2 or lbsetscale feet 5.83")
+        return false
+    end
+    local scale
+    if u == "feet" then
+        scale = num / CS.FEET_PER_SCALE_UNIT
+        say(string.format("%.2fft -> scale %.4f", num, scale))
+    else
+        scale = num
+        say(string.format("scale %.4f -> %.2fft", scale, scale * CS.FEET_PER_SCALE_UNIT))
+    end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    if not CS.setActorScaleGrounded(actor, scale, say) then say("SetActorScale3D failed"); return false end
+    say(string.format("target=%s | scale set to %.4f (%.2fft) -- check visually now, no reload needed.", tostring(e.label or "?"), scale, scale * CS.FEET_PER_SCALE_UNIT))
+    return true
+end
+
+-- Spawner.ApplyActorHeightFeet(feet, say, actorOverride) -- Custom tab Height slider (2026-09-18,
+-- range 3ft-8ft). Thin wrapper over setActorScaleGrounded, same convention as every other
+-- Apply*(..., actorOverride) function in this file.
+function Spawner.ApplyActorHeightFeet(feet, say, actorOverride)
+    say = say or function(m) print("[LivingBase] [height] " .. tostring(m) .. "\n") end
+    local num = tonumber(feet)
+    if not num then say("bad feet value: " .. tostring(feet)); return false end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then say("no actor"); return false end
+    local scale = num / CS.FEET_PER_SCALE_UNIT
+    if not CS.setActorScaleGrounded(actor, scale, say) then say("SetActorScale3D failed"); return false end
+    say(string.format("target=%s | height set to %.2fft (scale %.4f).", tostring(e.label or "?"), num, scale))
+    return true
+end
+
+-- Spawner.TestReadActorHeightFeet(say, actorOverride) -- read-current/detect counterpart to
+-- ApplyActorHeightFeet. Returns the target's current height in feet (rounded to 2 decimals) and
+-- its raw scale, or nil if no target/scale unreadable.
+--
+-- CORRECTED 2026-09-18 (RedFalcon: "the detect isnt pulling scale") -- used to read
+-- actor:K2_GetActorScale3D() (the actor/root's own scale), which stays 1.0 on a native NPC even
+-- when they're visibly short/tall -- this game bakes the "short/tall variant" scale onto
+-- actor.Mesh, not the root (see CS.setActorScaleGrounded's own header for the full story, and
+-- project_livingbase_spawn_menu.md memory's earlier `lbheight` investigation confirming this
+-- live on Marita). Long Ben's Detect came back as scale 1.0/5.83ft instead of his real native
+-- 1.2/7ft because of exactly this. Now reads actor.Mesh:K2_GetComponentScale() -- the same proven
+-- binding `lbheight` itself already uses for this exact purpose.
+function Spawner.TestReadActorHeightFeet(say, actorOverride)
+    say = say or function(m) print("[LivingBase] [read-height] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then return nil end
+    local actor = e.actor
+    if not (actor and actor:IsValid()) then return nil end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then return nil end
+    local scale = nil
+    local ok = pcall(function()
+        local s = mesh:K2_GetComponentScale()
+        scale = s and s.Z
+    end)
+    if not (ok and scale) then return nil end
+    return scale * CS.FEET_PER_SCALE_UNIT, scale
 end
 
 -- Spawner.TestReadEyeColor(say) -- pure-read counterpart to TestSetEyeColor/TestSetBaseCPDFloat,
@@ -21265,57 +25473,14 @@ function Spawner.TestReadEyeColor(say)
     pcall(function() mesh = actor.Mesh end)
     if not (mesh and mesh:IsValid()) then say("actor.Mesh not readable"); return nil end
 
-    local numMats = 0
-    pcall(function() numMats = mesh:GetNumMaterials() end)
-    for slot = 0, numMats - 1 do
-        local mat = nil
-        pcall(function() mat = mesh:GetMaterial(slot) end)
-        if mat and mat:IsValid() then
-            local nm = nil
-            pcall(function() nm = mat:GetFName():ToString() end)
-            if nm and nm:lower():find("eye") then
-                local nmLower = nm:lower()
-                for _, v in ipairs(EYE_COLOR_VARIANTS) do
-                    if nmLower:find(v.asset:lower(), 1, true) then
-                        if v.asset == "Evil" then
-                            say("eye color: Glowing (found " .. nm .. " on slot " .. slot .. ")")
-                            return "GLOWING"
-                        end
-                        local cpdIdx = EYE_MATERIAL_TO_CPD_INDEX[v.display]
-                        if cpdIdx then
-                            say(string.format("eye color: native %s material (found %s on slot %d) -- reporting matching CPD idx=%d", v.display, nm, slot, cpdIdx))
-                            return cpdIdx
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    local okRead, dataArr = pcall(function() return mesh.CustomPrimitiveData.Data end)
-    local n = 0
-    if okRead and dataArr then
-        pcall(function() n = dataArr:GetArrayNum() end)
-        if n == 0 then pcall(function() n = #dataArr end) end
-    end
-    if n >= 16 then
-        local v = nil
-        pcall(function() v = dataArr[16] end)
-        if v == nil then pcall(function() v = dataArr:Get(16) end) end
-        local raw = tonumber(v)
-        if raw then
-            local idx = math.floor(raw + 0.5)
-            if idx >= 0 then
-                say(string.format("eye color: CPD15=%s -> idx=%d", tostring(v), idx))
-                return idx
-            end
-        end
-    end
-
-    -- Third mechanism (2026-09-14): SavedCustomizationData.SelectedColors, BodyPart=15 (confirmed
-    -- live by RedFalcon via lbprobecolors) -- same struct/grouping TestReadHairColors already reads
-    -- for Hairs/Beard/etc, just scoped to the one BodyPart eye color uses. Only reached when both
-    -- the material-slot scan and live CPD15 came back empty above.
+    -- bakedIdx (2026-09-16, RedFalcon: "we can poll some of the cooked information right?") --
+    -- computed ONCE, up front, and returned as a SECOND value alongside every resolved value below --
+    -- see Spawner.TestReadCategoryColors' own bakedC1/2/3 header for the full reasoning
+    -- (Spawner.BuildCustomStateLines compares this against the resolved value and skips writing an
+    -- EYECOLOR line when they match, i.e. this eye was never actually customized). Also replaces the
+    -- old tier-3 fallback's own SEPARATE SavedCustomizationData read further down -- one read serves
+    -- both jobs now.
+    local bakedIdx = nil
     do
         local compositeComp = nil
         pcall(function() compositeComp = actor.CompositeMeshComponent end)
@@ -21338,9 +25503,42 @@ function Spawner.TestReadEyeColor(say)
                     pcall(function() val = tonumber(el.Value) end)
                     if bp == 15 and val then
                         local idx = math.floor(val + 0.5)
-                        if idx >= 0 then
-                            say(string.format("eye color: CPD/material empty -- using SavedCustomizationData fallback (BodyPart=15), Value=%s -> idx=%d", tostring(val), idx))
-                            return idx
+                        if idx >= 0 then bakedIdx = idx end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Tier 0: our own in-memory "last applied this session" cache (2026-09-16, RedFalcon: "could we
+    -- not just read from the menu?" -- see Spawner._lastAppliedColors' own header) -- wins over
+    -- everything below, including a live CPD/material read.
+    local cachedEye = e.label and Spawner._lastAppliedEyeColor[e.label]
+    if cachedEye ~= nil then
+        say(string.format("eye color: using last-applied-this-session cache, %s", tostring(cachedEye)))
+        return cachedEye, bakedIdx
+    end
+
+    local numMats = 0
+    pcall(function() numMats = mesh:GetNumMaterials() end)
+    for slot = 0, numMats - 1 do
+        local mat = nil
+        pcall(function() mat = mesh:GetMaterial(slot) end)
+        if mat and mat:IsValid() then
+            local nm = nil
+            pcall(function() nm = mat:GetFName():ToString() end)
+            if nm and nm:lower():find("eye") then
+                local nmLower = nm:lower()
+                for _, v in ipairs(EYE_COLOR_VARIANTS) do
+                    if nmLower:find(v.asset:lower(), 1, true) then
+                        if v.asset == "Evil" then
+                            say("eye color: Glowing (found " .. nm .. " on slot " .. slot .. ")")
+                            return "GLOWING", bakedIdx
+                        end
+                        local cpdIdx = EYE_MATERIAL_TO_CPD_INDEX[v.display]
+                        if cpdIdx then
+                            say(string.format("eye color: native %s material (found %s on slot %d) -- reporting matching CPD idx=%d", v.display, nm, slot, cpdIdx))
+                            return cpdIdx, bakedIdx
                         end
                     end
                 end
@@ -21348,8 +25546,56 @@ function Spawner.TestReadEyeColor(say)
         end
     end
 
-    say("eye color: CPD15 empty/unreadable, no SavedCustomizationData entry either -- genuinely un-recolored.")
-    return nil
+    local okRead, dataArr = pcall(function() return mesh.CustomPrimitiveData.Data end)
+    local n = 0
+    if okRead and dataArr then
+        pcall(function() n = dataArr:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #dataArr end) end
+    end
+    if n >= 16 then
+        local v = nil
+        pcall(function() v = dataArr[16] end)
+        if v == nil then pcall(function() v = dataArr:Get(16) end) end
+        local raw = tonumber(v)
+        if raw then
+            local idx = math.floor(raw + 0.5)
+            if idx >= 0 then
+                say(string.format("eye color: CPD15=%s -> idx=%d", tostring(v), idx))
+                return idx, bakedIdx
+            end
+        end
+    end
+
+    -- THREE-TIER fallback order (2026-09-16, RedFalcon: "read CPD info, then persist, then default
+    -- in that order" -- see Spawner.TestReadCategoryColors' own header comment for the full story:
+    -- SavedCustomizationData is the NPC's ARCHETYPE-BAKED default eye color, reporting it on any CPD
+    -- miss silently overrode a real eye-color change; removing it outright then made Read Current
+    -- blank for an eye that WAS already saved). Tier 2 is our own previously-Saved custom_state.txt
+    -- EYECOLOR line (either "GLOWING" or a numeric palette index); tier 3 (bakedIdx, computed above)
+    -- only applies when there's no CPD AND no prior save.
+    do
+        local persistedLine = CS.findPersistedLine(e.label, "EYECOLOR:")
+        if persistedLine then
+            local val = persistedLine:match("^EYECOLOR:(.+)$")
+            if val == "GLOWING" then
+                say("eye color: CPD/material empty -- using own persisted save, Glowing")
+                return "GLOWING", bakedIdx
+            end
+            local pIdx = tonumber(val)
+            if pIdx then
+                say(string.format("eye color: CPD/material empty -- using own persisted save, idx=%d", pIdx))
+                return pIdx, bakedIdx
+            end
+        end
+    end
+
+    if bakedIdx then
+        say(string.format("eye color: CPD/persist both empty -- using baked default (BodyPart=15), idx=%d", bakedIdx))
+        return bakedIdx, bakedIdx
+    end
+
+    say("eye color: CPD15 empty/unreadable, no persisted save, no SavedCustomizationData entry either -- genuinely un-recolored.")
+    return nil, bakedIdx
 end
 
 -- Spawner.TestEyeScleraAlpha(alphaArg, say) -- "lbtesteyealpha <0-1>" (2026-09-12, RedFalcon: "the
@@ -21665,7 +25911,7 @@ end
 -- ones with no custom BodyTypeParams override at all, with zero per-family engineering needed ever
 -- again -- the family is derived live from whatever's already applied, not hardcoded here.
 local SKIN_SIZE_NAMES = { "Small", "Medium", "Large" }
-function Spawner.TestSetSkinSize(sizeName, say)
+function Spawner.TestSetSkinSize(sizeName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [test-skinsize] " .. tostring(m) .. "\n") end
     if not sizeName then
         say("usage: lbtestskinsize <Small|Medium|Large>")
@@ -21680,7 +25926,7 @@ function Spawner.TestSetSkinSize(sizeName, say)
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -21841,14 +26087,14 @@ end
 -- just apply the one," RedFalcon's own words -- but the Skin Tone swatch itself always still finds
 -- the slot and can freely switch to any OTHER tone from there, since that slot-finder never
 -- required a size (or sex) to already be present.
-function Spawner.ApplyCustomTabSkinTone(toneName, say)
+function Spawner.ApplyCustomTabSkinTone(toneName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [custom-skintone] " .. tostring(m) .. "\n") end
     if not toneName or toneName == "" then
         say("usage: internal call requires a skin tone name")
         return false
     end
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -22003,11 +26249,14 @@ function Spawner.TestReadSkinTone(say)
                     for _, p in ipairs(SKIN_TONE_NAME_PREFIXES) do
                         if nm:find(p.prefix, 1, true) == 1 then
                             say(string.format("skin material slot %d = %s -> tone=%s", slot, nm, p.name))
-                            return p.name
+                            -- 2nd return `rawMaterial` (2026-09-17) -- raw baseline reference need,
+                            -- same as TestReadClothesStyles' own new 3rd return -- the actual
+                            -- material name, not the resolved friendly tone.
+                            return p.name, nm
                         end
                     end
                     say(string.format("skin material slot %d = %s -- not one of the %d Custom-tab tones (native/unknown family).", slot, nm, #SKIN_TONE_NAME_PREFIXES))
-                    return nil
+                    return nil, nm
                 end
             end
         end
@@ -23165,13 +27414,65 @@ end
 -- current position) via the fixed actorBoundsBottomZ. The follow loop's floor-lock then does
 -- target.Z = floorSurfaceZ - thisOffset to rest the actor's bottom exactly on whatever surface
 -- findFloorBelow found, regardless of this statue's own pivot-to-feet quirk.
+-- Sanity clamp (2026-09-20, RedFalcon: "placing the idle ghost pirate also doesnt drag and drop") --
+-- BP_NPC_QuestStatic_Ghost_01_WithFXLogic's own particle/FX components inflate GetActorBounds'
+-- aggregate extent hugely (confirmed live: bottomOffset=-1462.4, vs. every real statue tested so
+-- far landing in the -50 to -150 range, e.g. Scared Sailor's own -96.75 the same session) -- the
+-- SAME "GetActorBounds returns unreliable values on a component-rich actor" class of bug this
+-- project has hit before on skinned meshes (see the Height slider saga, WINDROSE_MODDING_NOTES.md
+-- 19ap, which had to switch to a live socket query instead). Floor-lock then tries to plant the
+-- actor ~14 real-world meters below wherever the raycast actually hit, which reads as "the drag
+-- doesn't work" (the actor effectively vanishes underground) even though StartPlacementPreview
+-- itself fired correctly. No live/reliable alternative bounds query was worth chasing for one FX-
+-- heavy statue -- a bogus-magnitude offset is just as safely treated as "couldn't measure this
+-- one" (nil), which the follow loop already handles as a normal, well-tested fallback: no floor-
+-- lock at all, the actor just follows the raw camera-forward raycast hit point directly, same as
+-- decor/non-statue placement.
+-- REAL fix, same day (RedFalcon: "the ghost lets me place it through the floor and doesnt detect
+-- the ground properly" -- the nil-fallback above stopped the underground-teleport symptom but also
+-- gave up floor-locking for this statue entirely, exactly as its own comment warned it would).
+-- GetActorBounds stays the PRIMARY measurement, unchanged -- it's already proven correct across
+-- every seated/chair/interactive pose in this project's history (a bone-based query would need
+-- re-validating per-pose, since "root" doesn't necessarily track a sitting character's actual
+-- lowest point the way it does a standing one -- not worth risking a regression on everything
+-- already working to fix one FX-heavy statue). Only when the bounds-based result is clearly bogus
+-- (the sanity check below) does this now try a LIVE bone query as a RESCUE instead of giving up --
+-- the same "root" socket the Height slider work (WINDROSE_MODDING_NOTES.md 19ap) already proved is
+-- a reliable, always-current feet-position query on this game's human skeleton family, immune to
+-- whatever components (FX/particle included) inflate GetActorBounds' aggregate. Only falls all the
+-- way through to nil (no floor-lock) if BOTH measurements fail or look wrong.
+-- 300.0 inlined, not a new top-level local -- this file is already at the 200-local ceiling (see
+-- the CS-table workaround this project's own history uses repeatedly for this exact trap).
 local function computeStatueBottomOffset(actor)
-    local bottomZ = actorBoundsBottomZ(actor)
-    if not bottomZ then return nil end
     local curZ
     pcall(function() curZ = actor:K2_GetActorLocation().Z end)
     if not curZ then return nil end
-    return bottomZ - curZ
+
+    local bottomZ = actorBoundsBottomZ(actor)
+    local offset = bottomZ and (bottomZ - curZ) or nil
+    if offset and math.abs(offset) <= 300.0 then
+        return offset
+    end
+    if offset then
+        always(string.format(
+            "computeStatueBottomOffset: bounds-based %.1f is outside the sane range (+/-300) -- likely an FX/particle component inflating GetActorBounds -- trying a live bone query instead.",
+            offset))
+    end
+
+    local mesh
+    pcall(function() mesh = actor.Mesh end)
+    if mesh and mesh:IsValid() then
+        local ok, footLoc = pcall(function() return mesh:GetSocketLocation(FName("root")) end)
+        if ok and footLoc and footLoc.Z then
+            local boneOffset = footLoc.Z - curZ
+            if math.abs(boneOffset) <= 300.0 then
+                return boneOffset
+            end
+        end
+    end
+
+    always("computeStatueBottomOffset: no reliable measurement (bounds and bone query both failed/out of range) -- falling back to no floor-lock for this placement.")
+    return nil
 end
 
 -- Build-mode camera raise (2026-08-20, RedFalcon: native build mode raises/pulls back the camera for
@@ -23480,7 +27781,19 @@ local function beginFollowLoop(distance)
             -- decor's own pivot-to-center fix) doesn't ALSO apply on top of this and double-adjust --
             -- floor-lock already fully determines the pivot position itself when it engages.
             local usedFloorLock = false
-            if Spawner._placementStatueBottomOffset then
+            -- Lights also need this block's forward raycast (2026-09-21, RedFalcon: "its spawning,
+            -- just it spawns far away, and i have a wall in front of me") -- exempting lights from
+            -- floor-lock (CS.IsLightActor, above) ALSO skipped this raycast entirely, since it used
+            -- to be gated purely on Spawner._placementStatueBottomOffset being non-nil -- meaning a
+            -- light always used the RAW camera-ray endpoint at the full placement distance with no
+            -- wall-stopping at all, landing behind/through any wall in the way. The raycast itself
+            -- is genuinely general-purpose (a forward trace along the camera's own view, landing on
+            -- whatever solid geometry it hits FIRST -- a wall included, not just a floor); only the
+            -- `- bottomOffset` subtraction below is floor-specific. Now also runs for a light, with
+            -- bottomOffset simply 0 (no floor-anchoring adjustment) -- lands exactly on the first
+            -- hit surface (wall, table, floor, whatever), or free in open air within reach if
+            -- nothing's hit, matching the "lift it into the air" requirement.
+            if Spawner._placementStatueBottomOffset or CS.IsLightActor(Spawner._placementActor) then
                 -- Snapshot into a local (2026-08-24 fix, RedFalcon's crash-on-exit investigation):
                 -- CONFIRMED LIVE in ue4ss.log -- "attempt to perform arithmetic on a nil value
                 -- (field '_placementStatueBottomOffset')" -- the SAME reentrancy this block's own
@@ -23493,7 +27806,10 @@ local function beginFollowLoop(distance)
                 -- own wrapper (harmless -- one skipped move, not a crash), but closing it removes
                 -- one candidate contributor while the actual native crash-on-exit is still being
                 -- isolated.
-                local bottomOffset = Spawner._placementStatueBottomOffset
+                -- 0 for a light (Spawner._placementStatueBottomOffset is nil there by design --
+                -- see this block's own header) -- no floor-anchoring subtraction, just land exactly
+                -- on whatever the ray hits.
+                local bottomOffset = Spawner._placementStatueBottomOffset or 0.0
                 local camLoc
                 pcall(function() camLoc = cam:GetCameraLocation() end)
                 if camLoc then
@@ -23586,6 +27902,27 @@ local function beginFollowLoop(distance)
                 }
             end
             actor:K2_SetActorLocation(moveTarget, false, {}, true)
+
+            -- Face-the-player while being placed (2026-09-21, RedFalcon: "for anything spawned...
+            -- as you drag it around, its rotation follows yours, so for example, the person spawn
+            -- will always be looking towards you while being spawned. no rotation when relocating
+            -- would be good though") -- NEW placement only (Spawner._placementMode == "NEW"),
+            -- never RELOCATE, matching that request exactly; RELOCATE already leaves rotation
+            -- completely untouched (this whole tick() only ever called K2_SetActorLocation before
+            -- this addition), so no change was needed there at all.
+            -- Yaw = camera yaw + 180 -- the object sits ALONG the camera's forward ray (see `target`
+            -- above), so facing straight back down that same ray points it at the player/camera,
+            -- not away from it. Pitch/Roll forced to 0 (upright) rather than matching camera pitch --
+            -- an object looking "up"/"down" to match camera tilt would look wrong for anything
+            -- standing on the ground, which is the common case this is for.
+            -- Skipped once Spawner.RotatePlacementActor has been used this session (RedFalcon's own
+            -- numpad ROTATE-mode control during placement, see that function's own comment) -- a
+            -- deliberate manual rotation should stick, not get fought back to face-player on the
+            -- very next 33ms tick.
+            if Spawner._placementMode == "NEW" and not Spawner._placementManualRotate then
+                local faceYaw = (rot.Yaw + 180.0) % 360.0
+                pcall(function() actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = faceYaw, Roll = 0.0 }, false) end)
+            end
         end)
         if ok then
             consecutiveFails = 0
@@ -23716,6 +28053,9 @@ function Spawner.StartPlacementPreview(actor, distance)
     Spawner._placementActor = actor
     Spawner._placementActive = true
     Spawner._placementMode = "NEW"
+    -- Fresh for every NEW placement session (2026-09-21) -- see beginFollowLoop's own
+    -- "face-the-player" comment and Spawner.RotatePlacementActor's own header.
+    Spawner._placementManualRotate = false
     -- Auto-switch to Rotate mode (2026-08-24, numpad rebuild) -- movement nudges don't make sense
     -- on an actor whose position this SAME follow loop is already overwriting every 33ms from
     -- camera aim; only rotation does. NOT the same field as Spawner._placementMode just above
@@ -23731,7 +28071,12 @@ function Spawner.StartPlacementPreview(actor, distance)
     -- doesn't feel right, no code changes needed. Statues always get it regardless of this flag,
     -- UNLESS free-build mode is on (F8, Spawner.ToggleFreeBuild) -- that overrides everything back to
     -- the old center-anchored/static-distance behavior for both statues and decor.
-    local wantFloorLock = (not Spawner._placementFreeBuild) and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
+    -- Lights EXEMPT too (2026-09-21, RedFalcon: "treat it as if floor clipping is on, so that it can
+    -- be lifted into the air") -- a light needs free vertical placement (e.g. hung overhead), not
+    -- floor-snapped like decor/statues; CS.IsLightActor checks Spawner.Lights rather than a global
+    -- free-build toggle so this is scoped to lights only, not every OTHER spawn in the session.
+    local wantFloorLock = (not Spawner._placementFreeBuild) and (not CS.IsLightActor(actor))
+        and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
     Spawner._placementStatueBottomOffset = wantFloorLock and computeStatueBottomOffset(actor) or nil
     Spawner._placementCenterOffset = (not wantFloorLock) and computeActorCenterOffset(actor) or nil
     local co = Spawner._placementCenterOffset
@@ -23824,7 +28169,10 @@ function Spawner.StartRelocatePreview()
     Spawner.placementMode = "ROTATE"
     Spawner._placementPhysicsOn = false
     Spawner._placementIsStatue = isStatueClass(lt.class)
-    local wantFloorLock = (not Spawner._placementFreeBuild) and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
+    -- Lights exempt from floor-lock here too (2026-09-21) -- see StartPlacementPreview's own
+    -- comment on CS.IsLightActor for why.
+    local wantFloorLock = (not Spawner._placementFreeBuild) and (not CS.IsLightActor(actor))
+        and (Spawner._placementIsStatue or (Config.PLACEMENT_FLOOR_LOCK_DECOR ~= false))
     Spawner._placementStatueBottomOffset = wantFloorLock and computeStatueBottomOffset(actor) or nil
     Spawner._placementCenterOffset = (not wantFloorLock) and computeActorCenterOffset(actor) or nil
     local co = Spawner._placementCenterOffset
@@ -23906,6 +28254,77 @@ function Spawner.ConfirmPlacement()
     end
     print("[LivingBase] Placement confirmed.\n")
     pcall(function() Spawner.Toast("Placed.", 1.5) end)
+
+    -- Barbie auto-detect, moved here from the moment of SPAWN (2026-09-16, RedFalcon: "on the spawn
+    -- of a barbie, it is detecting info before it's stripped. Maybe wait to detect until officially
+    -- placed") -- the old trigger fired the instant the composite build finished (inside
+    -- SwapBodyType's own onSpawned callback), before this same placement session's underwear-strip
+    -- work had actually settled, so Read Current's own capture raced it. `Spawner._placementIsBarbie`
+    -- is set by pollBarbieSpawnRequest right where the old done-file write used to be, and cleared
+    -- here (and in CancelPlacement, defensively) so an ordinary decor/statue/crew placement never
+    -- triggers this.
+    if Spawner._placementIsBarbie then
+        Spawner._placementIsBarbie = nil
+        -- TEMPORARILY DISABLED (2026-09-16, RedFalcon: "still crashed on placement" even after the
+        -- Save Customizations auto-save above was already disabled -- the log showed a DIFFERENT,
+        -- pre-existing mechanism was the one actually firing: this done-file write is what makes
+        -- CustomMenu.cpp call its own requestReadCurrent() automatically right after a Barbie is
+        -- placed, and THAT read is what died (BuildedCompositeMeshes: 11 entries printed, then
+        -- nothing) -- same "reading composite-mesh structure right after the underwear-strip burst"
+        -- trigger, just via a different, older auto-trigger than the one already disabled above.
+        -- RedFalcon, correctly: "it didn't used to [crash], so something's off" -- see the
+        -- restructured pollCustomColorReadRequest's own header (main.lua) for the leading
+        -- hypothesis (the new multi-frame staging may let OTHER pending game-thread work, like the
+        -- tail of this same strip sequence, interleave mid-read in a way the old single-burst
+        -- version never allowed). Re-enable by restoring the done-file write below once that's
+        -- resolved -- a freshly-placed Barbie just won't auto-satisfy the "detect gate" until a
+        -- manual Read Current is clicked, same as any other target.
+        --
+        -- pcall(function()
+        --     for _, p in ipairs({ "ue4ss/Mods/LivingBase/barbie_spawn_done.txt", "Mods/LivingBase/barbie_spawn_done.txt", "barbie_spawn_done.txt" }) do
+        --         local doneF = io.open(p, "w")
+        --         if doneF then doneF:write("1"); doneF:close(); break end
+        --     end
+        -- end)
+        -- Auto-save (2026-09-16, RedFalcon: "since they are new and stripped, the barbies
+        -- currently spawn fully clothed. We would want to save their look on placement") -- SAME
+        -- timing reason as the auto-detect done-file just above: this is the first point a Barbie's
+        -- look is actually settled (post-strip).
+        --
+        -- RE-ENABLED 2026-09-19 via a DIFFERENT mechanism than the original disabled call below --
+        -- RedFalcon: "we know exactly what they are spawning with... they are supposed to be naked
+        -- except for underwear, so we add that to the custom persist right away instead of calling
+        -- save." Spawner.SaveCustomState (disabled block just below, kept for the crash history) had
+        -- to be disabled because it READS the actor's live BuildedCompositeMeshes, which crashed
+        -- immediately after the underwear-strip burst no matter how long a settle delay was tried
+        -- (see WINDROSE_MODDING_NOTES.md 19ai/3u). But a Barbie's post-strip look is fully
+        -- deterministic -- Spawner.RemoveClothingOnActor(actor, "all", ...) always produces the same
+        -- outcome -- so there's nothing that actually needs reading. Spawner.
+        -- WriteBarbieDefaultCustomState writes the equivalent saved lines directly, no actor read at
+        -- all, so it carries none of the crash risk and needs no settle delay.
+        pcall(function() Spawner.WriteBarbieDefaultCustomState(actor, function() end) end)
+        --
+        -- ORIGINAL, READ-BASED auto-save -- TEMPORARILY DISABLED (2026-09-16, RedFalcon: "scanning
+        -- and saving the extant statues were fine, placing the barbie wasnt. can we remove the auto
+        -- save of the barbie") -- a 500ms settle delay was already tried here (see git history / the
+        -- comment this replaced) after a crash dump caught this call dying with zero of its own log
+        -- output, immediately after the ~12-item underwear-strip burst that runs right before this
+        -- point -- confirmed live that the delay alone wasn't enough; manually saving customizations
+        -- on an already-placed statue was fine, but a freshly-placed Barbie specifically kept
+        -- crashing here. Superseded by the direct-write call above rather than re-enabled as-is --
+        -- kept only as the historical record of why a read-based approach doesn't work for this one
+        -- timing window.
+        --
+        -- if ExecuteWithDelay then
+        --     ExecuteWithDelay(500, function()
+        --         ExecuteInGameThread(function()
+        --             pcall(function() Spawner.SaveCustomState(actor, function() end) end)
+        --         end)
+        --     end)
+        -- else
+        --     pcall(function() Spawner.SaveCustomState(actor, function() end) end)
+        -- end
+    end
 end
 
 -- Cancel: stop following. NEW mode -- fully remove it (Spawner.DespawnActor destroys the actor AND
@@ -23919,6 +28338,9 @@ function Spawner.CancelPlacement()
     local actor = Spawner._placementActor
     local mode = Spawner._placementMode
     local origLoc, origRot = Spawner._placementOriginalLoc, Spawner._placementOriginalRot
+    -- Cancelling a Barbie's own placement never fires the auto-detect (the actor may be destroyed
+    -- outright) -- just clear the flag so it can't leak into a LATER, unrelated placement.
+    Spawner._placementIsBarbie = nil
     Spawner._placementActive = false
     Spawner._placementActor = nil
     Spawner._placementMode = nil
@@ -24051,6 +28473,10 @@ end
 function Spawner.RotatePlacementActor(dYaw, dPitch, dRoll)
     local actor = Spawner._placementActor
     if not (Spawner._placementActive and actor and actor:IsValid()) then return end
+    -- Marks this session as manually rotated (2026-09-21) -- see beginFollowLoop's own
+    -- "face-the-player" comment for why: once the player deliberately rotates during NEW
+    -- placement, the follow loop's own auto-face-player logic must stop overriding it every tick.
+    Spawner._placementManualRotate = true
     pcall(function()
         local r = actor:K2_GetActorRotation()
         actor:K2_SetActorRotation({
@@ -24534,7 +28960,15 @@ function Spawner.UpdateHoverHighlight()
                     local m = trackedActor.Mesh
                     isCharacter = (m ~= nil) and m:IsValid()
                 end)
-                if isCharacter then
+                -- Lights too (2026-09-21, RedFalcon: "use the same effect on the lights that we do
+                -- on the statues and actors... that doesnt rely on a visible texture") -- a light's
+                -- plate mesh lives on a DIFFERENT property (`StaticMeshComponent`, not `.Mesh`), so
+                -- it never matched the isCharacter test above and always fell through to the
+                -- material-swap path -- which has nothing to show when "Show Spill Shield" hides
+                -- the plate. The spawned-effect path doesn't touch the target's own mesh/material
+                -- at all (see SpawnHoverEffect's own header), so it works regardless of the shield's
+                -- visibility -- exactly the property RedFalcon wants reused here.
+                if isCharacter or CS.IsLightActor(trackedActor) then
                     Spawner.SpawnHoverEffect(trackedActor)
                 else
                     applyHoverHighlight(trackedActor)

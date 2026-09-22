@@ -26,16 +26,27 @@ from collections import defaultdict
 
 XLSX_PATH = os.environ.get("CLOTHES_XLSX_OVERRIDE") or r"H:\OneDrive\Coding\WINDROSE MODS\Other\Hair_And_Clothes_Export.xlsx"
 
-# The 7 real clothing slots this feature covers (matches BODY_PART_ENUM_BY_NAME's own spelling in
+# The 8 real clothing slots this feature covers (matches BODY_PART_ENUM_BY_NAME's own spelling in
 # spawner.lua exactly -- "Feets"/"Headgear", not "Feet"/"Hat" -- those friendlier names are a
-# UI-only relabeling done in CustomMenu.cpp, not used anywhere in this data). Mask is a real Body
-# Part value in the source sheets but is NOT one of these -- deliberately excluded (RedFalcon's own
-# call, see project_sdk_stub_ue_editor memory: no non-suspending Mask alternative exists, not worth
-# permanently costing default facial hair for one niche asset). "Outfit" is also a real Body Part
-# value in "Clothes Adjusted" but only ever a placeholder row (Friendly Name = a Set Name, every
-# other column blank) -- the actual Outfit list comes from grouping "Clothing Outfits" by Set Name
-# instead, not from these placeholder rows.
-REAL_BODY_PARTS = {"Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape"}
+# UI-only relabeling done in CustomMenu.cpp, not used anywhere in this data). "Outfit" is also a
+# real Body Part value in "Clothes Adjusted" but only ever a placeholder row (Friendly Name = a Set
+# Name, every other column blank) -- the actual Outfit list comes from grouping "Clothing Outfits"
+# by Set Name instead, not from these placeholder rows.
+#
+# Mask ADDED BACK (2026-09-16, RedFalcon: "add it back in, as some of the pregen NPCs have it, same
+# as waist already being there despite not being able to use it") -- REVERSES the original 2026-09-14
+# exclusion (project_sdk_stub_ue_editor memory: the only real Mask asset permanently suspends facial
+# hair with no alternative, so it was left out of the OUTFIT-BUILD feature on the LivingBaseExtended
+# side). That reasoning was specific to building a NEW Barbie outfit from scratch, where losing
+# default facial hair for every Male spawn was too costly to accept for one niche asset -- it does
+# NOT apply here: this is a pure per-target READ/APPLY row on an EXISTING pregen NPC (same as Waist,
+# which is already in this same list "despite not being able to use it" per RedFalcon's own words --
+# real Torso pieces always suspend Waist, but the row stays so Waist can still be READ/displayed).
+# Mask has no rows in "Clothes Adjusted" (RedFalcon's own curated pass never covered it, since it was
+# excluded when that sheet was built) -- its 3 real rows are pulled from the raw "Clothes" sheet
+# instead, just below, and merged into the same items_by_part dict Mask never has a Set Name (not
+# part of any Clothing Outfit -- "only the blackbeard pirate has a scarf," never bundled).
+REAL_BODY_PARTS = {"Torso", "Legs", "Waist", "Hands", "Feets", "Headgear", "Cape", "Mask"}
 
 # An outfit must define at least these 3 slots to be offered at all (RedFalcon, 2026-09-14: "Any
 # outfit should contain at least feet, torso and legs. If it doesn't, dont create that outfit").
@@ -127,6 +138,42 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     if name is not None:
         name_to_part_key[(bodyPart, name)] = finalFriendly
 
+# ---- Mask supplement: pulled from the raw "Clothes" sheet, not "Clothes Adjusted" (2026-09-16) --
+# see REAL_BODY_PARTS' own comment above for why. All 3 real rows verified present here: 2 MALE ONLY
+# (Mask 1/2, femaleMesh blank) + 1 Both (Mask 3, RedFalcon's own single dual-sex variant -- same mesh
+# path in both the Male and Female columns, not two distinct assets despite the "distinct Male +
+# Female art" label text).
+wsRaw = wb["Clothes"]
+headerRaw = [c.value for c in wsRaw[1]]
+assert headerRaw[:8] == ["Body Part", "Name", "Friendly Name", "Availability",
+                         "Male mesh", "Female mesh", "Unisex mesh", "Source asset"], \
+    f"Clothes header changed, update this script: {headerRaw}"
+for row in wsRaw.iter_rows(min_row=2, values_only=True):
+    bodyPart, name, friendlyName, availability, maleMesh, femaleMesh, unisexMesh, srcAsset = row[:8]
+    bodyPart = norm_ws(bodyPart)
+    if bodyPart != "Mask":
+        continue
+    if not (maleMesh or femaleMesh or unisexMesh):
+        continue
+    name = norm_ws(name)
+    friendlyName = norm_ws(friendlyName)
+    availability = norm_ws(availability)
+    srcAsset = fix_source_asset_path(norm_ws(srcAsset))
+
+    key = (bodyPart, friendlyName)
+    seen_friendly[key] += 1
+    finalFriendly = friendlyName
+    if seen_friendly[key] > 1:
+        finalFriendly = f"{friendlyName} ({seen_friendly[key]})"
+
+    items_by_part[bodyPart].append({
+        "name": name, "friendlyName": finalFriendly, "setName": None,
+        "availability": availability, "maleMesh": maleMesh, "femaleMesh": femaleMesh,
+        "unisexMesh": unisexMesh, "sourceAsset": srcAsset,
+    })
+    if name is not None:
+        name_to_part_key[(bodyPart, name)] = finalFriendly
+
 out = []
 out.append("-- Config.CLOTHES_ITEMS -- generated by gen_clothes_lua.py from Other\\Hair_And_Clothes_Export.xlsx's")
 out.append("-- \"Clothes Adjusted\" sheet (RedFalcon's own validated per-body-type pass). One row per real,")
@@ -168,6 +215,17 @@ header2 = [c.value for c in ws2[1]]
 assert header2[:4] == ["Body Part", "Name", "Friendly Name", "Set Name"], \
     f"Clothing Outfits header changed, update this script: {header2}"
 
+# Mask is deliberately EXCLUDED from outfit-bundling specifically (2026-09-16) even though it's now
+# a real standalone Config.CLOTHES_ITEMS category above -- the original 2026-09-14 exclusion reason
+# (the only real Mask asset permanently suspends Mustache/Beard/Whiskers with no alternative) is
+# STILL a real concern for a bulk multi-slot APPLY like an outfit selection, even though it's fine
+# for a plain per-slot read/apply row. Without this, "Clothing Outfits" rows tag 3 real Mask pieces
+# onto "Blackbeard Sailor 1/2/3" (confirmed present in the sheet) that would otherwise silently
+# start suspending facial hair on anyone who picks that Outfit -- exactly what RedFalcon avoided
+# building to in the first place ("only the blackbeard pirate has a scarf. i feel like we dont need
+# to build to that exception").
+OUTFIT_BODY_PARTS = REAL_BODY_PARTS - {"Mask"}
+
 pieces_by_set = defaultdict(dict)  # setName -> { bodyPart: friendlyName }
 set_order = []
 for row in ws2.iter_rows(min_row=2, values_only=True):
@@ -175,8 +233,8 @@ for row in ws2.iter_rows(min_row=2, values_only=True):
     bodyPart = norm_ws(bodyPart)
     name = norm_ws(name)
     setName = norm_ws(setName)
-    if not setName or not bodyPart or bodyPart not in REAL_BODY_PARTS:
-        continue  # drops Mask pieces (not one of our 7 slots) and any blank rows
+    if not setName or not bodyPart or bodyPart not in OUTFIT_BODY_PARTS:
+        continue  # drops Mask pieces (excluded from outfit-bundling, see OUTFIT_BODY_PARTS' own comment) and any blank rows
     resolved = name_to_part_key.get((bodyPart, name))
     if resolved is None:
         print(f"WARNING: Clothing Outfits piece ({bodyPart}, {name!r}) for set {setName!r} has no "

@@ -1,9 +1,10 @@
-# gen_socketitems_lua.py -- (2026-09-07, extended 2026-09-15) regenerates the Config.SOCKETITEMS_*
-# and Config.BELTSTRAPS_PIECES blocks in config.lua from RedFalcon's own Other/SocketItems.xlsx
-# (7 tabs: Belts and Straps, Sockets, Item Ratios, Rarity Ratios, Items, Weapons, plus a "Socket
-# List" tab that's just RedFalcon's own UI mockup, not real data -- see WINDROSE_MODDING_NOTES.md
-# 19u for the full design/rules this data drives, and the Custom-tab "Belts and Straps" section for
-# the 2026-09-15 GUI work built on top of it).
+# gen_socketitems_lua.py -- (2026-09-07, extended 2026-09-15, 2026-09-21) regenerates the
+# Config.SOCKETITEMS_* and Config.BELTSTRAPS_PIECES blocks in config.lua from RedFalcon's own
+# Other/SocketItems.xlsx (Belts and Straps, Sockets, Item Ratios, Rarity Ratios, Items, Weapons,
+# Tools, plus a "Socket List" tab that's just RedFalcon's own UI mockup, not real data, and
+# "additional poses"/"Sheet2" which this script doesn't touch -- see WINDROSE_MODDING_NOTES.md
+# 19u for the full design/rules this data drives, and the Custom-tab "Belts and Straps"/"Poses and
+# Actions" sections for the GUI work built on top of it).
 #
 # 2026-09-15: Items/Weapons/Sockets tabs each gained a real "Friendly Name" column (Sockets also
 # gained "test command", ignored here -- it's just a copy/paste console-command helper for RedFalcon
@@ -60,16 +61,18 @@ def luaarr(items):
 
 out = []
 
-# Excluded from the random socket-item pool entirely (2026-09-14, RedFalcon: "let's remove
-# soc_Lantern from the mix for the socket randomization" -- reserved for the deliberate
-# lbtestlanternset/lbtestlanternmesh/lbtestlanternlight feature; a random belt-misc item landing
-# there would visually clash with an intentionally-summoned lantern). Filtered here rather than
-# hand-edited into config.lua's generated output, and rather than edited row-by-row in the
-# spreadsheet's per-item Sockets columns, since Config.SOCKETITEMS_SOCKETS (the "Sockets" tab below)
-# is the actual master pool Spawner.TestGenerateSocketItems draws real candidate sockets from -- an
-# item's own per-row socket list is only consulted AFTER a socket's already been picked from this
-# pool, so excluding it here is the single correct choke point.
-EXCLUDED_SOCKETS = {"soc_Lantern"}
+# soc_Lantern RE-ENABLED (2026-09-17, RedFalcon: "some of them have an item in the lantern spot...
+# it needs to be like the other slots... we have our own lantern item... both should be allowed at
+# the same time") -- originally excluded 2026-09-14 to keep a random belt-misc roll from visually
+# clashing with an intentionally-summoned lantern, but RedFalcon has since found real native NPCs
+# using this exact socket for a genuine accessory, independent of our own lantern feature. The
+# coexistence problem (our lantern's own 2 known meshes vs. a real accessory sharing the same
+# socket) is handled entirely in spawner.lua now (CS.LANTERN_KNOWN_MESHES / filterOutLanternMeshes,
+# threaded through TestReadSocketAccessories/RemoveSocketAttachment/ClearSocketAccessories/
+# CaptureRawCustomBaseline) -- nothing left to exclude at the data-generation level. Only
+# soc_LanternLight (the lantern's own separate light-source socket, never a real accessory point)
+# stays excluded.
+EXCLUDED_SOCKETS = {"soc_LanternLight"}
 
 # ---- Belts and Straps ---- (2026-09-15, new tab: the real Belt/Sling/Strap/Frog MESH pieces
 # themselves, distinct from the soc_*/weapon ACCESSORY sockets below. "Set" rows (Set 1/3/4) carry
@@ -155,6 +158,19 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     socks = [s for s in split_list(availSocket) if s not in EXCLUDED_SOCKETS]
     tags = split_list(tag)
     out.append(f"  {{ asset={luastr(asset)}, shortName={luastr(shortName)}, friendlyName={luastr(friendly)}, sockets={luaarr(socks)}, tags={luaarr(tags)}, location={luastr(location)}, rarity={luastr(rarity)} }},")
+out.append("}")
+out.append("")
+
+# ---- Tools ---- (2026-09-21, new tab: the flat item list backing the Custom tab's Left/Right
+# Hand item dropdowns -- Friendly Name, Type, Mesh, Test Command (ignored). `type` is one of
+# Weapons/Tools/Bottles/Other, matching the 4 hand dropdowns exactly.
+ws = wb["Tools"]
+out.append("Config.SOCKETITEMS_TOOLS = {")
+for row in ws.iter_rows(min_row=2, values_only=True):
+    friendly, type_, mesh = row[:3]
+    if not friendly or not mesh:
+        continue
+    out.append(f"  {{ friendlyName = {luastr(friendly)}, type = {luastr(type_)}, asset = {luastr(mesh)} }},")
 out.append("}")
 
 result = "\n".join(out)

@@ -11115,6 +11115,20 @@ function Spawner.BuildCustomStateLines(actor, say)
         end
     end
 
+    -- GHOST (2026-09-22, RedFalcon: "i dont think saving custom tracks if someone is changed to
+    -- ghost") -- Spawner.MakeGhost is a pure one-way material swap with no other readable state, so
+    -- the ONLY way to know an actor is ghosted is the flag it now sets on its own Spawner.spawned
+    -- entry. Not a "look" category in the randomized/hair/clothes sense (like HEIGHT above), so this
+    -- runs unconditionally -- a randomized archetype can still be ghosted. Only ever written true;
+    -- there's no "un-ghost" action to diff against, so omitting the line entirely when false is
+    -- correct (matches every other category's "no line = no change" convention).
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor and e.isGhost then
+            lines[#lines + 1] = "GHOST:1"
+            break
+        end
+    end
+
     -- Everything below this point is a "look" category (hair/skin/clothes) -- skipped entirely
     -- for "randomized" archetypes (see skipLookCategories's own comment above); Color, read
     -- above, is the one look category RedFalcon confirmed IS worth keeping for them.
@@ -11460,6 +11474,11 @@ CS.applyLine = function(actor, line, say)
     elseif key == "HEIGHT" then
         local feet = line:match("^HEIGHT:([%d%.]+)$")
         if feet then pcall(function() Spawner.ApplyActorHeightFeet(feet, say, actor) end) end
+    elseif key == "GHOST" then
+        -- Only ever written "GHOST:1" (see BuildCustomStateLines's own comment -- there's no
+        -- "un-ghost" action to diff against), but check the value anyway rather than assume.
+        local val = line:match("^GHOST:(%d)$")
+        if val == "1" then pcall(function() Spawner.MakeGhost(say, true, actor) end) end
     end
     -- Unknown prefixes are silently skipped -- forward-compatible with the line vocabulary
     -- growing later without needing an old custom_state.txt to be re-saved.
@@ -11513,6 +11532,17 @@ function Spawner.RestoreCustomState(say, onComplete)
             return
         end
         local b = blocks[i]
+        -- 2026-09-22 FIX (RedFalcon: "too many were trying to reconfigure at once and some women
+        -- ended up topless and some men ended up with womens clothes") -- the next actor's own step
+        -- used to be scheduled (via ExecuteWithDelay) IMMEDIATELY after this actor's apply-lines
+        -- work was merely QUEUED (via ExecuteInGameThread), not after it actually ran -- a fixed
+        -- real-world timer racing independently against a queued game-thread callback whose true
+        -- execution timing this function never controlled. Under load (many saved actors restoring
+        -- together), that let two actors' own composite-rebuild-triggering apply calls land on the
+        -- same or adjacent ticks -- the exact "touching two composites' builds concurrently" hazard
+        -- Spawner.RunSerialized exists elsewhere in this file to prevent, just never applied here.
+        -- Fix: schedule the NEXT actor's step from INSIDE this actor's own ExecuteInGameThread
+        -- callback, after its lines have genuinely finished running, not from outside it.
         ExecuteInGameThread(function()
             local entry = nil
             for _, e in ipairs(Spawner.spawned) do
@@ -11526,12 +11556,12 @@ function Spawner.RestoreCustomState(say, onComplete)
             else
                 say("could not find a spawned actor labeled '" .. tostring(b.label) .. "' to restore -- skipped.")
             end
+            if ExecuteWithDelay then
+                ExecuteWithDelay(Config.RESTORE_STAGGER_MS or 350, step)
+            else
+                step()
+            end
         end)
-        if ExecuteWithDelay then
-            ExecuteWithDelay(Config.RESTORE_STAGGER_MS or 350, step)
-        else
-            step()
-        end
     end
     step()
 end
@@ -11705,6 +11735,32 @@ local function restoreOne(line)
     if ok and a and a:IsValid() then
         if needsMigration then
             pcall(function() Spawner.PersistUpdateLabel(cls, loc, resolvedLabel) end)
+        end
+        -- 2026-09-22 FIX (RedFalcon: "Miner F African is spawning with mens clothes and Mercer M
+        -- Native is spawning in women's clothes... a fresh spawn is correct"). A fresh Barbie spawn
+        -- goes through Spawner.SwapBodyType, which calls pollForBuildThenApplyBodySwap AFTER the
+        -- composite build finishes to do the REAL correction (swap DefaultParams to the matching
+        -- Barbie outfit, then comp:SwapBodySex()) -- this restore path only ever set the pre-build
+        -- compositeLook fields via Spawner.Spawn above and never ran that post-build correction, so
+        -- the saved sex never actually took on the rebuilt actor. Gated on look.bodyTypes (not just
+        -- look.sex) so this only fires for the real Barbie/bodyTypesOverride flow -- other reskin
+        -- mechanisms (e.g. the Senkamati crew) also set compositeLook.sex but never bodyTypes, and
+        -- are left untouched. currentSex is read LIVE off the just-spawned actor, same as
+        -- Spawner.SwapBodyType's own doSpawnNow does, so a same-sex Barbie (native sex already
+        -- matches) correctly skips the SwapBodySex() rebuild entirely instead of running it
+        -- unconditionally. family is passed nil deliberately -- phase 2's raw mesh-override block is
+        -- gated on family being truthy, so nil is a clean no-op there (matching how a real
+        -- bodyTypesOverride spawn already skips that block too), without needing to reconstruct the
+        -- origin family string persist.txt never stored.
+        if look and look.sex and look.bodyTypes and Spawner.RestoreApplySexCorrection then
+            pcall(function()
+                local currentSex = nil
+                pcall(function()
+                    local comp = a.CompositeMeshComponent
+                    if comp and comp:IsValid() then currentSex = comp:GetBodySex() end
+                end)
+                Spawner.RestoreApplySexCorrection(a, look.sex, currentSex, nil, false, resolvedLabel, log, nil, nil, false, look.bodyTypes)
+            end)
         end
         -- Disable AI IMMEDIATELY, same frame as the spawn (2026-09-16, see savedAiOff's own comment
         -- above) -- before the very first AI tick has a chance to move this actor off its saved spot.
@@ -18907,6 +18963,13 @@ local function pollForBuildThenApplyBodySwap(actor, targetSex, currentSex, famil
         applyPhase2()
     end
 end
+
+-- Exposed via the Spawner table (not a new file-level local -- this file is already at Lua's
+-- 200-local ceiling) so restoreOne (well above this function's own definition, ~line 11636) can
+-- call it without a forward-reference: a table index resolves at CALL time, not parse time, so
+-- declaration order doesn't matter. 2026-09-22 fix for the "wrong-sex-clothes-on-restore" bug --
+-- see restoreOne's own call site for the full story.
+Spawner.RestoreApplySexCorrection = pollForBuildThenApplyBodySwap
 
 -- Spawner.SwapBodyType(familyArg, classPath, sexArg, underwearArg, say) -- "lbtestbodyswap
 -- <family|-> [classPath|-] [sex: M/F|-] [underwear: on|-]" (2026-09-08, rewritten same day after
@@ -26323,11 +26386,17 @@ local GHOST_SKIN_PATH  = "/Game/Character/Skeletal_Meshes/Human/Regular/Ghost/Ma
 local GHOST_HAIR_PATH  = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Ghost/Materials/MI_Hair_Ghost"
 local GHOST_ARMOR_PATH = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Ghost/Materials/MI_Boneman_Ghost_Spanish"
 local GHOST_BASE_PATH  = "/Game/Character/Shaders/MasterMaterials/M_CharacterGhost_V2"
-function Spawner.MakeGhost(say, hairUsesArmor)
+-- actorOverride (2026-09-22, RedFalcon: "i dont think saving custom tracks if someone is changed
+-- to ghost") -- added so Spawner.RestoreCustomState can call this directly on a specific actor, the
+-- same resolveTargetOrActor pattern every other restore-compatible Apply/Test function already
+-- uses (see that helper's own header, just above findNearestSpawnInFront) -- NOT the old
+-- Spawner.lockedTarget-bypass path, which the 2026-09-16 restore rework moved away from precisely
+-- because its distance leash could silently misapply a saved state onto the wrong nearby NPC.
+function Spawner.MakeGhost(say, hairUsesArmor, actorOverride)
     say = say or function(m) print("[LivingBase] [make-ghost] " .. tostring(m) .. "\n") end
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
     if not bestI then
         say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
         return false
@@ -26499,6 +26568,11 @@ function Spawner.MakeGhost(say, hairUsesArmor)
     say(string.format("target=%s skinSlots=%d baseGhostSlots=%d hairComps=%d(incl. eyebrows) armorComps=%d weaponComps=%d",
         name, skinSlots, baseSlots, hairComps, armorComps, weaponComps))
     pcall(function() Spawner.Toast("Ghost look applied to " .. name, 3.0) end)
+    -- Tracked on the Spawner.spawned entry itself (2026-09-22) -- purely a material swap otherwise,
+    -- with no readable "is this actor ghosted" state anywhere, so Save Customizations/Read Current
+    -- had no way to know. `e` here is exactly this actor's own entry (resolveTargetOrActor already
+    -- found or synthesized it); a fresh spawn's entry never has this field, so no stale-flag risk.
+    e.isGhost = true
     return true
 end
 

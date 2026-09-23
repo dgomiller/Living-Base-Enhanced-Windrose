@@ -2724,6 +2724,14 @@ end
 -- rather than hardcoded in the C++ picker specifically so a future fix (like the Male-Senkamati
 -- mesh/clothing swap) never needs a DLL rebuild + full game restart to take effect -- only
 -- lbreload.
+-- 2026-09-22 RENAME ATTEMPTED then REVERTED same day -- RedFalcon: "all the spawns are toasted
+-- now... unless its their default body mesh, it is spawning the generic male spawn." Renaming
+-- Hunter/Axel/Mortar's packages to AfricanMale/AlbionMale/NativeMale (matching the other 5
+-- origins' "<Origin>Male" convention) broke EVERY retargeted spawn project-wide, not just the 3
+-- renamed families -- root cause not yet found; reverted the pak to the pre-rename backup and this
+-- table back to the original names to restore known-good behavior. DO NOT re-attempt this rename
+-- without first understanding why it broke unrelated origins too (see WINDROSE_MODDING_NOTES.md
+-- for the write-up once filed).
 local ORIGIN_RETARGET_LABEL = {
     Adventurer = { M = "AdventurerMale", F = "Adventurer" },
     African    = { M = "Hunter",         F = "African" },

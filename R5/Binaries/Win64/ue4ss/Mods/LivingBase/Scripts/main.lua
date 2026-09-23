@@ -11776,6 +11776,28 @@ else
     log("lbtestmovement unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestfreezetree" (2026-09-23) -- THROWAWAY TEST, see Spawner.TestFreezeTreeChop's
+-- own header comment. Run lbprobe on a fresh, never-hit tree first, then this, then swing an axe at
+-- it and report what happens -- confirms/refutes the ActiveSegmentInterval hypothesis before it
+-- becomes a real Spawner.Spawn hook (the shipwreck/boulder decor-protection follow-up).
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestfreezetree", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-freeze-tree] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestFreezeTreeChop(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestfreezetree")
+    registerCmdInfo("lbtestfreezetree", "lbtestfreezetree", "THROWAWAY TEST: on the lbprobe-cached tree, collapses ActiveSegmentInterval to an inverted/empty range and reads it back -- run lbprobe on a fresh tree first, then this, then swing an axe at it and report the result.")
+else
+    log("lbtestfreezetree unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbtoggleswapai <on|off>" (2026-09-09) -- toggles AI logic on the CURRENT lbtestbodyswap
 -- actor (Spawner._bodySwapActor) without respawning it, via the same Spawner.SetAILogic(actor, on)
 -- mechanism lbtestbodyswap itself already calls with `false` right after every spawn (frozen for

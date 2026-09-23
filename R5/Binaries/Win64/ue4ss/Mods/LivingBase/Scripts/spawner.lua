@@ -1090,7 +1090,14 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
 
     -- Set-dressing makes a spawn INVULNERABLE. A raider must be killable, or the whole
     -- feature is a group of immortal zombies standing in your camp.
-    if not Spawner.combatant then makeSetDressing(actor) end
+    if not Spawner.combatant then
+        makeSetDressing(actor)
+        -- 2026-09-23: shipwreck/boulder decor's mineral-node clusters have their own separate
+        -- Health pool the actor's own bCanBeDamaged doesn't gate -- see this function's own header
+        -- comment. Same non-combatant scope as makeSetDressing itself (a resource node clearly
+        -- isn't a combatant either).
+        Spawner.ProtectResourceNodeHealth(actor)
+    end
     ensureController(actor)
     if Config.HIDE_NAMEPLATES then Spawner.HideNameplate(actor) end
     if Config.STRIP_INTERACTION then Spawner.StripInteraction(actor) end
@@ -3364,6 +3371,55 @@ function Spawner.StripInteraction(actor)
     stripComponentsOfClass(actor, "/Script/R5.R5PrimitiveInteractionTargetComponent")
 end
 
+-- Spawner.ProtectResourceNodeHealth(actor) (2026-09-23, RedFalcon: shipwreck/boulder decor can still
+-- be broken/mined with a pick even with StripInteraction and bCanBeDamaged=false already applied).
+-- Root cause, found via Spawner.DumpAllComponents on a live shipwreck/boulder: the pick/axe hit
+-- doesn't go through the actor's own damage system at all (bCanBeDamaged is an ACTOR-level gate,
+-- confirmed already false) -- shipwrecks and mineral nodes both carry one or more
+-- R5MineralNodeClusterComponent children (named "01"/"02"/etc), each with its OWN independent
+-- `Health` float (confirmed live: 120.0 on a fresh MiddleRock_05 boulder) that a mining/salvage hit
+-- decrements directly. Same fix idiom as makeSetDressing's own bCanBeDamaged write -- a large,
+-- effectively-unreachable Health value makes the node immune to being fully depleted/broken while
+-- leaving everything else (mesh, collision, loot table) untouched. Uses the exact same
+-- K2_GetComponentsByClass sweep + RemoteUnrealParam unwrap already proven safe by
+-- stripComponentsOfClass/Spawner.DumpAllComponents -- just a property WRITE instead of a destroy.
+-- Does NOT cover R5SegmentTree (trees) -- confirmed via the same probe that trees track chop
+-- progress via ChoppingSegments/bTreeChopped instead of a plain numeric Health, a separate
+-- not-yet-solved case.
+function Spawner.ProtectResourceNodeHealth(actor)
+    if not (actor and actor:IsValid()) then return end
+    local cls = StaticFindObject("/Script/R5.R5MineralNodeClusterComponent")
+    if not (cls and cls:IsValid()) then return end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    pcall(function() n = comps:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #comps end) end
+    if n == 0 then return end
+    local fixed = 0
+    for i = 1, n do
+        local raw
+        local okIdx, viaIdx = pcall(function() return comps[i] end)
+        if okIdx then raw = viaIdx end
+        if not raw then
+            local okGet, viaGet = pcall(function() return comps:Get(i) end)
+            if okGet then raw = viaGet end
+        end
+        local c = raw
+        if raw then
+            local okUnwrap, unwrapped = pcall(function() return raw:get() end)
+            if okUnwrap and unwrapped then c = unwrapped end
+        end
+        if c and c:IsValid() then
+            local ok = pcall(function() c.Health = 999999.0 end)
+            if ok then fixed = fixed + 1 end
+        end
+    end
+    if fixed > 0 then
+        print(string.format("[LivingBase] [protect-resource] set Health on %d mineral-node cluster component(s).\n", fixed))
+    end
+end
+
 -- Spawner.SetLootMesh(actor, meshPath) — forces a R5LootActor's MeshComponent to show a specific
 -- static mesh, bypassing the whole business-rule/LootView system that normally sets it (that path is
 -- CONFIRMED DEAD: Spawner.ProbeStoneItemMesh found the Stone item's ItemMesh property is an opaque
@@ -3989,6 +4045,150 @@ local function dumpObjectProperties(obj, tag)
         pcall(function() nextCls = cls:GetSuperStruct() end)
         cls = nextCls
     end
+end
+
+-- Spawner.DumpAllComponents(actor) (2026-09-23, RedFalcon: shipwreck/tree/boulder decor are still
+-- choppable/mineable with an axe/pick even though Spawner.StripInteraction already destroys their
+-- InteractTargetComponent at spawn time, confirmed live via the ue4ss log's own "[strip] ... destroy
+-- #1: call OK ... 0 remaining" -- so whatever actually gates the chop/mine hit-detection isn't that
+-- component. probeDumpPropertiesBody's own dumpObjectProperties(target, "TARGET") call only ever
+-- walks the ACTOR's own class hierarchy properties, never drilling into a referenced COMPONENT's own
+-- declared properties (CompositeMeshComponent is the one deliberate exception, dumped separately
+-- right below it) -- so a per-cluster mesh component (R5MineralNodeClusterComponent "01"/"02" on the
+-- boulder) or a dedicated collision component (R5SegmentTreeCollision on the tree) has never actually
+-- been inspected. Not a new file-level local (this project is already at Lua's 200-local ceiling) --
+-- exposed as a Spawner table field, reusing the exact same K2_GetComponentsByClass sweep +
+-- RemoteUnrealParam unwrap stripComponentsOfClass already proved safe, plus the existing
+-- dumpObjectProperties walk CompositeMeshComponent already uses. Called from probeDumpPropertiesBody
+-- below so its output lands in the SAME timestamped probedump file as everything else -- no new
+-- console command needed.
+function Spawner.DumpAllComponents(actor)
+    if not (actor and actor:IsValid()) then return end
+    local baseCls = StaticFindObject("/Script/Engine.ActorComponent")
+    if not (baseCls and baseCls:IsValid()) then
+        print("[LivingBase] [probe-props] could not resolve ActorComponent base class.\n")
+        return
+    end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(baseCls) end)
+    local n = 0
+    pcall(function() n = comps:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #comps end) end
+    print(string.format("[LivingBase] [probe-props] -- ALL COMPONENTS: %s found --\n", tostring(n)))
+    for i = 1, n do
+        local raw
+        local okIdx, viaIdx = pcall(function() return comps[i] end)
+        if okIdx then raw = viaIdx end
+        if not raw then
+            local okGet, viaGet = pcall(function() return comps:Get(i) end)
+            if okGet then raw = viaGet end
+        end
+        local c = raw
+        if raw then
+            local okUnwrap, unwrapped = pcall(function() return raw:get() end)
+            if okUnwrap and unwrapped then c = unwrapped end
+        end
+        if c and c:IsValid() then
+            local cname = "?"
+            pcall(function() cname = c:GetFName():ToString() end)
+            pcall(function() dumpObjectProperties(c, "COMPONENT:" .. cname) end)
+        end
+    end
+end
+
+-- Spawner.DumpTreeChopState(actor) (2026-09-23) -- the mineral-node cluster Health fix
+-- (Spawner.ProtectResourceNodeHealth) doesn't cover R5SegmentTree: confirmed via
+-- Spawner.DumpAllComponents that a tree has no plain numeric Health anywhere -- it tracks chop
+-- progress through `Spec` (a R5SegmentTreeSpec ScriptStruct VALUE, not a UObject) and
+-- `ActiveSegmentInterval` (a plain FInt32Interval struct), neither of which dumpObjectProperties can
+-- read (it only shows "ScriptStruct /Script/..." for the type, same limitation
+-- CustomizationRecordID hit before -- see probeDumpPropertiesBody's own drill for that one, same
+-- technique reused here: resolve the struct's own UScriptStruct type, ForEachProperty over THAT to
+-- find its real field names, then bracket-index the struct VALUE itself for each). ChoppingSegments/
+-- Segments are TArrays of that same struct type (not UObjects), so only their count is read here --
+-- an actual per-element read would need a further TArray-of-struct walk, not yet built.
+function Spawner.DumpTreeChopState(actor)
+    if not (actor and actor:IsValid()) then return end
+    local hasSpec = false
+    pcall(function() hasSpec = actor.Spec ~= nil end)
+    if not hasSpec then
+        print("[LivingBase] [probe-props] no Spec field -- not a R5SegmentTree.\n")
+        return
+    end
+    local function drillStruct(label, val, structPath)
+        if val == nil then
+            print(string.format("[LivingBase] [probe-props] %s is nil.\n", label))
+            return
+        end
+        local structType = nil
+        pcall(function() structType = StaticFindObject(structPath) end)
+        if not (structType and structType:IsValid()) then
+            print(string.format("[LivingBase] [probe-props] could not resolve %s struct type (%s).\n", label, structPath))
+            return
+        end
+        pcall(function()
+            structType:ForEachProperty(function(prop)
+                local fname = "?"
+                pcall(function() fname = prop:GetFName():ToString() end)
+                local valStr = "<unreadable>"
+                local okv, fval = pcall(function() return val[fname] end)
+                if okv then
+                    if fval == nil then
+                        valStr = "nil"
+                    elseif type(fval) == "userdata" then
+                        local okc, full = pcall(function() return fval:GetFullName() end)
+                        valStr = okc and full or tostring(fval)
+                    else
+                        valStr = tostring(fval)
+                    end
+                end
+                print(string.format("[LivingBase] [probe-props] %s.%s = %s\n", label, fname, valStr))
+            end)
+        end)
+    end
+    pcall(function() drillStruct("Spec", actor.Spec, "/Script/R5.R5SegmentTreeSpec") end)
+    pcall(function() drillStruct("ActiveSegmentInterval", actor.ActiveSegmentInterval, "/Script/CoreUObject.Int32Interval") end)
+    for _, fieldName in ipairs({ "ChoppingSegments", "Segments" }) do
+        pcall(function()
+            local arr = actor[fieldName]
+            local n = 0
+            pcall(function() n = arr:GetArrayNum() end)
+            if n == 0 then pcall(function() n = #arr end) end
+            print(string.format("[LivingBase] [probe-props] %s: %s element(s) (struct array, not individually readable yet).\n", fieldName, tostring(n)))
+        end)
+    end
+end
+
+-- Spawner.TestFreezeTreeChop(say) -- "lbtestfreezetree" (2026-09-23), THROWAWAY TEST, not wired into
+-- the real spawn path yet. On a fresh, never-hit tree, Spawner.DumpTreeChopState read
+-- ActiveSegmentInterval = {min=0, max=8} against 9 total Segments -- reads like "the range of
+-- segment indices still choppable." Hypothesis: collapsing it to an inverted/out-of-range interval
+-- (min > max) makes every chop-hit's own "is this segment index in range" check fail, so nothing
+-- ever registers -- without touching bTreeChopped (which might just be the FINAL felled-visual flag,
+-- so forcing it true directly seemed likelier to make the tree instantly look chopped-down than to
+-- just block further hits). Writes the whole struct as a table (the established working pattern in
+-- this codebase for struct properties -- Spawner.Spawn's own transform table, K2_SetActorLocation,
+-- etc. -- rather than mutating a field on the existing struct userdata in place, which has proven
+-- unreliable elsewhere in this file), then reads it straight back to confirm the write actually
+-- stuck rather than trusting pcall's bare "ok". PURELY for RedFalcon to test live (write, then swing
+-- an axe at the SAME tree and report what happens) before this becomes a real Spawner.Spawn hook.
+-- **ABANDONED 2026-09-23, BOTH DIRECTIONS CONFIRMED UNSAFE -- DO NOT RE-ENABLE OR RE-ATTEMPT THIS
+-- FUNCTION WITHOUT A GENUINELY NEW LEAD.** Attempt 1 (inverted range, min=999999/max=-999999)
+-- instakilled the tree on the very first hit -- the width apparently reads as a live "hits
+-- remaining" count, and an inverted range overflowed to something the game treated as "already
+-- fully depleted." Attempt 2 (non-inverted but with max blown out to 999999, on the theory that a
+-- huge POSITIVE width would just mean "way more hits required") instead FROZE THE ENTIRE GAME --
+-- most likely a native loop somewhere in the chop-hit path that iterates the segment range and
+-- never expected a width in the hundreds of thousands. Directly manipulating this native struct is
+-- confirmed dangerous in both directions; a real fix for trees needs a different mechanism entirely
+-- (e.g. changing the tree's own Collision component's response to whatever trace channel the
+-- axe/pick hit-detection uses, so a chop hit never registers at all -- collision responses are a
+-- standard, well-trodden lever elsewhere in this file, unlike this struct). Left in place
+-- (unregistered from any console command) purely as a documented dead end, same as this project's
+-- other "DO NOT re-attempt" precedents (the Hunter/Axel/Mortar rename, the AIPawnParams delay tweak).
+function Spawner.TestFreezeTreeChop(say)
+    say = say or function(m) print("[LivingBase] [test-freeze-tree] " .. tostring(m) .. "\n") end
+    say("DISABLED 2026-09-23 -- both prior attempts (inverted range, oversized range) either instakilled the tree or froze the whole game. See this function's own header comment. Not safe to run.")
 end
 
 -- resolveTestDiagActor() -- shared by lbtestmovement/lbtestaicontroller/lbtestblackboard (2026-09-09).
@@ -7890,6 +8090,13 @@ local function probeDumpPropertiesBody()
     pcall(function() dumpAvailableBodyTypes(target) end)
     pcall(function() dumpCompositeFunctions(target) end)
     pcall(function() dumpAnimInfo(target) end)
+    -- 2026-09-23: drill into every attached component's OWN properties too -- see
+    -- Spawner.DumpAllComponents's own header comment (the shipwreck/tree/boulder "still choppable
+    -- despite StripInteraction" investigation).
+    pcall(function() Spawner.DumpAllComponents(target) end)
+    -- 2026-09-23: R5SegmentTree's own chop-progress state (Spec/ActiveSegmentInterval) -- a no-op
+    -- for any non-tree actor (Spawner.DumpTreeChopState checks for a Spec field first).
+    pcall(function() Spawner.DumpTreeChopState(target) end)
     print("[LivingBase] [probe-props] ---- END " .. probeName .. " ----\n")
 end
 

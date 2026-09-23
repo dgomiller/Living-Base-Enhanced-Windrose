@@ -1249,7 +1249,20 @@ local function pollCameraAutoReset()
     local cameraActive = Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()
     if not cameraActive then return end
 
-    local targetLost = not (Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid())
+    -- 2026-09-22 fix (RedFalcon: "tripod and selfie are requiring a target be selected or it drops
+    -- back out. those are target independant") -- this check used to fire on ANY lost/missing
+    -- target regardless of which camera mode was actually using the shared tripod actor, which is
+    -- only correct for Full Body/Face View (genuinely target-scoped views). Photo Mode's own
+    -- Tripod/Selfie are explicitly NOT target-dependent (they compose off the player's own position/
+    -- look, not a locked NPC) -- with no target ever locked during normal Photo Mode use, the old
+    -- check treated that as "lost" on literally the very first poll tick after activating either
+    -- one and immediately tore the camera back down. Scoped to only apply when Spawner.
+    -- _photoModeCamState is actually "FULLBODY"/"FACE" (BarbieMenu's own target-zoom modes) --
+    -- Tripod/Selfie/FirstPerson never trigger this branch now, only the window-close path still
+    -- resets them.
+    local targetScopedModeActive = Spawner._photoModeCamState == "FULLBODY" or Spawner._photoModeCamState == "FACE"
+    local targetLost = targetScopedModeActive
+        and not (Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid())
     if not (windowJustClosed or targetLost) then return end
 
     ExecuteInGameThread(function()
@@ -2376,6 +2389,251 @@ BeltStrapPolls.publishLightsStatus = function()
     end
 end
 
+-- Photo Mode tab's Camera section (2026-09-22) -- Tripod/Selfie/First Person 3-way mode switch,
+-- a direction-relative movement pad, and an FOV slider, all built on the pre-existing
+-- lbphototripod/lbfirstperson/lbcameramove/lbcamerarotate/lbcamerafov Lua plumbing from 2026-09-08
+-- -- see Spawner.PhotoCamSetMode/MoveTripodCameraRelative/GetPhotoCamStatus's own headers.
+BeltStrapPolls.PHOTOCAM_MODE_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photocam_mode_request.txt",
+    "Mods/LivingBase/custom_photocam_mode_request.txt",
+    "custom_photocam_mode_request.txt",
+}
+BeltStrapPolls.photoCamMode = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTOCAM_MODE_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local mode = content:match("^%s*(%u+)%s*$")
+    if not mode then
+        print("[LivingBase] [photocam-mode] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Photo Mode: camera mode") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [photocam] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.PhotoCamSetMode(mode, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- APPENDED (not overwritten), same reasoning as move_request.txt -- a held movement-pad button can
+-- fire many times between two 100ms polls. Applied directly here rather than accumulate+flush like
+-- MoveMenu's own EditNearestInFront queue -- that two-stage throttle exists specifically because
+-- EditNearestInFront's old SetActorHiddenInGame toggle crashed under rapid-fire calls (now removed,
+-- but the throttle stayed as insurance); Spawner.PhotoCamAdjustOffset/MoveFirstPersonRelative are
+-- plain SetActorLocation/SetActorRotation (or SocketOffset) writes with no such history, so a direct
+-- per-line apply at the 100ms poll rate is fine. Dispatch is MODE-aware (2026-09-22, rewritten
+-- alongside the base+offset camera model) -- TRIPOD/SELFIE route through PhotoCamAdjustOffset
+-- (rotate included); FIRSTPERSON only honors MOVE lines (RedFalcon: "positional offset only" --
+-- rotation stays on the mouse there, so ROTATE lines are silently dropped for that mode).
+BeltStrapPolls.PHOTOCAM_MOVE_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photocam_move_request.txt",
+    "Mods/LivingBase/custom_photocam_move_request.txt",
+    "custom_photocam_move_request.txt",
+}
+BeltStrapPolls.PHOTOCAM_MOVE_MAX_PER_DRAIN = 40
+BeltStrapPolls.photoCamMove = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTOCAM_MOVE_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    if not os.remove(path) then
+        local tf = io.open(path, "w")
+        if tf then tf:close() end
+    end
+    local moves, rotates = {}, {}
+    local count = 0
+    for line in content:gmatch("[^\r\n]+") do
+        if count < BeltStrapPolls.PHOTOCAM_MOVE_MAX_PER_DRAIN then
+            local dir, amt = line:match("^MOVE:(%a+):(-?[%d%.]+)$")
+            if dir then
+                moves[#moves + 1] = { dir = dir, amt = tonumber(amt) }
+                count = count + 1
+            else
+                local axis, ramt = line:match("^ROTATE:(%a+):(-?[%d%.]+)$")
+                if axis then
+                    rotates[#rotates + 1] = { axis = axis, amt = tonumber(ramt) }
+                    count = count + 1
+                end
+            end
+        end
+    end
+    if count == 0 then return end
+    if not restoreGate("Photo Mode: camera move") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [photocam-move] " .. tostring(m) .. "\n") end
+        local mode = Spawner._photoModeCamState or "OFF"
+        if mode == "FIRSTPERSON" then
+            for _, mv in ipairs(moves) do
+                pcall(function() Spawner.MoveFirstPersonRelative(mv.dir, mv.amt, say) end)
+            end
+            -- ROTATE lines are ignored in First Person -- rotation is mouse-only there (see this
+            -- block's own header comment).
+        else
+            for _, mv in ipairs(moves) do
+                pcall(function() Spawner.PhotoCamAdjustOffset("move", mv.dir, mv.amt, say) end)
+            end
+            for _, rt in ipairs(rotates) do
+                pcall(function() Spawner.PhotoCamAdjustOffset("rotate", rt.axis, rt.amt, say) end)
+            end
+        end
+    end)
+end
+
+BeltStrapPolls.PHOTOCAM_FOV_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photocam_fov_request.txt",
+    "Mods/LivingBase/custom_photocam_fov_request.txt",
+    "custom_photocam_fov_request.txt",
+}
+BeltStrapPolls.photoCamFov = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTOCAM_FOV_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local value = tonumber(content:match("^%s*([%d%.]+)%s*$"))
+    if not value then
+        print("[LivingBase] [photocam-fov] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Photo Mode: camera FOV") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [photocam-fov] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.SetTripodFOV(value, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- Coords popup's Preview/Apply (2026-09-22, RedFalcon: "coords should also act the same as the
+-- coords in spawn mode... a button you click on that brings up the ability to set them manually")
+-- -- payload "X,Y,Z:Pitch,Yaw,Roll", same field order as the existing move_request.txt's
+-- COORDS_MOVE line. Tripod-only -- Spawner.PhotoCamSetAbsolute itself refuses any other mode.
+BeltStrapPolls.PHOTOCAM_COORDS_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photocam_coords_request.txt",
+    "Mods/LivingBase/custom_photocam_coords_request.txt",
+    "custom_photocam_coords_request.txt",
+}
+BeltStrapPolls.photoCamCoords = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTOCAM_COORDS_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local x, y, z, pitch, yaw, roll = content:match(
+        "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*:%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
+    if not x then
+        print("[LivingBase] [photocam-coords] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Photo Mode: camera coords") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [photocam-coords] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function()
+            Spawner.PhotoCamSetAbsolute(tonumber(x), tonumber(y), tonumber(z), tonumber(pitch), tonumber(yaw), tonumber(roll), say)
+        end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+-- Continuous status publish, same "just write what's true right now" convention as
+-- publishLightsStatus above -- POS/ROT/FOV lines only present in TRIPOD/SELFIE mode (see
+-- Spawner.GetPhotoCamStatus's own header for why Coords is tripod-only).
+BeltStrapPolls.PHOTOCAM_STATUS_PATH = "ue4ss/Mods/LivingBase/custom_photocam_status.txt"
+BeltStrapPolls.publishPhotoCamStatus = function()
+    local status = Spawner.GetPhotoCamStatus()
+    if status.mode == "OFF" then
+        pcall(function() os.remove(BeltStrapPolls.PHOTOCAM_STATUS_PATH) end)
+        return
+    end
+    local lines = { "MODE=" .. tostring(status.mode) }
+    if status.pos then
+        lines[#lines + 1] = string.format("POS=%.1f,%.1f,%.1f", status.pos.X, status.pos.Y, status.pos.Z)
+    end
+    if status.rot then
+        lines[#lines + 1] = string.format("ROT=%.2f,%.2f,%.2f", status.rot.Pitch, status.rot.Yaw, status.rot.Roll)
+    end
+    if status.fov then
+        lines[#lines + 1] = string.format("FOV=%.1f", status.fov)
+    end
+    local f = io.open(BeltStrapPolls.PHOTOCAM_STATUS_PATH, "w")
+    if f then
+        f:write(table.concat(lines, "\n"))
+        f:close()
+    end
+end
+
+-- "Toggle Target Highlight" (2026-09-23, RedFalcon: "click it swaps between showing and hiding the
+-- highlights used when targeting something for a cleaner picture") -- deliberately its OWN small
+-- always-published status file, NOT folded into custom_photocam_status.txt, since that one only
+-- exists while a camera mode is active (mode=="OFF" removes it entirely) but this toggle is useful
+-- any time, camera mode active or not.
+BeltStrapPolls.HIGHLIGHT_STATUS_PATH = "ue4ss/Mods/LivingBase/custom_highlight_status.txt"
+BeltStrapPolls.publishHighlightStatus = function()
+    -- Publishes the EFFECTIVE value (Spawner.IsHoverHighlightEffectivelySuppressed), not the raw
+    -- persisted flag -- outside Tripod/Selfie/First Person the raw flag may still be "true" from a
+    -- prior session in one of those modes, but highlights are always actually ON then, so the C++
+    -- button's own checkmark styling should read "not suppressed" in that case too.
+    local f = io.open(BeltStrapPolls.HIGHLIGHT_STATUS_PATH, "w")
+    if f then
+        f:write("SUPPRESSED=" .. (Spawner.IsHoverHighlightEffectivelySuppressed() and "1" or "0"))
+        f:close()
+    end
+end
+
+BeltStrapPolls.HIGHLIGHT_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_highlight_request.txt",
+    "Mods/LivingBase/custom_highlight_request.txt",
+    "custom_highlight_request.txt",
+}
+BeltStrapPolls.highlightToggle = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.HIGHLIGHT_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local value = content:match("^%s*([01])%s*$")
+    if not value then
+        print("[LivingBase] [highlight-toggle] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [highlight-toggle] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.SetHoverHighlightSuppressed(value == "1", say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
 if ExecuteWithDelay then
     local function customColorPollLoop()
         ExecuteWithDelay(400, function()
@@ -2428,6 +2686,16 @@ if ExecuteWithDelay then
             BeltStrapPolls.lightShieldSize()
             BeltStrapPolls.lightShieldVisible()
             BeltStrapPolls.publishLightsStatus()
+            BeltStrapPolls.photoCamMode()
+            BeltStrapPolls.photoCamFov()
+            BeltStrapPolls.photoCamCoords()
+            BeltStrapPolls.publishPhotoCamStatus()
+            BeltStrapPolls.highlightToggle()
+            BeltStrapPolls.publishHighlightStatus()
+            BeltStrapPolls.photoWeatherGui()
+            BeltStrapPolls.photoTimeGui()
+            BeltStrapPolls.photoFreezeTimeGui()
+            BeltStrapPolls.publishPhotoFreezeTimeStatus()
             if not mutated then
                 pollCustomColorReadRequest()
             elseif findCustomColorReadRequestPath() then
@@ -2465,6 +2733,13 @@ local ORIGIN_RETARGET_LABEL = {
     Orient     = { M = "OrientMale",     F = "Orient" },
     Scum       = { M = "ScumMale",       F = "Scum" },
     Senkamati  = { M = "SenkaMale",      F = "Senkamati" },
+    -- Ksante (2026-09-22, "John" in the GUI) -- his own unique native tag, not one of the 8 origin
+    -- families above; no F entry since he's confirmed not sex-changeable (same as GalenSkelton,
+    -- who deliberately has NO entry here at all -- excluded from the roster catalog, see
+    -- BARBIE_ROSTER.md). Label == his own family name since the 32 new DA_Custom_BodyType(List)_
+    -- KsanteAs<Origin> packages were authored directly under that name, no separate donor label
+    -- needed the way African/Native borrow Hunter/Mortar's names.
+    Ksante     = { M = "Ksante" },
 }
 
 local BARBIE_REQUEST_PATH_CANDIDATES = {
@@ -3001,6 +3276,25 @@ if ExecuteWithDelay then
     end
     moveMenuFlushLoop()
     print("[LivingBase] Move menu bridge armed — watching for move_request.txt from LivingBaseSpawnMenu.\n")
+
+    -- Photo Mode Camera movement pad -- its OWN fast (100ms) drain loop, matching the move menu's
+    -- own responsiveness rather than waiting on the slower 400ms customColorPollLoop above (that
+    -- cadence is fine for a mode switch/FOV slider, but a held movement-pad button would feel
+    -- choppy at 400ms). Applied directly per drain (see BeltStrapPolls.photoCamMove's own header
+    -- for why this doesn't need a second accumulate+flush stage the way move_request.txt does.
+    -- ALSO calls Spawner.PhotoCamTick every tick (2026-09-22) -- the only thing that keeps Selfie's
+    -- live face-tracking moving between button presses; a no-op for every other mode (see its own
+    -- header).
+    local function photoCamMoveDrainLoop()
+        ExecuteWithDelay(100, function()
+            BeltStrapPolls.photoCamMove()
+            if Spawner._photoModeCamState == "SELFIE" then
+                ExecuteInGameThread(function() pcall(function() Spawner.PhotoCamTick() end) end)
+            end
+            photoCamMoveDrainLoop()
+        end)
+    end
+    photoCamMoveDrainLoop()
 end
 
 ------------------------------------------------------------
@@ -3309,12 +3603,29 @@ local function scheduleRestore()
     -- re-find them by. Wrapping onComplete here (rather than editing Spawner.RestoreFromPersist's
     -- own several internal onComplete call sites) guarantees this runs exactly once per real
     -- completion, whatever internal path RestoreFromPersist took to get there.
-    local function afterRestore()
+    local function afterRestore(staticsCount, moversCount)
         -- Spawner.RestoreCustomState is now STAGGERED across multiple ticks (2026-09-16, crashed
         -- when it ran fully synchronously -- see its own header in spawner.lua), so it can no
         -- longer be treated as done the instant this call returns -- unlockIfCurrent must wait for
         -- its own onComplete callback instead of firing right after.
-        local ok, err = pcall(function() Spawner.RestoreCustomState(nil, unlockIfCurrent) end)
+        --
+        -- The "base restored and ready" toast now fires HERE, only once RestoreCustomState's own
+        -- onComplete runs (2026-09-22, RedFalcon: "the base is ready text appears before the
+        -- customizations are set on the actors. I needs to wait until after they are all applied")
+        -- -- it used to fire from inside Spawner.RestoreFromPersist itself (spawner.lua), the moment
+        -- the actors were spawned but BEFORE their saved skin/hair/clothes/belts/pose were replayed
+        -- onto them. staticsCount/moversCount are threaded through from RestoreFromPersist's own
+        -- onComplete call so the wording stays the same.
+        local ok, err = pcall(function()
+            Spawner.RestoreCustomState(nil, function()
+                pcall(function()
+                    Spawner.Toast(string.format(
+                        "LivingBase: base restored and ready (%d statues, %d movers). You can move freely now.",
+                        staticsCount or 0, moversCount or 0), 4.0)
+                end)
+                unlockIfCurrent()
+            end)
+        end)
         if not ok then
             always("Restore: RestoreCustomState FAILED: " .. tostring(err))
             unlockIfCurrent()
@@ -4577,6 +4888,30 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lblightshield", "lblightshield <1|2|3> <on|off>", "Shows/hides that light's spill shield mesh (stays selectable/movable either way).")
 else
     log("lblightshield unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbphotocammode <tripod|selfie|firstperson|off|reset>" (2026-09-22) -- direct
+-- console-testing parity for the Photo Mode tab's Camera mode buttons, same convention as every
+-- other Custom/Photo Mode tab control (lblighton/lbtestbeltroll/etc). See
+-- Spawner.PhotoCamSetMode's own header for the mode semantics.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbphotocammode", function(FullCommand, Parameters, Ar)
+            local function say(msg) print("[LivingBase] [lbphotocammode] " .. msg .. "\n") end
+            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):upper()) or nil
+            if not mode then
+                say("usage: lbphotocammode <tripod|selfie|firstperson|off|reset>")
+                return true
+            end
+            local ok, err = pcall(function() Spawner.PhotoCamSetMode(mode, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbphotocammode <tripod|selfie|firstperson|off|reset>")
+    registerCmdInfo("lbphotocammode", "lbphotocammode <tripod|selfie|firstperson|off|reset>", "Photo Mode tab's Camera mode switch -- Tripod (faces same way you were facing), Selfie (faces back at you), First Person (eyes, free look), Off (restores normal view), Reset (re-places the active Tripod/Selfie camera at its default spot near you).")
+else
+    log("lbphotocammode unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestbuildingitem <DA_BI_path>" (2026-09-20) -- PURE EXPLORATORY TEST, see
@@ -10402,6 +10737,165 @@ if ExecuteWithDelay then
         end)
     end
     photoWeatherListPollLoop()
+end
+
+------------------------------------------------------------
+-- Photo Mode tab GUI bridge for Weather/Time/Freeze Time (2026-09-22, RedFalcon: "under light 3...
+-- one is for weather... a dropdown... let the dropdown choose from lbphotoweather... Next to that a
+-- dropdown... call it 'Time'... 00-23... using lbphototime... a checkbox for Freeze Time").
+--
+-- Packed entirely onto the BeltStrapPolls table (fields, not new locals) -- this file is already at
+-- Lua's 200-local ceiling (see feedback_lua_200_local_ceiling in Claude's memory; a first pass here
+-- as plain top-level locals blew straight through it: "too many local variables (limit is 200)").
+-- Deliberately DEFINED here though (not up with the rest of BeltStrapPolls near the top of this
+-- file), because PHOTO_WEATHERS/findPhotoWeather/pendingPhotoWeather/pendingPhotoTime/
+-- realHourToRawHour are all locals declared just above -- a function literal closes over the locals
+-- visible at the point it's WRITTEN, regardless of which table it's assigned into, so this still has
+-- to sit textually after them to avoid the forward-reference trap this file has hit before. The
+-- calls themselves are added to the EARLIER 400ms poll loop below (BeltStrapPolls fields are already
+-- assigned by the time that loop actually runs, long after the whole file has loaded).
+--
+-- These request pollers just set the SAME pending-request locals the lbphotoweather/lbphototime
+-- console commands themselves set; the actual native work still happens in
+-- photoWeatherPollLoop/photoTimePollLoop above, unchanged. Freeze Time is new: it directly flips the
+-- day-cycle component's tick (SetComponentTickEnabled), independent of any specific hour --
+-- unchecking resumes the normal running cycle from wherever it currently sits. Its status is
+-- published from a REAL readback (IsComponentTickEnabled) every poll, not a cached flag -- same fix
+-- this session already had to make for the Target Highlight toggle (a locally-cached value read
+-- wrong after an exit/re-entry the button itself didn't cause).
+------------------------------------------------------------
+BeltStrapPolls.PHOTO_WEATHER_GUI_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photoweather_request.txt",
+    "Mods/LivingBase/custom_photoweather_request.txt",
+    "custom_photoweather_request.txt",
+}
+BeltStrapPolls.PHOTO_TIME_GUI_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_phototime_request.txt",
+    "Mods/LivingBase/custom_phototime_request.txt",
+    "custom_phototime_request.txt",
+}
+BeltStrapPolls.PHOTO_FREEZETIME_GUI_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photofreezetime_request.txt",
+    "Mods/LivingBase/custom_photofreezetime_request.txt",
+    "custom_photofreezetime_request.txt",
+}
+BeltStrapPolls.PHOTO_FREEZETIME_STATUS_PATH = "ue4ss/Mods/LivingBase/custom_photofreezetime_status.txt"
+
+BeltStrapPolls._findPhotoDayCycleComp = function()
+    for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+        local okName, n = pcall(function() return c:GetFullName() end)
+        if okName and n and not n:find("Default__") then return c end
+    end
+    return nil
+end
+
+BeltStrapPolls.photoWeatherGui = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTO_WEATHER_GUI_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local nameArg = content:match("^%s*(.-)%s*$")
+    local weather = findPhotoWeather(nameArg)
+    if not weather then
+        print("[LivingBase] [photoweather-gui] unknown weather '" .. tostring(nameArg) .. "', ignored.\n")
+        return
+    end
+    pendingPhotoWeather = weather
+    print(string.format("[LivingBase] [photoweather-gui] setting weather to %s (ID=%d)...\n", weather.name, weather.id))
+end
+
+BeltStrapPolls.photoTimeGui = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTO_TIME_GUI_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local realHour = tonumber(content:match("^%s*(%d+)%s*$"))
+    if not realHour or realHour < 0 or realHour > 23 then
+        print("[LivingBase] [phototime-gui] malformed hour '" .. tostring(content) .. "', ignored.\n")
+        return
+    end
+    local rawHour = realHourToRawHour(realHour)
+    pendingPhotoTime = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = 0.0125, ticks = 0 }
+    print(string.format("[LivingBase] [phototime-gui] setting time to %d:00...\n", realHour))
+end
+
+-- KNOWN LIMITATION (2026-09-22, RedFalcon: "when unfreezing it looks like the world resyncs with
+-- the game clock. so if you froze time at 15:00 and time progress in your world until what would be
+-- 6:00, then once unfrozen the sun moves to 06:00"). GetCurrentTimeInHours() is apparently computed
+-- from real elapsed world time, not accumulated only inside TickComponent -- this is the same root
+-- cause already documented above (WorldDayTime writes have zero lasting effect; changing
+-- DayCycleSpeedInv mid-stream jumps instead of transitioning smoothly). SetComponentTickEnabled(false)
+-- only stops this component from APPLYING that computed hour to the visuals (sun rotation/lighting);
+-- it does not stop the underlying real-time-based hour from silently continuing to advance while
+-- "frozen." Re-enabling tick just reveals wherever that hidden clock ended up, which can look like a
+-- jump/resync rather than a true pause-and-resume. RedFalcon's own call: leave this as-is (a real
+-- engine limitation, not something a client-side Lua mod can truly stop) rather than build a
+-- reconverge-back-to-the-frozen-hour workaround -- documenting it here instead.
+BeltStrapPolls.photoFreezeTimeGui = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTO_FREEZETIME_GUI_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local onStr = content:match("^%s*([01])%s*$")
+    if not onStr then
+        print("[LivingBase] [photofreeze-gui] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    local comp = BeltStrapPolls._findPhotoDayCycleComp()
+    if not comp then
+        print("[LivingBase] [photofreeze-gui] day-cycle component not found.\n")
+        return
+    end
+    local on = (onStr == "1")
+    -- Resuming needs DayCycleSpeedInv restored to 1.0 (confirmed normal pace, see lbtestdaytime9's
+    -- own comment: "100000 = near-frozen, 1.0 = normal pace"), not just re-enabling tick -- the
+    -- component was left at whatever FAST-FORWARD speedInv (default 0.0125) lbphototime used to
+    -- converge to its target hour, so a bare SetComponentTickEnabled(true) resumed time at that
+    -- same fast rate instead of the real day/night pace (RedFalcon: "freeze time does return time
+    -- passing but it doesnt reset the speed").
+    local ok = pcall(function()
+        if not on then comp.DayCycleSpeedInv = 1.0 end
+        comp:SetComponentTickEnabled(not on)
+    end)
+    print("[LivingBase] [photofreeze-gui] time " .. (on and "FROZEN" or "RESUMED") .. (ok and "." or " (call failed).") .. "\n")
+end
+
+BeltStrapPolls.publishPhotoFreezeTimeStatus = function()
+    local frozen = false
+    pcall(function()
+        local comp = BeltStrapPolls._findPhotoDayCycleComp()
+        if comp then
+            local enabled = true
+            pcall(function() enabled = comp:IsComponentTickEnabled() end)
+            frozen = not enabled
+        end
+    end)
+    local f = io.open(BeltStrapPolls.PHOTO_FREEZETIME_STATUS_PATH, "w")
+    if f then
+        f:write("FROZEN=" .. (frozen and "1" or "0"))
+        f:close()
+    end
 end
 
 ------------------------------------------------------------

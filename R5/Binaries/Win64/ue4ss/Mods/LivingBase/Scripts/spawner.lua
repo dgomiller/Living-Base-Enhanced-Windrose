@@ -4290,9 +4290,20 @@ end
 -- instead, which Spawner.Spawn itself keeps current on every spawn (see "AUTO-TARGET ON SPAWN"). Fall
 -- back to that whenever the swap-specific reference is stale, rather than forcing a fresh respawn
 -- after every single reload just to re-arm these diagnostics.
+--
+-- Spawner.lockedTarget fallback (2026-09-25, RedFalcon: "i freshly targeted one of the senkamati"
+-- via Numpad+ target-lock and lbteststatetree still said "both stale") -- Spawner.lockedTarget (set by
+-- ToggleTargetLock, the Numpad+ live-edit lock) is a SEPARATE tracking mechanism from
+-- Spawner._lastProbedActor (only set by lbprobe/lbprobedump's camera-cone sweep or auto-target-on-spawn)
+-- -- targeting something via Numpad+ alone never touched _lastProbedActor, so every resolveTestDiagActor
+-- caller reported stale even with a real, freshly-locked target sitting right there. Check it last
+-- (least surprising precedence: an explicit recent spawn/probe still wins over an older lock).
 local function resolveTestDiagActor()
     if Spawner._bodySwapActor and Spawner._bodySwapActor:IsValid() then return Spawner._bodySwapActor end
     if Spawner._lastProbedActor and Spawner._lastProbedActor:IsValid() then return Spawner._lastProbedActor end
+    if Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid() then
+        return Spawner.lockedTarget.actor
+    end
     return nil
 end
 
@@ -4540,12 +4551,28 @@ function Spawner.TestDumpStateTree(say)
     local actorFullName = "?"
     pcall(function() actorFullName = actor:GetFullName() end)
     say("actor: " .. actorFullName)
+    -- AIControllerClass one-stop addition (2026-09-25, RedFalcon: chasing why the lbtestaianim'd
+    -- Senkamati fights with a foreign Citizen-Walker tree instead of its own combat one) -- report
+    -- BOTH the Pawn's own AIControllerClass property (what class it WANTS to be possessed by) and the
+    -- live Controller's actual class (what's REALLY possessing it right now). These can legitimately
+    -- differ right after an lbtestaianim override, so print both rather than assuming they match.
+    pcall(function()
+        local wanted = actor.AIControllerClass
+        local wantedName = "?"
+        if wanted then pcall(function() wantedName = wanted:GetFName():ToString() end) else wantedName = "nil" end
+        say("Pawn.AIControllerClass = " .. wantedName)
+    end)
     local ctrl = nil
     pcall(function() ctrl = actor.Controller end)
     if not ctrl then
         say("actor.Controller is nil.")
         return false
     end
+    pcall(function()
+        local liveName = "?"
+        pcall(function() liveName = ctrl:GetClass():GetFName():ToString() end)
+        say("live Controller class = " .. liveName)
+    end)
     local st = nil
     pcall(function() st = ctrl.StateTreeComponent end)
     if not st then pcall(function() st = ctrl.BrainComponent end) end
@@ -4573,6 +4600,13 @@ function Spawner.TestDumpStateTree(say)
         stName = "nil/None"
     end
     say("StateTreeRef.StateTree = " .. stName)
+    -- Ready-to-paste command (2026-09-25, RedFalcon: "if you could get it to output the final command
+    -- that would be helpful too") -- GetFullName() returns "ClassName /Game/Path.AssetName"; strip the
+    -- leading class-name token since resolveAsset()/lbwakeai's 2nd arg wants just the "/Game/..." path.
+    if okRef and stateTreeAsset then
+        local bare = stName:match("(/Game/.*)$") or stName
+        say("  ready command: lbwakeai graft " .. bare)
+    end
     -- Also check whether the tree is actually RUNNING right now (not just configured) -- distinct
     -- questions: "does it have the right asset" vs "did anything ever actually start it ticking".
     for _, fname in ipairs({ "GetStateTreeRunStatus", "IsRunning", "GetRunStatus" }) do
@@ -4583,10 +4617,266 @@ function Spawner.TestDumpStateTree(say)
         end)
         if ok then say(string.format("%s() = %s", fname, tostring(res))) end
     end
+    -- Full StateTreeMap dump (2026-09-25) -- StateTreeRef.StateTree above only ever shows whichever
+    -- ONE tree is currently active (e.g. a "Calm" idle tree while nothing's provoked it yet). A native
+    -- mob's controller can carry SEVERAL trees keyed by GameplayTag (Params.StateTreeMap, the same map
+    -- Spawner.WakeAI's findTree() already reads) -- e.g. a Combat/Aggro tag alongside Calm. Dump every
+    -- entry so the REAL combat tree's asset path can be found even when the mob is currently passive,
+    -- rather than only ever seeing whichever tree happened to be live at probe time.
+    pcall(function()
+        local m = st.Params.StateTreeMap
+        if not m then
+            say("Params.StateTreeMap = nil.")
+            return
+        end
+        local n = 0
+        say("Params.StateTreeMap entries:")
+        m:ForEach(function(k, v)
+            n = n + 1
+            local tagName, treeName = "?", "nil"
+            pcall(function() tagName = k:ToString() end)
+            pcall(function()
+                local data = v
+                if type(v) == "userdata" and v.get then data = v:get() end
+                local t = data.StateTree
+                if t and t:IsValid() then
+                    local ok2, full = pcall(function() return t:GetFullName() end)
+                    treeName = (ok2 and full) or "<GetFullName nil>"
+                end
+            end)
+            say(string.format("  [%s] -> %s", tostring(tagName), tostring(treeName)))
+            if treeName ~= "nil" and treeName ~= "<GetFullName nil>" then
+                local bare = treeName:match("(/Game/.*)$") or treeName
+                say("    ready command: lbwakeai graft " .. bare)
+            end
+        end)
+        if n == 0 then say("  (empty map)") end
+    end)
     return true
 end
 
--- Spawner.WakeAI(say, mode) -- "lbwakeai [status|activate|graft]" (2026-09-10). The active attempt to
+-- Spawner.TestDumpCombatComponent(say) -- "lbtestcombat" (2026-09-25), PURE READ. RedFalcon: "i think
+-- equipped and visually present are different things" -- lbsockets already proved the Macuahuitl/
+-- Shield meshes are genuinely attached at the right sockets (ik_weapon_lSocket/ik_weapon_rSocket) on
+-- this actor, yet the combat tree still behaves as if unarmed. A fresh lbprobedump on a real crew
+-- member with a known working sword (BP_Mob_Crew_Regular_Player_C) settled where "equipped" actually
+-- lives: CombatComponent itself (R5CombatComponent) only carries generic Params (DA_CombatParams) --
+-- a dead end, DESPITE it being what Spawner.MakePassive's own CombatComponent-strip targets. The
+-- REAL weapon state is a separate component, `EquipmentComponent`, which owns a genuine CHILD OBJECT
+-- named after the weapon class itself (e.g. BP_Mob_Wpn_Crew_Saber_C_..., an R5MeleeWeaponItem) --
+-- that child owns Visual (R5MeleeWeaponVisual, holding the actual WeaponMesh SkeletalMeshComponent --
+-- the cosmetic side lbsockets already saw), Params, and LogicParams (the combat data the AI tree
+-- almost certainly reads to know it's armed and how to attack). A weapon mesh on a socket with no
+-- matching EquipmentComponent child is exactly "visually present but not equipped." Dumps
+-- EquipmentComponent and lists every child sub-object it owns (with each child's own class + Visual/
+-- Params/LogicParams if present) on the current test-diag actor, so we can see whether the Macuahuitl
+-- is genuinely missing its EquipmentComponent entry or just needs the same population/activation step
+-- lbwakeai's "activate" mode already targets.
+function Spawner.TestDumpCombatComponent(say)
+    say = say or function(m) print("[LivingBase] [test-combat] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current test actor (Spawner._bodySwapActor / Spawner._lastProbedActor / Spawner.lockedTarget all stale) -- spawn or target one first.")
+        return false
+    end
+    local actorFullName = "?"
+    pcall(function() actorFullName = actor:GetFullName() end)
+    say("actor: " .. actorFullName)
+    local ec = nil
+    pcall(function() ec = actor.EquipmentComponent end)
+    if not (ec and ec:IsValid()) then
+        say("actor.EquipmentComponent is nil/invalid -- no equipment component on this actor at all.")
+        return false
+    end
+    local ecName = "?"
+    pcall(function() ecName = ec:GetClass():GetFName():ToString() end)
+    say("EquipmentComponent class: " .. ecName)
+    dumpObjectProperties(ec, "EQUIPMENT")
+    -- The real crew-sword probedump showed the weapon item (BP_Mob_Wpn_Crew_Saber_C_...,
+    -- an R5MeleeWeaponItem) enumerated as its own top-level ActorComponent on the ACTOR itself
+    -- (logically owned by EquipmentComponent, but reachable the same way every other component sweep
+    -- in this file already works) -- reuse the SAME proven K2_GetComponentsByClass(ActorComponent)
+    -- sweep + unwrap pattern (see Spawner.LetFurniturePass's own comment on the wrapper gotcha) rather
+    -- than a speculative "walk EquipmentComponent's own children" API this file has never used before.
+    -- Filter to components carrying a Visual/Params/LogicParams field -- the R5MeleeWeaponItem shape --
+    -- so the output stays focused on weapon items instead of dumping every mesh/light/etc. on the actor.
+    pcall(function()
+        local acCls = StaticFindObject("/Script/Engine.ActorComponent")
+        if not (acCls and acCls:IsValid()) then
+            say("could not resolve /Script/Engine.ActorComponent -- cannot sweep for weapon item components.")
+            return
+        end
+        local comps = actor:K2_GetComponentsByClass(acCls)
+        local n = 0
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+        local found = 0
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                local hasWeaponShape = false
+                pcall(function() if c.LogicParams then hasWeaponShape = true end end)
+                if hasWeaponShape then
+                    found = found + 1
+                    local cName, cClass = "?", "?"
+                    pcall(function() cName = c:GetFName():ToString() end)
+                    pcall(function() cClass = c:GetClass():GetFName():ToString() end)
+                    say(string.format("  weapon item: %s (class %s)", cName, cClass))
+                    for _, fname in ipairs({ "Visual", "Params", "LogicParams" }) do
+                        pcall(function()
+                            local v = c[fname]
+                            if v and v:IsValid() then
+                                local full = "?"
+                                pcall(function() full = v:GetFullName() end)
+                                say(string.format("    %s = %s", fname, full))
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+        if found == 0 then say("  NO weapon item component (nothing with a LogicParams field) found on this actor -- this is the real 'not equipped' gap.") end
+    end)
+    -- Function-name sweep on EquipmentComponent (2026-09-25, RedFalcon: "can we swap the weapon" --
+    -- checking FIRST whether that's even safely possible) -- EquipmentComponent's own property dump
+    -- above came back completely empty (R5AIEquipment/R5NoInventoryEquipment expose no readable/
+    -- writable fields at all), so the weapon-item child components must be constructed/registered by
+    -- some NATIVE FUNCTION at spawn time, not a settable array property. Same ForEachFunction walk
+    -- Spawner.TestDumpAIController already uses to find candidate functions on a controller -- if
+    -- nothing plausibly equip/weapon-shaped turns up here, a live weapon swap isn't safely reachable
+    -- via Lua reflection at all (no function to call, no property to write), and it stays a real
+    -- engineering effort rather than a quick test.
+    pcall(function()
+        local cls
+        pcall(function() cls = ec:GetClass() end)
+        local names = {}
+        while cls and cls:IsValid() do
+            local className = "?"
+            pcall(function() className = cls:GetFName():ToString() end)
+            pcall(function()
+                cls:ForEachFunction(function(fn)
+                    local n = "?"
+                    pcall(function() n = fn:GetFName():ToString() end)
+                    local lower = n:lower()
+                    if lower:find("equip", 1, true) or lower:find("weapon", 1, true)
+                        or lower:find("add", 1, true) or lower:find("remove", 1, true)
+                        or lower:find("set", 1, true) then
+                        names[#names + 1] = string.format("%s (from %s)", n, className)
+                    end
+                end)
+            end)
+            local nextCls
+            pcall(function() nextCls = cls:GetSuperStruct() end)
+            cls = nextCls
+        end
+        table.sort(names)
+        say(string.format("=== EquipmentComponent candidate functions (%d match, filtered to equip/weapon/add/remove/set) ===", #names))
+        for _, n in ipairs(names) do say("  " .. n) end
+        if #names == 0 then say("  NONE -- no plausible equip/weapon function found on this class chain at all.") end
+    end)
+    return true
+end
+
+-- Spawner.TestDumpAsset(assetPath, say) -- "lbdumpasset <AssetPath>" (2026-09-25), PURE READ.
+-- RedFalcon: chasing the Caster totem's own confused targeting (attacks friendlies, ignores real
+-- enemies, even after its FactionComponent.FactionsParams was correctly re-pointed to a friendly
+-- faction) -- also a live issue in the separate "LBE: Summonable Ghost Fighters" mod, so worth
+-- actually solving rather than accepting. dumpObjectProperties has always only ever shown a
+-- component's own OUTER reference to a DataAsset (e.g. "Params = R5AS_AgentParams
+-- DA_..._AgentParams"), never that asset's OWN fields -- no generic "load this asset and dump its
+-- properties" tool existed anywhere in this file despite how much probing this project has done.
+-- The actual targeting/relationship rules almost certainly live inside AgentParams/MemoryParams/
+-- TargetLockParams DataAssets themselves (the R5AS_AgentComponent/R5AS_MemoryComponent "AS" system
+-- is a separate targeting/threat-tracking layer from the plain FactionComponent damage check), so
+-- this is the missing piece to actually see them. Reuses resolveAsset (same asset-resolution
+-- fallback chain every other asset-path lookup in this file already relies on).
+-- fieldName (2026-09-25, RedFalcon: "can we dig deeper to see what its truly saying") -- drills one
+-- level into a named field on the resolved asset (e.g. "TargetSelector") and dumps THAT object
+-- instead, since dumpObjectProperties only ever shows a bare reference for a nested UObject field,
+-- never its own contents. If the field is a TArray of objects, enumerates and dumps EACH entry
+-- (e.g. "AgentCollectors"/"Categorizers") rather than just the opaque array handle.
+function Spawner.TestDumpAsset(assetPath, fieldName, say)
+    say = say or function(m) print("[LivingBase] [dump-asset] " .. tostring(m) .. "\n") end
+    if not assetPath or assetPath == "" then
+        say("Usage: lbdumpasset <full /Game/... asset path, e.g. .../DA_Foo.DA_Foo> [FieldName]")
+        return false
+    end
+    local asset = resolveAsset(assetPath)
+    if not (asset and asset:IsValid()) then
+        say("could not resolve asset: " .. tostring(assetPath))
+        return false
+    end
+    local className = "?"
+    pcall(function() className = asset:GetClass():GetFName():ToString() end)
+    say("asset class: " .. className)
+    if not fieldName or fieldName == "" then
+        dumpObjectProperties(asset, "ASSET")
+        return true
+    end
+    local ok, field = pcall(function() return asset[fieldName] end)
+    if not ok or field == nil then
+        say("field '" .. tostring(fieldName) .. "' unreadable or nil on this asset.")
+        return false
+    end
+    -- 2026-09-25 FIX: check TArray-ness FIRST, not last -- a TArray wrapper can ALSO answer
+    -- :IsValid()==true (it's a valid non-null container reference), which made the original
+    -- single-object branch wrongly claim Categorizers/AgentCollectors as single objects (logged
+    -- "class: ?" -- GetClass() silently failing on a container is the tell) before array
+    -- enumeration ever got a chance to run. GetArrayNum() failing/erroring is the more specific
+    -- "this isn't actually an array" signal -- track that explicitly rather than trusting a bare
+    -- n==0 (a genuine empty array and "not an array at all" would otherwise look identical).
+    local isArray, n = false, 0
+    if pcall(function() n = field:GetArrayNum(); isArray = true end) then
+        -- got it
+    elseif pcall(function() n = #field; isArray = true end) then
+        -- got it via length-operator fallback
+    end
+    if isArray then
+        if n == 0 then
+            say(string.format("%s: TArray, empty (0 entries).", fieldName))
+            return true
+        end
+        say(string.format("%s: TArray with %d entr%s", fieldName, n, n == 1 and "y" or "ies"))
+        for i = 1, n do
+            local ok2, item = pcall(function() return field[i] end)
+            if not (ok2 and item) then pcall(function() item = field:Get(i) end) end
+            pcall(function() if item and type(item) == "userdata" and item.get then item = item:get() end end)
+            if item and type(item) == "userdata" and item.IsValid then
+                local isValid = false
+                pcall(function() isValid = item:IsValid() end)
+                if isValid then
+                    local iClass = "?"
+                    pcall(function() iClass = item:GetClass():GetFName():ToString() end)
+                    say(string.format("  [%d] class: %s", i, iClass))
+                    dumpObjectProperties(item, string.format("%s[%d]", fieldName:upper(), i))
+                else
+                    say(string.format("  [%d]: invalid/nil entry", i))
+                end
+            else
+                say(string.format("  [%d]: %s (not an object)", i, tostring(item)))
+            end
+        end
+        return true
+    end
+    -- Not an array -- fall back to treating it as a single object (e.g. TargetSelector).
+    if type(field) == "userdata" and field.IsValid then
+        local isValid = false
+        pcall(function() isValid = field:IsValid() end)
+        if isValid then
+            local fClass = "?"
+            pcall(function() fClass = field:GetClass():GetFName():ToString() end)
+            say(string.format("%s class: %s", fieldName, fClass))
+            dumpObjectProperties(field, fieldName:upper())
+            return true
+        end
+    end
+    say(string.format("field '%s' = %s (not a dumpable object or array)", fieldName, tostring(field)))
+    return true
+end
+
+-- Spawner.WakeAI(say, mode, treeAssetPathArg) -- "lbwakeai [status|activate|graft] [StateTreeAssetPath|-]"
+-- (2026-09-10, extended 2026-09-25 with the explicit tree-path arg). The active attempt to
 -- get the from-scratch donor-independent class (BP_BarbieR5Char_Test) to actually WALK, after the
 -- long diagnostic chase (§19x) settled the root cause: her controller's own
 -- StateTreeComponent.StateTreeRef.StateTree never resolves and the tree never starts
@@ -4614,7 +4904,15 @@ end
 --
 -- Every step is individually pcall'd with an always() line printed BEFORE and AFTER, so if any native
 -- call hard-crashes (the SetAnimInstanceClass pattern from §19x) the log pins down exactly which one.
-function Spawner.WakeAI(say, mode)
+-- treeAssetPathArg (2026-09-25, RedFalcon: "how do we get the senkamati to fight using their regular
+-- weapons and techniques" after lbtestaianim proved they can be made to walk) -- lets the graft target
+-- a SPECIFIC StateTree asset instead of always falling through to findTree()'s own Params.StateTreeMap
+-- lookup / hardcoded calm-worker fallback. Pass "-" (or omit) to keep the exact original behavior.
+-- The intended use: run lbteststatetree on an UNTOUCHED native spawn first to read its real combat
+-- tree's asset path off StateTreeRef.StateTree, then pass THAT path here on the lbtestaianim'd/walking
+-- copy -- grafts the real native combat tree onto the AI-overridden actor rather than whatever generic
+-- tree its foreign AIControllerClass would otherwise supply.
+function Spawner.WakeAI(say, mode, treeAssetPathArg)
     say = say or function(m) always("[wake-ai] " .. tostring(m)) end
     mode = (mode and mode:lower()) or "auto"
     local actor = resolveTestDiagActor()
@@ -4706,7 +5004,15 @@ function Spawner.WakeAI(say, mode)
     end
 
     if mode == "auto" or mode == "graft" then
-        local tree, src = findTree()
+        local tree, src
+        if treeAssetPathArg and treeAssetPathArg ~= "-" and treeAssetPathArg ~= "" then
+            pcall(function() tree = resolveAsset(treeAssetPathArg) end)
+            src = tree and ("explicit path: " .. treeAssetPathArg)
+                or ("explicit path UNRESOLVED: " .. treeAssetPathArg .. " -- falling back to auto-lookup")
+        end
+        if not tree then
+            tree, src = findTree()
+        end
         say("graft tree source: " .. src .. (tree and "" or " -- ABORTING graft, no tree"))
         if tree then
             local tn = "?"

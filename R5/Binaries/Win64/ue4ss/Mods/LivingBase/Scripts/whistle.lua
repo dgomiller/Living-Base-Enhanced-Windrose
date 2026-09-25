@@ -341,10 +341,78 @@ local function onTotemSpawned(totem)
     if not (totem and totem:IsValid()) then return end
     -- The Caster's witch totems attack the player: they are separate actors and never inherit her
     -- friendly faction. Our earlier attempt stripped abilities by GUESSED name and removed nothing
-    -- ("removed ability" appears 0 times in the log). With the real class path we simply destroy
-    -- them on spawn. Her close-range AoE is untouched.
-    pcall(function() totem:K2_DestroyActor() end)
-    out("Caster totem destroyed on spawn.")
+    -- ("removed ability" appears 0 times in the log), so we switched to destroying the totem on
+    -- spawn by its real class path instead.
+    --
+    -- REVISED 2026-09-25 (RedFalcon: "so the reskinned senkamati have that weapon and use it... i
+    -- do wonder if the witch could still use her magic" -> traced to senkaMobFix's own
+    -- Spawner.StripAbilities(actor, Config.CASTER_DISABLE_ABILITIES, "Caster") call, which removes
+    -- ANY ability whose class name contains "Summon" or "Totem" -- including her own totem-deploy
+    -- ability, her combat opener. With that ability gone entirely, her StateTree had nothing to
+    -- activate to start a fight at all -- confirmed by RedFalcon: a bare `lbspawn` + friendly
+    -- (bypassing senkaMobFix, so the ability stays granted) fights normally, but every menu-spawned
+    -- Wild/Monsterous witch (which DOES go through senkaMobFix) never fought. Destroying the totem
+    -- was never the problem; stripping her ONLY way to open combat was.
+    --
+    -- Fix: stop stripping the ability (see senkaMobFix's own updated comment) and instead let her
+    -- summon the totem normally, then immediately re-faction THIS totem to friendly the same way
+    -- every other friendly spawn in this mod already is (Spawner.MakeFriendly) -- neutralizing the
+    -- one real problem (a hostile totem attacking the player) without touching her own combat
+    -- sequencing at all. RedFalcon confirmed the game's own ability logic destroys/replaces her
+    -- previous totem each time she redeploys (they're temporary), so there's no cleanup burden here
+    -- -- this hook only ever needs to touch each totem once, right as it spawns.
+    local fp = Spawner.GetFriendlyFactionParams()
+    if fp then
+        local ok = pcall(function() Spawner.MakeFriendly(totem, fp) end)
+        out(ok and "Caster totem re-factioned to friendly on spawn." or "Caster totem re-faction FAILED.")
+    else
+        -- No friendly faction source available (e.g. no live crew yet) -- fall back to the old
+        -- destroy behavior rather than leave a hostile totem live with nothing done to it.
+        pcall(function() totem:K2_DestroyActor() end)
+        out("Caster totem destroyed on spawn (no friendly faction source available).")
+        return
+    end
+
+    -- 2026-09-25 FOLLOW-UP (RedFalcon: "so it doesn't hurt friendlies but it attacks friendlies and
+    -- not the enemies... theres no reason for it to attack everything"): FModel's export of the
+    -- totem's own DA_..._AgentParams settled why the FactionsParams overwrite above only ever fixed
+    -- DAMAGE, not TARGETING. Its TargetSelector (R5AS_TargetSelector_NearAlertAggressive) requires
+    -- candidates to carry a dynamically-assigned "AS.Category.Enemy" tag before it will ever target
+    -- them at all -- assigned by R5AS_Categorizer_Relationship, one of 5 Categorizers re-evaluated
+    -- every CollectionTickInterval (0.3s, so not a stale-cache/timing bug). That categorizer's own
+    -- Properties came back completely EMPTY in the FModel export -- zero Blueprint-exposed config,
+    -- its actual relationship logic is 100% hardcoded native C++. We can't tune it directly.
+    --
+    -- The totem's native defaults (bShouldUseOwnerFaction=true, Owner=the Caster who deployed it)
+    -- suggest this categorizer is BUILT to defer to an owner's own relationships rather than reading
+    -- a target's own independent FactionsParams -- and the Caster herself already discriminates
+    -- friend/foe correctly (she fights real enemies, never the player). Xenophon's own proven taming
+    -- recipe (see project_crew_type_exploration memory) is exactly this: copy the PLAYER's real
+    -- OwnerId (PlayerState.AccountData.AccountId) onto a target's OwnershipComponent, set
+    -- bShouldUseOwnerFaction=true (already true here), call OnRep_OwnerId() -- never tried on this
+    -- totem before. Layered ADDITIONALLY on top of the FactionsParams fix above (not replacing it),
+    -- since that fix is still the one thing keeping damage safe if this new step turns out to be a
+    -- no-op for targeting specifically.
+    pcall(function()
+        local oc = totem.OwnershipComponent
+        if not (oc and oc:IsValid()) then return end
+        local ownerId = nil
+        pcall(function()
+            local UEHelpers = require("UEHelpers")
+            local pc = UEHelpers.GetPlayerController()
+            local ps = pc and pc:IsValid() and pc.PlayerState
+            if ps and ps:IsValid() then ownerId = ps.AccountData.AccountId end
+        end)
+        if not ownerId then
+            out("Caster totem OwnerId sync SKIPPED -- could not read PlayerState.AccountData.AccountId.")
+            return
+        end
+        local wroteOk = pcall(function() oc.OwnerId = ownerId end)
+        pcall(function() oc.bShouldUseOwnerFaction = true end)
+        local repOk = pcall(function() oc:OnRep_OwnerId() end)
+        out(string.format("Caster totem OwnerId synced to player (write=%s, OnRep_OwnerId=%s).",
+            tostring(wroteOk), tostring(repOk)))
+    end)
 end
 
 --- Register the object hooks. Safe to call more than once.

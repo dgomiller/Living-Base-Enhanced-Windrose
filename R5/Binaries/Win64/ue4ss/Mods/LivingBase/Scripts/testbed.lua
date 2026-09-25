@@ -809,17 +809,23 @@ local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, on
     -- it HERE too, not just MakePassive. Otherwise a reloaded Caster/Hunter stays hostile.
     local fp = Spawner.GetFriendlyFactionParams()
     -- The Caster summons witch totems that attack the player. The totems are separate actors and
-    -- don't inherit her friendly faction, so they stay hostile. Remove ONLY the summon ability —
-    -- her close-range AoE is fine and stays. Abilities can be granted late in BeginPlay, so this
-    -- rides the same retry cadence as the faction/passive work below.
-    local killAbilities = (name == "Caster-F") and Config.CASTER_DISABLE_ABILITIES or nil
+    -- don't inherit her friendly faction, so they stay hostile.
+    --
+    -- REMOVED 2026-09-25 (RedFalcon: "i do wonder if the witch could still use her magic" -> "so
+    -- the reskinned senkamati have that weapon and use it... is something being stripped on
+    -- spawn?"): this used to strip her totem-summon ability entirely via
+    -- Spawner.StripAbilities(actor, Config.CASTER_DISABLE_ABILITIES, "Caster") -- but her summon IS
+    -- her combat opener; removing it left her StateTree with nothing to activate to ever start a
+    -- fight at all. Confirmed live: a bare `lbspawn` + friendly (bypassing this function, so the
+    -- ability stays granted) fights normally; every menu-spawned Wild/Monsterous witch (which DOES
+    -- run this function) never fought. Fix is now on the TOTEM side instead — see
+    -- whistle.lua's onTotemSpawned, which re-factions each totem to friendly the instant it spawns
+    -- (rather than destroying it or stripping the ability that makes it) — so her own combat
+    -- sequencing is never touched at all.
     local function pacify()
         if Config.SENKAMATI_PASSIVE then pcall(function() Spawner.MakePassive(actor) end) end
         if Config.MAKE_CREATURES_FRIENDLY and fp then
             pcall(function() Spawner.MakeFriendly(actor, fp) end)
-        end
-        if killAbilities then
-            pcall(function() Spawner.StripAbilities(actor, killAbilities, "Caster") end)
         end
     end
     pacify()

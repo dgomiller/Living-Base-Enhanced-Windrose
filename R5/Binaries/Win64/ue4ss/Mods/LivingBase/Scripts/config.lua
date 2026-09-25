@@ -673,12 +673,11 @@ Config.SENKA_MOB_WALK_AI_PARAMS =
 -- Strip the ability system on Senkamati MOB spawns so they can't attack at all.
 -- EXPERIMENTAL: if they freeze or misbehave, set false.
 Config.SENKAMATI_PASSIVE = true
--- The Caster summons witch totems that fight for her. The totems are separate actors that do NOT
--- inherit her friendly faction, so they attack the player. Remove ONLY the summon ability by
--- class-name pattern; her close-range AoE is harmless and stays. If none of these match, the mod
--- dumps every ability she was granted (once) so we can target the real name instead of guessing.
--- NEVER strip the whole AbilitySystemComponent: movement runs on it and the pawn freezes.
-Config.CASTER_DISABLE_ABILITIES = { "Summon", "Totem" }
+-- REMOVED 2026-09-25 (was Config.CASTER_DISABLE_ABILITIES = { "Summon", "Totem" }): stripped her
+-- totem-summon ability entirely to stop the totem attacking the player, but that ability is also
+-- her combat opener -- removing it left her StateTree with nothing to activate to ever start a
+-- fight at all. See whistle.lua's onTotemSpawned for the real fix: the totem itself now gets
+-- re-factioned to friendly the instant it spawns, instead of destroying it or crippling her kit.
 
 -- RESULT (2026-07-07): forcing sex=Female on the Senkamati look did NOTHING —
 -- all male. The Senkamati ARCHETYPE dictates sex at build and is authored male;

@@ -11956,9 +11956,55 @@ if RegisterConsoleCommandHandler then
         end)
     end)
     log("Console command registered: lbteststatetree")
-    registerCmdInfo("lbteststatetree", "lbteststatetree", "PURE READ: dumps the current target's own StateTreeComponent properties.")
+    registerCmdInfo("lbteststatetree", "lbteststatetree", "PURE READ: dumps the current target's own AIControllerClass (wanted + live), StateTreeComponent properties, the currently-active StateTree asset, and every tag->tree entry in Params.StateTreeMap -- each with a ready-to-paste 'lbwakeai graft <path>' command line.")
 else
     log("lbteststatetree unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestcombat" (2026-09-25) -- PURE READ. Dumps EquipmentComponent + sweeps the
+-- actor's components for a real weapon item object (LogicParams-bearing, e.g. R5MeleeWeaponItem) --
+-- the actual "is this armed" state, distinct from CombatComponent (a dead end, generic Params only)
+-- and distinct from a cosmetic weapon mesh sitting on a socket.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestcombat", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [test-combat] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local ok, err = pcall(function() Spawner.TestDumpCombatComponent(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestcombat")
+    registerCmdInfo("lbtestcombat", "lbtestcombat", "PURE READ: dumps EquipmentComponent and lists any real weapon item component (LogicParams-bearing, e.g. R5MeleeWeaponItem) on the current target, plus a filtered function-name sweep of EquipmentComponent's class chain (equip/weapon/add/remove/set) to check whether a live weapon swap is even reachable via Lua.")
+else
+    log("lbtestcombat unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbdumpasset <AssetPath>" (2026-09-25) -- PURE READ. Loads any /Game/... asset by
+-- path and dumps its own properties -- fills the gap where every other probe command only ever
+-- showed a component's reference TO an asset (e.g. "Params = ... DA_Foo"), never that asset's own
+-- field values.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbdumpasset", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [dump-asset] " .. tostring(msg) .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local path = Parameters and Parameters[1] and tostring(Parameters[1]) or nil
+            local fieldName = Parameters and Parameters[2] and tostring(Parameters[2]) or nil
+            local ok, err = pcall(function() Spawner.TestDumpAsset(path, fieldName, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbdumpasset")
+    registerCmdInfo("lbdumpasset", "lbdumpasset <AssetPath> [FieldName]", "PURE READ: loads a /Game/... asset (e.g. a DataAsset like AgentParams/MemoryParams/TargetLockParams) and dumps its own properties. Optional FieldName drills one level deeper into a nested object/array field (e.g. 'TargetSelector', 'AgentCollectors', 'Categorizers').")
+else
+    log("lbdumpasset unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestcrewcomponents" (2026-09-09) -- PURE READ. Dumps the current target's own
@@ -11995,13 +12041,14 @@ if RegisterConsoleCommandHandler then
                 if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
             end
             local mode = Parameters and Parameters[1] and tostring(Parameters[1]) or nil
-            local ok, err = pcall(function() Spawner.WakeAI(say, mode) end)
+            local treeArg = Parameters and Parameters[2] and tostring(Parameters[2]) or nil
+            local ok, err = pcall(function() Spawner.WakeAI(say, mode, treeArg) end)
             if not ok then say("FAILED: " .. tostring(err)) end
             return true
         end)
     end)
     log("Console command registered: lbwakeai")
-    registerCmdInfo("lbwakeai", "lbwakeai [status|activate|graft]", "Tries to make the current target's AI start walking: ActivateCharacter() then a StateTree graft (StopLogic/SetStateTree/StartLogic). No arg = do both; 'status' = read only.")
+    registerCmdInfo("lbwakeai", "lbwakeai [status|activate|graft] [StateTreeAssetPath|-]", "Tries to make the current target's AI start walking: ActivateCharacter() then a StateTree graft (StopLogic/SetStateTree/StartLogic). No arg = do both; 'status' = read only. Optional 2nd arg grafts a SPECIFIC StateTree asset path instead of the auto-lookup/fallback tree -- pass '-' or omit to keep the original auto behavior.")
 else
     log("lbwakeai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

@@ -347,6 +347,131 @@ local function spawnCreature(candidates, label, aiPath, disable)
     return nil
 end
 
+-- MONSTEROUS_MOBS / CRABS (2026-09-25, NewItems.xlsx batch): pacified the same way LIVESTOCK's
+-- spawnCreature() is (friendly-faction copy + invincibility via pacifyCreature) -- RedFalcon's call
+-- 2026-09-25 after the first pass shipped these genuinely hostile ("none of the new monsterous are
+-- friendly") -- these are placeable set-dressing like every other roster, not real threats. Reuses
+-- spawnCreature itself (single-path `candidates` list of one) rather than duplicating its logic.
+local function spawnMonsterousMob(path, label)
+    return spawnCreature({ path }, label, nil, nil)
+end
+
+local function monsterousMobLabel(m)
+    return (Spawner.FriendlyLabels and Spawner.FriendlyLabels[m.name]) or m.name
+end
+
+-- `idlePose` (2026-09-25): spawns normally (walking, same as the plain path), then freezes AI
+-- (Spawner.SetAILogic(false), same mechanism as lbfreeze/lbspawnnoai) -- when it's a string,
+-- additionally locks that exact pose via Spawner.ApplyFrozenPose; `true` alone just freezes
+-- whatever stance the AI was in the instant it froze, no pose forced.
+-- Re-applied over ~3s (same disarmRepeated/pacifyCreature pattern above, guarded against DEL via
+-- stillAlive) -- a single one-shot SetAILogic(false) right after spawn silently failed to stick
+-- (RedFalcon: "the idles for marlowe, steed, and richards are not disabling AI and are moving
+-- around"), same "AIController/ability system attaches late in BeginPlay" race those two functions
+-- already exist to work around -- lbspawnnoai's own comment on SetAILogic even warns "no valid
+-- AIController found?" is possible on a same-frame call.
+local function spawnFrozenIdleNewPerson(path, label, idlePose)
+    local a = spawnMonsterousMob(path, label)
+    if not (a and a:IsValid()) then return a end
+    local function apply()
+        pcall(function() Spawner.SetAILogic(a, false) end)
+        -- Belt-and-suspenders (2026-09-25): StopLogic() alone stopped Marlowe but NOT Steed Bonet
+        -- or Thomas Richards (Boss) -- their movement is evidently still being driven by something
+        -- other than the standard AIController Logic component (a Boss-specific StateTree/Blueprint
+        -- tick that doesn't respect StopLogic). Zeroing CharacterMovement directly stops the ACTUAL
+        -- motion regardless of whatever brain is issuing move requests.
+        pcall(function()
+            local cm = a.CharacterMovement
+            if cm and cm:IsValid() then
+                cm.MaxWalkSpeed = 0.0
+                pcall(function() cm:StopMovementImmediately() end)
+            end
+        end)
+        if type(idlePose) == "string" then
+            pcall(function() Spawner.ApplyFrozenPose(a, idlePose, 0) end)
+        end
+    end
+    apply()
+    if ExecuteWithDelay then
+        local gen = Spawner.generation
+        local n = 0
+        local function again()
+            ExecuteInGameThread(function() pcall(function()
+                if stillAlive(a, gen) then apply() end
+            end) end)
+            n = n + 1
+            if n < 4 and ExecuteWithDelay then ExecuteWithDelay(750, again) end
+        end
+        ExecuteWithDelay(750, again)
+    end
+    return a
+end
+
+-- By-name lookup (console/spawn-menu), same contract as Testbed.SpawnLivestockByName.
+-- `m.idlePose` (2026-09-25, same mechanism as Config.NEW_PEOPLE's Named idles): routes to the
+-- frozen-AI spawn path instead of the plain pacified one -- see spawnFrozenIdleNewPerson's own
+-- header comment for why this needs the repeated-retry + direct CharacterMovement zeroing (Boss
+-- classes like Swamp Toad don't reliably stop on a single StopLogic() call).
+function Testbed.SpawnMonsterousMobByName(name)
+    for _, m in ipairs(Config.MONSTEROUS_MOBS or {}) do
+        if m.name:lower() == tostring(name):lower() then
+            if m.idlePose then
+                return spawnFrozenIdleNewPerson(m.path, monsterousMobLabel(m), m.idlePose)
+            end
+            return spawnMonsterousMob(m.path, monsterousMobLabel(m))
+        end
+    end
+    return nil, "no monsterous mob entry named '" .. tostring(name) .. "'"
+end
+
+function Testbed.SpawnCrabByName(name)
+    for _, c in ipairs(Config.CRABS or {}) do
+        if c.name:lower() == tostring(name):lower() then
+            return spawnMonsterousMob(c.path, monsterousMobLabel(c))
+        end
+    end
+    return nil, "no crab entry named '" .. tostring(name) .. "'"
+end
+
+-- NEW_PEOPLE (2026-09-25, NewItems.xlsx batch, second pass): same pacified spawn as
+-- MONSTEROUS_MOBS/CRABS above, but `label` is used directly (required field, not looked up via
+-- Spawner.FriendlyLabels) -- see Config.NEW_PEOPLE's own comment for why.
+--
+-- `p.mobileOverride` (2026-09-25): forces the SAME QuestStatic AIController/AnimBP override
+-- placeMobileQuestNPC uses for Config.MOBILE_QUEST_NPCS (real AI-driven movement + real walk
+-- animation), for a row that natively stands in a fixed pose despite having the matching
+-- AIController/PathFollowingComponent/MercunaGroundNavigationComponent already wired -- see
+-- Config.NEW_PEOPLE's own comment on the Merchant Generalist row for the probe evidence. Falls
+-- through to the plain pacified spawn (spawnMonsterousMob) for every row without this flag.
+local function spawnMobileNewPerson(path, label)
+    local placeYaw = playerYaw()
+    local a = Spawner.Spawn(path, label, frontSpot(300), nil,
+        Config.MOBILE_QUEST_NPC_AI_CONTROLLER, placeYaw, true, nil, nil, false,
+        Config.MOBILE_QUEST_NPC_ANIM_CLASS)
+    if a and a:IsValid() then
+        snapToFloor(a, playerFloorZ())
+        pacifyCreature(a, label, nil)
+        announceCreatureClass(label, path)
+        return a
+    end
+    return nil
+end
+
+function Testbed.SpawnNewPersonByName(name)
+    for _, p in ipairs(Config.NEW_PEOPLE or {}) do
+        if p.name:lower() == tostring(name):lower() then
+            if p.mobileOverride then
+                return spawnMobileNewPerson(p.path, p.label)
+            end
+            if p.idlePose then
+                return spawnFrozenIdleNewPerson(p.path, p.label, p.idlePose)
+            end
+            return spawnMonsterousMob(p.path, p.label)
+        end
+    end
+    return nil, "no new-person entry named '" .. tostring(name) .. "'"
+end
+
 -- LIVESTOCK (NUM_8): all "tame like pets" creatures on one key. Cycles boar family -> goats ->
 -- dodos -> wolves -> crocodile. Expanded 2026-08-07 (per user request) to fold in the wider wildlife
 -- roster, all pacified the same way as the original boar/goat/dodo set (friendly-faction copy +
@@ -448,7 +573,14 @@ local function placeDecorEntry(d)
     -- then d.name, same as before this existed.
     local spawnLabel = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[d.name]) or d.label or d.name
     local spot = frontSpot(300)
+    -- `d.noPersist` (2026-09-25): a small number of decor entries (e.g. the explosive barrel) are
+    -- meant to be consumed/destroyed in normal play, not restored as a fresh unexploded barrel every
+    -- world load -- same Spawner.transient toggle Spawner.Spawn's own persistPlacement path already
+    -- uses (spawner.lua ~19707) to skip writing a persist.txt line for one spawn.
+    local _prevTransient = Spawner.transient
+    if d.noPersist then Spawner.transient = true end
     local a = Spawner.Spawn(d.path, spawnLabel, spot)
+    Spawner.transient = _prevTransient
     if not (a and a:IsValid()) then
         log("Decoration " .. d.name .. " failed — path may be wrong; probe a wild one for its class.")
         return
@@ -515,6 +647,36 @@ function Testbed.SpawnDecorCategory(cat)
     local d = list[decorIdx[cat]]
     log(string.format("Decor[%s] %d/%d: %s", cat, decorIdx[cat], #list, d.name))
     placeDecorEntry(d)
+end
+
+-- Testbed.TestSpawnDropMesh(meshPath, label, say) -- "lbtestdropmesh <meshPath> [label]"
+-- (2026-09-23, RedFalcon: "is it possible to make a command that would allow me to spawn it to
+-- test?" -- pulling candidate static-mesh paths straight from a pak info file). Quick-tests a real
+-- /Game/... static mesh as a decor item BEFORE it's added to fkeys.lua's real manifest, so a
+-- bad/misspelled path is caught immediately instead of only being found the next time the whole
+-- Decor menu is regenerated. Reuses placeDecorEntry as-is -- it already takes a plain `d` table
+-- (path/mesh/name/label/zoffset), not specifically a fkeys.lua entry, so no new spawn logic is
+-- needed here at all; same DECOR_COLLISION/floor-pin/persist-backfill treatment every other decor
+-- item gets.
+function Testbed.TestSpawnDropMesh(meshPath, label, say)
+    say = say or function(m) print("[LivingBase] [test-dropmesh] " .. tostring(m) .. "\n") end
+    if not meshPath or meshPath == "" then
+        say("usage: lbtestdropmesh <meshPath> [label]")
+        return
+    end
+    local d = {
+        path = "/Script/R5.R5LootActor",
+        mesh = meshPath,
+        name = label or "TestDropMesh",
+        label = label or "Test Drop",
+        zoffset = 0.0,
+    }
+    local a = placeDecorEntry(d)
+    if a and a:IsValid() then
+        say("spawned test drop -- mesh: " .. meshPath)
+    else
+        say("FAILED to spawn -- check the mesh path is a real /Game/... static mesh (not a class path).")
+    end
 end
 
 -- ACTIVE DECOR CATEGORY (';'/''' -- see fkeys.lua): ''' advances which category is "active"

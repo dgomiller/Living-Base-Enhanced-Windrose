@@ -694,6 +694,24 @@ SPAWN_MENU_HANDLERS.LIVESTOCK = function(index)
     return Testbed.SpawnLivestockByName(row.name)
 end
 
+-- MONSTEROUS_MOBS / CRABS (2026-09-25, NewItems.xlsx batch): plain flat rosters, one Config table
+-- each -- no flattening needed like DECOR/LIVESTOCK above.
+SPAWN_MENU_HANDLERS.MONSTEROUS_MOBS = function(index)
+    local row = Config.MONSTEROUS_MOBS and Config.MONSTEROUS_MOBS[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnMonsterousMobByName(row.name)
+end
+SPAWN_MENU_HANDLERS.CRABS = function(index)
+    local row = Config.CRABS and Config.CRABS[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnCrabByName(row.name)
+end
+SPAWN_MENU_HANDLERS.NEW_PEOPLE = function(index)
+    local row = Config.NEW_PEOPLE and Config.NEW_PEOPLE[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnNewPersonByName(row.name)
+end
+
 ------------------------------------------------------------
 -- FRIENDLY SPAWN LABELS (2026-08-19, RedFalcon's request): spawn_menu.ini's hand-curated
 -- `label = ...` per roster/index entry -- the tree reorganization from v2.1.5 -- becomes the
@@ -738,6 +756,18 @@ do
     end
     for index, label in pairs(byRoster.LIVESTOCK or {}) do
         local row = SPAWN_MENU_LIVESTOCK_ROWS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.MONSTEROUS_MOBS or {}) do
+        local row = Config.MONSTEROUS_MOBS and Config.MONSTEROUS_MOBS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.CRABS or {}) do
+        local row = Config.CRABS and Config.CRABS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.NEW_PEOPLE or {}) do
+        local row = Config.NEW_PEOPLE and Config.NEW_PEOPLE[index]
         if row then Spawner.FriendlyLabels[row.name] = label end
     end
     for roster, def in pairs(SPAWN_MENU_STATUE_ROSTERS) do
@@ -810,6 +840,10 @@ local function pollSpawnMenuRequest()
                     -- caught by RedFalcon: "i think you forgot to add the drag and drop options to
                     -- the new walkers."
                     or roster == "MOBILE_QUEST_NPCS"
+                    -- MONSTEROUS_MOBS/CRABS (2026-09-25, NewItems.xlsx batch): same "drag it into
+                    -- place before it wanders off" need as any other living-creature roster
+                    -- (LIVESTOCK) -- RedFalcon: "make sure they also let me move and place them too."
+                    or roster == "MONSTEROUS_MOBS" or roster == "CRABS" or roster == "NEW_PEOPLE"
                     or SPAWN_MENU_STATUE_ROSTERS[roster]) then
             -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues, 2026-08-24 to
             -- townsfolk/crew/livestock/female-walkers/Senkamati). Briefly pulled the four humanoid
@@ -8153,6 +8187,34 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbprobelootmesh", "lbprobelootmesh", "TEMP DEV TOOL: reads the mesh straight off a real dropped item (follow-up to lbprobestone hitting an opaque property).")
 else
     log("lbprobelootmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestdropmesh <meshPath> [label...]" (2026-09-23) -- see
+-- Testbed.TestSpawnDropMesh's own comment. Quick-test a candidate static mesh (e.g. pulled from a
+-- pak info file, or found via lbprobelootmesh) as a decor item before it's added to fkeys.lua.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestdropmesh", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestdropmesh] " .. msg .. "\n")
+                if Ar then pcall(function() Ar:Log(tostring(msg) .. "\n") end) end
+            end
+            local meshPath = Parameters and Parameters[1]
+            local label = nil
+            if Parameters and #Parameters > 1 then
+                local parts = {}
+                for i = 2, #Parameters do parts[#parts + 1] = Parameters[i] end
+                label = table.concat(parts, " ")
+            end
+            local ok, err = pcall(function() Testbed.TestSpawnDropMesh(meshPath, label, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestdropmesh")
+    registerCmdInfo("lbtestdropmesh", "lbtestdropmesh <meshPath> [label]", "Spawns a candidate static mesh (e.g. from lbprobelootmesh or a pak info file) as a decor item right in front of you, to test before adding it to the real Decor menu manifest.")
+else
+    log("lbtestdropmesh unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbprobecam" (2026-08-20) -- TEMP DEV TOOL, see Spawner.ProbeCameraRig's own

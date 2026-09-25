@@ -164,7 +164,13 @@ end
 -- Config table's own comment). Rows carry an explicit `label` (Ghost Pirate) since a generic
 -- monster name is worth a real curated leaf from the start, not the raw class-name fallback every
 -- OTHER statue roster's mechanical default settles for.
+-- menuPath override (2026-09-24, same mechanism mobile_quest_npc_path_and_label already uses) --
+-- Ghost Pirate's row now sets menuPath = {"Monsterous", "Ghost Pirate"} so its Idle entry lands in
+-- the SAME subcategory as its Mobile counterpart (MOBILE_QUEST_NPCS' own menuPath, updated to
+-- match) instead of two separate Standing/Walkers homes. Rows without an explicit menuPath keep the
+-- plain default.
 local function monsterous_standing_path_and_label(row)
+    if row.menuPath then return row.menuPath, row.label or short_class_name(row.path) end
     return {"Monsterous", "Standing"}, row.label or short_class_name(row.path)
 end
 
@@ -214,6 +220,79 @@ local DECOR_CATEGORY_LABELS = {
     invdrop_weapons = {"Drops", "Weapons"},
     invdrop_wood = {"Drops", "Wood"},
     invdrop_writings = {"Drops", "Writings"},
+    -- NewItems.xlsx batch (2026-09-25) new categories:
+    -- NewItems.xlsx batch fixup: new items for EXISTING Drops themes:
+    new_drops_animal_parts = {"Drops", "Animal Parts"},
+    new_drops_artifacts = {"Drops", "Artifacts"},
+    new_drops_clothes = {"Drops", "Clothes"},
+    new_drops_currency = {"Drops", "Currency"},
+    new_drops_ingredients = {"Drops", "Ingredients"},
+    new_drops_meals = {"Drops", "Meals"},
+    new_drops_mined = {"Drops", "Mined"},
+    new_drops_misc = {"Drops", "Misc"},
+    new_drops_potions_bottles_and_healing = {"Drops", "Potions, Bottles, and Healing"},
+    new_drops_tailoring = {"Drops", "Tailoring"},
+    new_drops_tools = {"Drops", "Tools"},
+    new_drops_treasure = {"Drops", "Treasure"},
+    new_drops_weapons = {"Drops", "Weapons"},
+    new_drops_wood = {"Drops", "Wood"},
+    new_drops_writings = {"Drops", "Writings"},
+    new_campfires = "Campfires",
+    new_clutter_dishes_clay = {"Clutter", "Dishes - Clay"},
+    new_clutter_dishes_metal = {"Clutter", "Dishes - Metal"},
+    new_clutter_dishes_wood = {"Clutter", "Dishes - Wood"},
+    new_clutter_light_sources = {"Clutter", "Light Sources"},
+    new_clutter_misc = {"Clutter", "Misc"},
+    new_clutter_water_goods = {"Clutter", "Water Goods"},
+    new_dead = "Dead",
+    new_drops_belt_bags = {"Drops", "Belt Bags"},
+    new_drops_bones = {"Drops", "Bones"},
+    new_furniture_beds = {"Furniture", "Beds"},
+    new_furniture_benches = {"Furniture", "Benches"},
+    new_furniture_tables = {"Furniture", "Tables"},
+    new_furniture_wardrobes = {"Furniture", "Wardrobes"},
+    new_misc_animals = {"Misc", "Animals"},
+    new_misc_effects = {"Misc", "Effects"},
+    new_plants_coast = {"Plants", "Coast"},
+    new_plants_corrupted = {"Plants", "Corrupted"},
+    new_plants_highlands = {"Plants", "Highlands"},
+    new_plants_jungle = {"Plants", "Jungle"},
+    new_plants_ruin_overgrowth = {"Plants", "Ruin Overgrowth"},
+    new_plants_swamp = {"Plants", "Swamp"},
+    new_plants_trees = {"Plants", "Trees"},
+    new_senkamati = "Senkamati",
+    new_stockade_flooring = {"Stockade", "Flooring"},
+    new_stockade_structural = {"Stockade", "Structural"},
+    new_stockade_wall = {"Stockade", "Wall"},
+    new_storage_bales = {"Storage", "Bales"},
+    new_storage_barrels = {"Storage", "Barrels"},
+    new_storage_basins = {"Storage", "Basins"},
+    new_storage_baskets = {"Storage", "Baskets"},
+    new_storage_chests = {"Storage", "Chests"},
+    new_storage_crates = {"Storage", "Crates"},
+    new_storage_other = {"Storage", "Other"},
+    new_structural_fences = {"Structural", "Fences"},
+    new_structural_ladders = {"Structural", "Ladders"},
+    new_structural_misc = {"Structural", "Misc"},
+    new_tents_and_coverings_awnings = {"Tents and Coverings", "Awnings"},
+    new_tents_and_coverings_canopies = {"Tents and Coverings", "Canopies"},
+    new_tents_and_coverings_enclosures = {"Tents and Coverings", "Enclosures"},
+    new_tents_and_coverings_tents = {"Tents and Coverings", "Tents"},
+    new_terrain_minerals_and_resources = {"Terrain", "Minerals and Resources"},
+    new_terrain_rocks = {"Terrain", "Rocks"},
+    new_terrain_rocks_and_boulders = {"Terrain", "Rocks and Boulders"},
+    new_terrain_shipwrecks = {"Terrain", "Shipwrecks"},
+    new_terrain_statues = {"Terrain", "Statues"},
+    new_terrain_wood = {"Terrain", "Wood"},
+    new_workbenches_alchemy = {"Workbenches", "Alchemy"},
+    new_workbenches_armor = {"Workbenches", "Armor"},
+    new_workbenches_blacksmith = {"Workbenches", "Blacksmith"},
+    new_workbenches_cooking = {"Workbenches", "Cooking"},
+    new_workbenches_farming = {"Workbenches", "Farming"},
+    new_workbenches_fishing = {"Workbenches", "Fishing"},
+    new_workbenches_jeweler = {"Workbenches", "Jeweler"},
+    new_workbenches_utility = {"Workbenches", "Utility"},
+    new_workbenches_workbench = {"Workbenches", "Workbench"},
 }
 
 -- Decor lives in per-category sub-tables (Config.DECOR_CATEGORIES[key]), not one flat array like
@@ -262,6 +341,19 @@ local function livestock_rows(Config)
 end
 local function livestock_path_and_label(row)
     return {"Animals", row.label}, row.entry.name
+end
+
+-- MONSTEROUS_MOBS (2026-09-25): Monsterous > Basic/Boss/Corrupted, per-row `sub` field.
+local function monsterous_mobs_path_and_label(row)
+    return {"Monsterous", row.sub or "Basic"}, row.name
+end
+-- CRABS (2026-09-25): Animals > Crabs.
+local function crabs_path_and_label(row)
+    return {"Animals", "Crabs"}, row.name
+end
+-- NEW_PEOPLE (2026-09-25, second pass): People > Crew/Walkers/Leaning/Named/Standing, per-row `sub`.
+local function new_people_path_and_label(row)
+    return {"People", row.sub or "Named"}, row.label or row.name
 end
 
 -- Walking women (Config.FEMALE_RESKIN_TARGETS) -- a flat list of plain name strings, not rows with
@@ -373,6 +465,9 @@ local function roster_descriptors(Config)
         {name = "DECOR", rows = decor_rows(Config), path_and_label = decor_path_and_label},
         {name = "LIVESTOCK", rows = livestock_rows(Config), path_and_label = livestock_path_and_label},
         {name = "FEMALE_RESKIN_TARGETS", rows = Config.FEMALE_RESKIN_TARGETS, path_and_label = walking_women_path_and_label},
+        {name = "MONSTEROUS_MOBS", rows = Config.MONSTEROUS_MOBS, path_and_label = monsterous_mobs_path_and_label},
+        {name = "CRABS", rows = Config.CRABS, path_and_label = crabs_path_and_label},
+        {name = "NEW_PEOPLE", rows = Config.NEW_PEOPLE, path_and_label = new_people_path_and_label},
     }
 end
 

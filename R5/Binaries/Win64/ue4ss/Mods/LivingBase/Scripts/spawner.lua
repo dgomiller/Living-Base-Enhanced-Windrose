@@ -1097,6 +1097,10 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         -- comment. Same non-combatant scope as makeSetDressing itself (a resource node clearly
         -- isn't a combatant either).
         Spawner.ProtectResourceNodeHealth(actor)
+        -- 2026-09-24: craft-station decor (Kiln/Furnace/Cooking Station/campfire) carries a
+        -- warmth-radius volume that blocks the third-person camera at a distance -- see this
+        -- function's own header comment. Same non-combatant scope.
+        Spawner.DisableHearthVolumeCollision(actor)
     end
     ensureController(actor)
     if Config.HIDE_NAMEPLATES then Spawner.HideNameplate(actor) end
@@ -3420,6 +3424,60 @@ function Spawner.ProtectResourceNodeHealth(actor)
     end
 end
 
+-- Spawner.DisableHearthVolumeCollision(actor) (2026-09-24, RedFalcon: "3 meters away [from a small
+-- campfire/kiln/furnace] it acts like its blocking [the camera] and i lose view of my character").
+-- Root cause, found via Spawner.DumpAllComponents's new BodyInstance drill on a Kiln/Furnace/Cooking
+-- Station: every one of them carries an R5HearthVolumeComponent ("R5HearthVolume_T3", a CapsuleComponent
+-- sized to the fire's WARMTH radius, several meters across) with CollisionEnabled=1 (QueryOnly) and a
+-- "Custom" collision profile -- QueryOnly means it doesn't physically shove the player, but it DOES
+-- respond to TRACE queries, and a third-person camera's own collision-avoidance check (the SpringArm's
+-- own trace) is exactly that -- a query, not a physics push. This explains the whole symptom: a small,
+-- harmless-looking fire with a much larger invisible warmth-detection volume reacting to the camera at
+-- a distance the visible mesh alone would never trigger. This volume is a pure gameplay-warmth trigger
+-- (buffing the player when nearby) -- not needed on a placed decor prop, which this project already
+-- treats as pure set-dressing (see Spawner.StripInteraction's own precedent) -- so disabling its
+-- collision entirely (not just the Camera channel) is both the fix and harmless. Same proven
+-- K2_GetComponentsByClass sweep + RemoteUnrealParam unwrap as ProtectResourceNodeHealth just above,
+-- but calls the real SetCollisionEnabled(0) UFUNCTION rather than writing a BodyInstance sub-field
+-- directly -- struct sub-field writes on a live component have proven unreliable elsewhere in this
+-- file (see the ActiveSegmentInterval saga), so the actual native setter is used instead, with a
+-- readback to confirm it actually took.
+function Spawner.DisableHearthVolumeCollision(actor)
+    if not (actor and actor:IsValid()) then return end
+    local cls = StaticFindObject("/Script/R5.R5HearthVolumeComponent")
+    if not (cls and cls:IsValid()) then return end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    pcall(function() n = comps:GetArrayNum() end)
+    if n == 0 then pcall(function() n = #comps end) end
+    if n == 0 then return end
+    local fixed = 0
+    for i = 1, n do
+        local raw
+        local okIdx, viaIdx = pcall(function() return comps[i] end)
+        if okIdx then raw = viaIdx end
+        if not raw then
+            local okGet, viaGet = pcall(function() return comps:Get(i) end)
+            if okGet then raw = viaGet end
+        end
+        local c = raw
+        if raw then
+            local okUnwrap, unwrapped = pcall(function() return raw:get() end)
+            if okUnwrap and unwrapped then c = unwrapped end
+        end
+        if c and c:IsValid() then
+            pcall(function() c:SetCollisionEnabled(0) end)  -- ECollisionEnabled::NoCollision
+            local after = nil
+            pcall(function() after = c.BodyInstance.CollisionEnabled end)
+            if after == 0 then fixed = fixed + 1 end
+        end
+    end
+    if fixed > 0 then
+        print(string.format("[LivingBase] [protect-resource] disabled collision on %d hearth-volume component(s).\n", fixed))
+    end
+end
+
 -- Spawner.SetLootMesh(actor, meshPath) — forces a R5LootActor's MeshComponent to show a specific
 -- static mesh, bypassing the whole business-rule/LootView system that normally sets it (that path is
 -- CONFIRMED DEAD: Spawner.ProbeStoneItemMesh found the Stone item's ItemMesh property is an opaque
@@ -4092,6 +4150,39 @@ function Spawner.DumpAllComponents(actor)
             local cname = "?"
             pcall(function() cname = c:GetFName():ToString() end)
             pcall(function() dumpObjectProperties(c, "COMPONENT:" .. cname) end)
+            -- 2026-09-24 (RedFalcon: standing near a spawned craft-station prop "blocks the camera
+            -- and I lose view of my character") -- dumpObjectProperties only ever shows
+            -- "BodyInstance = ScriptStruct /Script/Engine.BodyInstance" for a primitive component's
+            -- own collision setup, same opaque-struct limitation R5SegmentTreeSpec hit before (see
+            -- Spawner.DumpTreeChopState's own header) -- CollisionProfileName/CollisionEnabled (both
+            -- plain fields on that struct) are exactly what determines whether this component
+            -- blocks the THIRD-PERSON CAMERA specifically (the SpringArm's own collision-avoidance
+            -- trace, distinct from player-movement or weapon-trace blocking) -- same struct-type
+            -- drill technique reused here.
+            pcall(function()
+                local bi = c.BodyInstance
+                if bi ~= nil then
+                    local biType = nil
+                    pcall(function() biType = StaticFindObject("/Script/Engine.BodyInstance") end)
+                    if biType and biType:IsValid() then
+                        for _, fieldName in ipairs({ "CollisionProfileName", "CollisionEnabled", "ObjectType" }) do
+                            local okv, val = pcall(function() return bi[fieldName] end)
+                            local valStr = "<unreadable>"
+                            if okv then
+                                if val == nil then valStr = "nil"
+                                elseif type(val) == "userdata" then
+                                    local okc, full = pcall(function() return val:ToString() end)
+                                    if not okc then okc, full = pcall(function() return val:GetFullName() end) end
+                                    valStr = okc and full or tostring(val)
+                                else
+                                    valStr = tostring(val)
+                                end
+                            end
+                            print(string.format("[LivingBase] [probe-props]   %s.BodyInstance.%s = %s\n", cname, fieldName, valStr))
+                        end
+                    end
+                end
+            end)
         end
     end
 end
@@ -11763,8 +11854,16 @@ function Spawner.RestoreCustomState(say, onComplete)
             else
                 say("could not find a spawned actor labeled '" .. tostring(b.label) .. "' to restore -- skipped.")
             end
+            -- Progress toast (2026-09-24, same request/throttle reasoning as
+            -- Spawner.RestoreFromPersist's own progress toast) -- a separate counter/phase from that
+            -- one (this runs afterward, over #blocks saved actors, not #lines persist.txt entries).
+            pcall(function()
+                Spawner.Toast(string.format("Restoring customizations: %d/%d", i, #blocks), 1.5)
+            end)
             if ExecuteWithDelay then
-                ExecuteWithDelay(Config.RESTORE_STAGGER_MS or 350, step)
+                -- 2026-09-24: split off Config.CUSTOM_RESTORE_STAGGER_MS (own header comment) --
+                -- used to reuse RESTORE_STAGGER_MS (350ms, the movers' own AI-wake pacing) here too.
+                ExecuteWithDelay(Config.CUSTOM_RESTORE_STAGGER_MS or 200, step)
             else
                 step()
             end
@@ -12113,6 +12212,15 @@ local function scheduleRestorePostProcess(restored, staticsCount, moversCount, o
             if e and e.actor and e.actor:IsValid() then
                 pcall(Spawner.restoreHook, e.actor, e.class, e.look)
             end
+            -- Progress toast (2026-09-24, RedFalcon: "status of the various steps... less of a
+            -- black box") -- post-processing previously had zero per-item feedback, just the one
+            -- "post-processing N mover(s)..." toast at the START of this whole (up to
+            -- RESTORE_POSTPROCESS_MS + #restored*SPACING_MS, i.e. many seconds on a big base) phase.
+            -- One toast per item is fine here (unlike spawnList's fast statics phase) -- this phase
+            -- is paced in the hundreds of ms per item, never fast enough to flood the screen.
+            pcall(function()
+                Spawner.Toast(string.format("Post-processing movers: %d/%d", idx, #restored), 1.5)
+            end)
         end)
         ExecuteWithDelay(Config.RESTORE_POSTPROCESS_SPACING_MS or 400, step)
     end
@@ -12219,9 +12327,14 @@ function Spawner.RestoreFromPersist(onComplete)
     -- spawned -- so a partial/silent restore failure (5 of 6 entries vanishing with no trace, this
     -- same session) still printed a falsely reassuring "success" count. onDone now receives the
     -- real tally.
-    local function spawnList(list, interval, collect, onDone)
+    -- phaseLabel (2026-09-24, RedFalcon: "i'd really like some status of the various steps. like
+    -- when its processing movers, how many are done, etc. less of a black box") -- each call site
+    -- names its own phase ("Restoring decor/statues"/"Restoring movers") so the toast says WHICH
+    -- step is running, not just an undifferentiated combined count.
+    local function spawnList(list, interval, collect, onDone, phaseLabel)
         local i = 0
         local successCount = 0
+        local lastToastAt = 0
         local function step()
             i = i + 1
             if i > #list then onDone(successCount); return end
@@ -12252,6 +12365,22 @@ function Spawner.RestoreFromPersist(onComplete)
                 if a then
                     successCount = successCount + 1
                     if collect then postList[#postList + 1] = { actor = a, class = cls, look = look } end
+                end
+                -- Progress toast (2026-09-24, RedFalcon: "status of the various steps... when its
+                -- processing movers, how many are done") -- throttled to at most once/second
+                -- (os.time() has only whole-second resolution anyway) so a fast statics phase
+                -- (40ms stagger) doesn't flood the screen with stacked toasts -- Spawner.Toast
+                -- always ADDS a new widget, it never updates one in place, so an untoasted per-item
+                -- call here would leave dozens on screen at once for a large base. Always fires on
+                -- the last item of THIS list too, so the count doesn't visibly stall right before a
+                -- phase ends. Named per-phase (phaseLabel) rather than one combined count, so it's
+                -- clear WHICH step is running, not just an undifferentiated number.
+                local nowT = os.time()
+                if idx == #list or (nowT - lastToastAt) >= 1 then
+                    lastToastAt = nowT
+                    pcall(function()
+                        Spawner.Toast(string.format("%s: %d/%d", phaseLabel, idx, #list), 1.5)
+                    end)
                 end
             end)
             ExecuteWithDelay(interval, step)
@@ -12310,8 +12439,8 @@ function Spawner.RestoreFromPersist(onComplete)
                     staticsCount, moversCount))
                 if onComplete then pcall(function() onComplete(staticsCount, moversCount) end) end
             end)
-        end)
-    end)
+        end, "Restoring movers")
+    end, "Restoring decor/statues")
     return 0    -- reported asynchronously
 end
 
@@ -20230,6 +20359,32 @@ end
 -- can call out that these outfits and poses have not been reviewed and many likely will not work
 -- or look improper" -- printed/toasted once here, on toggle, not repeated on every subsequent
 -- apply.
+-- CustomMenu.cpp bridge (2026-09-14) -- the Clothes dropdown's "Only with Unlock" items need to
+-- know this state live, not just on a "Read Current" click (RedFalcon: "update the dropdowns
+-- when that command is run"). Plain one-line status file, written here -- same "small status file
+-- the DLL polls every frame" shape as StandaloneWindow.cpp's own PublishWindowVisible, just the
+-- other direction (Lua writes, C++ reads).
+--
+-- Pulled out of Spawner.ToggleClothesUnlock into its own function (2026-09-25) and ALSO called
+-- once at script load (see this file's own init section) -- RedFalcon: "the senkamati stuff that
+-- is supposed to be hidden unless unlocked are visible in the lists". Root cause: this file is a
+-- persistent file on disk, but Config.CLOTHES_UNLOCK_ALL is a plain Lua variable that resets to
+-- its config.lua default (false) on every reload/relaunch -- the file was never being re-synced
+-- to match on load, so it could keep reporting a stale "1" from a previous session's
+-- lbunlockclothes test indefinitely, unlocking every Senkamati item for every target until someone
+-- happened to toggle it again. Calling this once at load (in addition to on every real toggle)
+-- guarantees the file always matches Lua's actual current value.
+function Spawner.WriteClothesUnlockState()
+    for _, p in ipairs({ "ue4ss/Mods/LivingBase/clothes_unlock_state.txt", "Mods/LivingBase/clothes_unlock_state.txt", "clothes_unlock_state.txt" }) do
+        local f = io.open(p, "w")
+        if f then
+            f:write(Config.CLOTHES_UNLOCK_ALL and "1" or "0")
+            f:close()
+            break
+        end
+    end
+end
+
 function Spawner.ToggleClothesUnlock()
     Config.CLOTHES_UNLOCK_ALL = not Config.CLOTHES_UNLOCK_ALL
     if Config.CLOTHES_UNLOCK_ALL then
@@ -20240,21 +20395,10 @@ function Spawner.ToggleClothesUnlock()
         print("[LivingBase] [clothes-unlock] Custom > Clothes fit restrictions: restored (default).\n")
         pcall(function() Spawner.Toast("Clothes fit restrictions restored", 2.5) end)
     end
-    -- CustomMenu.cpp bridge (2026-09-14) -- the Clothes dropdown's "Only with Unlock" items need to
-    -- know this state live, not just on a "Read Current" click (RedFalcon: "update the dropdowns
-    -- when that command is run"). Plain one-line status file, written here on every toggle -- same
-    -- "small status file the DLL polls every frame" shape as StandaloneWindow.cpp's own
-    -- PublishWindowVisible, just the other direction (Lua writes, C++ reads).
-    for _, p in ipairs({ "ue4ss/Mods/LivingBase/clothes_unlock_state.txt", "Mods/LivingBase/clothes_unlock_state.txt", "clothes_unlock_state.txt" }) do
-        local f = io.open(p, "w")
-        if f then
-            f:write(Config.CLOTHES_UNLOCK_ALL and "1" or "0")
-            f:close()
-            break
-        end
-    end
+    Spawner.WriteClothesUnlockState()
     return Config.CLOTHES_UNLOCK_ALL
 end
+Spawner.WriteClothesUnlockState()
 
 -- FACIAL_SLOT_TOKENS/facialSlotOf -- "Custom > Face" (2026-08-28). Same longest-token-first
 -- substring-match discipline as CLOTHING_SLOT_TOKENS/clothingSlotOf, but a SEPARATE list --

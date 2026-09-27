@@ -326,9 +326,14 @@ end
 
 -- Livestock is spread across five separate Config tables -- flatten the same way as decor above,
 -- same "main.lua's handler must rebuild this exact order" caveat applies.
+-- LIVESTOCK_IDLE (2026-09-25) added as a 6th, TRAILING source -- appended last so every existing
+-- family's flattened index above it is untouched (see Config.LIVESTOCK_IDLE's own header comment
+-- in config.lua). It has no fixed `label` of its own (its rows span all 5 families) -- each row's
+-- own `family` field is used instead, checked in livestock_path_and_label below.
 local LIVESTOCK_SOURCES = {
     {key = "BOARS", label = "Boar"}, {key = "GOATS", label = "Goat"}, {key = "DODOS", label = "Dodo"},
     {key = "WOLVES", label = "Wolf"}, {key = "CROCODILES", label = "Crocodile"},
+    {key = "LIVESTOCK_IDLE", label = nil},
 }
 local function livestock_rows(Config)
     local rows = {}
@@ -340,7 +345,7 @@ local function livestock_rows(Config)
     return rows
 end
 local function livestock_path_and_label(row)
-    return {"Animals", row.label}, row.entry.name
+    return {"Animals", row.entry.family or row.label}, row.entry.name
 end
 
 -- MONSTEROUS_MOBS (2026-09-25): Monsterous > Basic/Boss/Corrupted, per-row `sub` field.
@@ -354,6 +359,16 @@ end
 -- NEW_PEOPLE (2026-09-25, second pass): People > Crew/Walkers/Leaning/Named/Standing, per-row `sub`.
 local function new_people_path_and_label(row)
     return {"People", row.sub or "Named"}, row.label or row.name
+end
+-- SENKAMATI_ORIGINAL_UPRIGHT (2026-09-25, RedFalcon: "People > Senkamati > Original Upright >
+-- Mask On/Off > Type (Idle/Mobile)") -- a NEW branch under "People > Senkamati", distinct from
+-- senkamati_path_and_label's own existing top-level "Senkamati" (Mob Body/Crew Reskin/As Original)
+-- -- the two are not merged. Mask On/Off is the top split under "Original Upright"; the archetype +
+-- Idle/Mobile becomes the leaf text underneath it.
+local function original_upright_path_and_label(row)
+    local maskGroup = row.showHelmet and "Mask On" or "Mask Off"
+    local leaf = row.archetype .. (row.idlePose and " (Idle)" or " (Mobile)")
+    return {"People", "Senkamati", "Original Upright", maskGroup}, leaf
 end
 
 -- Walking women (Config.FEMALE_RESKIN_TARGETS) -- a flat list of plain name strings, not rows with
@@ -468,6 +483,7 @@ local function roster_descriptors(Config)
         {name = "MONSTEROUS_MOBS", rows = Config.MONSTEROUS_MOBS, path_and_label = monsterous_mobs_path_and_label},
         {name = "CRABS", rows = Config.CRABS, path_and_label = crabs_path_and_label},
         {name = "NEW_PEOPLE", rows = Config.NEW_PEOPLE, path_and_label = new_people_path_and_label},
+        {name = "SENKAMATI_ORIGINAL_UPRIGHT", rows = Config.SENKAMATI_ORIGINAL_UPRIGHT, path_and_label = original_upright_path_and_label},
     }
 end
 

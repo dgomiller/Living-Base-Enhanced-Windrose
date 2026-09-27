@@ -574,26 +574,65 @@ Config.GOAT_DISABLE = { "MemoryComponent", "R5AgentComponent" }
 -- starting point that worked for the Dodo. If any of them still fight despite the friendly faction,
 -- it needs the same treatment as Boar/GoatM: find a passive sibling controller and add an `ai`
 -- override here.
+-- Idle/Mobile split (2026-09-25, RedFalcon: "go through the animals and rename the current ones
+-- with (Mobile) at the end, and then add idle versions of them all, similar to what we did with
+-- the monsterous ones") -- existing entries renamed with a "(Mobile)" suffix, COUNT AND ORDER
+-- UNCHANGED (spawn_menu.ini index safety -- see feedback_decor_order_append_only: inserting the
+-- Idle siblings INLINE here would shift every later family's flattened LIVESTOCK index, exactly
+-- that bug). All "(Idle)" siblings instead live in the new Config.LIVESTOCK_IDLE table below,
+-- appended as its own trailing source in spawnmenu_manifest.lua's LIVESTOCK_SOURCES -- see that
+-- table's own header comment.
 Config.BOARS = {
-  { name = "Boar",        candidates = Config.BOAR_CANDIDATES, ai = Config.BOAR_AI },
-  { name = "Sow",         candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/BoarF/BP_Mob_BoarF.BP_Mob_BoarF_C" } },
-  { name = "BoarCharger", candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/Charger/BP_Mob_Boar_Charger.BP_Mob_Boar_Charger_C" } },
-  { name = "BoarMega",    candidates = { "/Game/Gameplay/Character/AI/Mob/BoarMega/BP_Mob_Boar_Mega.BP_Mob_Boar_Mega_C" } },
+  { name = "Boar (Mobile)",        candidates = Config.BOAR_CANDIDATES, ai = Config.BOAR_AI },
+  { name = "Sow (Mobile)",         candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/BoarF/BP_Mob_BoarF.BP_Mob_BoarF_C" } },
+  { name = "BoarCharger (Mobile)", candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/Charger/BP_Mob_Boar_Charger.BP_Mob_Boar_Charger_C" } },
+  { name = "BoarMega (Mobile)",    candidates = { "/Game/Gameplay/Character/AI/Mob/BoarMega/BP_Mob_Boar_Mega.BP_Mob_Boar_Mega_C" } },
 }
 
 -- WOLVES (2026-08-07). Paths confirmed from the manifest, never live-tested -- same "friendly-faction
 -- copy only, no AI override yet" starting point as the new boar variants above.
 Config.WOLVES = {
-  { name = "Wolf",      candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_Wolf.BP_Mob_Wolf_C" } },
-  { name = "AlphaWolf", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_AlphaWolf.BP_Mob_AlphaWolf_C" } },
+  { name = "Wolf (Mobile)",      candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_Wolf.BP_Mob_Wolf_C" } },
+  { name = "AlphaWolf (Mobile)", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_AlphaWolf.BP_Mob_AlphaWolf_C" } },
 }
 
 -- CROCODILE (2026-08-07). Paths confirmed from the manifest, never live-tested. CrocodileCorrupted
 -- mirrors the same folder shape as the SenkamatiCorrupted human mobs (own Behavior/GameplayAbilities/
 -- ChildForQuests) -- a distinct "plague" crocodile pawn, not just a material swap on the regular one.
 Config.CROCODILES = {
-  { name = "Crocodile",        candidates = { "/Game/Gameplay/Character/AI/Mob/Crocodile/BP_Mob_Crocodile.BP_Mob_Crocodile_C" } },
-  { name = "CrocodilePlague",  candidates = { "/Game/Gameplay/Character/AI/Mob/CrocodileCorrupted/BP_Mob_CrocodileCorrupted.BP_Mob_CrocodileCorrupted_C" } },
+  { name = "Crocodile (Mobile)",        candidates = { "/Game/Gameplay/Character/AI/Mob/Crocodile/BP_Mob_Crocodile.BP_Mob_Crocodile_C" } },
+  { name = "CrocodilePlague (Mobile)",  candidates = { "/Game/Gameplay/Character/AI/Mob/CrocodileCorrupted/BP_Mob_CrocodileCorrupted.BP_Mob_CrocodileCorrupted_C" } },
+}
+
+-- LIVESTOCK_IDLE (2026-09-25): the "(Idle)" sibling for every livestock entry across all 5 families
+-- above -- see Config.BOARS' own header comment for why these live in ONE separate trailing table
+-- instead of appended inline to each family array (inline would shift every LATER family's
+-- flattened spawn_menu.ini index, the exact feedback_decor_order_append_only bug). Each row's own
+-- `family` field (matching LIVESTOCK_SOURCES' per-source label in spawnmenu_manifest.lua) places it
+-- under the correct "Animals > <Family>" subcategory despite living in this one shared table --
+-- same per-row-override precedent as Config.MONSTEROUS_STANDING's `menuPath`/Config.NEW_PEOPLE's
+-- `sub`. `ai`/`disable` mirror each entry's own "(Mobile)" counterpart (GoatM still gets the female
+-- prey brain, all goats still get the perception strip) so freezing doesn't change anything else
+-- about how the actor would otherwise have been pacified.
+Config.LIVESTOCK_IDLE = {
+  { name = "Boar (Idle)",        idlePose = true, family = "Boar", candidates = Config.BOAR_CANDIDATES, ai = Config.BOAR_AI },
+  { name = "Sow (Idle)",         idlePose = true, family = "Boar", candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/BoarF/BP_Mob_BoarF.BP_Mob_BoarF_C" } },
+  { name = "BoarCharger (Idle)", idlePose = true, family = "Boar", candidates = { "/Game/Gameplay/Character/AI/Mob/Boar/Charger/BP_Mob_Boar_Charger.BP_Mob_Boar_Charger_C" } },
+  { name = "BoarMega (Idle)",    idlePose = true, family = "Boar", candidates = { "/Game/Gameplay/Character/AI/Mob/BoarMega/BP_Mob_Boar_Mega.BP_Mob_Boar_Mega_C" } },
+  { name = "GoatF (Idle)",    idlePose = true, family = "Goat", candidates = { "/Game/Gameplay/Character/AI/Mob/Goat/GoatF/BP_Mob_GoatF.BP_Mob_GoatF_C" }, disable = Config.GOAT_DISABLE },
+  { name = "GoatM (Idle)",    idlePose = true, family = "Goat", candidates = { "/Game/Gameplay/Character/AI/Mob/Goat/GoatM/BP_Mob_GoatM.BP_Mob_GoatM_C" }, ai = Config.GOATF_AI, disable = Config.GOAT_DISABLE },
+  { name = "GoatMega (Idle)", idlePose = true, family = "Goat", candidates = { "/Game/Gameplay/Character/AI/Mob/Goat/GoatMega/BP_Mob_GoatMega.BP_Mob_GoatMega_C" }, disable = Config.GOAT_DISABLE },
+  { name = "Dodo (Idle)",  idlePose = true, family = "Dodo", candidates = {
+      "/Game/Gameplay/Character/AI/Mob/Dodo/Dodo/BP_Mob_Dodo.BP_Mob_Dodo_C",
+      "/Game/Gameplay/Character/AI/Mob/Dodo/BP_Mob_Dodo.BP_Mob_Dodo_C" }, ai = Config.DODO_AI or nil },
+  { name = "DodoF (Idle)", idlePose = true, family = "Dodo", candidates = {
+      "/Game/Gameplay/Character/AI/Mob/Dodo/DodoF/BP_Mob_DodoF.BP_Mob_DodoF_C",
+      "/Game/Gameplay/Character/AI/Mob/Dodo/BP_Mob_DodoF.BP_Mob_DodoF_C",
+      "/Game/Gameplay/Character/AI/Mob/DodoF/BP_Mob_DodoF.BP_Mob_DodoF_C" }, ai = Config.DODO_AI or nil },
+  { name = "Wolf (Idle)",      idlePose = true, family = "Wolf", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_Wolf.BP_Mob_Wolf_C" } },
+  { name = "AlphaWolf (Idle)", idlePose = true, family = "Wolf", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_AlphaWolf.BP_Mob_AlphaWolf_C" } },
+  { name = "Crocodile (Idle)",       idlePose = true, family = "Crocodile", candidates = { "/Game/Gameplay/Character/AI/Mob/Crocodile/BP_Mob_Crocodile.BP_Mob_Crocodile_C" } },
+  { name = "CrocodilePlague (Idle)", idlePose = true, family = "Crocodile", candidates = { "/Game/Gameplay/Character/AI/Mob/CrocodileCorrupted/BP_Mob_CrocodileCorrupted.BP_Mob_CrocodileCorrupted_C" } },
 }
 
 -- Plague creatures ("SenkamatiCorrupted" mobs).
@@ -913,6 +952,75 @@ Config.SENKAMATI_LOOKS = {
 -- NOTE: the Villager moved OFF this cycle to its own key (Config.KEYS.villager)
 -- while we iterate on it, so testing doesn't mean cycling past the other three.
 
+-- ============================================================================
+-- "ORIGINAL UPRIGHT" (2026-09-25, RedFalcon: "another category under People > Senkamati Called
+-- 'Original Upright' that has mask on/mask off idle and mobile versions of all 4 ... using the
+-- testaianim process and removing weapons from the hunter and the warrior") -- a THIRD Senkamati
+-- presentation, distinct from both "Wild" (kind=mob above, native gait) and the crew-reskin
+-- (kind=crew above, a donor pawn cosmetically skinned as Senkamati): the native Senkamati body
+-- itself, walking upright via the one AI/anim pairing today's fighting-with-real-weapons
+-- investigation actually proved gives an upright gait (an Officer-class crew AIController +
+-- ABP_BlackBeard_Regular_Sailor, see feedback_animbp_family_attack_wall) -- but that investigation
+-- ALSO proved this pairing (or any foreign pairing) never renders real melee/magic/unarmed combat
+-- on this body, so this category is explicitly cosmetic/decorative like the Wild "as original"
+-- rows, not a combat feature. Warrior/Hunter additionally get their weapon meshes stripped per
+-- RedFalcon's own request (their attack animation was already non-functional under this pairing --
+-- see that memory -- so an armed-but-can't-fight look was never the goal here).
+-- FIX (2026-09-25, found while investigating an unrelated toast report): this was a bare class
+-- name, not a full asset path, so resolveClass (spawner.lua) could never find it -- confirmed via
+-- livingbase_debug.log/ue4ss.log showing "AI override class unresolved: BP_Mob_AIController_Crew_
+-- Officer_C" on every single Original Upright spawn/restore. The real full path already exists
+-- above for this same class (Config.CREW_AI_CONTROLLERS or similar, see the Officer entry ~line 701).
+Config.ORIGINAL_UPRIGHT_AI_CONTROLLER =
+    "/Game/Gameplay/Character/AI/Crew/Officer/Behavior/BP_Mob_AIController_Crew_Officer.BP_Mob_AIController_Crew_Officer_C"
+Config.ORIGINAL_UPRIGHT_ANIM_CLASS =
+  "/Game/Character/Animation_Blueprints/Human/Regular/BlackBeard/ABP_BlackBeard_Regular_Sailor.ABP_BlackBeard_Regular_Sailor_C"
+
+-- DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER is defined further down, right after Config.DECORRUPT_MOB
+-- itself -- it references DECORRUPT_MOB.swaps directly, and DECORRUPT_MOB isn't defined until later
+-- in this file (2026-09-25 FIX: originally placed here, which crashed the WHOLE mod load with
+-- "attempt to index a nil value (field 'DECORRUPT_MOB')" -- Lua evaluates top-to-bottom, so a
+-- forward reference to a not-yet-defined Config field is a hard error, not just a stale value).
+
+-- Same native class paths Wild/Monsterous use -- inlined below (not new locals) since this file
+-- already carries many per-archetype constants and there's no need to risk adding more.
+-- Warrior:  /Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/BP_Mob_SenkamatiCorrupted_Regular_Warrior.BP_Mob_SenkamatiCorrupted_Regular_Warrior_C
+-- Hunter:   /Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hunter.BP_Mob_SenkamatiCorrupted_Regular_Hunter_C
+-- Caster:   /Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C
+-- Thrall:   /Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C
+--
+-- `archetype` picks the DeCorrupt ruleset the same way senkaMobFix's own `name` param already does
+-- (Hunter/Thrall get their own tables, Warrior/Caster share DECORRUPT_MOB -- or the Wavy-3 override
+-- above for Caster specifically here). `removeWeapon` strips every known weapon/shield socket after
+-- de-corrupt converges (Testbed.SpawnOriginalUprightSenkamatiByName). `hairOverride` routes the
+-- Caster's mask-off rows to the Wavy-3 ruleset instead of the default DECORRUPT_MOB/dreadlocks.
+-- 2026-09-25 RENAME+REORDER: "Masked"/"Unmasked" -> "Mask On"/"Mask Off" (matches the existing
+-- Senkamati crew-reskin convention exactly). Array order is MASK-FIRST (all Mask Off rows, then all
+-- Mask On rows; archetype alphabetical, Idle before Mobile within each) to match
+-- original_upright_path_and_label's own "People > Senkamati > Original Upright > Mask On/Off >
+-- <Archetype> (Idle/Mobile)" grouping (spawnmenu_manifest.lua) -- this roster was never real-world-
+-- used (broke the whole mod load before RedFalcon ever saw it, see the forward-reference bug
+-- above), so reordering the array is safe: no existing spawn_menu.ini index needs preserving,
+-- unlike every other roster in this file.
+Config.SENKAMATI_ORIGINAL_UPRIGHT = {
+  { name = "Caster - Mask Off (Idle)",    archetype = "Caster",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C", showHelmet = false, hairOverride = true, idlePose = true },
+  { name = "Caster - Mask Off (Mobile)",  archetype = "Caster",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C", showHelmet = false, hairOverride = true },
+  { name = "Hunter - Mask Off (Idle)",    archetype = "Hunter",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hunter.BP_Mob_SenkamatiCorrupted_Regular_Hunter_C", showHelmet = false, removeWeapon = true, idlePose = true },
+  { name = "Hunter - Mask Off (Mobile)",  archetype = "Hunter",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hunter.BP_Mob_SenkamatiCorrupted_Regular_Hunter_C", showHelmet = false, removeWeapon = true },
+  { name = "Thrall - Mask Off (Idle)",    archetype = "Thrall",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C", showHelmet = false, idlePose = true },
+  { name = "Thrall - Mask Off (Mobile)",  archetype = "Thrall",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C", showHelmet = false },
+  { name = "Warrior - Mask Off (Idle)",   archetype = "Warrior", path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/BP_Mob_SenkamatiCorrupted_Regular_Warrior.BP_Mob_SenkamatiCorrupted_Regular_Warrior_C", showHelmet = false, removeWeapon = true, idlePose = true },
+  { name = "Warrior - Mask Off (Mobile)", archetype = "Warrior", path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/BP_Mob_SenkamatiCorrupted_Regular_Warrior.BP_Mob_SenkamatiCorrupted_Regular_Warrior_C", showHelmet = false, removeWeapon = true },
+  { name = "Caster - Mask On (Idle)",     archetype = "Caster",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C", showHelmet = true,  idlePose = true },
+  { name = "Caster - Mask On (Mobile)",   archetype = "Caster",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Shaman_Caster/BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster.BP_Mob_SenkamatiCorrupted_Regular_Shaman_Caster_C", showHelmet = true },
+  { name = "Hunter - Mask On (Idle)",     archetype = "Hunter",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hunter.BP_Mob_SenkamatiCorrupted_Regular_Hunter_C", showHelmet = true,  removeWeapon = true, idlePose = true },
+  { name = "Hunter - Mask On (Mobile)",   archetype = "Hunter",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Hunter/BP_Mob_SenkamatiCorrupted_Regular_Hunter.BP_Mob_SenkamatiCorrupted_Regular_Hunter_C", showHelmet = true,  removeWeapon = true },
+  { name = "Thrall - Mask On (Idle)",     archetype = "Thrall",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C", showHelmet = true,  idlePose = true },
+  { name = "Thrall - Mask On (Mobile)",   archetype = "Thrall",  path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Thrall/BP_Mob_SenkamatiCorrupted_Thrall.BP_Mob_SenkamatiCorrupted_Thrall_C", showHelmet = true },
+  { name = "Warrior - Mask On (Idle)",    archetype = "Warrior", path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/BP_Mob_SenkamatiCorrupted_Regular_Warrior.BP_Mob_SenkamatiCorrupted_Regular_Warrior_C", showHelmet = true,  removeWeapon = true, idlePose = true },
+  { name = "Warrior - Mask On (Mobile)",  archetype = "Warrior", path = "/Game/Gameplay/Character/AI/Mob/SenkamatiCorrupted/Regular_Warrior/BP_Mob_SenkamatiCorrupted_Regular_Warrior.BP_Mob_SenkamatiCorrupted_Regular_Warrior_C", showHelmet = true,  removeWeapon = true },
+}
+
 ------------------------------------------------------------
 -- SENKAMATI STATUES FEATURE REMOVED ENTIRELY (2026-08-15) -- shipped in v1.3.10 (the '='/'-'
 -- keys, Config.SENKAMATI_STATUES' "crew"/"posed"/"mob" three-kind roster, full saga in CLAUDE.md
@@ -1014,6 +1122,38 @@ Config.DECORRUPT_MOB = {
     -- DREADLOCKS specifically (the random pool rolled short styles like Wavy_02).
     { name = "dreadlocks (F)", match = "Witch_Feather_%d+_Head", to = DREADS_F },
   },
+}
+
+-- DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER (2026-09-25) -- for Config.SENKAMATI_ORIGINAL_UPRIGHT's
+-- Caster rows specifically: same skin/eye swaps as DECORRUPT_MOB above, but her "Head"/hair piece
+-- gets "Wavy 3" (Config.CLOTHES_ITEMS' Hairs dropdown) instead of DECORRUPT_MOB's default
+-- dreadlocks, so this category reads as visually distinct from Wild rather than identical-but-
+-- upright. Only her mask-OFF rows use this (rulesWithHelmet filters out any "_Head" replace when
+-- the mask is shown, same as Wild). Must be defined AFTER Config.DECORRUPT_MOB itself (references
+-- its .swaps directly) -- see that earlier placement's own header comment for why this matters.
+Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER = {
+  swaps = Config.DECORRUPT_MOB.swaps,
+  hides = {},
+  replaces = {
+    { name = "Wavy 3 (F)", match = "Witch_Feather_%d+_Head",
+      to = "/Game/Character/Skeletal_Meshes/Hair/Female/Wavy/SK_Hair_Wavy_03_Default_Female.SK_Hair_Wavy_03_Default_Female" },
+  },
+}
+
+-- DECORRUPT_MOB_ORIGINAL_UPRIGHT_WARRIOR (2026-09-25, RedFalcon: "warrior mask off isnt removing
+-- his mask") -- DECORRUPT_MOB's own `hides` is deliberately EMPTY (see its own comment: the Wild
+-- category wants the Warrior's armor/helmet kept for the "as original" comparison rows), so
+-- reusing it for Original Upright meant "Mask Off" never actually hid anything -- only Hunter has
+-- his own dedicated hides list with a real helmet pattern. Same naming convention already
+-- confirmed elsewhere in this file for the Warrior specifically (senkaCrewFix's own leg-nudge
+-- pattern, "Warrior_Feather_%d+_Legs") -- his helmet piece is the same family, "..._Head". Used
+-- UNCONDITIONALLY for every Warrior row in Config.SENKAMATI_ORIGINAL_UPRIGHT (both Mask On/Off),
+-- matching how DECORRUPT_HUNTER is already used unconditionally -- rulesWithHelmet's own showHelmet
+-- filter strips this hide out for Mask On rows automatically, same as it already does for Hunter.
+Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_WARRIOR = {
+  swaps = Config.DECORRUPT_MOB.swaps,
+  hides = { "Warrior_Feather_%d+_Head" },
+  replaces = {},
 }
 
 -- HUNTER variant: same skin/eye/facial-hair cleanup as the Caster, but LEAVE HIS HAIR
@@ -1374,15 +1514,17 @@ Config.TOWNSFOLK_HAIR_COLOR = nil  -- random per spawn
 -- GoatF is the passive doe (Calm/Fear AI only). GoatM has a charge/melee attack
 -- (friendly copy keeps it from targeting you/crew). GoatMega (a big variant) is
 -- available too — add it here if you want it in the cycle.
+-- Renamed with "(Mobile)" suffix 2026-09-25 -- see Config.BOARS' own header comment for the
+-- Idle/Mobile split; count/order unchanged, "(Idle)" siblings live in Config.LIVESTOCK_IDLE.
 Config.GOATS = {
-  { name = "GoatF", candidates = {
+  { name = "GoatF (Mobile)", candidates = {
       "/Game/Gameplay/Character/AI/Mob/Goat/GoatF/BP_Mob_GoatF.BP_Mob_GoatF_C" } },
-  { name = "GoatM", candidates = {
+  { name = "GoatM (Mobile)", candidates = {
       "/Game/Gameplay/Character/AI/Mob/Goat/GoatM/BP_Mob_GoatM.BP_Mob_GoatM_C" } },
   -- GoatMega added 2026-08-07 (per user request) -- path was already confirmed, just never
   -- uncommented. Never live-tested; same default-AI + friendly-faction-copy starting point as the
   -- other new creatures added alongside it (Sow, Boar Charger, Boar Mega, Wolf, Alpha Wolf, Crocodile).
-  { name = "GoatMega", candidates = {
+  { name = "GoatMega (Mobile)", candidates = {
       "/Game/Gameplay/Character/AI/Mob/Goat/GoatMega/BP_Mob_GoatMega.BP_Mob_GoatMega_C" } },
 }
 
@@ -1395,11 +1537,12 @@ Config.GOATS = {
 -- failed on the flat /Mob/Dodo/ path) is almost certainly under /Mob/Dodo/DodoF/. Candidates are
 -- ordered most-likely first; the resolver keeps whichever loads. If the female STILL doesn't appear,
 -- capture a wild one (there's one near RedFalcon's base) and read its class off the probe.
+-- Renamed with "(Mobile)" suffix 2026-09-25 -- see Config.BOARS' own header comment.
 Config.DODOS = {
-  { name = "Dodo",  candidates = {   -- male, "azure" — verified calm 2026-07-10
+  { name = "Dodo (Mobile)",  candidates = {   -- male, "azure" — verified calm 2026-07-10
       "/Game/Gameplay/Character/AI/Mob/Dodo/Dodo/BP_Mob_Dodo.BP_Mob_Dodo_C",
       "/Game/Gameplay/Character/AI/Mob/Dodo/BP_Mob_Dodo.BP_Mob_Dodo_C" } },
-  { name = "DodoF", candidates = {   -- female
+  { name = "DodoF (Mobile)", candidates = {   -- female
       "/Game/Gameplay/Character/AI/Mob/Dodo/DodoF/BP_Mob_DodoF.BP_Mob_DodoF_C",
       "/Game/Gameplay/Character/AI/Mob/Dodo/BP_Mob_DodoF.BP_Mob_DodoF_C",
       "/Game/Gameplay/Character/AI/Mob/DodoF/BP_Mob_DodoF.BP_Mob_DodoF_C" } },
@@ -3597,8 +3740,12 @@ Config.MONSTEROUS_MOBS = {
 
 -- CRABS (2026-09-25, NewItems.xlsx batch): Animals > Crabs. Same plain unpacified spawn path as
 -- Config.MONSTEROUS_MOBS -- see Testbed.SpawnMonsterousMobByName (shared by both rosters).
+-- Idle/Mobile split (2026-09-25) -- own roster (not part of LIVESTOCK's flattening), so appending
+-- the "(Idle)" sibling directly here is safe (no cross-family index-shift risk, see Config.BOARS'
+-- own header comment for why that risk exists elsewhere).
 Config.CRABS = {
-  { name = "Crab", path = "/Game/Gameplay/Character/AI/Simple/Crab/BP_SimpleMob_Crab.BP_SimpleMob_Crab_C" },
+  { name = "Crab (Mobile)", path = "/Game/Gameplay/Character/AI/Simple/Crab/BP_SimpleMob_Crab.BP_SimpleMob_Crab_C" },
+  { name = "Crab (Idle)", idlePose = true, path = "/Game/Gameplay/Character/AI/Simple/Crab/BP_SimpleMob_Crab.BP_SimpleMob_Crab_C" },
 }
 
 -- NEW_PEOPLE (2026-09-25, NewItems.xlsx batch, second pass): 35 rows silently dropped from the

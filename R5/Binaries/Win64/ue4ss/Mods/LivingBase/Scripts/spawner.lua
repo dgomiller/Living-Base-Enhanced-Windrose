@@ -3995,7 +3995,29 @@ function Spawner.ProbeNearestActor(maxDist)
                     if cf == "Class /Script/Engine.Actor" then isVolumeOrBare = true end
                 end)
             end
-            if a and a:IsValid() and not isController and not isVolumeOrBare and not exclude[actorInstancePath(a)] then
+            -- Always-excluded classes (2026-09-27, RedFalcon: "the hammer i am holding is getting in
+            -- the way ... i will never want to probe that") -- the build-tool GameplayCue actor sits
+            -- right in front of the camera while placing, out-competing the actual item being placed
+            -- for "nearest in cone" the same way the pawn/controller/camera-manager already are
+            -- excluded above. A fixed table rather than a single check, in case another
+            -- never-probe-this class turns up later.
+            local isAlwaysExcluded = false
+            if a then
+                pcall(function()
+                    -- Same GetFullName()+regex extraction this function's own tail (below) already
+                    -- uses to log the class path -- GetPathName() alone (tried first, didn't match
+                    -- live) evidently doesn't return the same dotted /Game/...Name.Name_C format for
+                    -- a Blueprint class in this UE4SS binding.
+                    local full = a:GetClass():GetFullName()
+                    local classPath = full:match("(/Game/[%w_/%.]+)$") or full
+                    for _, excludedPath in ipairs({
+                        "/Game/Gameplay/Character/Player/GameplayCue/GCA_BuildingCreate.GCA_BuildingCreate_C",
+                    }) do
+                        if classPath == excludedPath then isAlwaysExcluded = true; break end
+                    end
+                end)
+            end
+            if a and a:IsValid() and not isController and not isVolumeOrBare and not isAlwaysExcluded and not exclude[actorInstancePath(a)] then
                 local dist, cosAngle
                 pcall(function()
                     local l = a:K2_GetActorLocation()
@@ -5522,12 +5544,19 @@ end
 -- (actor.NiagaraComponent, the same pattern ProbeLootSparkle already used without issue) and a plain
 -- property WRITE (niag.Asset = sys, the SAME pattern _DoEngineSpawn's own aiClass override already
 -- uses: `deferred.AIControllerClass = aiClass`) -- no new UFunction CALL anywhere in this path.
+-- CHANGED (2026-09-26, RedFalcon: "that spawns on my probed target not as its own separate actor"
+-- -- no longer requires/positions off Spawner._lastProbedActor at all. RedFalcon's actual want is a
+-- genuinely independent preview actor, placed a fixed distance in front of the camera -- "spawn it
+-- at the distance we use for free camera placement," i.e. the SAME Config.
+-- PLACEMENT_FREEBUILD_START_DIST_UU (450uu) real free-build spawning already uses (RedFalcon's own
+-- "about one platform distance from the player" reference distance), not a new made-up number. The
+-- old target-bounds-derived scale/placement is GONE -- lbsetniagarascale/lbsetstaticscale/
+-- lbtestniagaramove already cover adjusting size/position afterward, so there's no need to guess a
+-- footprint-matched scale up front anymore; always spawns at a fixed 1.0 scale now. "still have it
+-- replace though" -- TestSpawnNiagaraActorClear() is still called first by every caller
+-- (TestSpawnNiagaraByPath/CycleTestNiagaraEffect), unchanged; this only touches WHERE the fresh one
+-- lands, not whether the old one gets cleared first.
 function Spawner.TestSpawnNiagaraActor(assetPath)
-    local target = Spawner._lastProbedActor
-    if not (target and target:IsValid()) then
-        print("[LivingBase] [test-niagaraactor] no valid probed target -- run lbprobe on something first.\n")
-        return
-    end
     assetPath = assetPath or NIAGARA_FX_CHEST_PICKUP
     local sys = resolveAsset(assetPath)
     if not (sys and sys:IsValid()) then
@@ -5546,50 +5575,28 @@ function Spawner.TestSpawnNiagaraActor(assetPath)
         print("[LivingBase] [test-niagaraactor] no GameplayStatics/World available.\n")
         return
     end
-    -- Scale + placement from the target's own bounds (2026-08-21, RedFalcon: "is it possible to
-    -- resize it to match the hitbox of the object?" then "it always spawns halfway up the actors")
-    -- -- GetActorBounds' 4-arg form (Origin/BoxExtent as pre-allocated Out-param tables) is already
-    -- proven safe elsewhere in this file (actorBoundsBottomZ/computeActorCenterOffset) -- reused
-    -- directly here rather than calling either of those (both declared much later in the file, so
-    -- calling them here would hit this file's own documented Lua forward-declaration scoping
-    -- gotcha). ONE bounds read now drives both: scale from horizontal extent only (tall, narrow
-    -- objects like statues/lampposts have Z as their LARGEST extent, which was driving the scale up
-    -- even though the effect should track the FOOTPRINT, not the height), and placement at the
-    -- bounding box's BOTTOM-CENTER (origin.X/Y, origin.Z - extent.Z) instead of the raw actor pivot
-    -- -- same root cause as the earlier decor "sits low"/statue anchor-offset bugs this session:
-    -- these actors' pivots sit mid-body, not at their visual base, so K2_GetActorLocation() alone put
-    -- the effect halfway up instead of grounded under the object. Falls back to
-    -- K2_GetActorLocation() only if bounds can't be read at all.
-    -- BUG FIX (2026-08-21, RedFalcon: "it still pops up halfway up a statue... It isnt changing
-    -- width though") -- NOT actually statue-specific: `local ok = target:GetActorBounds(...)`
-    -- captured GetActorBounds' own Lua return value as "ok" -- but GetActorBounds is a void
-    -- UFunction that only writes through its Origin/BoxExtent OUT-PARAMS, it has no real return
-    -- value, so `ok` was always nil/falsy and this whole branch silently never ran for ANYONE,
-    -- decor included -- see actorBoundsBottomZ's own proven pattern just above in this file, which
-    -- wraps the call in pcall() and uses PCALL's own success boolean as "ok", not the function's.
-    -- Decor only looked "fine" by coincidence: static prop pivots are usually already near their
-    -- base, so the fallback K2_GetActorLocation() happened to land close to the ground anyway;
-    -- statues' pivots sit mid-body, so the exact same silent failure looked completely different.
+    -- Placement: a fixed distance straight in front of the camera (2026-09-26) -- see this
+    -- function's own updated header for why. Same camera-location + yaw/pitch-forward-vector recipe
+    -- ProbeNearestActor's own camera-cone aim already uses (see that function's own comment for the
+    -- exact math) -- reused here rather than requiring a probed target at all.
     local scaleMul = 1.0
     local loc
     pcall(function()
-        local origin, extent = {}, {}
-        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
-        if ok and origin.X and origin.Y and origin.Z and extent.X and extent.Y and extent.Z then
-            loc = { X = origin.X, Y = origin.Y, Z = origin.Z - extent.Z }
-            local radius = math.max(extent.X, extent.Y)
-            local base = Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU or 50.0
-            if radius > 0 and base > 0 then
-                scaleMul = radius / base
-                local minS, maxS = Config.NIAGARA_HIGHLIGHT_MIN_SCALE or 0.3, Config.NIAGARA_HIGHLIGHT_MAX_SCALE or 4.0
-                if scaleMul < minS then scaleMul = minS end
-                if scaleMul > maxS then scaleMul = maxS end
-            end
-        end
+        local pc = UEHelpers.GetPlayerController()
+        local cam = pc and pc:IsValid() and pc.PlayerCameraManager
+        if not (cam and cam:IsValid()) then return end
+        local camLoc, camRot
+        pcall(function() camLoc = cam:GetCameraLocation() end)
+        pcall(function() camRot = cam:GetCameraRotation() end)
+        if not (camLoc and camRot) then return end
+        local yaw, pitch = math.rad(camRot.Yaw), math.rad(camRot.Pitch)
+        local cp = math.cos(pitch)
+        local fx, fy, fz = cp * math.cos(yaw), cp * math.sin(yaw), math.sin(pitch)
+        local dist = Config.PLACEMENT_FREEBUILD_START_DIST_UU or 450.0
+        loc = { X = camLoc.X + fx * dist, Y = camLoc.Y + fy * dist, Z = camLoc.Z + fz * dist }
     end)
-    if not loc then pcall(function() loc = target:K2_GetActorLocation() end) end
     if not loc then
-        print("[LivingBase] [test-niagaraactor] could not read target location/bounds.\n")
+        print("[LivingBase] [test-niagaraactor] no player/camera available -- aborting.\n")
         return
     end
     local transform = {
@@ -5613,7 +5620,7 @@ function Spawner.TestSpawnNiagaraActor(assetPath)
         return
     end
     Spawner._testNiagaraActor = actor
-    print("[LivingBase] [test-niagaraactor] spawned OK at target's location. Run lbtestniagaraactorclear to remove it.\n")
+    print("[LivingBase] [test-niagaraactor] spawned OK in front of the camera. Run lbtestniagaraactorclear to remove it (or lbtestniagaramove to reposition it).\n")
 end
 
 function Spawner.TestSpawnNiagaraActorClear()
@@ -5779,6 +5786,638 @@ function Spawner.TestSpawnNiagaraByPath(pathArg)
     end
     Spawner.TestSpawnNiagaraActorClear()
     Spawner.TestSpawnNiagaraActor(path)
+end
+
+-- Spawner.TestSpawnNiagaraByPathLoop(pathArg, intervalMsArg, say) -- "lbtestniagaraloop <path>
+-- [intervalMs]" (2026-09-26, RedFalcon: "is it possible to add a loop option for lbtestniagarapath
+-- to see how quick fx may look on repeat?") -- a fast, non-looping burst effect only shows its real
+-- character when fired back-to-back (a single lbtestniagarapath call just plays it once and it's
+-- gone) -- this repeatedly clears+respawns the SAME effect at a fixed interval so a quick burst can
+-- be watched on repeat.
+--
+-- CRASH FOUND LIVE (2026-09-26, same session): the FIRST version of this looped UNBOUNDED (only
+-- ever stopped by an explicit lbtestniagaraloopstop or a newer loop superseding it) and repeatedly
+-- destroyed+respawned a real actor via Spawner._DoEngineSpawn every tick. Confirmed to reproduce
+-- the EXACT same "[Lua::Registry::get_function_ref] Ref was not function, removing hook!" engine-
+-- tick-hook-corruption crash this project already hit once before (see the 2026-09-25 senka-crew-
+-- legs retry-loop incident) -- nothing else in this codebase repeats a native actor destroy/spawn
+-- cycle on an indefinite timer, and the established lesson from that FIRST incident ("dense burst of
+-- native reflection/spawn calls destabilizes UE4SS's own bridge") applies just as much to a
+-- destroy+respawn loop as it did to a repeated ApplyClothesItem/TestSetCPDPaletteColor call. FIXED
+-- by hard-capping total iterations (MAX_NIAGARA_LOOP_TICKS) so this can NEVER run indefinitely --
+-- same "bounded, not open-ended" discipline as this file's other proven-safe retry loops (e.g.
+-- testbed.lua's stripOriginalUprightWeapons, capped at 4 reassertions). A short bounded burst is
+-- still plenty to visually judge how a quick FX reads on repeat; the user can just re-run the
+-- command for another burst if they need to keep watching.
+--
+-- Generation-token guarded (same cancel-safety idiom this file already uses for retry/reassertion
+-- loops elsewhere) so a stale loop from a PREVIOUS lbtestniagaraloop call can never keep firing
+-- after a newer one starts or lbtestniagaraloopstop is called -- ExecuteWithDelay has no native
+-- "cancel a pending timer" API, this generation check is the only way to make an old loop actually
+-- stop. Hung off the Spawner table directly (not a new top-level `local`) -- this file is already
+-- at Lua's 200-local ceiling.
+Spawner._niagaraLoopGen = 0
+-- CAUGHT LIVE (2026-09-26, moments after deploying): this was FIRST written as `local
+-- MAX_NIAGARA_LOOP_TICKS = 12` -- a NEW file-level local, immediately hard-crashing the entire mod
+-- load ("too many local variables (limit is 200) in main function") the instant it pushed this
+-- file's main-chunk local count past 200. Exactly the mistake this same comment block already
+-- warned against one paragraph up. Fixed the same way `Spawner._niagaraLoopGen` right above it
+-- already does it correctly -- a plain Spawner table field costs nothing against the 200-local
+-- budget, only a bare `local` does.
+Spawner._maxNiagaraLoopTicks = 12
+function Spawner.TestSpawnNiagaraByPathLoop(pathArg, intervalMsArg, say)
+    say = say or function(m) print("[LivingBase] [test-niagaraloop] " .. tostring(m) .. "\n") end
+    if not pathArg or pathArg == "" then
+        say("usage: lbtestniagaraloop <path> [intervalMs] -- default interval 800ms, capped at "
+            .. Spawner._maxNiagaraLoopTicks .. " repeats -- re-run for another burst.")
+        return false
+    end
+    local interval = tonumber(intervalMsArg) or 800
+    if not ExecuteWithDelay then
+        say("ExecuteWithDelay unavailable in this UE4SS build -- can't loop.")
+        return false
+    end
+    Spawner._niagaraLoopGen = Spawner._niagaraLoopGen + 1
+    local myGen = Spawner._niagaraLoopGen
+    local count = 0
+    local function tick()
+        if Spawner._niagaraLoopGen ~= myGen then return end -- superseded by a newer loop/stop
+        if count >= Spawner._maxNiagaraLoopTicks then
+            say(string.format("loop finished (%d repeats) -- re-run lbtestniagaraloop to watch another burst.", count))
+            return
+        end
+        count = count + 1
+        pcall(function() Spawner.TestSpawnNiagaraByPath(pathArg) end)
+        ExecuteWithDelay(interval, tick)
+    end
+    say(string.format("looping '%s' every %dms, up to %d repeats -- lbtestniagaraloopstop to stop early.",
+        tostring(pathArg), interval, Spawner._maxNiagaraLoopTicks))
+    tick()
+    return true
+end
+
+-- Spawner.TestSpawnNiagaraLoopStop(say) -- "lbtestniagaraloopstop" -- cancels any in-flight
+-- lbtestniagaraloop by bumping the generation token (the next scheduled tick sees a mismatch and
+-- quietly stops rescheduling itself instead of firing again), then despawns whatever the loop last
+-- spawned via the same clear function lbtestniagaraactorclear already uses.
+function Spawner.TestSpawnNiagaraLoopStop(say)
+    say = say or function(m) print("[LivingBase] [test-niagaraloop] " .. tostring(m) .. "\n") end
+    Spawner._niagaraLoopGen = Spawner._niagaraLoopGen + 1
+    pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+    say("loop stopped.")
+    return true
+end
+
+-- Spawner.TestNiagaraActorMove(dx, dy, dz, say) -- "lbtestniagaramove <dx> <dy> <dz>" (2026-09-26,
+-- RedFalcon: "can we also have a tool that allows use to move niagara effects as well, in case they
+-- spawn in a bad spot?") -- a plain WORLD-SPACE offset applied to Spawner._testNiagaraActor's
+-- CURRENT location via K2_SetActorLocation, the same proven-safe call every other live-nudge tool
+-- in this file already uses (e.g. CS.setActorScaleGrounded's own grounding compensation). Relative
+-- rather than absolute so it's repeatable -- run it again with the same small offset to keep
+-- nudging the same direction, same idea as the Move tab's own D-pad. NOTE: doesn't survive the NEXT
+-- tick of an active lbtestniagaraloop -- that loop destroys and respawns fresh at the probed
+-- target's own bounds-derived location every interval, so a manual nudge only sticks for a single,
+-- non-looping spawn (lbtestniagarapath/lbtestniagaraactor/lbtestniagaracycle).
+function Spawner.TestNiagaraActorMove(dx, dy, dz, say)
+    say = say or function(m) print("[LivingBase] [test-niagaramove] " .. tostring(m) .. "\n") end
+    local ndx, ndy, ndz = tonumber(dx), tonumber(dy), tonumber(dz)
+    if not (ndx and ndy and ndz) then
+        say("usage: lbtestniagaramove <dx> <dy> <dz> -- e.g. lbtestniagaramove 0 0 50 (world-space UU offset, positive Z = up)")
+        return false
+    end
+    local actor = Spawner._testNiagaraActor
+    if not (actor and actor:IsValid()) then
+        say("no test Niagara actor currently spawned -- run lbtestniagarapath/lbtestniagaraactor first.")
+        return false
+    end
+    local loc
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    if not loc then say("could not read current location"); return false end
+    local newLoc = { X = loc.X + ndx, Y = loc.Y + ndy, Z = loc.Z + ndz }
+    local ok = pcall(function() actor:K2_SetActorLocation(newLoc, false, {}, true) end)
+    if not ok then say("K2_SetActorLocation FAILED"); return false end
+    say(string.format("moved to (%.1f, %.1f, %.1f).", newLoc.X, newLoc.Y, newLoc.Z))
+    return true
+end
+
+-- Spawner.TestFitDecorToTarget(decorPathArg, say) -- "lbtestfithitbox [decorPath]" (2026-09-26,
+-- RedFalcon: "I'd like to put it in the same spot as a target and make it exactly fit the hitbox
+-- of the target" -- testing whether "Quest Sparkle" (Decor > Misc > Effects in the spawn tree,
+-- real class BP_Sc_POI_CoastJungle_Interaction_SecretOfTheExpedition_Graves_01) can be used as a
+-- target marker sized to match whatever it's placed on). A REAL, tracked `Spawner.Spawn` -- unlike
+-- the other niagara test tools' ephemeral `_testNiagaraActor`, this one shows up in
+-- Spawner.spawned/persist.txt like any normal placement; despawn it the normal way (Numpad+ lock
+-- then Numpad 3, or the Target List tab) when done testing. Defaults to Quest Sparkle's own class
+-- path when no argument is given (the specific entity being tested); any other /Game/... decor
+-- path works too.
+--
+-- "Fit the hitbox": spawns fresh at 1.0 scale first, reads its OWN default GetActorBounds, then
+-- computes a per-axis (non-uniform) scale ratio against the TARGET's own GetActorBounds extent and
+-- applies it via K2_SetActorScale3D -- same proven pcall'd 4-arg GetActorBounds pattern used
+-- elsewhere in this file (actorBoundsBottomZ/computeActorCenterOffset/the old, since-removed
+-- niagara-highlight footprint-fit code Spawner.TestSpawnNiagaraActor used to do), just matching all
+-- 3 axes independently instead of only a uniform horizontal-footprint scale. Placed at the TARGET's
+-- own bounds CENTER (not its raw actor pivot) so the two boxes' centers actually line up once
+-- scaled -- "same spot" and "fits the hitbox" both point at the same bounds-center placement.
+function Spawner.TestFitDecorToTarget(decorPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-fit-hitbox] " .. tostring(m) .. "\n") end
+    local decorPath = decorPathArg
+    if not decorPath or decorPath == "" then
+        decorPath = "/Game/Gameplay/Scenario/POI/BIOMS/CoastJungle/SecretOfTheExpedition/BP_Sc_POI_CoastJungle_Interaction_SecretOfTheExpedition_Graves_01.BP_Sc_POI_CoastJungle_Interaction_SecretOfTheExpedition_Graves_01_C"
+    end
+    local target = resolveTestDiagActor()
+    if not (target and target:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local targetLoc, targetExtent
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.X and extent.X then
+            targetLoc = { X = origin.X, Y = origin.Y, Z = origin.Z }
+            targetExtent = extent
+        end
+    end)
+    if not targetLoc then pcall(function() targetLoc = target:K2_GetActorLocation() end) end
+    if not targetLoc then
+        say("could not read target location/bounds.")
+        return false
+    end
+    local actor = Spawner.Spawn(decorPath, "Fit Test Decor", targetLoc)
+    if not (actor and actor:IsValid()) then
+        say("spawn failed -- check the class path.")
+        return false
+    end
+    if targetExtent then
+        local ok, spawnExtent = pcall(function()
+            local origin2, extent2 = {}, {}
+            local ok2 = pcall(function() actor:GetActorBounds(false, origin2, extent2, false) end)
+            if ok2 and extent2.X and extent2.X > 0 and extent2.Y > 0 and extent2.Z > 0 then
+                return extent2
+            end
+            return nil
+        end)
+        if ok and spawnExtent then
+            local sx = targetExtent.X / spawnExtent.X
+            local sy = targetExtent.Y / spawnExtent.Y
+            local sz = targetExtent.Z / spawnExtent.Z
+            pcall(function() actor:K2_SetActorScale3D({ X = sx, Y = sy, Z = sz }) end)
+            say(string.format("spawned '%s' at target's location, scaled %.3f,%.3f,%.3f to match its bounds.", decorPath, sx, sy, sz))
+        else
+            say("spawned at target's location, but couldn't read its own bounds to compute a fit scale -- left at 1.0 scale.")
+        end
+    else
+        say("spawned at target's location -- target's own bounds weren't readable, so no fit scale was applied.")
+    end
+    return true
+end
+
+-- Spawner.TestFitNiagaraToTarget(assetPathArg, say) -- "lbtestfitniagara [path]" (2026-09-26,
+-- RedFalcon: "can you do one that let's me assign a niagara effect to a target fit to its
+-- hitbox" -- the raw-NiagaraActor counterpart to lbtestfithitbox just above (which spawns a full
+-- decor Blueprint like Quest Sparkle instead). This restores the target-bounds-based placement/
+-- scale Spawner.TestSpawnNiagaraActor used to do before this SAME session's earlier camera-forward
+-- change (RedFalcon wants BOTH placement modes available side by side, not one replacing the
+-- other) -- kept as its own separate command rather than reverting lbtestniagarapath/
+-- lbtestniagaraactor back.
+--
+-- Scale uses the ORIGINAL horizontal-footprint/baseline-radius heuristic
+-- (Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU/MIN_SCALE/MAX_SCALE, both otherwise unused again after
+-- that camera-forward change) rather than lbtestfithitbox's "measure my own default bounds, then
+-- ratio against the target" trick -- a raw Niagara particle system's own GetActorBounds is
+-- unreliable immediately after spawn (particles haven't emitted yet, so bounds can read as zero/
+-- tiny), so measuring ITS bounds to compute a fit ratio isn't a safe basis the way it is for a real
+-- static/skeletal mesh decor Blueprint. This heuristic instead scales directly off the TARGET's own
+-- known-good bounds, never touching the effect's own.
+--
+-- Reuses the SAME Spawner._testNiagaraActor tracking slot every other niagara test tool uses, so
+-- lbtestniagaraactorclear/lbtestniagaramove/lbsetniagarascale all keep working on whatever this
+-- spawns too -- no separate parallel set of commands needed just for this placement mode.
+function Spawner.TestFitNiagaraToTarget(assetPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-niagarafit] " .. tostring(m) .. "\n") end
+    local target = resolveTestDiagActor()
+    if not (target and target:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local assetPath = assetPathArg
+    if not assetPath or assetPath == "" then
+        assetPath = HOVER_EFFECT_FX_PATH
+    end
+    local sys = resolveAsset(assetPath)
+    if not (sys and sys:IsValid()) then
+        say("could not resolve " .. tostring(assetPath))
+        return false
+    end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve NiagaraActor class.")
+        return false
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return false
+    end
+    -- Placement (2026-09-26, two fixes RedFalcon reported live testing this):
+    -- (1) "the bottom of the effect is at the middle" -- the SAME "spawns halfway up" symptom this
+    -- project already root-caused and fixed once, in the original 2026-08-21 niagara-highlight work
+    -- (see Spawner.ComputeHoverEffectLoc's near-identical fix for the production hover-highlight): a
+    -- Niagara effect's own pivot sits at ITS bottom, so placing it at the target's bounds Z-CENTER
+    -- put the effect floating with ITS bottom at the target's MIDDLE height. Fixed with
+    -- origin.Z - extent.Z (the bounding box's actual floor).
+    -- (2) "it also needs to be moved back to center on their center" -- the bounding-box's own X/Y
+    -- CENTER (origin.X/Y) is not always the same as the actor's own pivot/centerline -- an
+    -- asymmetric pose (a weapon held out, an off-center prop) skews the AABB center away from where
+    -- the target actually "is." Switched X/Y to the actor's own K2_GetActorLocation() (its real
+    -- pivot) instead of the bounds center, while keeping Z bounds-derived for the floor anchor above
+    -- -- the two axes intentionally come from different sources now, matched to what each one is
+    -- actually for (X/Y = where the target IS, Z = how tall it is).
+    local loc, scaleMul = nil, 1.0
+    local pivotLoc
+    pcall(function() pivotLoc = target:K2_GetActorLocation() end)
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.X and extent.X then
+            local px, py = (pivotLoc and pivotLoc.X) or origin.X, (pivotLoc and pivotLoc.Y) or origin.Y
+            loc = { X = px, Y = py, Z = origin.Z - extent.Z }
+            local radius = math.max(extent.X, extent.Y)
+            local base = Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU or 50.0
+            if radius > 0 and base > 0 then
+                scaleMul = radius / base
+                local minS, maxS = Config.NIAGARA_HIGHLIGHT_MIN_SCALE or 0.3, Config.NIAGARA_HIGHLIGHT_MAX_SCALE or 4.0
+                if scaleMul < minS then scaleMul = minS end
+                if scaleMul > maxS then scaleMul = maxS end
+            end
+        end
+    end)
+    if not loc then pcall(function() loc = pivotLoc end) end
+    if not loc then
+        say("could not read target location/bounds.")
+        return false
+    end
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = scaleMul, Y = scaleMul, Z = scaleMul },
+    }
+    local preFinish = function(actor)
+        pcall(function()
+            local niag = actor.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, "TestNiagaraActor", preFinish, nil)
+    if not (actor and actor:IsValid()) then
+        say("spawn failed.")
+        return false
+    end
+    Spawner._testNiagaraActor = actor
+    say(string.format("spawned '%s' at target's bounds-center, scale=%.2f (fit to hitbox footprint). Run lbtestniagaraactorclear to remove it, lbtestniagaramove/lbsetniagarascale to adjust.", tostring(assetPath), scaleMul))
+    return true
+end
+
+-- Spawner.TestPlaceNiagaraAtTarget(assetPathArg, say) -- "lbtestniagaraattarget [path]" (2026-09-26,
+-- RedFalcon: "so i dont think resizing the actor placed is resizing the effect ... so let's make a
+-- not fit version" -- many Niagara systems simulate in WORLD SPACE, which makes particle spawn
+-- positions/sizes ignore the owning actor/component's transform scale entirely (a real property
+-- baked into the Niagara System asset's own emitters, not something a Lua-side scale command can
+-- work around) -- fitting to the target's hitbox is pointless for an effect that won't visually
+-- resize anyway, so this is the plain "just place it at the target, always 1.0 scale" version of
+-- lbtestfitniagara, with no scaleMul math at all. Same bottom-center-X/Y-from-pivot placement fix
+-- as lbtestfitniagara (see that function's own header for the two placement fixes this project
+-- already found), same Spawner._testNiagaraActor tracking slot -- lbtestniagaraactorclear/
+-- lbtestniagaramove/lbsetniagarascale all still work on whatever this spawns.
+function Spawner.TestPlaceNiagaraAtTarget(assetPathArg, say)
+    say = say or function(m) print("[LivingBase] [test-niagaraattarget] " .. tostring(m) .. "\n") end
+    local target = resolveTestDiagActor()
+    if not (target and target:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local assetPath = assetPathArg
+    if not assetPath or assetPath == "" then assetPath = HOVER_EFFECT_FX_PATH end
+    local sys = resolveAsset(assetPath)
+    if not (sys and sys:IsValid()) then
+        say("could not resolve " .. tostring(assetPath))
+        return false
+    end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve NiagaraActor class.")
+        return false
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return false
+    end
+
+    local pivotLoc
+    pcall(function() pivotLoc = target:K2_GetActorLocation() end)
+    local floorZ
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.Z and extent.Z then floorZ = origin.Z - extent.Z end
+    end)
+    if not (pivotLoc and pivotLoc.X) then
+        say("could not read target location.")
+        return false
+    end
+    local loc = { X = pivotLoc.X, Y = pivotLoc.Y, Z = floorZ or pivotLoc.Z }
+
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+    local preFinish = function(actor)
+        pcall(function()
+            local niag = actor.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, "TestNiagaraActor", preFinish, nil)
+    if not (actor and actor:IsValid()) then
+        say("spawn failed.")
+        return false
+    end
+    Spawner._testNiagaraActor = actor
+    say(string.format("spawned '%s' at target's location (1.0 scale, no fit). Run lbtestniagaraactorclear to remove it, lbtestniagaramove to reposition.", tostring(assetPath)))
+    return true
+end
+
+-- Spawner.TestPlaceNiagaraAtOffset(assetPathArg, scaleArg, dxArg, dyArg, dzArg, say) --
+-- "lbtestniagaraplace <path> <scale|sx,sy,sz> <dx> <dy> <dz>" (2026-09-27, RedFalcon: "can you make
+-- one that spawns that lets me place with both scale and relative x y z") -- a one-shot combination
+-- of what previously took lbtestniagaraattarget + lbtestniagaramove + lbsetniagarascale as three
+-- separate follow-up commands. Same pivot-X/Y + bounds-floor-Z target placement fix as
+-- lbtestfitniagara/lbtestniagaraattarget, then adds the given dx/dy/dz world-space offset on top,
+-- and applies scale directly to the spawned actor's transform (uniform number OR comma "sx,sy,sz",
+-- same dual-input convention as lbsetniagarascale/lbsetstaticscale). Note: a World-Space-simulated
+-- Niagara system will still ignore this scale visually (see lbtestniagaraattarget's header) -- that's
+-- an asset property, not a bug in this tool. Same Spawner._testNiagaraActor tracking slot, so
+-- lbtestniagaraactorclear/lbtestniagaramove/lbsetniagarascale all still work on whatever this spawns.
+function Spawner.TestPlaceNiagaraAtOffset(assetPathArg, scaleArg, dxArg, dyArg, dzArg, say)
+    say = say or function(m) print("[LivingBase] [test-niagaraplace] " .. tostring(m) .. "\n") end
+    local target = resolveTestDiagActor()
+    if not (target and target:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local assetPath = assetPathArg
+    if not assetPath or assetPath == "" then assetPath = HOVER_EFFECT_FX_PATH end
+    local sys = resolveAsset(assetPath)
+    if not (sys and sys:IsValid()) then
+        say("could not resolve " .. tostring(assetPath))
+        return false
+    end
+
+    local sx, sy, sz
+    if scaleArg and tostring(scaleArg):find(",") then
+        local vx, vy, vz = tostring(scaleArg):match("^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+        sx, sy, sz = tonumber(vx), tonumber(vy), tonumber(vz)
+    else
+        local num = tonumber(scaleArg)
+        sx, sy, sz = num, num, num
+    end
+    if not (sx and sy and sz) then sx, sy, sz = 1.0, 1.0, 1.0 end
+
+    -- Accept dx/dy/dz as either 3 separate args OR one "dx,dy,dz" comma triple in dxArg (2026-09-27,
+    -- RedFalcon typed "0,0,100" as a single token, matching the scale arg's own comma convention --
+    -- tonumber() on that whole string silently failed and fell back to 0.0, so the offset came out
+    -- as (0,0,0) with no error at all -- "still appears at the feet"). Same dual-input shape as the
+    -- scale arg above, just applied to whichever of dx/dy/dz arrives combined.
+    local dx, dy, dz
+    if dxArg and tostring(dxArg):find(",") then
+        local vx, vy, vz = tostring(dxArg):match("^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+        dx, dy, dz = tonumber(vx) or 0.0, tonumber(vy) or 0.0, tonumber(vz) or 0.0
+    else
+        dx, dy, dz = tonumber(dxArg) or 0.0, tonumber(dyArg) or 0.0, tonumber(dzArg) or 0.0
+    end
+
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve NiagaraActor class.")
+        return false
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return false
+    end
+
+    local pivotLoc
+    pcall(function() pivotLoc = target:K2_GetActorLocation() end)
+    local floorZ
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.Z and extent.Z then floorZ = origin.Z - extent.Z end
+    end)
+    if not (pivotLoc and pivotLoc.X) then
+        say("could not read target location.")
+        return false
+    end
+    local loc = { X = pivotLoc.X + dx, Y = pivotLoc.Y + dy, Z = (floorZ or pivotLoc.Z) + dz }
+
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = sx, Y = sy, Z = sz },
+    }
+    local preFinish = function(actor)
+        pcall(function()
+            local niag = actor.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, "TestNiagaraActor", preFinish, nil)
+    if not (actor and actor:IsValid()) then
+        say("spawn failed.")
+        return false
+    end
+    Spawner._testNiagaraActor = actor
+    say(string.format("spawned '%s' at target + offset(%.1f, %.1f, %.1f), scale(%.2f, %.2f, %.2f). Run lbtestniagaraactorclear to remove it.", tostring(assetPath), dx, dy, dz, sx, sy, sz))
+    return true
+end
+
+-- Spawner.TestPlaceNiagaraSizedAtTarget(assetPathArg, heightFracArg, widthFracArg, say) --
+-- "lbtestniagarasized [path] [heightFrac] [widthFrac]" (2026-09-27, RedFalcon describing the
+-- FastTravelFlag circle FX: "keep it's height at about 10% the height of the target and 10% wider
+-- on the x and y so an oblong object would create an oval ... putting it at the 50% vertical") --
+-- LITERAL-size version of the fit tools (see lbtestniagaraplace's discussion): rather than a scale
+-- ratio against a fixed base radius, this reads the TARGET's own real bounds, computes a desired
+-- literal size per axis (heightFrac * target height, widthFrac * target X/Y footprint), then spawns
+-- the effect once at 1.0 scale and re-reads ITS OWN just-spawned bounds after a short delay (Niagara
+-- particle bounds are unreliable read immediately post-spawn -- see lbtestfitniagara's header) to
+-- get a real native-size baseline, then applies the correction scale = desiredSize/nativeSize per
+-- axis. This is what makes an oblong (non-square-footprint) target produce a genuinely oval ring
+-- rather than a uniformly-scaled circle. Placement: bounds-CENTER (origin.Z from GetActorBounds is
+-- already the 50%-vertical midpoint, no floor math needed here) for Z, pivot X/Y for horizontal
+-- centering (same fix as lbtestfitniagara/lbtestniagaraattarget). Guards against a newer spawn
+-- landing during the delay window by re-checking Spawner._testNiagaraActor identity before applying
+-- the correction. Same Spawner._testNiagaraActor tracking slot as the other niagara test tools.
+function Spawner.TestPlaceNiagaraSizedAtTarget(assetPathArg, heightFracArg, widthFracArg, say)
+    say = say or function(m) print("[LivingBase] [test-niagarasized] " .. tostring(m) .. "\n") end
+    local target = resolveTestDiagActor()
+    if not (target and target:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local FAST_TRAVEL_FLAG_PATH = "/Game/FX/Particles/Environment/Fire/Building/FX_FastTravelFlag.FX_FastTravelFlag"
+    local assetPath = assetPathArg
+    if not assetPath or assetPath == "" then
+        assetPath = FAST_TRAVEL_FLAG_PATH
+    end
+    -- Calibration below is specific to FX_FastTravelFlag -- match on the resolved path itself, not
+    -- just "was no arg given" (2026-09-27 bug: RedFalcon kept typing this exact path explicitly as
+    -- arg1, which left the old emptiness-only check permanently false and silently ran the unreliable
+    -- delayed-measurement branch every time despite looking identical in the log's spawned-path text).
+    local isDefaultAsset = (assetPath == FAST_TRAVEL_FLAG_PATH)
+    local heightFrac = tonumber(heightFracArg) or 0.10
+    local widthFrac = tonumber(widthFracArg) or 1.10
+    local sys = resolveAsset(assetPath)
+    if not (sys and sys:IsValid()) then
+        say("could not resolve " .. tostring(assetPath))
+        return false
+    end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve NiagaraActor class.")
+        return false
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return false
+    end
+
+    local pivotLoc, targetOrigin, targetExtent
+    pcall(function() pivotLoc = target:K2_GetActorLocation() end)
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() target:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.Z and extent.X then targetOrigin, targetExtent = origin, extent end
+    end)
+    if not (pivotLoc and pivotLoc.X and targetOrigin and targetExtent) then
+        say("could not read target location/bounds.")
+        return false
+    end
+    local targetClassName = "?"
+    pcall(function() targetClassName = target:GetClass():GetFName():ToString() end)
+
+    -- Prefer CapsuleComponent (2026-09-27, RedFalcon: the raw whole-actor bounds on a character
+    -- balloon out to whatever gear/props they're carrying -- "she is wearing the same outfit as the
+    -- witch" explained a broom/hat inflating GetActorBounds well past her real body). CapsuleComponent
+    -- is a FIXED gameplay-collision size per class regardless of visual gear (same proven property
+    -- this file already reads elsewhere, e.g. TestDumpMovement/computeStatueBottomOffset) -- using it
+    -- here gives a genuine body-only measurement, immune to whatever she's holding/wearing. It IS
+    -- circular (same radius both X and Y), which is fine for the humanoid case this tool targets --
+    -- only falls back to the raw GetActorBounds extent (which DOES support real oblong shapes) for
+    -- non-character targets like decor/statues that have no CapsuleComponent at all.
+    local targetSizeX, targetSizeY, targetSizeZ
+    local usedCapsule = false
+    pcall(function()
+        local capsule = target.CapsuleComponent
+        if capsule and capsule:IsValid() then
+            local radius, halfHeight
+            pcall(function() radius = capsule:GetScaledCapsuleRadius() end)
+            pcall(function() halfHeight = capsule:GetScaledCapsuleHalfHeight() end)
+            if radius and radius > 0 and halfHeight and halfHeight > 0 then
+                targetSizeX, targetSizeY, targetSizeZ = radius * 2.0, radius * 2.0, halfHeight * 2.0
+                usedCapsule = true
+            end
+        end
+    end)
+    if not targetSizeX then
+        targetSizeX, targetSizeY, targetSizeZ = targetExtent.X * 2.0, targetExtent.Y * 2.0, targetExtent.Z * 2.0
+    end
+    local loc = { X = pivotLoc.X, Y = pivotLoc.Y, Z = usedCapsule and pivotLoc.Z or targetOrigin.Z }
+    say(string.format("target '%s' %s size: %.1f x %.1f x %.1f uu (%.2f x %.2f x %.2f m).", targetClassName, usedCapsule and "body (capsule)" or "raw bounds", targetSizeX, targetSizeY, targetSizeZ, targetSizeX / 100.0, targetSizeY / 100.0, targetSizeZ / 100.0))
+    local desiredSizeX = targetSizeX * widthFrac
+    local desiredSizeY = targetSizeY * widthFrac
+    local desiredSizeZ = targetSizeZ * heightFrac
+
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+    local preFinish = function(actor)
+        pcall(function()
+            local niag = actor.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    pcall(function() Spawner.TestSpawnNiagaraActorClear() end)
+    local actor = Spawner._DoEngineSpawn(gs, world, cls, transform, "TestNiagaraActor", preFinish, nil)
+    if not (actor and actor:IsValid()) then
+        say("spawn failed.")
+        return false
+    end
+    Spawner._testNiagaraActor = actor
+
+    -- Calibrated native size for the default FX_FastTravelFlag asset (2026-09-27, RedFalcon live
+    -- look-check: "the scale of the effect should be around 8 wide and 1.5 tall" for a desired
+    -- 72 x 72 x 27 uu ring -- i.e. its REAL native footprint is ~9uu diameter x ~18uu tall, nowhere
+    -- near the ~2000uu the delayed post-spawn GetActorBounds read implied). That confirms this
+    -- asset's own bounds read (even after a short delay) is NOT trustworthy -- almost certainly
+    -- Niagara's default/unbounded fallback box, not the real emitted-particle extent (same class of
+    -- issue lbtestfitniagara's header already flagged, just worse for this asset). Applying scale
+    -- immediately at spawn from this fixed baseline instead of trying to measure it live -- same
+    -- "use a manually-tuned constant instead of an unreliable live Niagara-bounds read" precedent as
+    -- Config.NIAGARA_HIGHLIGHT_BASE_RADIUS_UU elsewhere in this file.
+    if isDefaultAsset then
+        local nativeDiameterUU, nativeHeightUU = 9.0, 18.0
+        local sx = desiredSizeX / nativeDiameterUU
+        local sy = desiredSizeY / nativeDiameterUU
+        local sz = desiredSizeZ / nativeHeightUU
+        pcall(function() actor:K2_SetActorScale3D({ X = sx, Y = sy, Z = sz }) end)
+        say(string.format("spawned '%s', scale(%.3f, %.3f, %.3f) for desired size %.1f x %.1f x %.1f uu (calibrated baseline, no live measurement). Run lbtestniagaraactorclear to remove it.", tostring(assetPath), sx, sy, sz, desiredSizeX, desiredSizeY, desiredSizeZ))
+        return true
+    end
+
+    say(string.format("spawned '%s' at 1.0 scale, measuring native size in 0.25s to fit desired %.1f x %.1f x %.1f uu...", tostring(assetPath), desiredSizeX, desiredSizeY, desiredSizeZ))
+    if ExecuteWithDelay then
+        ExecuteWithDelay(250, function()
+            if Spawner._testNiagaraActor ~= actor or not (actor and actor:IsValid()) then
+                return
+            end
+            local nativeOrigin, nativeExtent
+            pcall(function()
+                local origin, extent = {}, {}
+                local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+                if ok and origin.X and extent.X then nativeOrigin, nativeExtent = origin, extent end
+            end)
+            if not (nativeExtent and nativeExtent.X and nativeExtent.X > 0 and nativeExtent.Y > 0 and nativeExtent.Z > 0) then
+                say("could not measure the spawned effect's own bounds -- left at 1.0 scale.")
+                return
+            end
+            local sx = desiredSizeX / (nativeExtent.X * 2.0)
+            local sy = desiredSizeY / (nativeExtent.Y * 2.0)
+            local sz = desiredSizeZ / (nativeExtent.Z * 2.0)
+            pcall(function() actor:K2_SetActorScale3D({ X = sx, Y = sy, Z = sz }) end)
+            say(string.format("fit applied: scale(%.3f, %.3f, %.3f) for desired size %.1f x %.1f x %.1f uu. Run lbtestniagaraactorclear to remove it.", sx, sy, sz, desiredSizeX, desiredSizeY, desiredSizeZ))
+        end)
+    else
+        say("ExecuteWithDelay unavailable in this UE4SS build -- left at 1.0 scale, no size correction applied.")
+    end
+    return true
 end
 
 -- Spawner.ProbeInteractionTargetParams() -- TEMP DEV TOOL (2026-08-21). RedFalcon found two native
@@ -8249,6 +8888,18 @@ local function dumpMatsOnMeshComponent(mesh, tag)
                             end
                         elseif okv then
                             pval = tostring(rawVal)
+                        end
+                        -- A LinearColor (or any other) struct's tostring() just gives its TYPE name
+                        -- ("ScriptStruct /Script/CoreUObject.LinearColor"), not its actual R/G/B/A --
+                        -- read the fields directly the same way this file reads any other UE4SS
+                        -- struct wrapper's fields (e.g. FVector's .X/.Y/.Z elsewhere) rather than
+                        -- relying on tostring/GetFullName, neither of which exist for a plain struct.
+                        if okv and rawVal and type(pval) == "string" and pval:find("LinearColor", 1, true) then
+                            local r, g, b, a
+                            pcall(function() r, g, b, a = rawVal.R, rawVal.G, rawVal.B, rawVal.A end)
+                            if r then
+                                pval = string.format("R=%.4f G=%.4f B=%.4f A=%.4f", r, g, b, a or 1.0)
+                            end
                         end
                         print(string.format("[LivingBase] [probe-mat]     [%d] name='%s' value=%s\n", i, pname, pval))
                     end
@@ -11961,6 +12612,43 @@ function Spawner.SaveCustomState(actor, say)
     return true
 end
 
+-- Spawner.WriteCustomStateLinesForActor(actor, lines, say) -- 2026-09-25 (RedFalcon: "Once the
+-- randomized items are selected, write it to the custom. Do not do a scan and write all, just the
+-- features we randomized"). SaveCustomState above always calls Spawner.BuildCustomStateLines, which
+-- does a full live scan of EVERY customizable property and diffs against baked defaults -- exactly
+-- what RedFalcon asked NOT to do here (a randomizer already knows precisely which lines it wants
+-- written, and a full scan on a non-composite native mob actor is also unproven territory -- see
+-- this function's own callers for why). Same label-lookup/block-replace-or-insert mechanism as
+-- SaveCustomState (writes to the SAME custom_state_<islandId>.txt, restored by the SAME CS.applyLine
+-- on world load), just with the caller supplying the exact "KEY:value" line list directly instead of
+-- deriving it from a live scan.
+function Spawner.WriteCustomStateLinesForActor(actor, lines, say)
+    say = say or function(m) print("[LivingBase] [write-custom-lines] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then
+        say("no actor to write for.")
+        return false
+    end
+    local label = nil
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label; break end
+    end
+    if not label then
+        say("not a tracked spawn (never placed via Spawner.Spawn) -- nothing to key this write by, skipped.")
+        return false
+    end
+    local blocks = CS.readBlocks()
+    local replaced = false
+    for _, b in ipairs(blocks) do
+        if b.label == label then b.lines = lines; replaced = true; break end
+    end
+    if not replaced then
+        table.insert(blocks, { label = label, lines = lines })
+    end
+    CS.writeBlocks(blocks)
+    say(string.format("wrote %d randomized customization line(s) for '%s'.", #lines, label))
+    return true
+end
+
 -- CS.applyLine(actor, line, say) -- the restore-side twin of BuildCustomStateLines: given one
 -- saved "KEY:..." line, calls the EXACT SAME Apply* function the live Custom tab already uses for
 -- that category (main.lua's own request handlers are the reference for each call shape). Every
@@ -12435,6 +13123,25 @@ local function restoreOne(line)
         -- one has already taken, and a safety net if this one somehow doesn't.
         if look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") then
             pcall(function() Spawner.SetAILogic(a, false) end)
+        end
+        -- Original Upright idle freeze (2026-09-25 fix, RedFalcon: "idle still isnt working on
+        -- restore"). This roster's reskinTarget format is "OriginalUpright::<entry.name>", not the
+        -- "name::kind::helmet::idle" shape the check right above parses -- so that check never
+        -- matched these actors, and the ONLY freeze they got was RESTORE_RULES' own applyIdleFreeze
+        -- call, which (per the big comment right above this block) doesn't fire until
+        -- Config.RESTORE_POSTPROCESS_MS (8s default) after every mover has already spawned. Same
+        -- immediate-not-deferred fix as that check: look the row up in Config right here (Config is
+        -- already required at the top of this file) and freeze now if it's an Idle row.
+        if look and type(look.reskinTarget) == "string" then
+            local upName = look.reskinTarget:match("^OriginalUpright::(.+)$")
+            if upName then
+                for _, e in ipairs(Config.SENKAMATI_ORIGINAL_UPRIGHT or {}) do
+                    if e.name == upName and e.idlePose then
+                        pcall(function() Spawner.SetAILogic(a, false) end)
+                        break
+                    end
+                end
+            end
         end
         return a, cls, look
     end
@@ -13440,9 +14147,18 @@ end
 
 -- Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg) -- console-testable version of
 -- the above, same shape/target-resolution as TestApplyMaterialByPath.
+-- "-" for either argument means "leave that part alone" (2026-09-27, RedFalcon: "if it gets a - in
+-- one of the two parameters it just ignores setting that part") -- lets you retest/adjust just the
+-- skin OR just the cloth material without having to retype a path you already got right for the
+-- other slot. ApplyTwoMaterialsToActor's own applySlots already no-ops on a nil/invalid mat, so
+-- passing nil through for a "-" arg is enough -- no change needed there.
 function Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg)
-    if not skinPathArg or skinPathArg == "" or not clothPathArg or clothPathArg == "" then
-        print("[LivingBase] [test-mat2path] usage: lbtestmaterial2 <skin Material/MI path> <cloth Material/MI path> (dotted suffix optional on either)\n")
+    local skinSkipped = (skinPathArg == "-")
+    local clothSkipped = (clothPathArg == "-")
+    local skinGiven = skinPathArg and skinPathArg ~= "" and not skinSkipped
+    local clothGiven = clothPathArg and clothPathArg ~= "" and not clothSkipped
+    if not (skinGiven or clothGiven) then
+        print("[LivingBase] [test-mat2path] usage: lbtestmaterial2 <skin Material/MI path>|- <cloth Material/MI path>|- (dotted suffix optional; use - to leave one side unset)\n")
         return false
     end
     local function withSuffix(p)
@@ -13452,7 +14168,6 @@ function Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg)
         end
         return p
     end
-    local skinPath, clothPath = withSuffix(skinPathArg), withSuffix(clothPathArg)
 
     local maxDist = Config.DESPAWN_FRONT_UU or 250.0
     local bestI, e = findNearestSpawnInFront(maxDist)
@@ -13463,15 +14178,23 @@ function Spawner.TestApplyTwoMaterialsByPath(skinPathArg, clothPathArg)
         return false
     end
 
-    local skinMat = resolveAsset(skinPath)
-    if not (skinMat and skinMat:IsValid()) then
-        print("[LivingBase] [test-mat2path] could not resolve skin path " .. skinPath .. "\n")
-        return false
+    local skinMat, clothMat
+    local skinPath, clothPath = "-", "-"
+    if skinGiven then
+        skinPath = withSuffix(skinPathArg)
+        skinMat = resolveAsset(skinPath)
+        if not (skinMat and skinMat:IsValid()) then
+            print("[LivingBase] [test-mat2path] could not resolve skin path " .. skinPath .. "\n")
+            return false
+        end
     end
-    local clothMat = resolveAsset(clothPath)
-    if not (clothMat and clothMat:IsValid()) then
-        print("[LivingBase] [test-mat2path] could not resolve cloth path " .. clothPath .. "\n")
-        return false
+    if clothGiven then
+        clothPath = withSuffix(clothPathArg)
+        clothMat = resolveAsset(clothPath)
+        if not (clothMat and clothMat:IsValid()) then
+            print("[LivingBase] [test-mat2path] could not resolve cloth path " .. clothPath .. "\n")
+            return false
+        end
     end
     print("[LivingBase] [test-mat2path] target=" .. tostring(e.label or "actor")
         .. " | skin=" .. skinPath .. " | cloth=" .. clothPath .. "\n")
@@ -16243,6 +16966,186 @@ function Spawner.TestProbeLightComponents(say)
         say(string.format("%d light component(s) found total (see lines above).", found))
     end
     return found > 0
+end
+
+-- Spawner.ProbeStaticStats(say) -- "lbprobestatic" (2026-09-26, RedFalcon: HOME/lbprobetargetparams
+-- only works on CompositeMeshComponent-bearing "people" targets -- "i'd like a command to grab some
+-- of the stats of static objects so that we can see that too"). Same targeted-sweep idiom as
+-- lbprobelight just above (StaticMeshComponent/SkeletalMeshComponent/NiagaraComponent instead of
+-- light classes), reporting each component's own live scale + resolved asset name, plus the actor's
+-- overall K2_GetActorScale3D(). Deliberately uses resolveTestDiagActor() (falls through
+-- Spawner._bodySwapActor / Spawner._lastProbedActor / Spawner.lockedTarget, see that function's own
+-- header) rather than the narrower Spawner._lastProbedActor lbprobelight reads directly -- a plain
+-- static decor prop (e.g. "Quest Sparkle") has no CompositeMeshComponent for lbprobetargetparams to
+-- key off of, but DOES set Spawner.lockedTarget when picked via Numpad+ or the new Target List
+-- tab's "+" row, so this works from either without needing a separate lbprobe camera-aim step.
+function Spawner.ProbeStaticStats(say)
+    say = say or function(m) print("[LivingBase] [probe-static] " .. tostring(m) .. "\n") end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+
+    local label = "?"
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label or label; break end
+    end
+    say("target=" .. tostring(label))
+
+    local classPath = "?"
+    pcall(function() classPath = actor:GetClass():GetPathName() end)
+    say("class=" .. classPath)
+
+    local sx, sy, sz = nil, nil, nil
+    pcall(function()
+        local s = actor:K2_GetActorScale3D()
+        if s then sx, sy, sz = s.X, s.Y, s.Z end
+    end)
+    say(string.format("actor scale = %s, %s, %s", tostring(sx), tostring(sy), tostring(sz)))
+
+    -- One explicit block per component/asset-field pair rather than a generic dynamic-dispatch
+    -- loop -- matches this file's own established style (see TestProbeLightComponents just above),
+    -- and avoids relying on dynamic string-keyed UFunction calls (c[getterName](c)) working
+    -- reliably across every component type in this UE4SS build.
+    local found = 0
+    local function reportComponentScaleAndAsset(className, script, assetFieldName, assetGetterName)
+        local cls = StaticFindObject("/Script/" .. script .. "." .. className)
+        if not (cls and cls:IsValid()) then return end
+        local comps = nil
+        pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+        local n = 0
+        if comps then pcall(function() n = comps:GetArrayNum() end); if n == 0 then pcall(function() n = #comps end) end end
+        for i = 1, n do
+            local c = nil
+            pcall(function() c = comps[i] end)
+            if c == nil then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then
+                found = found + 1
+                local compName = "?"
+                pcall(function() compName = c:GetFName():ToString() end)
+                local rs = nil
+                pcall(function()
+                    local r = c:K2_GetComponentScale()
+                    if r then rs = string.format("%.4f, %.4f, %.4f", r.X, r.Y, r.Z) end
+                end)
+                local asset = nil
+                pcall(function() asset = c[assetFieldName] end)
+                if not (asset and asset.IsValid and asset:IsValid()) and assetGetterName then
+                    pcall(function() asset = c[assetGetterName](c) end)
+                end
+                local assetName = "nil/invalid"
+                if asset and type(asset) == "userdata" and asset.IsValid and asset:IsValid() then
+                    pcall(function() assetName = asset:GetFullName() end)
+                end
+                say(string.format("[%s] name=%s scale=%s %s=%s", className, compName, tostring(rs), assetFieldName, assetName))
+            end
+        end
+    end
+    reportComponentScaleAndAsset("StaticMeshComponent", "Engine", "StaticMesh", "GetStaticMesh")
+    reportComponentScaleAndAsset("SkeletalMeshComponent", "Engine", "SkeletalMesh", "GetSkeletalMeshAsset")
+    reportComponentScaleAndAsset("NiagaraComponent", "Niagara", "Asset", nil)
+
+    if found == 0 then
+        say("no StaticMeshComponent/SkeletalMeshComponent/NiagaraComponent found on this actor.")
+    else
+        say(string.format("%d component(s) found total (see lines above).", found))
+    end
+    return found > 0
+end
+
+-- Spawner.SetStaticActorScale(value, say) -- "lbsetstaticscale <value>" (2026-09-26, RedFalcon's
+-- follow-up to lbprobestatic: "do we have a command that will let me scale this?"). A generic
+-- scale-SETTER for plain static/decor actors, which have no `.Mesh` SkeletalMeshComponent for
+-- Spawner.TestSetScale/CS.setActorScaleGrounded to key off of (that pair -- "lbsetscale" -- is
+-- specifically for CompositeMesh "people" targets, see its own header comment). Scales the ACTOR
+-- ROOT directly (K2_SetActorScale3D), which cascades uniformly to every child component
+-- (RootComponent, StaticMeshComponent, NiagaraComponent, etc.) via normal parent-child scale
+-- inheritance -- the correct generic knob for a decor prop, unlike the per-Mesh-component
+-- convention people/NPC scaling uses. Uses resolveTestDiagActor() (same as lbprobestatic) so a
+-- target picked via lbprobe, Numpad+, or the Target List tab's "+" row all work without a separate
+-- aim step.
+function Spawner.SetStaticActorScale(value, say)
+    say = say or function(m) print("[LivingBase] [set-static-scale] " .. tostring(m) .. "\n") end
+    local num = tonumber(value)
+    if not num then
+        say("usage: lbsetstaticscale <value> -- e.g. lbsetstaticscale 1.5")
+        return false
+    end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local ok = pcall(function() actor:K2_SetActorScale3D({ X = num, Y = num, Z = num }) end)
+    if not ok then say("K2_SetActorScale3D FAILED"); return false end
+    local label = "?"
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label or label; break end
+    end
+    say(string.format("target=%s | actor scale set to %.4f -- check visually now, no reload needed.", tostring(label), num))
+    return true
+end
+
+-- Spawner.SetNiagaraComponentScale(value, say) -- "lbsetniagarascale <value>|<x,y,z>" (2026-09-26,
+-- RedFalcon: "niagara scale specifically as its an effect" -- a follow-up to lbsetstaticscale,
+-- which resizes the WHOLE actor root. Quest Sparkle (and any other FX-only decor prop) usually
+-- wants just its OWN effect resized, not the whole actor -- scaling the root would also needlessly
+-- rescale its StaticMesh body/collision Box alongside the effect. Sweeps every NiagaraComponent on
+-- the current target (same resolveTestDiagActor() resolution as lbprobestatic/lbsetstaticscale) and
+-- calls SetRelativeScale3D on each directly. Accepts EITHER a single plain number (applied
+-- uniformly to X/Y/Z, same convention as lbsetstaticscale/lbsetscale) OR a comma-separated
+-- "x,y,z" triple for a genuinely non-uniform scale -- RedFalcon: "i'd like lbsetniagarascale to not
+-- be uniform unless its a single number" -- same "scaleMul|sx,sy,sz" dual-input shape
+-- Spawner.TestScaleClothingPiece/lbtestscale already established elsewhere in this file, reused
+-- here for consistency rather than inventing a different convention.
+function Spawner.SetNiagaraComponentScale(value, say)
+    say = say or function(m) print("[LivingBase] [set-niagara-scale] " .. tostring(m) .. "\n") end
+    local sx, sy, sz
+    if value and tostring(value):find(",") then
+        local vx, vy, vz = tostring(value):match("^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+        sx, sy, sz = tonumber(vx), tonumber(vy), tonumber(vz)
+    else
+        local num = tonumber(value)
+        sx, sy, sz = num, num, num
+    end
+    if not (sx and sy and sz) then
+        say("usage: lbsetniagarascale <value> | lbsetniagarascale <x,y,z> -- e.g. lbsetniagarascale 1.5 or lbsetniagarascale 1,1,3")
+        return false
+    end
+    local actor = resolveTestDiagActor()
+    if not (actor and actor:IsValid()) then
+        say("no current target -- run lbprobe, Numpad+ lock something, or pick one from the Target List tab first.")
+        return false
+    end
+    local cls = StaticFindObject("/Script/Niagara.NiagaraComponent")
+    if not (cls and cls:IsValid()) then say("NiagaraComponent class not found"); return false end
+    local comps = nil
+    pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+    local n = 0
+    if comps then pcall(function() n = comps:GetArrayNum() end); if n == 0 then pcall(function() n = #comps end) end end
+    local found = 0
+    for i = 1, n do
+        local c = nil
+        pcall(function() c = comps[i] end)
+        if c == nil then pcall(function() c = comps:Get(i) end) end
+        pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+        if c and c:IsValid() then
+            local okSet = pcall(function() c:SetRelativeScale3D({ X = sx, Y = sy, Z = sz }) end)
+            if okSet then
+                found = found + 1
+                local compName = "?"
+                pcall(function() compName = c:GetFName():ToString() end)
+                say(string.format("NiagaraComponent '%s' scale set to %.4f, %.4f, %.4f", compName, sx, sy, sz))
+            end
+        end
+    end
+    if found == 0 then
+        say("no NiagaraComponent found on this actor (or SetRelativeScale3D failed).")
+        return false
+    end
+    return true
 end
 
 -- CORRECTED (2026-09-14, RedFalcon: "so there is the lantern light socket. soc_LanternLight...
@@ -28246,6 +29149,114 @@ function Spawner.ToggleTargetLock()
     Spawner.StartTargetLockTick()
 end
 
+-- TARGET LIST (2026-09-26, RedFalcon: new "Target List" GUI tab -- scan this mod's own tracked
+-- actors within a radius, filtered by top-level category checkboxes, list them nearest-first, and
+-- let a specific row be target-locked directly by index instead of the usual hover/probe pick).
+--
+-- Category classification reuses the SAME Config rosters spawnmenu_manifest.lua's own menuPath
+-- functions read to build spawn_menu.ini's tree (BOARS/WOLVES/CROCODILES/GOATS/DODOS/CRABS/
+-- LIVESTOCK_IDLE -> Animals, MONSTEROUS_STANDING/MONSTEROUS_MOBS -> Monsterous,
+-- Config.DECOR_CATEGORIES's every sub-table -> Decor) rather than re-deriving
+-- spawnmenu_manifest.lua's own tree-building logic a second time -- this always agrees with the
+-- real spawn tree with nothing to keep in sync. Everything NOT found in one of those rosters
+-- defaults to "People", matching spawn_menu.ini's own fallback (every menuPath function whose row
+-- doesn't set an explicit override lands under People) -- covers Senkamati/crew/townsfolk/walkers/
+-- statues/quest NPCs, the single biggest bucket, without an exhaustive per-roster list here.
+-- Cached on first call (Spawner._targetListCategoryMap) since these rosters never change at
+-- runtime. Deliberately no new file-level local for the builder (this file already sits at Lua's
+-- 200-local ceiling, see feedback_lua_200_local_ceiling) -- built inline, once, right here.
+function Spawner.CategoryForClassPath(classPath)
+    if not classPath then return "People" end
+    if not Spawner._targetListCategoryMap then
+        local map = {}
+        local function addRows(rows, category)
+            for _, row in ipairs(rows or {}) do
+                if row.path then map[row.path] = category end
+                if row.candidates then
+                    for _, c in ipairs(row.candidates) do map[c] = category end
+                end
+            end
+        end
+        addRows(Config.BOARS, "Animals")
+        addRows(Config.WOLVES, "Animals")
+        addRows(Config.CROCODILES, "Animals")
+        addRows(Config.GOATS, "Animals")
+        addRows(Config.DODOS, "Animals")
+        addRows(Config.CRABS, "Animals")
+        addRows(Config.LIVESTOCK_IDLE, "Animals")
+        addRows(Config.MONSTEROUS_STANDING, "Monsterous")
+        addRows(Config.MONSTEROUS_MOBS, "Monsterous")
+        for _, rows in pairs(Config.DECOR_CATEGORIES or {}) do
+            addRows(rows, "Decor")
+        end
+        Spawner._targetListCategoryMap = map
+    end
+    return Spawner._targetListCategoryMap[classPath] or "People"
+end
+
+-- Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor) --
+-- backing function for the Target List tab's "Scan" button. Deliberately scoped to
+-- Spawner.spawned (everything THIS mod is tracking) rather than a world-wide FindAllOf("Actor")
+-- sweep like Spawner.ScanNearbyCustomization does -- "any spawned items" (RedFalcon's own
+-- phrasing) means this mod's own placed/tracked actors, not every wild vanilla NPC on the island.
+-- Returns a plain array sorted nearest-first (distM in meters); also cached on
+-- Spawner._targetListResults in the SAME order so a later Spawner.TargetListSelect(index) can
+-- resolve straight back to the actor without a second scan.
+function Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor)
+    local radiusUU = (tonumber(radiusMeters) or 10.0) * 100.0
+    local px, py, pz
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local pawn = pc and pc:IsValid() and pc.Pawn
+        if pawn and pawn:IsValid() then
+            local l = pawn:K2_GetActorLocation()
+            px, py, pz = l.X, l.Y, l.Z
+        end
+    end)
+    local results = {}
+    if px then
+        for _, entry in ipairs(Spawner.spawned) do
+            local a = entry.actor
+            if a and a:IsValid() then
+                local cat = Spawner.CategoryForClassPath(entry.class)
+                local wanted = (cat == "People" and wantPeople) or (cat == "Monsterous" and wantMonsterous)
+                    or (cat == "Animals" and wantAnimals) or (cat == "Decor" and wantDecor)
+                if wanted then
+                    local dist
+                    pcall(function()
+                        local l = a:K2_GetActorLocation()
+                        local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    end)
+                    if dist and dist <= radiusUU then
+                        results[#results + 1] = { actor = a, label = entry.label or "?", class = entry.class,
+                            category = cat, distM = dist / 100.0 }
+                    end
+                end
+            end
+        end
+        table.sort(results, function(x, y) return x.distM < y.distM end)
+    end
+    Spawner._targetListResults = results
+    return results
+end
+
+-- Spawner.TargetListSelect(index) -- 0-based (matches the C++ side's own array indexing over the
+-- same scan results it was just handed). Sets Spawner.lockedTarget the SAME plain
+-- {actor,label,class} wrapper table Num+/ToggleTargetLock already use, so every existing
+-- lockedTarget consumer (Move panel, Custom tab, restore-safe picker, etc.) treats a Target List
+-- selection identically to a manual Num+ lock -- no separate "how was this targeted" concept
+-- introduced anywhere else in the codebase.
+function Spawner.TargetListSelect(index)
+    local row = Spawner._targetListResults and Spawner._targetListResults[index + 1]
+    if not (row and row.actor and row.actor:IsValid()) then return false end
+    Spawner.lockedTarget = { actor = row.actor, label = row.label, class = row.class }
+    print("[LivingBase] Target lock ON (from Target List): " .. tostring(row.label) .. ".\n")
+    pcall(function() Spawner.Toast("Target lock ON: " .. tostring(row.label), 2.5) end)
+    Spawner.StartTargetLockTick()
+    return true
+end
+
 -- Spawner.TargetLockDistanceCheck(px, py, pz) — the actual "still good?" rule for a lock: shared by
 -- BOTH the lazy check inside findNearestSpawnInFront (every despawn/cycle/live-edit press re-validates
 -- the lock too, so a target going bad the instant before a press is still caught right then) AND the
@@ -29893,6 +30904,11 @@ function Spawner.ClearHoverHighlight()
     Spawner.ClearHoverEffect()
 end
 
+-- Reverted back to MI_Building_SimplifiedPreview (2026-09-27, RedFalcon: "you got confused on my
+-- want for the decor. i wanted targeting set back to ...SimplifiedPreview and mark to be
+-- ...BuildingBlock_Prebuilt") -- targeting/placement-hover keeps its original ghost material;
+-- BuildingBlock_Prebuilt's glow instead goes on Mark Target's decor path (see
+-- Spawner.ApplyMarkTargetHighlight's own material).
 local HOVER_GHOST_MAT_PATH = "/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_SimplifiedPreview.MI_Building_SimplifiedPreview"
 local function applyHoverHighlight(actor)
     local mat = resolveAsset(HOVER_GHOST_MAT_PATH)
@@ -29997,6 +31013,200 @@ local function applyHoverHighlight(actor)
     end
     Spawner._hoverActor = actor
     Spawner._hoverOriginalMats = saved
+end
+
+-- "Mark Target" (2026-09-27, RedFalcon's Target List tab checkbox: "if checked and targeted, do the
+-- thing ... if untargeted return to normal") -- same slot-walk/skip-skin-and-eye technique as
+-- applyHoverHighlight just above (deliberately duplicated rather than generalized -- that function
+-- is a pre-existing local carrying a lot of Aug-21-specific diagnostic cruft not worth disturbing),
+-- but with its OWN material and its OWN separate saved-originals slot (Spawner._markTargetActor/
+-- _markTargetOriginalMats) so it never collides with the hover-highlight system, which can be live
+-- at the same time (camera-hover preview vs. a persistent Target-List mark). One material path for
+-- BOTH the person and decor case: skipping skin/eye slots already gives exactly RedFalcon's two
+-- requested behaviors for free -- a person's skin/eye slots get skipped (matching "lbtestmaterial2 -
+-- <path>": skin left alone, everything else swapped) while decor has no skin/eye-named slots to
+-- begin with, so nothing gets skipped there either (matching plain "lbtestmaterial <path>": every
+-- slot swapped) -- no actor-type branch needed.
+-- Not a new top-level local (this file is already at Lua's 200-local ceiling) -- inline helper
+-- inside the one function that needs it instead.
+function Spawner.ApplyMarkTargetHighlight(actor)
+    local function isSkinOrEyeSlot(origName)
+        if not origName then return false end
+        local lower = origName:lower()
+        return lower:find("/human/", 1, true) ~= nil or lower:find("/eyes/", 1, true) ~= nil or lower:find("/eye/", 1, true) ~= nil
+    end
+    if not (actor and actor:IsValid()) then return false end
+    -- MI_Building_BuildingBlock_Prebuilt (2026-09-27, RedFalcon's actual intent, corrected: "i wanted
+    -- targeting set back to ...SimplifiedPreview and mark to be ...BuildingBlock_Prebuilt") --
+    -- targeting/placement-hover uses SimplifiedPreview (see HOVER_GHOST_MAT_PATH's own header); Mark
+    -- Target's decor path keeps the glowing BuildingBlock_Prebuilt look, giving the two features
+    -- visually distinct materials without needing a new asset.
+    local mat = resolveAsset("/Game/Environment/Gameplay/GDKit/Meshes/Building/MI_Building_BuildingBlock_Prebuilt.MI_Building_BuildingBlock_Prebuilt")
+    if not (mat and mat:IsValid()) then return false end
+    local saved = {}
+    local function applyTo(comp)
+        pcall(function() if comp ~= nil and type(comp) == "userdata" and comp.get then comp = comp:get() end end)
+        if not (comp and comp:IsValid()) then return end
+        local n = 0
+        pcall(function() n = comp:GetNumMaterials() end)
+        for slot = 0, (n - 1) do
+            local orig
+            pcall(function() orig = comp:GetMaterial(slot) end)
+            local origName
+            if orig then pcall(function() origName = orig:GetFullName() end) end
+            if not isSkinOrEyeSlot(origName) then
+                local setOk = pcall(function() comp:SetMaterial(slot, mat) end)
+                if setOk and orig and orig:IsValid() then
+                    saved[#saved + 1] = { comp = comp, slot = slot, mat = orig }
+                end
+            end
+        end
+    end
+    pcall(function() applyTo(actor.Mesh) end)
+    for _, className in ipairs({ "StaticMeshComponent", "SkeletalMeshComponent" }) do
+        local cls = StaticFindObject("/Script/Engine." .. className)
+        if cls and cls:IsValid() then
+            local comps
+            local ok = pcall(function() comps = actor:K2_GetComponentsByClass(cls) end)
+            if ok and comps then
+                local n = 0
+                pcall(function() n = comps:GetArrayNum() end)
+                if n == 0 then pcall(function() n = #comps end) end
+                for i = 1, n do
+                    local comp
+                    pcall(function() comp = comps[i] end)
+                    if not comp then pcall(function() comp = comps:Get(i) end) end
+                    applyTo(comp)
+                end
+            end
+        end
+    end
+    Spawner._markTargetActor = actor
+    Spawner._markTargetOriginalMats = saved
+    return true
+end
+
+function Spawner.ClearMarkTargetHighlight()
+    local saved = Spawner._markTargetOriginalMats
+    if saved then
+        for _, entry in ipairs(saved) do
+            pcall(function()
+                if entry.comp and entry.comp:IsValid() and entry.mat and entry.mat:IsValid() then
+                    entry.comp:SetMaterial(entry.slot, entry.mat)
+                end
+            end)
+        end
+    end
+    Spawner._markTargetActor = nil
+    Spawner._markTargetOriginalMats = nil
+end
+
+-- Effect-based marking for ACTOR/character targets (2026-09-27, RedFalcon: "for the actor targets,
+-- let's change how marking works from changing texture back to using an effect ... equivalent of
+-- lbtestniagaraplace .../FX_FastTravelFlag 6,6,2 0,0,40 and have it follow like the other one does
+-- too") -- same asset/scale/offset as that exact lbtestniagaraplace call, same pivot+bounds-floor
+-- placement math as Spawner.TestPlaceNiagaraAtOffset, and the SAME "spawn once, reposition via
+-- K2_SetActorLocation every tick while still the same target" follow technique
+-- Spawner.SpawnHoverEffect/UpdateHoverHighlight already established for the hover-highlight's own
+-- character case (2026-08-22) -- reused rather than reinvented. Decor keeps the plain material-swap
+-- (Spawner.ApplyMarkTargetHighlight/ClearMarkTargetHighlight, unchanged) -- same actor.Mesh-valid
+-- character test UpdateHoverHighlight already uses to make that same person-vs-decor split.
+function Spawner.ComputeMarkTargetEffectLoc(actor)
+    if not (actor and actor:IsValid()) then return nil end
+    local pivotLoc
+    pcall(function() pivotLoc = actor:K2_GetActorLocation() end)
+    if not (pivotLoc and pivotLoc.X) then return nil end
+    local floorZ
+    pcall(function()
+        local origin, extent = {}, {}
+        local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+        if ok and origin.Z and extent.Z then floorZ = origin.Z - extent.Z end
+    end)
+    return { X = pivotLoc.X, Y = pivotLoc.Y, Z = (floorZ or pivotLoc.Z) + 40.0 }
+end
+
+function Spawner.ApplyMarkTargetEffect(actor)
+    if not (actor and actor:IsValid()) then return false end
+    local sys = resolveAsset("/Game/FX/Particles/Environment/Fire/Building/FX_FastTravelFlag.FX_FastTravelFlag")
+    if not (sys and sys:IsValid()) then return false end
+    local loc = Spawner.ComputeMarkTargetEffectLoc(actor)
+    if not loc then return false end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Niagara.NiagaraActor") end)
+    if not (cls and cls:IsValid()) then return false end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then return false end
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+        Scale3D = { X = 6.0, Y = 6.0, Z = 2.0 },
+    }
+    local preFinish = function(a)
+        pcall(function()
+            local niag = a.NiagaraComponent
+            if niag and niag:IsValid() then niag.Asset = sys end
+        end)
+    end
+    local effectActor = Spawner._DoEngineSpawn(gs, world, cls, transform, "MarkTargetEffect", preFinish, nil)
+    if not (effectActor and effectActor:IsValid()) then return false end
+    Spawner._markTargetEffectActor = effectActor
+    Spawner._markTargetEffectTarget = actor
+    return true
+end
+
+function Spawner.ClearMarkTargetEffect()
+    local e = Spawner._markTargetEffectActor
+    Spawner._markTargetEffectActor = nil
+    Spawner._markTargetEffectTarget = nil
+    if e and e:IsValid() then
+        pcall(function() e:K2_DestroyActor() end)
+    end
+end
+
+-- Reconciles the mark against whatever's CURRENTLY locked, called every tick from main.lua's own
+-- poll loop (cheap no-op comparison in the common case) so the mark follows target changes from ANY
+-- source (Target List row, Numpad+, etc.), not just the checkbox's own toggle moment. Dispatches by
+-- target TYPE (actor.Mesh valid -> effect; decor -> material-swap), same distinguishing test
+-- UpdateHoverHighlight's own dispatch already uses.
+function Spawner.UpdateMarkTargetHighlight()
+    local actor = Spawner.lockedTarget and Spawner.lockedTarget.actor
+    local validActor = (actor and actor:IsValid()) and actor or nil
+    local currentlyMarked = Spawner._markTargetActor or Spawner._markTargetEffectTarget
+    if Spawner._markTargetEnabled and validActor then
+        if currentlyMarked ~= validActor then
+            if Spawner._markTargetActor then Spawner.ClearMarkTargetHighlight() end
+            if Spawner._markTargetEffectTarget then Spawner.ClearMarkTargetEffect() end
+            local isCharacter = false
+            pcall(function()
+                local m = validActor.Mesh
+                isCharacter = (m ~= nil) and m:IsValid()
+            end)
+            if isCharacter then
+                Spawner.ApplyMarkTargetEffect(validActor)
+            else
+                Spawner.ApplyMarkTargetHighlight(validActor)
+            end
+        elseif Spawner._markTargetEffectActor and Spawner._markTargetEffectActor:IsValid() then
+            -- Same target, effect-mode active -- keep it following (a walking Senkamati, idle
+            -- animation drift, etc.), same plain K2_SetActorLocation reposition
+            -- UpdateHoverHighlight's own "still hovering" branch already uses.
+            pcall(function()
+                local loc = Spawner.ComputeMarkTargetEffectLoc(validActor)
+                if loc then Spawner._markTargetEffectActor:K2_SetActorLocation(loc, false, {}, true) end
+            end)
+        end
+    else
+        if Spawner._markTargetActor then Spawner.ClearMarkTargetHighlight() end
+        if Spawner._markTargetEffectTarget then Spawner.ClearMarkTargetEffect() end
+    end
+end
+
+function Spawner.SetMarkTargetEnabled(enabled, say)
+    say = say or function(m) print("[LivingBase] [mark-target] " .. tostring(m) .. "\n") end
+    Spawner._markTargetEnabled = enabled and true or false
+    Spawner.UpdateMarkTargetHighlight()
+    say(Spawner._markTargetEnabled and "enabled" or "disabled")
 end
 
 -- Called on a poll loop from main.lua (only while gated conditions hold there). Traces from the
@@ -30586,13 +31796,27 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight, dPitch, dRoll)
     -- Static props ignore runtime moves on the render thread — make it Movable first, or the mesh
     -- stays put on screen even though SetActorLocation succeeds (the bug RedFalcon kept hitting).
     Spawner.MakeMovable(e.actor)
-    -- Slide frame: STATUES move along their OWN facing (so fwd/back/left/right track the pose the statue
-    -- is set to); DECORATIONS move along a FIXED WORLD axis (2026-08-19, RedFalcon's request -- was the
-    -- player's own facing, which meant forward/right for an object silently changed direction depending
-    -- on which way you happened to be standing when you nudged it, making repeated edits inconsistent).
-    -- Statues are AnimatedActor/QuestStatic classes.
-    local statueFrame = (e.class and (string.find(e.class, "AnimatedActor", 1, true)
-        or string.find(e.class, "QuestStatic", 1, true))) and true or false
+    -- Slide frame: CHARACTERS move along their OWN facing (so fwd/back/left/right track whichever way
+    -- they're posed/facing); DECORATIONS move along a FIXED WORLD axis (2026-08-19, RedFalcon's
+    -- request -- was the player's own facing, which meant forward/right for an object silently
+    -- changed direction depending on which way you happened to be standing when you nudged it, making
+    -- repeated edits inconsistent).
+    -- WIDENED (2026-09-27, RedFalcon: "non statues like the senkamati and thomas richards dont move
+    -- relative to the direction that they are facing. i'd like them to behave like the statues when
+    -- being moved") -- originally just the 2 statue class substrings (AnimatedActor/QuestStatic), which
+    -- left every OTHER character (Senkamati crew, named NPCs like Thomas Richards) on the decor's
+    -- fixed-world-axis frame purely because their class name didn't happen to match those two
+    -- substrings, even though they have just as real a facing to move relative to as a statue does.
+    -- Same actor.Mesh-valid character test UpdateHoverHighlight/Spawner.UpdateMarkTargetHighlight
+    -- already use to draw this exact person-vs-decor line elsewhere in this file -- reused here rather
+    -- than growing the substring list class-by-class.
+    local statueFrame = isStatueClass(e.class)
+    if not statueFrame then
+        pcall(function()
+            local m = e.actor.Mesh
+            statueFrame = (m ~= nil) and m:IsValid()
+        end)
+    end
     local newX, newY, newZ, newYaw, newPitch, newRoll
     pcall(function()
         local l = e.actor:K2_GetActorLocation()

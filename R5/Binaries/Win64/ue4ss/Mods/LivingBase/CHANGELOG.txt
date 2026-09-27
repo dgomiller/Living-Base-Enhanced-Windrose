@@ -1,148 +1,107 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
-v3.0.0 (2026-08-22) -- previous version: v2.1.5
+v3.0.0 (2026-09-26) -- previous version: v2.1.7.1 -- MAJOR REWORK
 ======================================================================
 
-ADDED -- Live placement preview for decor (F5 confirm / F6 cancel)
-- Newly spawned decor now follows your camera in real time before it's
-  actually placed, instead of landing instantly wherever you were
-  aiming. Zoom the preview closer/farther with Home/Pause, then F5 to
-  confirm it right where it's floating, or F6 to cancel and remove it.
+This release changed enough that it's easier to describe as a new baseline than as an
+incremental diff -- see the shipped README.md for the full current feature set. Highlights:
 
-ADDED -- Grab and relocate anything already placed (F7)
-- Pick up an existing statue or decoration and carry it the same way
-  the live preview works, instead of despawning and re-placing from
-  scratch. F6 while relocating reverts it to exactly where it was
-  before you grabbed it; F5 confirms the new spot.
+REBUILT -- Numpad-only control scheme, GUI is now the only way to spawn/replace anything
+- Every keyboard-only spawn/decoration/live-edit key from earlier versions (Num1-Num8,
+  the apostrophe/semicolon decor keys, PageUp/PageDown+arrow live-edit, the old F5-F8
+  placement-preview keys, Insert, '\') is RETIRED. The GUI window is now the only way to
+  spawn, replace, or customize anything; the numpad (7/8/9/4/5/6 move-or-rotate, 2 mode
+  toggle, 1/3/+/-/*//. for release-cursor/despawn/lock/open/grab/floor-clip, 0 confirm)
+  works identically in-game or with the GUI focused, for movement/confirmation/despawn/
+  undo. See README.md's NUMPAD CONTROLS section for the full table.
 
-ADDED -- Reticle hover-highlight
-- Whatever you're aiming at now visibly lights up before you commit to
-  targeting or grabbing it, so it's always clear what Num+ or F7 would
-  actually act on.
+ADDED -- Two new GUI tabs: Customize (F6) and Photo Mode (F7)
+- Customize: spawn a from-scratch custom character (sex/Body Type/Origin, "Spawn Custom"),
+  then dress/pose ANY target-locked actor through five sections -- Body (skin tone, eye
+  color, physique, height, AI toggle, one-way Make Ghost), Hair, Clothes (with a fit-safety
+  net, toggleable via the new lbunlockclothes console command), Belts and Straps (plus
+  Accessories detect/randomize), and Poses and Actions. "Read Current" reads a target's live
+  appearance into every control; "Save Customizations" pins the current setup so it survives
+  a reload (most rosters don't need this -- see the persistence change below).
+- Photo Mode: camera positioning (Tripod/Selfie/First Person presets, a directional move
+  pad, target highlight, precise Coords editor) and a 3-slot portable lighting rig
+  (enable/color/brightness/throw per slot), for setting up screenshots. Not persisted by
+  design.
 
-ADDED -- Free-build toggle (F8)
-- By default, placement and relocation snap to the real floor/surface
-  under your reticle. F8 switches to open placement at a fixed
-  distance instead, for spots the floor-lock doesn't suit. Locked out
-  mid-placement on purpose -- switch before you start, not while
-  something is already following your camera.
+CHANGED -- Custom character/appearance no longer persists by default
+- Earlier builds saved a randomized appearance (hair/skin/etc.) permanently the first time
+  it was picked. Most rosters now regenerate a fresh look on every world reload, the same
+  as a brand-new spawn -- exactly how the game's own native NPCs behave. Use "Save
+  Customizations" (Customize tab) on a specific actor if you want its current appearance to
+  survive a reload instead of re-rolling.
 
-ADDED -- Statues can now be targeted, moved, and highlighted too
-- The preview/relocate/hover-highlight toolkit above -- previously
-  decor-only -- now covers every posed statue roster as well
-  (standing, seated, chair, and interactive statues).
+ADDED -- Senkamati "Original Upright" presentation, alongside a reorganized "Wild"
+- Every Senkamati archetype (Warrior, Hunter, Thrall, Caster) now has TWO full
+  presentations, each organized Mask On / Mask Off, each with a moving and a frozen
+  ("Idle") version of every entry: "Wild" (the original crew-based re-skins, naturally
+  upright already) and the new "Original Upright" (the native mob body given an upright
+  gait via a foreign AI/animation pairing -- cosmetic only, can't fight with real weapons,
+  so Warrior/Hunter have their weapons stripped). Both presentations correctly restore mask
+  state, weapons, and idle-freeze on a world reload, not just on first spawn.
 
-CHANGED -- Camera raises and widens while placing or with the GUI open
-- Matches the view the game's own native building mode uses: a slight
-  camera raise and a wider field of view, active while the spawn menu
-  window is open.
+FIXED -- Curated legs/underwear look for Wild Caster/Hunter/Thrall
+- The mask-off DeCorrupt pass that hides each archetype's original leg armor used to leave
+  plain default underwear showing. Caster, Hunter, and Thrall (Warrior unchanged, by
+  request) now get a specific curated Legs piece + palette color instead, applied on both
+  spawn and restore.
 
-FIXED -- Targeting now reaches walking crew, Senkamati, and drops decor
-- Aiming at a walking NPC, a friendly Senkamati, or placed "Drops"
-  decor could pass straight through it to whatever was standing behind
-  it instead of targeting/highlighting the actual object. Fixed for
-  all three.
+ADDED -- "(Idle)" frozen version of every ordinary Animals entry
+- Boars, goats, dodos, wolves, crocodiles, and crabs each now have a wandering "(Mobile)"
+  and a frozen, statue-like "(Idle)" version of every individual look -- previously only the
+  monstrous/Corrupted variants had this option.
 
-CHANGED -- Placed crew/Senkamati freeze in place like statues once positioned
-- Moving an NPC with the new preview/relocate tools used to leave it
-  fighting its own AI and physics afterward (bumping into nearby
-  objects, legs bending oddly, dropping if left in the air). Once
-  placed this way, it now stays frozen in position exactly like a
-  statue instead.
+FIXED -- Several restore-on-reload bugs surfaced building the above
+- A frozen ("Idle") actor could get silently un-frozen a few seconds after a world-load
+  restore (an automatic placement-confirm step was re-enabling its AI unless a specific
+  internal flag was set) -- fixed centrally for every "Idle" roster, not just the new ones.
+- A new roster reusing an existing native class path could get caught by an OLDER, unrelated
+  restore rule meant for a different roster on that same class, misapplying the wrong
+  ruleset (wrong mask/weapon handling, wrong idle detection) on reload. Fixed with a proper
+  per-roster identity marker and priority ordering.
+- A restored Thrall (Wild) was being silently misidentified as a Warrior on reload (missing
+  from an archetype-detection pattern list), losing its correct mask/weapon/legs treatment
+  as a result. Fixed.
 
-REBUILT -- Letty, Marita, and the Merchant walking women
-- These three now spawn with their own real, distinct outfit instead
-  of sharing one generic look with a patched-on overlay. Letty and
-  Marita wear their actual in-game outfits; the Merchant wears a
-  proper female-fitted Buccaneers Merchant look, fixing a persistent
-  pants-clipping issue (a body-shape mismatch baked into her own
-  outfit, not a wrong-sex asset -- the earlier v2.1.5 fix for this
-  covered the old system only, not this new one).
-- Hair and skin tone are still randomized on every spawn, same as
-  before.
-- Any Letty/Marita/Merchant placed in an earlier version is upgraded
-  to her real outfit automatically the next time your save loads --
-  no need to despawn and re-place her.
+FIXED -- GUI window no longer confuses Steam's F12 screenshot / FPS counter
+- The companion window's own D3D11 render thread used to start presenting frames before the
+  game's own real swapchain existed, winning whatever "which swapchain is the game"
+  detection Steam's overlay runs once at startup -- so F12 captured the GUI instead of the
+  game, and the FPS counter drew in the wrong corner. Fixed with a short startup delay
+  before the window creates its own device, giving the game's real swapchain a head start.
+  The window now takes a few seconds to appear after the loading screen finishes -- expected,
+  not a bug.
 
-MERGED -- "Woman With Hat" and "Woman With Hair" into one "Woman"
-- These two used to be separate entries forcing a hat (or not) onto a
-  generic look. They're now a single "Woman" entry (still spawnable as
-  either base body) whose outfit, hat presence, hair, and skin tone
-  all vary naturally on their own -- no more forced hat logic, and a
-  wider range of genuine outfit variety than before.
+ADDED -- New GUI tab: Target List
+- Scans tracked actors within a chosen radius (3/5/8/10/15m), filtered by four category
+  checkboxes (People/Monsterous/Animals/Decor), and lists them nearest-first with a small
+  "+" button to target-lock any one directly by index -- unlike Numpad+, this can lock
+  something out of view entirely, to help locate it if its position isn't known. Shows a
+  large live-updating distance readout for whatever's currently locked, and a "+/-" button
+  next to Selected Target (same lock/release idiom as the other tabs).
 
-CHANGED -- Despawn (Num9) and Undo-Despawn (Num0) now work with
-In-Game Keys off
-- Both now stay reachable with the in-game keybind toggle switched
-  off, matching Target Lock (Num+) -- useful for a GUI-driven session
-  where the keyboard placement keys are deliberately disabled.
+ADDED -- "Mark Target" checkbox (Target List tab)
+- While checked, highlights whatever's currently locked: a glowing marker material for
+  decor, or a following flame-ring effect (for people, animals, monsters) that tracks the
+  target as it moves. Automatically clears when unchecked or when nothing's targeted, and
+  follows the lock if it moves to a different target.
 
-CHANGED -- newly placed items are now the live Target Lock automatically
-- Placing anything now locks it as the current live-edit target
-  immediately (as if Num+ had just been pressed on it), instead of
-  only being available to the diagnostic probe commands. Adjust it
-  right away without a separate targeting step.
+FIXED -- Non-statue characters (Senkamati, named NPCs) now nudge relative to their own facing
+- Live-edit movement previously only moved a statue's own facing direction; every other
+  character (crew reskins, named NPCs) incorrectly moved along a fixed world axis instead,
+  the same as decor. Now any character moves relative to whichever way it's facing, matching
+  statue behavior; decor is unchanged.
 
-FIXED -- rotation now respects the live-edit precision setting
-- Rotating an object (keyboard ','/'.' or the move window's rotate
-  buttons) always used a fixed step regardless of the precision level.
-  Now it scales with precision the same way movement already did --
-  normal speed rotates exactly like before, finer/coarser precision
-  levels now actually apply to rotation too.
-
-CHANGED -- decor/object nudging now moves along a fixed direction
-- Sliding a non-NPC object with the live-edit keys used to move it
-  relative to whichever way YOU were facing, so the same forward/back/
-  left/right press could shift it a different direction depending on
-  where you were standing. It now always moves the same fixed
-  direction regardless of your facing. Statues and NPCs are unchanged
-  -- they still slide along their own pose direction.
-
-CHANGED -- move window slowed to reduce movement-related instability
-- The GUI move window's rate of applying nudges is now slower (330ms
-  between updates instead of 100ms). Held movement now applies in
-  slightly larger, less frequent steps rather than continuous small
-  ones -- worth knowing if it feels a little different, but it should
-  meaningfully improve stability during heavy live-editing sessions.
-
-FIXED -- "Drops" decor not restoring after a reload
-- Placed drop-item decor (Stone/Wood/Leather/etc, and anything else in
-  that category) could show up in your save data but come back
-  invisible after a reload. The correct visual is now restored
-  properly on load. Anything placed before this fix will need to be
-  despawned and re-placed once to pick up the correction.
-
-ADDED -- "Custom" GUI category: Poses, Skin Tones, Hair, and Clothes
-- A new spawn-tree branch that works differently from every other
-  category: its entries don't place a new actor, they modify whatever
-  is currently target-locked (Numpad +), in place.
-- Poses (221 entries) -- plays a specific real animation on the
-  targeted actor (idle stances, sitting poses, work-bench activity,
-  combat animations, and more), organized by category/subcategory.
-  Works on walking crew/NPCs, posed statues, and native mob skeletons
-  alike. A small number of combat/ability-themed poses carry real
-  gameplay damage baked into their own animation, regardless of who's
-  playing them -- test those from a safe distance.
-- Skin Tones (9 entries) -- swaps the targeted actor's skin material to
-  one of the game's 7 ethnicity families, plus two "Corrupted"
-  (Senkamati) variants. Sex-detected automatically.
-- Hair (109 entries) -- swaps the targeted actor's hairstyle, organized
-  by style, then by headwear-compatible variant (Default / Hat /
-  Headband / Bandana), then by cut number for styles with more than
-  one. Sex-detected automatically.
-- Clothes (304 entries) -- swaps one clothing/armor slot at a time,
-  organized by family then slot then piece name, spanning the ordinary
-  armor catalog plus the tribal Senkamati sets. A built-in fit-safety
-  net substitutes plain underwear instead of clipping for known-
-  incompatible body/piece combinations, and holds back several male-cut
-  families from female targets by default -- both cases say clearly
-  on-screen when a substitution happened. "Clothes > Remove" (16
-  entries: one per slot, plus "All") removes a piece instead of
-  swapping it.
-- New console command: lbunlockclothes -- toggles the Clothes
-  fit-safety net above on/off (off by default), for anyone who wants
-  full control and accepts the clipping risk.
+Everything from the v3.0.0 (2026-08-22) preview/relocate/statue-targeting rebuild, and the
+first version of the "Custom" GUI category (Poses/Skin Tones/Hair/Clothes), also ships in
+this release -- superseded in UX by the Customize tab above, but the underlying placement
+preview (confirm/cancel/grab/free-build), statue targeting, walking-women outfit rework, and
+Drops-decor restore fix from that work are all still present and unchanged in behavior.
 
 ======================================================================
 v2.1.5 (2026-08-18) -- previous version: v2.1.0

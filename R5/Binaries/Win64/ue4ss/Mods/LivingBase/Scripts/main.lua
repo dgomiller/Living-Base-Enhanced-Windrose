@@ -682,7 +682,10 @@ end
 
 local function flattenSpawnMenuLivestock()
     local rows = {}
-    for _, t in ipairs({ Config.BOARS, Config.GOATS, Config.DODOS, Config.WOLVES, Config.CROCODILES }) do
+    -- LIVESTOCK_IDLE (2026-09-25) MUST stay last -- matches spawnmenu_manifest.lua's own
+    -- LIVESTOCK_SOURCES order exactly (a trailing source, appended after every existing family, so
+    -- none of their flattened indices shift -- see Config.LIVESTOCK_IDLE's own header comment).
+    for _, t in ipairs({ Config.BOARS, Config.GOATS, Config.DODOS, Config.WOLVES, Config.CROCODILES, Config.LIVESTOCK_IDLE }) do
         for _, e in ipairs(t or {}) do rows[#rows + 1] = e end
     end
     return rows
@@ -705,6 +708,11 @@ SPAWN_MENU_HANDLERS.CRABS = function(index)
     local row = Config.CRABS and Config.CRABS[index]
     if not row then return false, "index " .. tostring(index) .. " out of range" end
     return Testbed.SpawnCrabByName(row.name)
+end
+SPAWN_MENU_HANDLERS.SENKAMATI_ORIGINAL_UPRIGHT = function(index)
+    local row = Config.SENKAMATI_ORIGINAL_UPRIGHT and Config.SENKAMATI_ORIGINAL_UPRIGHT[index]
+    if not row then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnOriginalUprightSenkamatiByName(row.name)
 end
 SPAWN_MENU_HANDLERS.NEW_PEOPLE = function(index)
     local row = Config.NEW_PEOPLE and Config.NEW_PEOPLE[index]
@@ -764,6 +772,10 @@ do
     end
     for index, label in pairs(byRoster.CRABS or {}) do
         local row = Config.CRABS and Config.CRABS[index]
+        if row then Spawner.FriendlyLabels[row.name] = label end
+    end
+    for index, label in pairs(byRoster.SENKAMATI_ORIGINAL_UPRIGHT or {}) do
+        local row = Config.SENKAMATI_ORIGINAL_UPRIGHT and Config.SENKAMATI_ORIGINAL_UPRIGHT[index]
         if row then Spawner.FriendlyLabels[row.name] = label end
     end
     for index, label in pairs(byRoster.NEW_PEOPLE or {}) do
@@ -844,6 +856,7 @@ local function pollSpawnMenuRequest()
                     -- place before it wanders off" need as any other living-creature roster
                     -- (LIVESTOCK) -- RedFalcon: "make sure they also let me move and place them too."
                     or roster == "MONSTEROUS_MOBS" or roster == "CRABS" or roster == "NEW_PEOPLE"
+                    or roster == "SENKAMATI_ORIGINAL_UPRIGHT"
                     or SPAWN_MENU_STATUE_ROSTERS[roster]) then
             -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues, 2026-08-24 to
             -- townsfolk/crew/livestock/female-walkers/Senkamati). Briefly pulled the four humanoid
@@ -2227,6 +2240,83 @@ BeltStrapPolls.scrubSeek = function()
     end)
 end
 
+-- Target List tab (2026-09-26, new "Target List" GUI tab, RedFalcon: scan this mod's own tracked
+-- actors by radius + category checkboxes, list nearest-first, target one by row) -- ONE request
+-- file for both actions this tab needs ("SCAN:<radiusMeters>:<people>:<monsterous>:<animals>:
+-- <decor>" and "TARGET:<index>", 0/1 flags, index 0-based matching the C++ side's own array) since
+-- they're never both pending at once (one button click at a time) -- see Spawner.ScanTargetList/
+-- Spawner.TargetListSelect's own header comments in spawner.lua for what each actually does.
+-- Packed onto BeltStrapPolls (same "avoid a new top-level local" reasoning as everything else on
+-- this table -- see its own header comment) despite not being belt/strap related.
+BeltStrapPolls.targetList = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/target_list_request.txt",
+        "Mods/LivingBase/target_list_request.txt",
+        "target_list_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+
+    local verb, rest = content:match("^%s*(%a+):(.-)%s*$")
+    if not verb then
+        print("[LivingBase] [target-list] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+
+    if verb == "SCAN" then
+        local radius, wp, wm, wa, wd = rest:match("^([%d%.]+):([01]):([01]):([01]):([01])$")
+        if not radius then
+            print("[LivingBase] [target-list] malformed SCAN request, ignored: '" .. tostring(content) .. "'\n")
+            return
+        end
+        if not restoreGate("Target List: scan") then return end
+        ExecuteInGameThread(function()
+            local ok, err = pcall(function()
+                local results = Spawner.ScanTargetList(tonumber(radius), wp == "1", wm == "1", wa == "1", wd == "1")
+                local lines = { "COUNT=" .. tostring(#results) }
+                for i, row in ipairs(results) do
+                    lines[#lines + 1] = string.format("ITEM_%d=%s|%.1f|%s", i - 1, tostring(row.label), row.distM, tostring(row.category))
+                end
+                local outF = io.open("ue4ss/Mods/LivingBase/target_list_status.txt", "w")
+                if outF then
+                    outF:write(table.concat(lines, "\n"))
+                    outF:close()
+                end
+            end)
+            if not ok then print("[LivingBase] [target-list] scan FAILED: " .. tostring(err) .. "\n") end
+        end)
+    elseif verb == "TARGET" then
+        local idx = tonumber(rest)
+        if not idx then
+            print("[LivingBase] [target-list] malformed TARGET request, ignored: '" .. tostring(content) .. "'\n")
+            return
+        end
+        if not restoreGate("Target List: select") then return end
+        ExecuteInGameThread(function()
+            pcall(function() Spawner.TargetListSelect(idx) end)
+        end)
+    elseif verb == "MARK" then
+        -- "Mark Target" checkbox (2026-09-27) -- same request file as SCAN/TARGET, new verb. See
+        -- Spawner.SetMarkTargetEnabled's own header comment.
+        local onStr = rest:match("^([01])$")
+        if not onStr then
+            print("[LivingBase] [target-list] malformed MARK request, ignored: '" .. tostring(content) .. "'\n")
+            return
+        end
+        ExecuteInGameThread(function()
+            pcall(function() Spawner.SetMarkTargetEnabled(onStr == "1") end)
+        end)
+    end
+end
+
 -- "Lights" section request pollers (2026-09-21, Photo tab mockup) -- 7 request files, one per
 -- control, each payload-encoded "<slot>:<value...>" (slot embedded rather than one file per light
 -- per control -- 3 lights x 7 controls would be 21 files for no real benefit). Same
@@ -2730,6 +2820,8 @@ if ExecuteWithDelay then
             BeltStrapPolls.photoTimeGui()
             BeltStrapPolls.photoFreezeTimeGui()
             BeltStrapPolls.publishPhotoFreezeTimeStatus()
+            BeltStrapPolls.targetList()
+            pcall(Spawner.UpdateMarkTargetHighlight)
             if not mutated then
                 pollCustomColorReadRequest()
             elseif findCustomColorReadRequestPath() then
@@ -3384,7 +3476,7 @@ local lastPublishedPitch, lastPublishedRoll = nil, nil
 local function currentLockedTargetInfo()
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then
-        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", false, false, false, false, 0, 0
+        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", false, false, false, false, 0, 0, 0.0
     end
     local id = ""
     pcall(function() id = lt.actor:GetFullName() end)
@@ -3393,6 +3485,26 @@ local function currentLockedTargetInfo()
         local l = lt.actor:K2_GetActorLocation()
         local r = lt.actor:K2_GetActorRotation()
         x, y, z, yaw, pitch, roll = l.X, l.Y, l.Z, r.Yaw, r.Pitch, r.Roll
+    end)
+    -- distM (2026-09-26, new Target List tab's "large text updating distance" readout) -- reuses
+    -- this SAME 300ms status publish loop rather than a separate poll, same reasoning as every
+    -- other target-scoped field here: it's already recomputing the target's live transform every
+    -- tick, so a player-pawn distance is one more cheap pcall alongside it, not a new timer.
+    -- require("UEHelpers") directly here rather than the file's own `local UEHelpers` (declared
+    -- much further down, ~line 3711) -- this function sits ABOVE that declaration in the file, so
+    -- the bare identifier would resolve as a nil GLOBAL at this point instead of that local
+    -- (confirmed live: "attempt to index a nil value (global 'UEHelpers')") -- same forward-
+    -- reference trap this project has hit before, see feedback_lua_forward_reference_check.
+    -- require() is cached after the first real load, so this costs nothing extra on every tick.
+    local distM = 0.0
+    pcall(function()
+        local pc = require("UEHelpers").GetPlayerController()
+        local pawn = pc and pc:IsValid() and pc.Pawn
+        if pawn and pawn:IsValid() then
+            local pl = pawn:K2_GetActorLocation()
+            local dx, dy, dz = x - pl.X, y - pl.Y, z - pl.Z
+            distM = math.sqrt(dx * dx + dy * dy + dz * dz) / 100.0
+        end
     end)
     -- isCharacter (2026-09-21, RedFalcon: "keep the detect button disabled for any non character
     -- objects. The animals and decor should not be able to have their customizations scanned...
@@ -3444,7 +3556,7 @@ local function currentLockedTargetInfo()
     local scrubActive, scrubPaused, scrubFrame, scrubNumFrames = false, false, 0, 0
     pcall(function() scrubActive, scrubPaused, scrubFrame, scrubNumFrames = Spawner.PoseScrubGetStatus(lt.actor) end)
     return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
-        scrubActive, scrubPaused, scrubFrame, scrubNumFrames
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM
 end
 local lastPublishedWindowToggle = nil
 local lastPublishedFocusSteal = nil
@@ -3464,12 +3576,21 @@ local lastPublishedIsCharacter = nil
 -- top-level locals (this file is also right at Lua's 200-local ceiling, same reasoning as
 -- BeltStrapPolls' own header comment).
 local lastPublishedScrub = { active = nil, paused = nil, frame = nil, numFrames = nil }
+-- TARGET_DIST_M (2026-09-26, Target List tab's live distance readout) -- tracked on the Spawner
+-- table (Spawner._lastPublishedDistM), NOT a new top-level local -- this file is ALSO at Lua's
+-- 200-local ceiling (confirmed live the hard way this same session: an unrelated new local added in
+-- spawner.lua crashed the whole mod load with "too many local variables (limit is 200)" the moment
+-- it crossed the line -- see that fix's own comment). Needed in the equality check below (unlike a
+-- comparison that would just always differ and could be dropped) because target X/Y/Z are the
+-- TARGET's own position, not distance -- if the player walks toward/away from a stationary target,
+-- every other field here stays unchanged and the early-return would otherwise skip publishing a
+-- genuinely new distance value, freezing the readout.
 local function publishSpawnMenuStatusIfChanged()
     local freebuild, restoring = Spawner._placementFreeBuild, restoreLockActive
     local placementMode = Spawner.placementMode or "MOVE"
     local placementActive = Spawner._placementActive and true or false
     local target, id, x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
-        scrubActive, scrubPaused, scrubFrame, scrubNumFrames = currentLockedTargetInfo()
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM = currentLockedTargetInfo()
     if freebuild == lastPublishedFreeBuild and restoring == lastPublishedRestoring and target == lastPublishedTarget
         and id == lastPublishedId
         and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
@@ -3484,7 +3605,8 @@ local function publishSpawnMenuStatusIfChanged()
         and scrubActive == lastPublishedScrub.active
         and scrubPaused == lastPublishedScrub.paused
         and scrubFrame == lastPublishedScrub.frame
-        and scrubNumFrames == lastPublishedScrub.numFrames then
+        and scrubNumFrames == lastPublishedScrub.numFrames
+        and distM == Spawner._lastPublishedDistM then
         return
     end
     lastPublishedFreeBuild, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = freebuild, restoring, target, id
@@ -3501,6 +3623,7 @@ local function publishSpawnMenuStatusIfChanged()
     lastPublishedScrub.paused = scrubPaused
     lastPublishedScrub.frame = scrubFrame
     lastPublishedScrub.numFrames = scrubNumFrames
+    Spawner._lastPublishedDistM = distM
     local f = io.open(SPAWN_MENU_STATUS_PATH, "w")
     if not f then return end
     f:write("FREEBUILD=", freebuild and "1" or "0", "\n")
@@ -3516,6 +3639,7 @@ local function publishSpawnMenuStatusIfChanged()
     f:write("TARGET_SEX=", sex, "\n")
     f:write("TARGET_STATIC=", isStatic and "1" or "0", "\n")
     f:write("TARGET_ISCHARACTER=", isCharacter and "1" or "0", "\n")
+    f:write("TARGET_DIST_M=", string.format("%.2f", distM), "\n")
     f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
     f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
     f:write("PLACEMENT_MODE=", placementMode, "\n")
@@ -4255,7 +4379,7 @@ local LBLOOK_CATEGORIES = {
     end)() },
     { key = "animals", label = "Animals/Livestock (Num8)", entries = (function()
         local out = {}
-        for _, t in ipairs({ Config.BOARS, Config.GOATS, Config.DODOS, Config.WOLVES, Config.CROCODILES }) do
+        for _, t in ipairs({ Config.BOARS, Config.GOATS, Config.DODOS, Config.WOLVES, Config.CROCODILES, Config.LIVESTOCK_IDLE }) do
             for _, e in ipairs(t or {}) do out[#out + 1] = e.name end
         end
         return out
@@ -5516,8 +5640,9 @@ end
 
 -- Console command "lbtestniagarapath <path>" (2026-08-21) -- TEMP DEV TOOL, see
 -- Spawner.TestSpawnNiagaraByPath's own comment. Paste any /Game/... asset path found in
--- Other\pakcontents.xlsx (dotted .AssetName suffix optional) to try it live on the last lbprobe'd
--- target, same Parameters[1] argument-reading pattern lbspawn already uses.
+-- Other\pakcontents.xlsx (dotted .AssetName suffix optional) to try it live, same Parameters[1]
+-- argument-reading pattern lbspawn already uses. No probed target needed (2026-09-26 change) --
+-- spawns as its own independent actor a fixed distance in front of the camera instead.
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbtestniagarapath", function(FullCommand, Parameters, Ar)
@@ -5531,6 +5656,168 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestniagarapath", "lbtestniagarapath <path>", "Spawns a specific Niagara effect by its exact /Game/... asset path -- the generic, path-fed FX tester.")
 else
     log("lbtestniagarapath unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console commands "lbtestniagaraloop <path> [intervalMs]" / "lbtestniagaraloopstop" (2026-09-26,
+-- RedFalcon: "is it possible to add a loop option for lbtestniagarapath to see how quick fx may
+-- look on repeat?") -- see Spawner.TestSpawnNiagaraByPathLoop's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraloop", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local arg2 = Parameters and Parameters[2]
+            -- "clear"/"stop" recognized as a STOP request, not a literal FX path (2026-09-26,
+            -- RedFalcon tried "lbtestniagaraloop clear" expecting it to remove the loop, same
+            -- "<command><clear>" naming pattern lbtestniagaraactorclear already established --
+            -- reasonable to expect, so honor it here too instead of treating "clear" as a path and
+            -- looping a failed "could not resolve clear.clear" over and over).
+            local arg1Lower = arg1 and arg1:lower()
+            local ok, err
+            if arg1Lower == "clear" or arg1Lower == "stop" then
+                ok, err = pcall(function() Spawner.TestSpawnNiagaraLoopStop() end)
+            else
+                ok, err = pcall(function() Spawner.TestSpawnNiagaraByPathLoop(arg1, arg2) end)
+            end
+            if not ok then print("[LivingBase] [lbtestniagaraloop] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraloop <path> [intervalMs]")
+    registerCmdInfo("lbtestniagaraloop", "lbtestniagaraloop <path> [intervalMs]  |  lbtestniagaraloop clear", "Repeatedly clears+respawns the given Niagara effect on a timer (default 800ms) so a quick, non-looping burst FX can be watched fired back-to-back -- 'clear'/'stop' (or lbtestniagaraloopstop) stops it early.")
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraloopstop", function(FullCommand, Parameters, Ar)
+            local ok, err = pcall(function() Spawner.TestSpawnNiagaraLoopStop() end)
+            if not ok then print("[LivingBase] [lbtestniagaraloopstop] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraloopstop")
+    registerCmdInfo("lbtestniagaraloopstop", "lbtestniagaraloopstop", "Stops a running lbtestniagaraloop and despawns its test actor.")
+else
+    log("lbtestniagaraloop/lbtestniagaraloopstop unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagaramove <dx> <dy> <dz>" (2026-09-26, RedFalcon: "a tool that allows
+-- use to move niagara effects as well, in case they spawn in a bad spot") -- see
+-- Spawner.TestNiagaraActorMove's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaramove", function(FullCommand, Parameters, Ar)
+            local dx = Parameters and Parameters[1]
+            local dy = Parameters and Parameters[2]
+            local dz = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestNiagaraActorMove(dx, dy, dz) end)
+            if not ok then print("[LivingBase] [lbtestniagaramove] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaramove <dx> <dy> <dz>")
+    registerCmdInfo("lbtestniagaramove", "lbtestniagaramove <dx> <dy> <dz>", "Nudges the current lbtestniagarapath/lbtestniagaraactor test effect by a world-space UU offset -- for when it spawns in a bad spot. Repeatable (relative, not absolute). Doesn't stick across an active lbtestniagaraloop's next respawn tick.")
+else
+    log("lbtestniagaramove unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestfithitbox [decorPath]" (2026-09-26, RedFalcon: "I'd like to put it in
+-- the same spot as a target and make it exactly fit the hitbox of the target") -- see
+-- Spawner.TestFitDecorToTarget's own header comment. Defaults to "Quest Sparkle" when no path is
+-- given.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestfithitbox", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestFitDecorToTarget(arg1) end)
+            if not ok then print("[LivingBase] [lbtestfithitbox] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestfithitbox [decorPath]")
+    registerCmdInfo("lbtestfithitbox", "lbtestfithitbox [decorPath]", "Spawns a decor item (default: Quest Sparkle) at the current target's bounds-center, scaled per-axis to match the target's own hitbox exactly. A REAL tracked spawn, not an ephemeral test actor -- despawn it the normal way when done.")
+else
+    log("lbtestfithitbox unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestfitniagara [path]" (2026-09-26, RedFalcon: "can you do one that let's me
+-- assign a niagara effect to a target fit to its hitbox") -- see
+-- Spawner.TestFitNiagaraToTarget's own header comment. Defaults to the same
+-- FX_Unblockable_Attack_PreActionState effect already validated as a subtle target marker
+-- (HOVER_EFFECT_FX_PATH) when no path is given.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestfitniagara", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestFitNiagaraToTarget(arg1) end)
+            if not ok then print("[LivingBase] [lbtestfitniagara] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestfitniagara [path]")
+    registerCmdInfo("lbtestfitniagara", "lbtestfitniagara [path]", "Spawns a raw Niagara effect (default: the validated hover-highlight FX) at the current target's location, scaled to roughly match its hitbox footprint. Uses the same test-actor slot as lbtestniagarapath/lbtestniagaraactor -- lbtestniagaraactorclear/lbtestniagaramove/lbsetniagarascale all work on it too.")
+else
+    log("lbtestfitniagara unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagaraattarget [path]" (2026-09-26, RedFalcon: "so i dont think resizing
+-- the actor placed is resizing the effect ... so let's make a not fit version") -- see
+-- Spawner.TestPlaceNiagaraAtTarget's own header comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraattarget", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestPlaceNiagaraAtTarget(arg1) end)
+            if not ok then print("[LivingBase] [lbtestniagaraattarget] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraattarget [path]")
+    registerCmdInfo("lbtestniagaraattarget", "lbtestniagaraattarget [path]", "Spawns a raw Niagara effect (default: the validated hover-highlight FX) at the current target's location, always at 1.0 scale -- no hitbox-fit scale math, for effects that ignore actor/component scale (World Space simulation). Same test-actor slot as the other niagara test tools.")
+else
+    log("lbtestniagaraattarget unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagaraplace <path> <scale|sx,sy,sz> <dx>|<dx,dy,dz> [dy] [dz]" (2026-09-27,
+-- RedFalcon: "can you make one that spawns that lets me place with both scale and relative x y z")
+-- -- see Spawner.TestPlaceNiagaraAtOffset's own header comment. Scale accepts a single number for
+-- uniform or a comma "sx,sy,sz" triple for non-uniform; the offset accepts EITHER a single comma
+-- "dx,dy,dz" triple (as its own 3rd argument) OR 3 separate dx/dy/dz arguments -- both work.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagaraplace", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local arg2 = Parameters and Parameters[2]
+            local arg3 = Parameters and Parameters[3]
+            local arg4 = Parameters and Parameters[4]
+            local arg5 = Parameters and Parameters[5]
+            local ok, err = pcall(function() Spawner.TestPlaceNiagaraAtOffset(arg1, arg2, arg3, arg4, arg5) end)
+            if not ok then print("[LivingBase] [lbtestniagaraplace] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagaraplace <path> <scale|sx,sy,sz> <dx>|<dx,dy,dz> [dy] [dz]")
+    registerCmdInfo("lbtestniagaraplace", "lbtestniagaraplace <path> <scale|sx,sy,sz> <dx>|<dx,dy,dz> [dy] [dz]", "One-shot: spawns a Niagara effect at the current target's location plus a relative x/y/z offset, with a scale applied directly (uniform number or sx,sy,sz triple). The offset accepts either a single dx,dy,dz comma triple or 3 separate args. Combines what used to take lbtestniagaraattarget + lbtestniagaramove + lbsetniagarascale as separate steps. Same test-actor slot as the other niagara test tools.")
+else
+    log("lbtestniagaraplace unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestniagarasized [path] [heightFrac] [widthFrac]" (2026-09-27, RedFalcon
+-- describing the FastTravelFlag circle FX: "keep it's height at about 10% the height of the target
+-- and 10% wider on the x and y ... putting it at the 50% vertical") -- see
+-- Spawner.TestPlaceNiagaraSizedAtTarget's own header comment. Defaults: path =
+-- FX_FastTravelFlag, heightFrac = 0.10, widthFrac = 1.10.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestniagarasized", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local arg2 = Parameters and Parameters[2]
+            local arg3 = Parameters and Parameters[3]
+            local ok, err = pcall(function() Spawner.TestPlaceNiagaraSizedAtTarget(arg1, arg2, arg3) end)
+            if not ok then print("[LivingBase] [lbtestniagarasized] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestniagarasized [path] [heightFrac] [widthFrac]")
+    registerCmdInfo("lbtestniagarasized", "lbtestniagarasized [path] [heightFrac] [widthFrac]", "Spawns a Niagara effect (default: FX_FastTravelFlag) sized in LITERAL uu relative to the target's own real bounds -- height = heightFrac * target height (default 0.10), X/Y = widthFrac * target X/Y footprint (default 1.10), so an oblong target produces an oval rather than a uniform circle. Measures the effect's own native bounds ~0.25s after spawn to compute the correction scale (Niagara bounds are unreliable read immediately at spawn). Placed at the target's bounds-center Z (50% vertical) and pivot X/Y. Same test-actor slot as the other niagara test tools.")
+else
+    log("lbtestniagarasized unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestpose <path>" (2026-08-25) -- same shape as lbtestniagarapath above, just
@@ -5670,8 +5957,8 @@ if RegisterConsoleCommandHandler then
             return true
         end)
     end)
-    log("Console command registered: lbtestmaterial2 <skinPath> <clothPath>")
-    registerCmdInfo("lbtestmaterial2", "lbtestmaterial2 <skinPath> <clothPath>", "Applies one material to the actor's base body/skin mesh and a different one to every other (clothing/armor) mesh piece.")
+    log("Console command registered: lbtestmaterial2 <skinPath>|- <clothPath>|-")
+    registerCmdInfo("lbtestmaterial2", "lbtestmaterial2 <skinPath>|- <clothPath>|-", "Applies one material to the actor's base body/skin mesh and a different one to every other (clothing/armor) mesh piece. Pass - for either side to leave that part untouched.")
 else
     log("lbtestmaterial2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -8394,8 +8681,53 @@ if RegisterConsoleCommandHandler then
     registerDumpCommand("lbprobedump", function() Spawner.ProbeDumpProperties() end, "ProbeDumpProperties")
     registerDumpCommand("lbprobelight", function() Spawner.TestProbeLightComponents() end, "TestProbeLightComponents")
     registerCmdInfo("lbprobelight", "lbprobelight", "Sweeps the currently-cached lbprobe target (same cache lbprobedump uses) for PointLightComponent/SpotLightComponent/LightComponent -- the generic probedump never checks for light components at all, this gives a real yes/no answer instead of inferring one from silence.")
+    -- "lbprobestatic" (2026-09-26, RedFalcon: HOME/lbprobetargetparams only works on
+    -- CompositeMeshComponent-bearing "people" targets -- "i'd like a command to grab some of the
+    -- stats of static objects so that we can see that too"). Uses resolveTestDiagActor (Numpad+/
+    -- Target List tab locks work too), NOT just the narrower lbprobe camera-aim cache -- see
+    -- Spawner.ProbeStaticStats' own header comment.
+    registerDumpCommand("lbprobestatic", function() Spawner.ProbeStaticStats() end, "ProbeStaticStats")
+    registerCmdInfo("lbprobestatic", "lbprobestatic", "Reports actor scale + StaticMeshComponent/SkeletalMeshComponent/NiagaraComponent scale+asset for the current target (lbprobe cache, Numpad+ lock, or a Target List tab selection) -- the static/decor-object counterpart to HOME/lbprobetargetparams, which only works on CompositeMeshComponent 'people' targets.")
 else
     log("lbprobe/lbprobedump unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbsetstaticscale <value>" (2026-09-26, RedFalcon's follow-up: "do we have a command that will
+-- let me scale this?") -- the SET counterpart to lbprobestatic, see Spawner.SetStaticActorScale's
+-- own header comment for why this scales the actor root rather than reusing lbsetscale's
+-- Mesh-component convention.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbsetstaticscale", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.SetStaticActorScale(arg1) end)
+            if not ok then print("[LivingBase] [lbsetstaticscale] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbsetstaticscale <value>")
+    registerCmdInfo("lbsetstaticscale", "lbsetstaticscale <value>", "Sets the current target's overall actor scale (K2_SetActorScale3D, uniform X/Y/Z) -- the static/decor-object counterpart to lbsetscale, which only works on CompositeMesh 'people' targets with a .Mesh component.")
+else
+    log("lbsetstaticscale unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- "lbsetniagarascale <value>" (2026-09-26, RedFalcon: "niagara scale specifically as its an
+-- effect" -- follow-up to lbsetstaticscale, which resizes the WHOLE actor. See
+-- Spawner.SetNiagaraComponentScale's own header comment for why an FX-only decor prop usually
+-- wants just its OWN effect resized instead.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbsetniagarascale", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.SetNiagaraComponentScale(arg1) end)
+            if not ok then print("[LivingBase] [lbsetniagarascale] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbsetniagarascale <value>|<x,y,z>")
+    registerCmdInfo("lbsetniagarascale", "lbsetniagarascale <value> | lbsetniagarascale <x,y,z>", "Sets the current target's NiagaraComponent(s) own scale directly (SetRelativeScale3D) -- resizes just the effect, not the whole actor/mesh, for FX-only decor like Quest Sparkle. A single number applies uniformly to X/Y/Z; a comma-separated x,y,z triple (no spaces) scales each axis independently.")
+else
+    log("lbsetniagarascale unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbdumpbodypart <DataAsset path>" (2026-09-14) -- see

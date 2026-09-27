@@ -370,9 +370,33 @@ end
 -- around"), same "AIController/ability system attaches late in BeginPlay" race those two functions
 -- already exist to work around -- lbspawnnoai's own comment on SetAILogic even warns "no valid
 -- AIController found?" is possible on a same-frame call.
-local function spawnFrozenIdleNewPerson(path, label, idlePose)
-    local a = spawnMonsterousMob(path, label)
-    if not (a and a:IsValid()) then return a end
+-- applyIdleFreeze(a, idlePose) -- extracted 2026-09-25 (RedFalcon: "go through the animals and
+-- rename the current ones with (Mobile)... add idle versions... similar to what we did with the
+-- monsterous ones") so LIVESTOCK's own spawn path (spawnCreature, a DIFFERENT call shape --
+-- candidates list + per-family ai/disable overrides, not spawnMonsterousMob's single path) can
+-- reuse the exact same freeze mechanism without duplicating the retry/CharacterMovement-zero logic.
+-- Same contract as before: call once immediately, then retried over ~3s (guarded by stillAlive)
+-- since a same-frame SetAILogic can miss a not-yet-attached AIController, and some classes (Boss-
+-- type) don't reliably stop from StopLogic() alone -- see the two pcall blocks' own comments.
+local function applyIdleFreeze(a, idlePose)
+    if not (a and a:IsValid()) then return end
+    -- REAL BUG FOUND 2026-09-25 (RedFalcon: "none of the animals are idling at all") -- freezing
+    -- was working fine for its first ~3s, then getting silently UNDONE the moment the automatic
+    -- ghost-placement-preview flow (every mod-spawned actor goes through this) was confirmed.
+    -- spawner.lua's own releasePlacementMobility (called from Spawner.ConfirmPlacement) does
+    -- `if not (entry and not entry.idle) then return end` -- i.e. it unconditionally calls
+    -- Spawner.SetAILogic(actor, true), RE-ENABLING AI, unless the actor's own Spawner.spawned
+    -- tracking entry has `.idle = true`. That flag is normally set via Spawner.Spawn's own
+    -- `markIdle` parameter -- but NONE of spawnCreature/spawnMonsterousMob/
+    -- spawnOriginalUprightSenkamati (every idle path added this session) ever passed it through.
+    -- Fixed centrally here, since every idle path already funnels through this one function --
+    -- mark the entry directly rather than threading markIdle through three different spawn-call
+    -- shapes with different signatures.
+    pcall(function()
+        for _, e in ipairs(Spawner.spawned) do
+            if e.actor == a then e.idle = true; break end
+        end
+    end)
     local function apply()
         pcall(function() Spawner.SetAILogic(a, false) end)
         -- Belt-and-suspenders (2026-09-25): StopLogic() alone stopped Marlowe but NOT Steed Bonet
@@ -404,6 +428,22 @@ local function spawnFrozenIdleNewPerson(path, label, idlePose)
         end
         ExecuteWithDelay(750, again)
     end
+end
+
+local function spawnFrozenIdleNewPerson(path, label, idlePose)
+    local a = spawnMonsterousMob(path, label)
+    applyIdleFreeze(a, idlePose)
+    return a
+end
+
+-- spawnCreatureFrozen(candidates, label, aiPath, disable, idlePose) -- LIVESTOCK's own equivalent
+-- of spawnFrozenIdleNewPerson above, for entries that resolve via a `candidates` list (first match
+-- wins) and carry per-family `ai`/`disable` overrides rather than a single fixed `path`. Reuses
+-- spawnCreature for the exact same pacify/friendly/AI-override treatment its "(Mobile)" sibling
+-- gets, then freezes on top via the shared applyIdleFreeze helper.
+local function spawnCreatureFrozen(candidates, label, aiPath, disable, idlePose)
+    local a = spawnCreature(candidates, label, aiPath, disable)
+    applyIdleFreeze(a, idlePose)
     return a
 end
 
@@ -427,6 +467,9 @@ end
 function Testbed.SpawnCrabByName(name)
     for _, c in ipairs(Config.CRABS or {}) do
         if c.name:lower() == tostring(name):lower() then
+            if c.idlePose then
+                return spawnFrozenIdleNewPerson(c.path, monsterousMobLabel(c), c.idlePose)
+            end
             return spawnMonsterousMob(c.path, monsterousMobLabel(c))
         end
     end
@@ -489,25 +532,31 @@ local function buildLivestockList()
     -- Boar family: only the base Boar has a known-passive AI override (Config.BOAR_AI, found by
     -- testing); Sow/Charger/Mega carry whatever `ai` Config.BOARS gives them (nil for now).
     for _, b in ipairs(Config.BOARS or {}) do
-        livestock[#livestock + 1] = { name = b.name, candidates = b.candidates, ai = b.ai }
+        livestock[#livestock + 1] = { name = b.name, candidates = b.candidates, ai = b.ai, idlePose = b.idlePose }
     end
     -- Aggressive MALE goat gets the FEMALE prey brain; all goats (incl. GoatMega) get the
     -- perception strip. GoatMega has no dedicated ai override yet (falls through to nil).
     for _, g in ipairs(Config.GOATS or {}) do
-        local ai = (g.name == "GoatM") and Config.GOATF_AI or nil
+        local ai = (g.name:find("^GoatM") and not g.name:find("^GoatMega")) and Config.GOATF_AI or nil
         livestock[#livestock + 1] = { name = g.name, candidates = g.candidates,
-                                      ai = ai, disable = Config.GOAT_DISABLE }
+                                      ai = ai, disable = Config.GOAT_DISABLE, idlePose = g.idlePose }
     end
     -- Dodos: calm with just the friendly faction, own brain kept (DODO_AI defaults false -> nil).
     for _, d in ipairs(Config.DODOS or {}) do
         livestock[#livestock + 1] = { name = d.name, candidates = d.candidates,
-                                      ai = Config.DODO_AI or nil }
+                                      ai = Config.DODO_AI or nil, idlePose = d.idlePose }
     end
     for _, w in ipairs(Config.WOLVES or {}) do
-        livestock[#livestock + 1] = { name = w.name, candidates = w.candidates }
+        livestock[#livestock + 1] = { name = w.name, candidates = w.candidates, idlePose = w.idlePose }
     end
     for _, c in ipairs(Config.CROCODILES or {}) do
-        livestock[#livestock + 1] = { name = c.name, candidates = c.candidates }
+        livestock[#livestock + 1] = { name = c.name, candidates = c.candidates, idlePose = c.idlePose }
+    end
+    -- Idle siblings (2026-09-25) -- own trailing table, own trailing loop, so every existing
+    -- family's flattened index above is untouched -- see Config.LIVESTOCK_IDLE's own header comment.
+    for _, i in ipairs(Config.LIVESTOCK_IDLE or {}) do
+        livestock[#livestock + 1] = { name = i.name, candidates = i.candidates, ai = i.ai,
+                                      disable = i.disable, idlePose = i.idlePose, family = i.family }
     end
     return livestock
 end
@@ -525,7 +574,13 @@ function Testbed.SpawnNextLivestock()
     liveIdx = liveIdx % #list + 1
     local a = list[liveIdx]
     log(string.format("Livestock %d/%d: %s", liveIdx, #list, a.name))
-    if not spawnCreature(a.candidates, livestockLabel(a), a.ai, a.disable) then
+    local ok
+    if a.idlePose then
+        ok = spawnCreatureFrozen(a.candidates, livestockLabel(a), a.ai, a.disable, a.idlePose)
+    else
+        ok = spawnCreature(a.candidates, livestockLabel(a), a.ai, a.disable)
+    end
+    if not ok then
         log("Livestock " .. a.name .. " failed — no candidate path resolved.")
     end
 end
@@ -541,6 +596,9 @@ function Testbed.SpawnLivestockByName(name)
     local list = buildLivestockList()
     for _, a in ipairs(list) do
         if a.name:lower() == tostring(name):lower() then
+            if a.idlePose then
+                return spawnCreatureFrozen(a.candidates, livestockLabel(a), a.ai, a.disable, a.idlePose)
+            end
             return spawnCreature(a.candidates, livestockLabel(a), a.ai, a.disable)
         end
     end
@@ -789,7 +847,11 @@ end
 -- concludes (converged or gave up) -- or immediately if there's no retry loop to wait for (no
 -- actor, decorrupt skipped/disabled). Callers route this through Spawner.RunSerialized so no two
 -- actors' composites are ever touched concurrently (see that function's own comment for why).
-local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, onDone)
+-- mobRulesOverride (2026-09-25, "Original Upright" category): when given, used INSTEAD of the
+-- name-based DECORRUPT_MOB/_HUNTER/_THRALL lookup below -- lets a caller give ONE archetype a
+-- different ruleset (e.g. the Caster's hair) without touching the shared tables every other
+-- category (Wild/Monsterous) still reads by default.
+local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, onDone, mobRulesOverride)
     -- Idempotent (2026-08-16): the ExecuteWithDelay/ExecuteInGameThread nesting fix below can
     -- occasionally fire one redundant final retry tick (see that fix's own comment for why --
     -- the retry-continuation state it checks is a tick stale by design), which could otherwise
@@ -841,9 +903,12 @@ local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, on
         -- Thrall (2026-09-02) routed to his own dedicated ruleset, same dispatch shape as Hunter's
         -- own carve-out -- see Config.DECORRUPT_THRALL's own header comment for why he needed one
         -- (a real helmet-hide pattern DECORRUPT_MOB's shared/empty `hides` table can't provide).
-        local mobRules = Config.DECORRUPT_MOB
-        if name == "Hunter" then mobRules = Config.DECORRUPT_HUNTER
-        elseif name == "Thrall" then mobRules = Config.DECORRUPT_THRALL end
+        local mobRules = mobRulesOverride
+        if not mobRules then
+            mobRules = Config.DECORRUPT_MOB
+            if name == "Hunter" then mobRules = Config.DECORRUPT_HUNTER
+            elseif name == "Thrall" then mobRules = Config.DECORRUPT_THRALL end
+        end
         local rules = rulesWithHelmet(mobRules, showHelmet)
         local gen = Spawner.generation
         local tries, quiet = 0, 0
@@ -890,6 +955,271 @@ local function senkaMobFix(actor, name, shortName, showHelmet, skipDecorrupt, on
     else
         finish()
     end
+end
+
+-- Original Upright RANDOMIZATION (2026-09-25, RedFalcon: "add a bit more variety... The Caster
+-- spawns with no hair and the hunter always has a mohawk. the other two seem to randomize... this
+-- is also only for the mask off originals"). Applies skin tone, skin size ("physique" -- this
+-- project has no build-variant axis, only Small/Medium/Large, confirmed via spawner.lua's own
+-- Custom-tab code), height, hair color, eye color, and (Caster/Hunter only, since Warrior/Thrall
+-- already vary their own native hair) a curated hair MESH pick. Mask ON rows are untouched -- see
+-- the call sites below.
+--
+-- REVISED AGAIN 2026-09-25 (RedFalcon: "I know i said to save customizations, but i changed my
+-- mind. lets treat it like the game treats the BotC woman, and unless someone goes in and saves a
+-- customization, we'll just generate on respawn the same as new spawn") -- no longer writes to
+-- custom_state_<islandId>.txt at all (the Spawner.WriteCustomStateLinesForActor call from the
+-- original version is gone). A fresh random pick is applied on every spawn AND every restore (see
+-- the RESTORE_RULES entry below, which now calls this same function) exactly like a brand-new
+-- spawn -- indistinguishable from one, since neither path persists anything. If RedFalcon manually
+-- clicks "Save Customizations" on one of these actors, that writes a REAL custom_state block keyed
+-- by the actor's own label via the normal Spawner.SaveCustomState path (untouched by this change) --
+-- and Spawner.RestoreCustomState applies that block AFTER this roster's own RESTORE_RULES/
+-- RestoreHook step runs (see scheduleRestorePostProcess's onFinished -> main.lua's afterRestore ->
+-- Spawner.RestoreCustomState ordering), so a manual save still correctly wins over the fresh
+-- re-randomize on the next reload.
+local ORIGINAL_UPRIGHT_SKIN_TONES = { "African", "Native", "Fable" }
+local ORIGINAL_UPRIGHT_SKIN_SIZES = { "Small", "Medium", "Large" }
+local ORIGINAL_UPRIGHT_HAIR_COLORS = { "Chocolate", "Charcoal", "Salt and Pepper", "Copper" }
+-- Height ranges are decimal FEET (Spawner.ApplyActorHeightFeet's own native unit, confirmed via its
+-- "Custom tab Height slider, range 3ft-8ft" header comment) -- RedFalcon's own numbers already used
+-- this convention (Warrior "6' and 7'" alongside Hunter/Thrall/Caster "5.25 and 5.9").
+local ORIGINAL_UPRIGHT_HEIGHT_RANGE = { Warrior = { 6.0, 7.0 } }
+local ORIGINAL_UPRIGHT_HEIGHT_RANGE_DEFAULT = { 5.25, 5.9 }  -- Hunter/Thrall/Caster
+-- Caster/Hunter's curated hair-mesh pools, checked against Config.HAIR_CATEGORY_ITEMS's real
+-- friendlyName strings -- ONE real typo fixed: "Partial Dreadlocks" doesn't exist verbatim, the
+-- catalog's actual entry is spelled "Partial Dredlocks" (missing the second "a").
+local ORIGINAL_UPRIGHT_HAIR_MESH_BY_ARCHETYPE = {
+    Caster = { "Wavy 3", "Afro 3", "Afro 5", "Layered Bob Decorated", "Mohawk", "Partial Dredlocks",
+               "Pixie 3", "Ponytail", "Undercut", "Wavy 2" },
+    Hunter = { "Afro 3", "Mohawk", "Wavy 2", "Afro 1", "Pixie 1", "Shag 3", "Shag 5", "Shag 6", "Unique - John" },
+}
+local function pickOne(list) return list[math.random(#list)] end
+
+-- REVISED 2026-09-25 (RedFalcon: "When i spawn a hunter, i see a mohawk, then the hair change, then
+-- it goes back to a mohawk") -- the apply calls below (confirmed via their own say() readback in the
+-- log) DID succeed the first time, then something else reverted the hair shortly after -- the exact
+-- same class of "something else keeps disturbing this" problem this project already has an
+-- established fix pattern for (Config.SHIELD_REASSERT_MS re-asserts the Warrior's shield after
+-- combat disturbs it). Restructured so every random VALUE is picked ONCE up front, applied
+-- immediately, then RE-APPLIED on the same retry cadence/guard convention as applyIdleFreeze/
+-- pacifyCreature (750ms x4, guarded by stillAlive) so a later revert gets overwritten again rather
+-- than winning permanently. The custom-state file is written once, right after the first apply --
+-- no need to rewrite it on every retry tick, only the live visual needs re-asserting.
+local function randomizeOriginalUpright(a, entry)
+    local say = function(m) print("[LivingBase] [original-upright-random] " .. tostring(m) .. "\n") end
+    if not (a and a:IsValid()) then return end
+
+    local tone = pickOne(ORIGINAL_UPRIGHT_SKIN_TONES)
+    local size = pickOne(ORIGINAL_UPRIGHT_SKIN_SIZES)
+    local range = ORIGINAL_UPRIGHT_HEIGHT_RANGE[entry.archetype] or ORIGINAL_UPRIGHT_HEIGHT_RANGE_DEFAULT
+    local feet = range[1] + math.random() * (range[2] - range[1])
+    local hairColorName = pickOne(ORIGINAL_UPRIGHT_HAIR_COLORS)
+    local hairColorIdx = nil
+    for idx, nm in pairs(Config.CPD_HAIR_COLOR_NAMES or {}) do
+        if nm == hairColorName then hairColorIdx = idx; break end
+    end
+    local eyeIdx = math.random(0, 7)
+    local hairPool = ORIGINAL_UPRIGHT_HAIR_MESH_BY_ARCHETYPE[entry.archetype]
+    local hairName = hairPool and pickOne(hairPool) or nil
+
+    local function apply()
+        pcall(function() Spawner.ApplyCustomTabSkinTone(tone, say, a) end)
+        pcall(function() Spawner.TestSetSkinSize(size, say, a) end)
+        pcall(function() Spawner.ApplyActorHeightFeet(feet, say, a) end)
+        if hairColorIdx then pcall(function() Spawner.ApplyHairCategoryColor("Hairs", hairColorIdx, say, a) end) end
+        pcall(function() Spawner.TestSetEyeColor("Default", say, a) end)
+        pcall(function() Spawner.TestSetBaseCPDFloat(15, eyeIdx, say, a) end)
+        if hairName then pcall(function() Spawner.ApplyHairCategoryMesh("Hairs", hairName, say, a) end) end
+    end
+    apply()
+
+    local lines = { "SKINTONE:" .. tone, "PHYSIQUE:" .. size, string.format("HEIGHT:%.4f", feet) }
+    if hairColorIdx then lines[#lines + 1] = "HAIRCOLOR:Hairs:" .. hairColorIdx end
+    lines[#lines + 1] = "EYECOLOR:" .. eyeIdx
+    if hairName then lines[#lines + 1] = "HAIRSTYLE:Hairs:" .. hairName end
+    pcall(function() Spawner.WriteCustomStateLinesForActor(a, lines, say) end)
+
+    if ExecuteWithDelay then
+        local gen = Spawner.generation
+        local n = 0
+        local function again()
+            ExecuteInGameThread(function() pcall(function()
+                if stillAlive(a, gen) then apply() end
+            end) end)
+            n = n + 1
+            if n < 4 and ExecuteWithDelay then ExecuteWithDelay(750, again) end
+        end
+        ExecuteWithDelay(750, again)
+    end
+end
+
+local ORIGINAL_UPRIGHT_WEAPON_SOCKETS = { "swordSlot_lSocket", "rapierSlot_lSocket", "ik_weapon_lSocket",
+    "ik_weapon_rSocket", "Axe1h_backsocket", "Axe2h_backsocket", "Crossbow2h_backsocket",
+    "GSword_backsocket", "Halberd_backsocket", "Musket_backsocket" }
+
+-- stripOriginalUprightWeapons(a) -- 2026-09-25 (RedFalcon: "the weapons still arent removing from
+-- hunters on restore"). The original single-shot RemoveSocketAttachment loop worked fine on a fresh
+-- spawn but not on restore -- same "sticks then reverts" symptom shape as the hair-mesh reassertion
+-- bug just above (see feedback_live_write_needs_reassertion): on restore, the native class's own
+-- default-loadout equip logic appears to fire LATER relative to RESTORE_RULES' post-process pass
+-- than it does relative to a fresh spawn's own immediate senkaMobFix call, so a one-shot strip run
+-- during post-process gets silently overwritten by a later native re-equip. Fixed with the exact
+-- same retry-reassertion pattern already used for idle-freeze/hair: strip immediately, then
+-- re-strip on a 750ms x4 cadence guarded by stillAlive, so a later re-equip gets stripped again
+-- instead of winning permanently. Shared by both the fresh-spawn and restore call sites below.
+local function stripOriginalUprightWeapons(a)
+    if not (a and a:IsValid()) then return end
+    local function apply()
+        for _, sock in ipairs(ORIGINAL_UPRIGHT_WEAPON_SOCKETS) do
+            pcall(function() Spawner.RemoveSocketAttachment(sock, function() end, a) end)
+        end
+    end
+    apply()
+    if ExecuteWithDelay then
+        local gen = Spawner.generation
+        local n = 0
+        local function again()
+            ExecuteInGameThread(function() pcall(function()
+                if stillAlive(a, gen) then apply() end
+            end) end)
+            n = n + 1
+            if n < 4 and ExecuteWithDelay then ExecuteWithDelay(750, again) end
+        end
+        ExecuteWithDelay(750, again)
+    end
+end
+
+-- Senkamati crew-reskin legs (2026-09-26, RedFalcon: "instead of plain white underwear i'd like to
+-- use these" -- clarified after an initial mis-fire: this is for Config.SENKAMATI_LOOKS' "crew"-kind
+-- rows (spawnSenkaEntry's crew branch + the matching "Senkamati re-skin (Warrior/Hunter/Caster/
+-- Healer)" RESTORE_RULES entry) -- "the reskinned ones... the first uprights we made", i.e. the
+-- ORIGINAL Senkamati reskins on the human crew skeleton (naturally upright, unlike the native mob
+-- skeleton), NOT this session's new "Original Upright" native-mob feature (which has no separate
+-- Legs slot to begin with -- its body is one fixed pre-baked mesh, never composite-built). The
+-- "plain white underwear" IS this project's own senkaCrewFix: its DECORRUPT_CREW* rules hide each
+-- archetype's own "*_Feather_%d+_Legs" armor piece, which is exactly what leaves the composite
+-- body's default underwear showing underneath. Keyed by SENKAMATI_LOOKS' own `name` field --
+-- "Caster-F", not "Caster" -- Hunter/Thrall each get a specific curated Legs clothing item + palette
+-- color; "Warrior is still fine with no change" so it's deliberately absent from this table and
+-- skipped. Same CLOTHESITEM/COLOR line shapes and function calls CS.applyLine already uses for the
+-- Custom tab's own saved-customization restore (Spawner.ApplyClothesItem /
+-- Spawner.TestSetCPDPaletteColor), called directly here instead of going through a saved
+-- custom_state.txt line -- there's nothing to read back, RedFalcon specified the exact item/color up
+-- front, same reasoning as Spawner.WriteBarbieDefaultCustomState's "nothing that actually needs
+-- reading" precedent.
+local SENKA_CREW_LEGS_BY_NAME = {
+    ["Caster-F"] = { item = "Starter Legs 1",             color = { 14, 5, 8 } },
+    ["Hunter"]   = { item = "Blackbeard Grenadier Legs 3", color = { 2, 2, 2 } },
+    ["Thrall"]   = { item = "Blackbeard Grenadier Legs 1", color = { 2, 2, 2 } },
+}
+
+local function senkaCrewLegsBodyPart()
+    for _, r in ipairs(Config.CUSTOM_TAB_CLOTH_CATEGORIES or {}) do
+        if r.key == "LEGS" then return r.bodyPart end
+    end
+    return nil
+end
+
+-- RETRY LOOP REMOVED (2026-09-26, RedFalcon: "i think the mod got unloaded" -- ue4ss.log showed
+-- "[UE4SS.EngineTick.LuaModImpl] Hook threw exception: '[Lua::Registry::get_function_ref] Ref was
+-- not function', removing hook!" moments after this function's own retry chain fired for a couple
+-- of overlapping actors). Originally copied the 750ms x4 retry-reassertion pattern from
+-- stripOriginalUprightWeapons/randomizeOriginalUpright "preemptively", with no actual observed
+-- revert to justify it -- unlike those two (both fixed AFTER a confirmed live "sticks then reverts"
+-- report), Spawner.ApplyClothesItem/Spawner.TestSetCPDPaletteColor had never previously been
+-- exercised via repeated/overlapping calls on the same actor within a couple of seconds -- every
+-- other caller (CS.applyLine, the Custom tab) only ever calls each of them ONCE per restore. Calling
+-- them repeatedly is the most likely trigger for the engine-tick hook corruption above. Reverted to
+-- a single, one-shot apply -- matching how every other caller in this project already uses these two
+-- functions -- rather than re-guessing at a safer retry shape with no real evidence one is needed.
+local function applySenkaCrewLegs(a, name)
+    local spec = SENKA_CREW_LEGS_BY_NAME[name]
+    if not (spec and a and a:IsValid()) then return end
+    local say = function(m) print("[LivingBase] [senka-crew-legs] " .. tostring(m) .. "\n") end
+    local bodyPart = senkaCrewLegsBodyPart()
+    pcall(function() Spawner.ApplyClothesItem("Legs", spec.item, say, a) end)
+    if bodyPart then
+        pcall(function() Spawner.TestSetCPDPaletteColor(bodyPart, spec.color[1], spec.color[2], spec.color[3], say, a) end)
+    end
+end
+
+-- "Original Upright" Senkamati post-spawn (2026-09-25, RedFalcon: "another category under
+-- People > Senkamati Called 'Original Upright'... using the testaianim process and removing
+-- weapons from the hunter and the warrior"). Native Senkamati body + the one upright-gait AI/anim
+-- pairing today's investigation proved works (Config.ORIGINAL_UPRIGHT_AI_CONTROLLER/_ANIM_CLASS --
+-- see feedback_animbp_family_attack_wall for why it's cosmetic-only, never real combat), then reuses
+-- senkaMobFix's existing skin/eye/hair/helmet DeCorrupt pass exactly like the Wild category does
+-- (mobRulesOverride lets the Caster's mask-off rows get Wavy 3 instead of Wild's default
+-- dreadlocks), then strips every known weapon/shield socket for Warrior/Hunter.
+--
+-- FIX (2026-09-25, RedFalcon: "freezing has to be the FIRST thing you do right away as the idles
+-- are supposed to stay where they are put originally") -- the freeze used to run inside
+-- senkaMobFix's own onDone, i.e. only after its retry loop fully CONVERGED (up to ~4s + 12x800ms
+-- retries) -- for that whole window the actor was walking freely under the full AI override, so an
+-- "(Idle)" spawn visibly wandered away from its placement spot before ever freezing. Freeze now
+-- happens IMMEDIATELY, right after spawn, in PARALLEL with DeCorrupt (its own independent retry,
+-- same applyIdleFreeze mechanism every other Idle row in this project already uses) -- exactly the
+-- same ordering mistake, and the same fix, as the Livestock/Monsterous Idle rows already got right.
+local function spawnOriginalUprightSenkamati(entry)
+    local label = (Spawner.FriendlyLabels and Spawner.FriendlyLabels[entry.name]) or entry.name
+    -- reskinTarget = "OriginalUpright::<entry.name>" (2026-09-25, RedFalcon: "thralls also didnt
+    -- remove masks on reload" / "check the idle function on respawns when loading a game") -- this
+    -- roster shares the EXACT SAME native SenkamatiCorrupted class paths as the "Wild" category, so
+    -- RESTORE_RULES' existing "Senkamati mob (original skeleton)" rule ALREADY matches these actors
+    -- on world-reload restore -- but its fallback (no reskinTarget recognized) crudely buckets
+    -- everything non-Hunter as "Caster-F" (Warrior/Thrall both wrongly get Caster-F's ruleset) and
+    -- never detects idle at all (parseSenkaRowKey(nil) is always nil). This marker lets a NEW,
+    -- higher-priority restore rule (added below, right before that generic one) recognize these
+    -- actors correctly and re-run the real per-archetype pipeline. compositeLook.reskinTarget is
+    -- already a generic, persisted field (see persistAppend/restoreOne) -- no new persist-format
+    -- work needed, just populating a field every other actor already threads through.
+    local a = Spawner.Spawn(entry.path, label, frontSpot(300), nil,
+        Config.ORIGINAL_UPRIGHT_AI_CONTROLLER, playerYaw(), true,
+        { reskinTarget = "OriginalUpright::" .. entry.name }, nil, false,
+        Config.ORIGINAL_UPRIGHT_ANIM_CLASS)
+    if not (a and a:IsValid()) then return a end
+    snapToFloor(a, playerFloorZ())
+    if entry.idlePose then applyIdleFreeze(a, true) end
+    local shortName = entry.path:match("%.([%w_]+)$") or entry.path
+    local mobRulesOverride = nil
+    if entry.hairOverride then
+        mobRulesOverride = Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER
+    elseif entry.archetype == "Warrior" then
+        -- DECORRUPT_MOB (Warrior's default, shared with Caster) has an intentionally empty `hides`
+        -- list for the Wild category's own reasons -- never actually hid his helmet. See
+        -- Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_WARRIOR's own header comment.
+        mobRulesOverride = Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_WARRIOR
+    end
+    Spawner.RunSerialized(function(done)
+        senkaMobFix(a, entry.archetype, shortName, entry.showHelmet, false, function()
+            if entry.removeWeapon then
+                stripOriginalUprightWeapons(a)
+            end
+            -- Randomization call DISABLED 2026-09-25 (RedFalcon: "as much as i enjoyed the
+            -- randomizing, the loading takes a long time. lets set it back (keep the machinery for
+            -- now). if someone wants differences they can do it themselves") -- randomizeOriginalUpright
+            -- itself is untouched/still fully working, just no longer auto-invoked here; a mask-off
+            -- Original Upright now spawns with its plain DeCorrupt-baseline look, same as before this
+            -- feature existed. Re-enable by uncommenting the two lines below (this is the only
+            -- spawn-time call site -- see the matching disabled call in the restore rule too).
+            -- if entry.showHelmet == false then
+            --     pcall(function() randomizeOriginalUpright(a, entry) end)
+            -- end
+            done()
+        end, mobRulesOverride)
+    end)
+    return a
+end
+
+-- By-name lookup (console/spawn-menu), same contract as Testbed.SpawnLivestockByName.
+function Testbed.SpawnOriginalUprightSenkamatiByName(name)
+    for _, entry in ipairs(Config.SENKAMATI_ORIGINAL_UPRIGHT or {}) do
+        if entry.name:lower() == tostring(name):lower() then
+            return spawnOriginalUprightSenkamati(entry)
+        end
+    end
+    return nil, "no Original Upright entry named '" .. tostring(name) .. "'"
 end
 
 -- Senkamati re-skin post-spawn (2026-08-10: now covers Warrior/Hunter/Caster/Healer, not just
@@ -1157,7 +1487,12 @@ local function spawnSenkaEntry(s, atLocation)
         -- Spawner.RunSerialized (2026-08-11) so this actor's composite surgery never overlaps
         -- with another Senkamati/female-walker's own de-corrupt/reskin work -- see that
         -- function's own comment for the crash this fixes.
-        Spawner.RunSerialized(function(done) senkaCrewFix(actor, s.name, s.helmet, done) end)
+        Spawner.RunSerialized(function(done)
+            senkaCrewFix(actor, s.name, s.helmet, function()
+                applySenkaCrewLegs(actor, s.name)
+                done()
+            end)
+        end)
         -- Return the actor, not a bare `true` (2026-08-24, RedFalcon's request: wire
         -- SENKAMATI_LOOKS into the same spawn-time live-placement-preview every other roster now
         -- has). Testbed.SpawnSenkaByKey/spawnCleanSenkamati's own callers only ever checked
@@ -1335,6 +1670,78 @@ end
 -- identified by its composite LOOK (not its class path), so it must be tested before the
 -- generic /Mob/ rules would ever see it. Adding a creature = adding one row here.
 local RESTORE_RULES = {
+    -- "Original Upright" restore rule (2026-09-25, RedFalcon: "thralls also didnt remove masks on
+    -- reload" / "check the idle function on respawns when loading a game" / "looks like weapons
+    -- werent cleared either"). MUST come before the generic "Senkamati mob (original skeleton)"
+    -- rule below -- these actors share the EXACT SAME native SenkamatiCorrupted class paths, so
+    -- that rule's own `when` would otherwise match first and misfire: its fallback (no reskinTarget
+    -- recognized) crudely buckets every non-Hunter archetype as "Caster-F" (Warrior/Thrall both get
+    -- the wrong DeCorrupt ruleset), never strips weapons, and never detects idle at all
+    -- (parseSenkaRowKey(nil) is always nil, so idle silently never fires). The
+    -- "OriginalUpright::<entry.name>" reskinTarget marker (spawnOriginalUprightSenkamati's own
+    -- Spawner.Spawn call) lets this rule look the row up directly and re-run the REAL pipeline --
+    -- same DeCorrupt ruleset selection, same weapon-socket strip, same idle-freeze (now via
+    -- applyIdleFreeze, which also marks Spawner.spawned's own entry.idle=true, unlike the older
+    -- freezeIdleOnRestore the generic rule uses).
+    --
+    -- Weapon-strip FIX (2026-09-25, RedFalcon: "the weapons still arent removing from hunters on
+    -- restore") -- switched from a one-shot RemoveSocketAttachment loop to the shared
+    -- stripOriginalUprightWeapons retry-reassert helper (750ms x4, same pattern as the hair-mesh
+    -- fix below) -- see that function's own header for why a single pass wasn't enough on restore
+    -- specifically.
+    --
+    -- Randomization REVISED 2026-09-25 (RedFalcon: "I know i said to save customizations, but i
+    -- changed my mind... unless someone goes in and saves a customization, we'll just generate on
+    -- respawn the same as new spawn") -- randomizeOriginalUpright no longer writes to
+    -- custom_state.txt (see its own header), so it's now called HERE too, generating a brand-new
+    -- random look on every restore exactly like a fresh spawn, instead of relying on custom-state
+    -- restore to replay a persisted one. Runs during post-processing, which completes BEFORE
+    -- Spawner.RestoreCustomState applies any custom_state.txt blocks (see scheduleRestorePostProcess
+    -- -> main.lua's afterRestore ordering) -- so if RedFalcon has manually "Save Customizations"'d
+    -- one of these actors, that real saved block still correctly overwrites this fresh randomize
+    -- afterward, same as it would for any other actor.
+    { name  = "Senkamati Original Upright",
+      when  = function(_, look)
+          return look ~= nil and type(look.reskinTarget) == "string"
+             and look.reskinTarget:find("^OriginalUpright::") ~= nil
+      end,
+      apply = function(actor, cls, look, short)
+          local entryName = look.reskinTarget:match("^OriginalUpright::(.+)$")
+          local entry = nil
+          for _, e in ipairs(Config.SENKAMATI_ORIGINAL_UPRIGHT or {}) do
+              if e.name == entryName then entry = e; break end
+          end
+          if not entry then
+              print("[LivingBase] Original Upright restore: no matching entry for '" .. tostring(entryName) .. "' -- leaving as plain restored spawn.\n")
+              return
+          end
+          if entry.idlePose then applyIdleFreeze(actor, true) end
+          local mobRulesOverride = nil
+          if entry.hairOverride then
+              mobRulesOverride = Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER
+          elseif entry.archetype == "Warrior" then
+              mobRulesOverride = Config.DECORRUPT_MOB_ORIGINAL_UPRIGHT_WARRIOR
+          end
+          Spawner.BeginAsyncPostProcess()
+          local onDone = function() Spawner.EndAsyncPostProcess() end
+          Spawner.RunSerialized(function(done)
+              senkaMobFix(actor, entry.archetype, short, entry.showHelmet, false, function()
+                  if entry.removeWeapon then
+                      stripOriginalUprightWeapons(actor)
+                  end
+                  -- Randomization call DISABLED 2026-09-25 (RedFalcon: "as much as i enjoyed the
+                  -- randomizing, the loading takes a long time. lets set it back (keep the
+                  -- machinery for now)") -- see the matching disabled spawn-time call site's own
+                  -- comment above (spawnOriginalUprightSenkamati). Restored actors now come back
+                  -- exactly as they were re-DeCorrupted, no re-randomize, matching the (also now
+                  -- disabled) fresh-spawn behavior.
+                  -- if entry.showHelmet == false then
+                  --     pcall(function() randomizeOriginalUpright(actor, entry) end)
+                  -- end
+                  onDone(); done()
+              end, mobRulesOverride)
+          end)
+      end },
     -- Senkamati STATUE restore rule REMOVED (2026-08-15) -- the whole feature was purged, see
     -- freezeSenkaStatue's own removal note above.
     -- Row identity RECOVERED (2026-08-11) via the persisted reskinTarget field (see
@@ -1379,7 +1786,19 @@ local RESTORE_RULES = {
       apply = function(actor, cls, look)
           local p = look.params
           local nm = "Warrior"
+          -- FIX (2026-09-26, RedFalcon: "thrall isnt processing correctly on respawn. Its not
+          -- removing mask or weapons and swapping pants. new spawn works ok") -- this pattern list
+          -- never had a "Regular_Thrall" check at all (THRALL_PARAMS above literally contains
+          -- "Regular_Thrall"), so every restored Thrall silently fell through to the "Warrior"
+          -- default: wrong DeCorrupt ruleset (DECORRUPT_CREW instead of DECORRUPT_CREW_THRALL, whose
+          -- own "Warrior_Feather_%d+_Legs" hide-pattern never matches Thrall's real mesh naming, so
+          -- nothing gets hidden) AND applySenkaCrewLegs(actor, "Warrior") silently no-ops (no
+          -- "Warrior" entry in SENKA_CREW_LEGS_BY_NAME) -- explains all three symptoms at once. A
+          -- fresh spawn never hit this because spawnSenkaEntry's crew branch already has the correct
+          -- `s.name` ("Thrall") directly from the SENKAMATI_LOOKS row, with no params-string
+          -- re-derivation needed.
           if p:find("Regular_Hunter") then nm = "Hunter"
+          elseif p:find("Regular_Thrall") then nm = "Thrall"
           elseif p:find("Shaman_Caster") then nm = "Caster-F"
           elseif p:find("Shaman_Healer") then nm = "Healer" end
           -- Name is already correctly recovered from `params` above regardless of
@@ -1392,7 +1811,10 @@ local RESTORE_RULES = {
           Spawner.BeginAsyncPostProcess()
           local onDone = function() Spawner.EndAsyncPostProcess() end
           Spawner.RunSerialized(function(done)
-              senkaCrewFix(actor, nm, row and row.helmet or false, function() onDone(); done() end)
+              senkaCrewFix(actor, nm, row and row.helmet or false, function()
+                  applySenkaCrewLegs(actor, nm)
+                  onDone(); done()
+              end)
           end)
       end },
     -- Item-drop decor's own RESTORE_RULES entry REMOVED (2026-08-19, same session it was added):

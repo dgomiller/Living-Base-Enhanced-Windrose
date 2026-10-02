@@ -491,7 +491,7 @@ register("targetLock", windowGatedAction(function() Spawner.ToggleTargetLock() e
 -- automated lbwalkroster batch approach proved unreliable). Not a numpad key -- every numpad slot
 -- was already spoken for by the 2026-08-24 rebuild, and this is a pure diagnostic read anyway, not
 -- a gameplay action, so it doesn't need to live on the numpad convention.
-register("probeDefaultParams", windowGatedAction(function() Spawner.TestReadDefaultParamsOnTarget() end, "probeDefaultParams"))
+-- probeDefaultParams key removed 2026-10-02 (collided with Ghost Sailors' Home); use lbprobedefaultparams.
 
 -- DELETE: select the sign you're aiming at for the "Signs" tab (2026-09-29) -- see signs.lua.
 -- Registered here, in the one synchronous startup pass, because RegisterKeyBind is unsafe later.

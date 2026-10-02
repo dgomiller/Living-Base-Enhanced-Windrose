@@ -438,13 +438,8 @@ Config.KEYS = {
   confirmPlacement = "NUM_ZERO",     -- was F5 -- lock the currently-previewed object in place
   -- Free-build/floor-clipping toggle (2026-08-21) -- flips floor-lock off/on globally. Was F8.
   toggleFreeBuild  = "NUM_DECIMAL",
-  -- Probe DefaultParams on the nearest/locked target (2026-09-16, RedFalcon: "can we make a key
-  -- run the command" -- for the manual, one-at-a-time roster-preset-building workflow, after the
-  -- automated lbwalkroster batch approach proved unreliable). Every numpad key is already spoken
-  -- for by the 2026-08-24 numpad rebuild, and F12 is Steam's own screenshot hotkey (RedFalcon
-  -- caught this) -- HOME confirmed genuinely free via a grep across every installed mod's own
-  -- config/keybind list (same collision-check discipline this project's own memory notes require).
-  probeDefaultParams = "HOME",
+  -- probeDefaultParams (HOME) REMOVED 2026-10-02: it collided with Summon Ghost Sailors' Home key.
+  -- The probe is now the console command `lbprobedefaultparams` only.
   -- Sign text (2026-09-29): aim at a sign and press to select it for the "Signs" tab. END was the
   -- first choice but Summon Ghost Sailors already owns it (R5ModSettings/SummonGhostSailors.lua);
   -- DELETE confirmed unused across the installed mods' own key lists.

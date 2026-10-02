@@ -75,6 +75,7 @@ CHANGED
   Moving a spawned sign after writing on it no longer loses its text on reload.
 - Wall Flag 2's text board is now 80 x 100.
 - New placements in Floor Clipping mode now start 650 uu from the camera (was 450).
+- The Home key no longer runs the DefaultParams probe (it clashed with Summon Ghost Sailors' Home key). The probe is still available as the console command lbprobedefaultparams.
 
 FIXED -- Stability
 - A crash that struck mid-way through applying sign text (and some arrow-key moves and

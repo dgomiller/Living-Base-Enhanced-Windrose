@@ -20,6 +20,97 @@
 ============================================================
 ]]
 
+-- ExecuteWithDelay SHIM (2026-09-30). In UE4SS, ExecuteWithDelay / ExecuteAsync / LoopAsync callbacks run on UE4SS's separate ASYNC thread, on a Lua
+-- thread that shares the registry, string table and garbage collector with the game thread, with no lock around the call. This mod schedules ~280 such
+-- callbacks (bridge pollers, restore chains, retry loops), so Lua was constantly running on two OS threads at once. The signature of that race is what
+-- the logs and dumps show: "[Lua::Registry::get_function_ref] Ref was not function" (hook removed), "bad argument ... (FILE* expected, got FILE*)",
+-- GetFullName() returning a function, and crashes inside UE4SS.dll's Lua table reads (+0x9347f0 and friends) in the middle of heavy Lua work such as a
+-- sign text apply. The shim sends every ExecuteWithDelay callback to the GAME thread instead (ExecuteInGameThreadWithDelay, present in current UE4SS),
+-- so no mod Lua runs on the async thread. Timing becomes frame-granular. Disable with Config.DELAY_ON_GAME_THREAD = false; if the API is missing the
+-- original behaviour is kept. Wrapped in do..end so it adds no file-level locals (main.lua sits at Lua's 200-local ceiling).
+do
+    local okCfg, cfg = pcall(require, "config")
+    local wanted = okCfg and type(cfg) == "table" and cfg.DELAY_ON_GAME_THREAD ~= false
+    if wanted and type(ExecuteInGameThreadWithDelay) == "function" and type(ExecuteWithDelay) == "function" and not rawget(_G, "__LB_DELAY_SHIM") then
+        local rawDelay = ExecuteWithDelay
+        rawset(_G, "__LB_DELAY_SHIM", true)
+        ExecuteWithDelay = function(ms, fn)
+            if type(fn) ~= "function" then return rawDelay(ms, fn) end
+            if not rawget(_G, "__LB_GT_DELAY_ON") then return rawDelay(ms, fn) end   -- GATED (2026-10-01): startup stays on the async thread; flipped on when the world-load restore begins (see fire() below)
+            local okG, handle = pcall(ExecuteInGameThreadWithDelay, math.floor(tonumber(ms) or 0), fn)
+            if okG then return handle end
+            return rawDelay(ms, fn)   -- never lose a callback if the game-thread API refuses it
+        end
+        print("[LivingBase] ExecuteWithDelay now runs on the game thread (Config.DELAY_ON_GAME_THREAD).\n")
+    end
+end
+
+-- COMMAND REGISTRY for lbhelp (2026-10-01): created here, before any module registers a command, so signs.lua / unlockbuild.lua / niagaraoff.lua /
+-- agentcheck.lua can list their own commands too (they were missing from lbhelp). _G.__LB_RegisterCmdInfo(name, usage, desc) adds or replaces one entry.
+if not rawget(_G, "__LB_CMDS") then
+    rawset(_G, "__LB_CMDS", {})
+    rawset(_G, "__LB_RegisterCmdInfo", function(name, usage, desc)
+        local list = rawget(_G, "__LB_CMDS")
+        for _, c in ipairs(list) do
+            if c.name == name then c.usage = usage or name; c.desc = desc or ""; return end
+        end
+        list[#list + 1] = { name = name, usage = usage or name, desc = desc or "" }
+    end)
+end
+
+-- QUIET MODE (2026-10-01). ExecuteWithDelay callbacks run on UE4SS's async thread, on a Lua state shared with the game thread, with no lock. The
+-- sign-apply crashes (UE4SS.dll +0x9347f0, freed Lua table) happened far sooner with the spawn-menu window OPEN (all bridge pollers live) than closed.
+-- While Signs.Apply runs it now calls __LB_SetQuiet(true): every timer callback checks that flag when it wakes and, if set, re-arms itself 40 ms later
+-- WITHOUT running its body, so almost no other Lua runs on the async thread during the apply. Self-expires after 5 s (never stuck quiet). The flag is a
+-- plain upvalue (no shared table touched). Disable with Config.QUIET_DURING_APPLY = false.
+do
+    local okCfg, cfg = pcall(require, "config")
+    local wanted = okCfg and type(cfg) == "table" and cfg.QUIET_DURING_APPLY ~= false
+    if wanted and type(ExecuteWithDelay) == "function" and not rawget(_G, "__LB_QUIET_WRAP") then
+        local rawDelay = ExecuteWithDelay
+        local depth, quietUntil = 0, 0
+        rawset(_G, "__LB_QUIET_WRAP", true)
+        -- Counter, not a boolean (2026-10-01): game-thread jobs nest (a sign apply runs inside a wrapped job), so each "on" is +1 and each "off" -1.
+        -- A stale count (a job that never came back) heals itself: any "on" arriving after quietUntil restarts from zero.
+        rawset(_G, "__LB_SetQuiet", function(on)
+            local now = os.clock()
+            if on then
+                if now > quietUntil then depth = 0 end
+                depth = depth + 1
+                quietUntil = now + 5.0
+            else
+                if depth > 0 then depth = depth - 1 end
+            end
+        end)
+        ExecuteWithDelay = function(ms, fn)
+            if type(fn) ~= "function" then return rawDelay(ms, fn) end
+            local function guarded()
+                if depth > 0 and os.clock() < quietUntil then
+                    return rawDelay(40, guarded)
+                end
+                return fn()
+            end
+            return rawDelay(ms, guarded)
+        end
+        -- Every game-thread job this mod queues (moves, customizations, spawns, sign applies...) runs quiet too, so the async-thread timers stay out of the
+        -- way while the heavy native/reflection work executes. Config.QUIET_GAME_THREAD_JOBS = false limits quiet mode to sign applies only.
+        if type(ExecuteInGameThread) == "function" and cfg.QUIET_GAME_THREAD_JOBS ~= false then
+            local rawGT = ExecuteInGameThread
+            local setQuiet = _G.__LB_SetQuiet
+            ExecuteInGameThread = function(fn, ...)
+                if type(fn) ~= "function" then return rawGT(fn, ...) end
+                return rawGT(function(...)
+                    setQuiet(true)
+                    local ok, err = pcall(fn, ...)
+                    setQuiet(false)
+                    if not ok then error(err, 0) end
+                end, ...)
+            end
+        end
+        print("[LivingBase] Quiet mode armed: timer callbacks pause while a sign text apply runs (Config.QUIET_DURING_APPLY).\n")
+    end
+end
+
 local Testbed = require("testbed")
 local Spawner = require("spawner")
 local Config = require("config")
@@ -172,6 +263,24 @@ local function isSpawnMenuWindowOpen()
         end
     end
     return false -- file not written yet (C++ side not loaded, or hasn't polled once) -- assume closed
+end
+-- Exposed for signs.lua (2026-09-30): lets its bridge loop stay completely idle while the spawn-menu window is closed.
+Spawner.IsMenuOpen = isSpawnMenuWindowOpen
+-- BridgeIdle (2026-10-01): true while the spawn-menu window is closed (plus a 1.5 s grace after it closes, so a last click still lands). The
+-- C++ menu is the ONLY writer of the request files the bridge loops poll (its keys only work with its own window focused; the in-game numpad
+-- keys call the edit directly and are window-gated anyway), so with the window closed those polls can only find nothing -- and every poll is
+-- Lua running on UE4SS's async thread, which shares its state with the game thread (the suspected cause of the sign-apply crashes).
+-- The hover loop is the one reader of the window flag (it needs the open/close transitions anyway) and stamps it here. FAILS OPEN: if that
+-- loop ever stalls (stamp older than 3 s) or Config.BRIDGE_IDLE_WHEN_CLOSED == false, nothing idles. statusPublishLoop is deliberately NOT
+-- gated: it carries the window-toggle hotkey signal to C++.
+Spawner.BridgeIdle = function()
+    if Config.BRIDGE_IDLE_WHEN_CLOSED == false then return false end
+    local stamp = Spawner._winStamp
+    if not stamp then return false end
+    local now = os.clock()
+    if now - stamp > 3.0 then return false end
+    if Spawner._winOpen then return false end
+    return (now - (Spawner._winLastOpen or 0)) > 1.5
 end
 -- windowGate: restoreGate PLUS the SpawnMenu window's own open/closed state, mirroring modGate's
 -- shape exactly but checking window visibility instead of the In-Game-Keys toggle. RedFalcon's
@@ -384,6 +493,10 @@ register("targetLock", windowGatedAction(function() Spawner.ToggleTargetLock() e
 -- a gameplay action, so it doesn't need to live on the numpad convention.
 register("probeDefaultParams", windowGatedAction(function() Spawner.TestReadDefaultParamsOnTarget() end, "probeDefaultParams"))
 
+-- DELETE: select the sign you're aiming at for the "Signs" tab (2026-09-29) -- see signs.lua.
+-- Registered here, in the one synchronous startup pass, because RegisterKeyBind is unsafe later.
+register("signTarget", windowGatedAction(function() require("signs").KeyPressed() end, "signTarget"))
+
 -- BUILD-GHOST-PREVIEW (2026-08-20): confirm/cancel a live-following placement started from the
 -- LivingBaseSpawnMenu Spawn button. Moved off F5/F6/F7/F8 onto the numpad (2026-08-24).
 register("confirmPlacement", windowGatedAction(Spawner.ConfirmPlacement, "confirm placement")) -- Numpad 0
@@ -398,9 +511,24 @@ register("toggleFreeBuild", windowGatedAction(Spawner.ToggleFreeBuild, "toggle f
 -- while the window is closed (alwaysAction, bypasses every gate). Only bumps a counter; the actual
 -- show/hide happens on the C++ side (StandaloneWindow.cpp) once it notices WINDOW_TOGGLE changed
 -- in spawn_menu_status.txt.
+-- DOUBLE-HANDLING FIX (2026-10-01): with the C++ window open and focused, the same Numpad '-' press reaches BOTH the C++ window (its own ImGui key
+-- check hides it at once) and this hook (bumps the counter). The C++ side then finds the counter changed while the window is already hidden and
+-- SHOWS it again -- the menu "keeps reopening". So when the window is open, wait a moment and re-check: if it already closed itself, skip the bump;
+-- if it is still open (the game had focus, the C++ window never saw the key), bump as before. Opening (window closed) bumps immediately.
 register("toggleWindow", alwaysAction(function()
-    windowToggleSeq = windowToggleSeq + 1
-    print("[LivingBase] Spawn menu window: toggle requested (seq " .. windowToggleSeq .. ").\n")
+    print(string.format("[LivingBase] [window] '-' key seen, window flag=%s (t=%.2f)\n", tostring(isSpawnMenuWindowOpen()), os.clock()))
+    local function bump()
+        windowToggleSeq = windowToggleSeq + 1
+        print("[LivingBase] Spawn menu window: toggle requested (seq " .. windowToggleSeq .. ").\n")
+    end
+    if ExecuteWithDelay and isSpawnMenuWindowOpen() then
+        ExecuteWithDelay(450, function()
+            if isSpawnMenuWindowOpen() then bump()
+            else print("[LivingBase] Spawn menu window: already closed by its own key -- toggle skipped.\n") end
+        end)
+    else
+        bump()
+    end
 end, "toggleWindow"))
 
 -- Without a console, a silently-skipped bind just looks like "the key does nothing" with no clue
@@ -674,6 +802,15 @@ local function flattenSpawnMenuDecor()
     return rows
 end
 local SPAWN_MENU_DECOR_ROWS = flattenSpawnMenuDecor()
+-- SPECIAL_ITEMS (2026-09-29): the Signs tab's "Special Items" dropdown. Index = the position in the dropdown
+-- (keep in step with SignMenu.cpp's kSpecialItems). Only "Sign Post" for now.
+local SPAWN_MENU_SPECIAL_ITEMS = { "BP_SignCacheTMP_01", "SM_FlagWall_01", "SM_FlagWall_02", "SM_FlagWall_03", "SM_FlagWall_04",
+    "SM_WoodElements_01_Board02", "SM_WoodElements_01_Board04", "SM_WoodElements_01_Board05", "SM_Obelisk" }
+SPAWN_MENU_HANDLERS.SPECIAL_ITEMS = function(index)
+    local name = SPAWN_MENU_SPECIAL_ITEMS[index]
+    if not name then return false, "index " .. tostring(index) .. " out of range" end
+    return Testbed.SpawnSpecialByName(name)
+end
 SPAWN_MENU_HANDLERS.DECOR = function(index)
     local row = SPAWN_MENU_DECOR_ROWS[index]
     if not row then return false, "index " .. tostring(index) .. " out of range" end
@@ -841,7 +978,7 @@ local function pollSpawnMenuRequest()
         if not ok then
             log("spawn menu " .. verb .. " " .. roster .. " FAILED: " .. tostring(result))
         elseif verb == "SPAWN" and result and result.IsValid and result:IsValid()
-               and (roster == "DECOR" or roster == "TOWNSFOLK_CLASSES" or roster == "FACTION_VISITOR_LOOKS"
+               and (roster == "DECOR" or roster == "SPECIAL_ITEMS" or roster == "TOWNSFOLK_CLASSES" or roster == "FACTION_VISITOR_LOOKS"
                     or roster == "LIVESTOCK" or roster == "FEMALE_RESKIN_TARGETS" or roster == "SENKAMATI_LOOKS"
                     -- MOBILE_QUEST_NPCS (2026-09-20): named explicitly here rather than via
                     -- SPAWN_MENU_STATUE_ROSTERS[roster] -- that table is deliberately skipped for
@@ -887,7 +1024,7 @@ end
 if ExecuteWithDelay then
     local function spawnMenuPollLoop()
         ExecuteWithDelay(400, function()
-            pollSpawnMenuRequest()
+            if not Spawner.BridgeIdle() then pollSpawnMenuRequest() end
             spawnMenuPollLoop()
         end)
     end
@@ -1307,9 +1444,15 @@ local function pollCameraAutoReset()
     -- _photoModeCamState is actually "FULLBODY"/"FACE" (BarbieMenu's own target-zoom modes) --
     -- Tripod/Selfie/FirstPerson never trigger this branch now, only the window-close path still
     -- resets them.
-    local targetScopedModeActive = Spawner._photoModeCamState == "FULLBODY" or Spawner._photoModeCamState == "FACE"
-    local targetLost = targetScopedModeActive
-        and not (Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid())
+    local targetScopedModeActive = Spawner._photoModeCamState == "FULLBODY" or Spawner._photoModeCamState == "FACE" or Spawner._photoModeCamState == "DECOR"
+    local lockedValid = Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid()
+    local targetLost = targetScopedModeActive and not lockedValid
+    -- A DIFFERENT object becoming the lock also ends the view (2026-10-01, RedFalcon: "always reset the view in custom when switched"):
+    -- the camera goes back to normal instead of staying framed on the old object. Config.CAMERA_VIEW_EXIT_ON_TARGET_SWITCH = false disables.
+    if targetScopedModeActive and lockedValid and Config.CAMERA_VIEW_EXIT_ON_TARGET_SWITCH ~= false
+        and Spawner._camViewTarget and Spawner.lockedTarget.actor ~= Spawner._camViewTarget then
+        targetLost = true
+    end
     if not (windowJustClosed or targetLost) then return end
 
     ExecuteInGameThread(function()
@@ -1354,14 +1497,17 @@ local function pollCustomZoomRequest()
     local trimmed = content:match("^%s*(%S+)%s*$") or ""
     local wantZoomOut = trimmed == "UNZOOM"
     local wantFace = trimmed == "FACE"
+    local wantDecor = trimmed == "DECOR"
 
-    local modeLabel = wantZoomOut and "out" or (wantFace and "face" or "in")
+    local modeLabel = wantZoomOut and "out" or (wantFace and "face" or (wantDecor and "decor" or "in"))
     if not restoreGate("Custom tab: zoom " .. modeLabel) then return end
     ExecuteInGameThread(function()
         local function say(m) print("[LivingBase] [zoom] " .. tostring(m) .. "\n") end
         local ok, err = pcall(function()
             if wantZoomOut then
                 Spawner.SetPhotoTripod("off", nil, nil, say)
+            elseif wantDecor then
+                Spawner.DecorViewOnTarget(say)
             elseif wantFace then
                 Spawner.FaceViewOnTarget(say)
             else
@@ -2563,6 +2709,45 @@ BeltStrapPolls.PHOTOCAM_MOVE_REQUEST_CANDIDATES = {
     "custom_photocam_move_request.txt",
 }
 BeltStrapPolls.PHOTOCAM_MOVE_MAX_PER_DRAIN = 40
+
+-- Custom tab camera view held buttons (2026-10-01): "<" ">" orbit and "+" "-" zoom for Decor View / Full Body / Face View. The C++ buttons APPEND
+-- lines "ORBIT:<signed degrees>" / "ZOOM:<+1 closer | -1 farther>" (a held button fires many times between drains, so it is a queue, like
+-- move_request.txt); this drains it (called every 100 ms from photoCamMoveDrainLoop), sums the batch and applies it once on the game thread.
+BeltStrapPolls.CAMVIEW_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_camview_request.txt",
+    "Mods/LivingBase/custom_camview_request.txt",
+    "custom_camview_request.txt",
+}
+BeltStrapPolls.CAMVIEW_MAX_PER_DRAIN = 60
+BeltStrapPolls.camView = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.CAMVIEW_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    if not os.remove(path) then
+        local tf = io.open(path, "w")
+        if tf then tf:close() end
+    end
+    local orbit, zoom, count = 0.0, 0, 0
+    for line in content:gmatch("[^\r\n]+") do
+        if count >= BeltStrapPolls.CAMVIEW_MAX_PER_DRAIN then break end
+        local kind, amt = line:match("^(%a+):(-?[%d%.]+)$")
+        amt = tonumber(amt)
+        if kind == "ORBIT" and amt then orbit = orbit + amt; count = count + 1
+        elseif kind == "ZOOM" and amt then zoom = zoom + amt; count = count + 1 end
+    end
+    if count == 0 then return end
+    if not restoreGate("Custom tab: camera view") then return end
+    ExecuteInGameThread(function()
+        pcall(function() Spawner.CameraViewNudge(orbit, zoom) end)
+    end)
+end
 BeltStrapPolls.photoCamMove = function()
     local path = nil
     for _, p in ipairs(BeltStrapPolls.PHOTOCAM_MOVE_REQUEST_CANDIDATES) do
@@ -2762,6 +2947,7 @@ if ExecuteWithDelay then
     local function customColorPollLoop()
         ExecuteWithDelay(400, function()
             pollCameraAutoReset()
+            if Spawner.BridgeIdle() then customColorPollLoop() return end   -- window closed: skip all ~45 request polls (see Spawner.BridgeIdle)
             -- Read Current is now run LAST and SKIPPED ENTIRELY for this tick if ANY mesh-mutating
             -- request also ran in it (2026-09-16, RedFalcon: "i stripped an npc of all belts, then
             -- added one back and it crashed" -- reproduced even AFTER reverting
@@ -2958,7 +3144,11 @@ local function pollBarbieSpawnRequest()
     -- already Spawner.lockedTarget by then) will read straight off this real, just-built actor.
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
-            Spawner.SwapBodyType(family, classPath, sex, "on", say, true, bodyTypesOverride, nil, nil, true,
+            -- underwearArg=nil (2026-09-29, RedFalcon: a beta tester's strip didn't place underwear,
+            -- and the strip is heavy on spawn -- "just spawn them as they are without removing
+            -- anything") -- was "on", which ran Spawner.RemoveClothingOnActor(actor, "all") after the
+            -- build. Barbies now spawn with whatever their build gives them, no strip burst.
+            Spawner.SwapBodyType(family, classPath, sex, nil, say, true, bodyTypesOverride, nil, nil, true,
                 function(actor)
                     pcall(function() Spawner.AddBarbieFacialHair(actor, sex, say) end)
                     pcall(function() Spawner.StartPlacementPreview(actor) end)
@@ -2984,7 +3174,7 @@ end
 if ExecuteWithDelay then
     local function barbiePollLoop()
         ExecuteWithDelay(400, function()
-            pollBarbieSpawnRequest()
+            if not Spawner.BridgeIdle() then pollBarbieSpawnRequest() end
             barbiePollLoop()
         end)
     end
@@ -3014,6 +3204,12 @@ if ExecuteWithDelay then
         ExecuteWithDelay(150, function()
             local hasLock = Spawner.lockedTarget and Spawner.lockedTarget.actor and Spawner.lockedTarget.actor:IsValid()
             local windowOpen = isSpawnMenuWindowOpen()
+            if Spawner._winOpen ~= nil and Spawner._winOpen ~= (windowOpen and true or false) then
+                print(string.format("[LivingBase] [window] state -> %s (t=%.2f)\n", windowOpen and "OPEN" or "CLOSED", os.clock()))
+            end
+            Spawner._winOpen = windowOpen and true or false
+            Spawner._winStamp = os.clock()
+            if windowOpen then Spawner._winLastOpen = Spawner._winStamp end
             -- "Living Base Controls Active/Inactive" toast on the window's own open/close transition
             -- (2026-08-20, RedFalcon: since windowGate now denies silently, the window toggling
             -- itself is the one moment worth telling the player about, not every gated action after).
@@ -3308,6 +3504,18 @@ local function drainMoveMenuQueue()
         if spatialAction then
             if count >= MOVE_MENU_MAX_ACTIONS_PER_DRAIN then
                 skipped = skipped + 1
+            -- Object Scale (2026-09-29) -- a separate accumulator (Spawner._movePendingScale, a
+            -- table field rather than a new top-level local -- see feedback_lua_200_local_ceiling),
+            -- NOT folded into MOVE_MENU_ACTIONS' 6-tuple (z/yaw/fwd/right/pitch/roll) shape: scale is
+            -- a different quantity applied to a different target property, and every OTHER consumer
+            -- of that table assumes exactly 6 numbers per entry. Base step 0.5, same precision
+            -- `scale` local already computed above for translation nudges -- "allow precision to
+            -- affect it," per RedFalcon's request.
+            elseif spatialAction == "SCALE_UP" or spatialAction == "SCALE_DOWN" then
+                local dir = (spatialAction == "SCALE_UP") and 1.0 or -1.0
+                Spawner._movePendingScale = (Spawner._movePendingScale or 0.0) + dir * 0.5 * scale
+                Spawner._movePendingScaleCount = (Spawner._movePendingScaleCount or 0) + 1
+                count = count + 1
             else
                 local d = MOVE_MENU_ACTIONS[spatialAction]
                 if d then
@@ -3381,10 +3589,26 @@ local function flushMoveMenuQueue()
     end)
 end
 
+-- Object Scale flush (2026-09-29) -- separate from flushMoveMenuQueue above on purpose: it acts on
+-- Spawner.lockedTarget directly (Spawner.NudgeTargetScale), not EditNearestInFront's nearest-in-
+-- front pick, and deliberately does NOT go through restoreGate/placement gating the way position
+-- edits do -- RedFalcon's explicit ask was "allow scale to work even while in placement mode."
+-- Spawner.NudgeTargetScale itself re-checks IsDecorClass server-side regardless of what the C++ UI
+-- already greyed out.
+local function flushObjectScaleQueue()
+    local count = Spawner._movePendingScaleCount or 0
+    if count == 0 then return end
+    local delta = Spawner._movePendingScale or 0.0
+    Spawner._movePendingScale, Spawner._movePendingScaleCount = 0.0, 0
+    ExecuteInGameThread(function()
+        pcall(function() Spawner.NudgeTargetScale(delta) end)
+    end)
+end
+
 if ExecuteWithDelay then
     local function moveMenuDrainLoop()
         ExecuteWithDelay(100, function()
-            drainMoveMenuQueue()
+            if not Spawner.BridgeIdle() then drainMoveMenuQueue() end
             moveMenuDrainLoop()
         end)
     end
@@ -3404,7 +3628,10 @@ if ExecuteWithDelay then
     -- 2026-08-16) needs re-examining, not just another rate reduction.
     local function moveMenuFlushLoop()
         ExecuteWithDelay(330, function()
-            flushMoveMenuQueue()
+            if not Spawner.BridgeIdle() then
+                flushMoveMenuQueue()
+                flushObjectScaleQueue()
+            end
             moveMenuFlushLoop()
         end)
     end
@@ -3421,7 +3648,7 @@ if ExecuteWithDelay then
     -- header).
     local function photoCamMoveDrainLoop()
         ExecuteWithDelay(100, function()
-            BeltStrapPolls.photoCamMove()
+            if not Spawner.BridgeIdle() then BeltStrapPolls.photoCamMove() ; BeltStrapPolls.camView() end
             if Spawner._photoModeCamState == "SELFIE" then
                 ExecuteInGameThread(function() pcall(function() Spawner.PhotoCamTick() end) end)
             end
@@ -3476,7 +3703,7 @@ local lastPublishedPitch, lastPublishedRoll = nil, nil
 local function currentLockedTargetInfo()
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then
-        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", false, false, false, false, 0, 0, 0.0
+        return "", "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "", false, false, false, false, 0, 0, 0.0, false, 1.0
     end
     local id = ""
     pcall(function() id = lt.actor:GetFullName() end)
@@ -3524,11 +3751,16 @@ local function currentLockedTargetInfo()
             sex = (tonumber(comp:GetBodySex()) == 2) and "F" or "M"
         end
     end)
+    -- isDecor (2026-09-29, MoveMenu's new Object Scale row): narrower than isStatic below, which
+    -- ALSO covers posed AnimatedActor/QuestStatic statues -- RedFalcon's request was decor-only
+    -- ("this feature should only be available for decor"), so this is its own separate check against
+    -- the same Spawner.IsDecorClass lookup rather than reusing isStatic once it's computed.
+    local isDecor = (lt.class and Spawner.IsDecorClass and Spawner.IsDecorClass(lt.class)) and true or false
     local isStatic = false
     if lt.class then
         if lt.class:find("AnimatedActor", 1, true) or lt.class:find("QuestStatic", 1, true) then
             isStatic = true
-        elseif Spawner.IsDecorClass and Spawner.IsDecorClass(lt.class) then
+        elseif isDecor then
             isStatic = true
         end
     end
@@ -3555,8 +3787,12 @@ local function currentLockedTargetInfo()
     -- just forwards lt.actor into it and passes the 4 results straight through.
     local scrubActive, scrubPaused, scrubFrame, scrubNumFrames = false, false, 0, 0
     pcall(function() scrubActive, scrubPaused, scrubFrame, scrubNumFrames = Spawner.PoseScrubGetStatus(lt.actor) end)
+    -- scale (2026-09-29, Object Scale row) -- only bother reading it for a decor target, since
+    -- that's the only case the C++ side will ever display it for; 1.0 default for everything else,
+    -- same "meaningless until checked" convention as sex/isCharacter above.
+    local scale = isDecor and Spawner.GetLockedTargetScale() or 1.0
     return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
-        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM, isDecor, scale
 end
 local lastPublishedWindowToggle = nil
 local lastPublishedFocusSteal = nil
@@ -3590,7 +3826,8 @@ local function publishSpawnMenuStatusIfChanged()
     local placementMode = Spawner.placementMode or "MOVE"
     local placementActive = Spawner._placementActive and true or false
     local target, id, x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
-        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM = currentLockedTargetInfo()
+        scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM, isDecor, scale = currentLockedTargetInfo()
+    local timeBusy = (Spawner.IsPhotoTimeBusy and Spawner.IsPhotoTimeBusy()) and true or false
     if freebuild == lastPublishedFreeBuild and restoring == lastPublishedRestoring and target == lastPublishedTarget
         and id == lastPublishedId
         and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
@@ -3606,9 +3843,13 @@ local function publishSpawnMenuStatusIfChanged()
         and scrubPaused == lastPublishedScrub.paused
         and scrubFrame == lastPublishedScrub.frame
         and scrubNumFrames == lastPublishedScrub.numFrames
-        and distM == Spawner._lastPublishedDistM then
+        and distM == Spawner._lastPublishedDistM
+        and isDecor == Spawner._lastPublishedIsDecor
+        and scale == Spawner._lastPublishedScale
+        and timeBusy == Spawner._lastPublishedTimeBusy then
         return
     end
+    Spawner._lastPublishedTimeBusy = timeBusy
     lastPublishedFreeBuild, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = freebuild, restoring, target, id
     lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = x, y, z, yaw
     lastPublishedPitch, lastPublishedRoll = pitch, roll
@@ -3624,6 +3865,11 @@ local function publishSpawnMenuStatusIfChanged()
     lastPublishedScrub.frame = scrubFrame
     lastPublishedScrub.numFrames = scrubNumFrames
     Spawner._lastPublishedDistM = distM
+    -- Spawner. table fields, not new top-level locals (2026-09-29) -- see feedback_lua_200_local_
+    -- ceiling: this file is already right at Lua's 200-local ceiling, same reasoning as
+    -- Spawner._lastPublishedDistM just above.
+    Spawner._lastPublishedIsDecor = isDecor
+    Spawner._lastPublishedScale = scale
     local f = io.open(SPAWN_MENU_STATUS_PATH, "w")
     if not f then return end
     f:write("FREEBUILD=", freebuild and "1" or "0", "\n")
@@ -3640,6 +3886,9 @@ local function publishSpawnMenuStatusIfChanged()
     f:write("TARGET_STATIC=", isStatic and "1" or "0", "\n")
     f:write("TARGET_ISCHARACTER=", isCharacter and "1" or "0", "\n")
     f:write("TARGET_DIST_M=", string.format("%.2f", distM), "\n")
+    f:write("TARGET_ISDECOR=", isDecor and "1" or "0", "\n")
+    f:write("TIME_BUSY=", timeBusy and "1" or "0", "\n")
+    f:write("TARGET_SCALE=", string.format("%.2f", scale), "\n")
     f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
     f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
     f:write("PLACEMENT_MODE=", placementMode, "\n")
@@ -3670,6 +3919,30 @@ if Config.WHISTLE_CREW or Config.CASTER_KILL_TOTEMS then
 end
 
 
+-- Sign text (2026-09-29): self-contained module, see signs.lua's own header. No new file-level local.
+pcall(function() require("agentcheck").Install(Spawner) end)
+pcall(function() require("niagaraoff").Install(Spawner) end)
+if Config.SIGNS_ENABLED ~= false then
+    pcall(function() require("signs").Install(Spawner, Config) end)
+end
+
+-- Structure shield (RESTORED 2026-09-28, see Spawner.ShieldStructure's own header comment): make
+-- building blocks invulnerable so hostile mobs can't wreck the base. A construction hook
+-- (NotifyOnNewObject) shields each block the instant it exists -- so pieces the player builds
+-- mid-session are covered immediately, it also catches blocks reconstructed on a world reload, and
+-- it never re-scans the whole UObject list. One delayed sweep after the world settles mops up blocks
+-- already present at mod load, before the hook was installed.
+if Config.PROTECT_STRUCTURES ~= false then
+    pcall(function() Spawner.WatchNewStructures() end)
+    if ExecuteWithDelay then
+        ExecuteWithDelay((Config.RESTORE_SETTLE_MS or 6000) + 6000, function()
+            ExecuteInGameThread(function() pcall(function()
+                local n = Spawner.ShieldAllStructures()
+                if n and n > 0 then print(string.format("[LivingBase] Structure shield: %d building blocks made invulnerable.\n", n)) end
+            end) end)
+        end)
+    end
+end
 
 -- Unlock hidden build-menu pieces (leaves standard progression intact). The build catalog isn't loaded
 -- until the player opens the build menu / is near a building center, so retry a few times until it
@@ -3683,13 +3956,18 @@ if Config.UNLOCK_HIDDEN_BUILDING and ExecuteWithDelay then
     -- stale. That's fine for a "retry up to ~10 times" heuristic (worst case: one extra retry
     -- beyond the ideal stopping point) and it's the price of the actual fix below.
     local shouldContinue = true
+    -- One chain only (2026-10-01): a reload or a second load used to start another overlapping chain; each chain carries a generation and quits if superseded.
+    UnlockBuild._gen = (UnlockBuild._gen or 0) + 1
+    local myGen = UnlockBuild._gen
     local function doWork()
         ExecuteInGameThread(function()
-            local n = 0
-            pcall(function() n = UnlockBuild.Run(tries == 0) or 0 end)
+            local n, hid = 0, 0
+            pcall(function() n, hid = UnlockBuild.Run(tries == 0) end)
+            n = n or 0 ; hid = hid or 0
             tries = tries + 1
-            -- keep retrying while the catalog is empty (max ~10 tries), then a couple of top-ups
-            shouldContinue = (n == 0 and tries < 10) or tries < 3
+            -- Retry while the catalog is empty (max ~10 tries). Once it is loaded, a scan that flipped something gets ONE confirming rescan; a scan that
+            -- finds nothing left hidden ends the chain. (`lbunlock` re-scans by hand, e.g. after a world change.)
+            shouldContinue = (n == 0 and tries < 10) or (n > 0 and hid > 0 and tries < 10)
         end)
     end
     -- CONFIRMED live (2026-08-16): calling ExecuteWithDelay NESTED inside an ExecuteInGameThread
@@ -3703,6 +3981,7 @@ if Config.UNLOCK_HIDDEN_BUILDING and ExecuteWithDelay then
     -- from inside a nested ExecuteInGameThread" shape, which is presumably why none of those ever
     -- hit this.
     local function unlockTick()
+        if UnlockBuild._gen ~= myGen then return end
         doWork()
         if shouldContinue then
             ExecuteWithDelay(15000, unlockTick)
@@ -3784,12 +4063,21 @@ local function scheduleRestore()
         -- onComplete call so the wording stays the same.
         local ok, err = pcall(function()
             Spawner.RestoreCustomState(nil, function()
-                pcall(function()
-                    Spawner.Toast(string.format(
-                        "LivingBase: base restored and ready (%d statues, %d movers). You can move freely now.",
-                        staticsCount or 0, moversCount or 0), 4.0)
-                end)
-                unlockIfCurrent()
+                -- Sign text on spawned props ("Populating Signs n/N"), after customizations, before "ready".
+                local function ready()
+                    pcall(function()
+                        Spawner.Toast(string.format(
+                            "LivingBase: base restored and ready (%d statues, %d movers). You can move freely now.",
+                            staticsCount or 0, moversCount or 0), 4.0)
+                    end)
+                    unlockIfCurrent()
+                end
+                if Config.SIGNS_ENABLED ~= false and Config.SIGNS_RESTORE_SPAWNED ~= false then
+                    local okS = pcall(function() require("signs").RestoreSpawned(ready) end)
+                    if not okS then ready() end
+                else
+                    ready()
+                end
             end)
         end)
         if not ok then
@@ -3798,6 +4086,7 @@ local function scheduleRestore()
         end
     end
     local function fire(why)
+        if rawget(_G, "__LB_DELAY_SHIM") then rawset(_G, "__LB_GT_DELAY_ON", true) end   -- from here on every ExecuteWithDelay reschedule runs on the game thread
         local delay = Config.RESTORE_SETTLE_MS or 4000
         always(string.format("Restore: %s; settling %dms.", why, delay))
         if ExecuteWithDelay then
@@ -3890,8 +4179,10 @@ end
 -- line, right next to its existing `log("Console command registered: ...")` line, recording its
 -- name/usage/one-line description here. Declared this early (before the first real command below)
 -- so every later `registerCmdInfo(...)` call has it in scope.
-local LB_COMMANDS = {}
+local LB_COMMANDS = rawget(_G, "__LB_CMDS") or {}
 local function registerCmdInfo(name, usage, desc)
+    local reg = rawget(_G, "__LB_RegisterCmdInfo")
+    if reg then return reg(name, usage, desc) end
     LB_COMMANDS[#LB_COMMANDS + 1] = { name = name, usage = usage or name, desc = desc or "" }
 end
 
@@ -8711,6 +9002,36 @@ else
     log("lbsetstaticscale unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- "lbtestobjectscale <delta>" (2026-09-29, RedFalcon: "the scale isnt working, what command can i
+-- use to test this") -- console-callable diagnostic for MoveMenu.cpp's new Object Scale +/- row.
+-- Exercises Spawner.lockedTarget (the SAME target the GUI row acts on, via Num+/Target List's own
+-- '+' row -- NOT resolveTestDiagActor()'s wider lbprobe-or-locked pick lbsetstaticscale uses) and
+-- reports each gate explicitly, so a "why isn't this working" report can be answered from one
+-- command instead of guessing which link in the chain (no lock? not decor? the actual scale write?)
+-- is the problem.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestobjectscale", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestobjectscale] " .. tostring(msg) .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestNudgeTargetScale(arg1, say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestobjectscale <delta>")
+    registerCmdInfo("lbtestobjectscale", "lbtestobjectscale <delta>", "Diagnostic for MoveMenu.cpp's Object Scale +/- row -- acts on the SAME Spawner.lockedTarget (Num+), reports whether it's locked, whether its class is recognized as decor, and the before/after scale.")
+else
+    log("lbtestobjectscale unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- "lbsetniagarascale <value>" (2026-09-26, RedFalcon: "niagara scale specifically as its an
 -- effect" -- follow-up to lbsetstaticscale, which resizes the WHOLE actor. See
 -- Spawner.SetNiagaraComponentScale's own header comment for why an FX-only decor prop usually
@@ -9076,6 +9397,32 @@ if RegisterConsoleCommandHandler then
             table.sort(sorted, function(a, b) return a.name < b.name end)
 
             local query = Parameters and Parameters[1]
+            -- lbhelp find <text> [more words] (2026-10-01, RedFalcon): every command whose name, usage or description contains ALL the given words.
+            if query and query:lower() == "find" then
+                local words = {}
+                for i = 2, #Parameters do
+                    local w = tostring(Parameters[i] or ""):lower()
+                    if w ~= "" then words[#words + 1] = w end
+                end
+                if #words == 0 then
+                    say("usage: lbhelp find <text> [more words]  -- lists every command whose name, usage or description contains all the words.")
+                    return true
+                end
+                local hits = 0
+                for _, c in ipairs(sorted) do
+                    local hay = (c.name .. " " .. c.usage .. " " .. (c.desc or "")):lower()
+                    local all = true
+                    for _, w in ipairs(words) do
+                        if not hay:find(w, 1, true) then all = false; break end
+                    end
+                    if all then
+                        hits = hits + 1
+                        say("  " .. c.name .. (c.desc and c.desc ~= "" and ("  --  " .. c.desc) or ""))
+                    end
+                end
+                say(string.format("lbhelp find '%s': %d match(es) of %d command(s).", table.concat(words, " "), hits, #sorted))
+                return true
+            end
             if query and query ~= "" then
                 local ql = query:lower()
                 local found = nil
@@ -9099,7 +9446,7 @@ if RegisterConsoleCommandHandler then
         end)
     end)
     log("Console command registered: lbhelp [command]")
-    registerCmdInfo("lbhelp", "lbhelp [command]", "Lists every console command this mod registers; give a command name for its exact syntax and description.")
+    registerCmdInfo("lbhelp", "lbhelp [command] | lbhelp find <text>", "Lists every console command this mod registers; give a command name for its exact syntax and description, or 'find <text>' to search names, usage and descriptions.")
 else
     log("lbhelp unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
@@ -9250,7 +9597,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime2PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime2Hour ~= nil then
                 local hour = pendingDayTime2Hour
                 pendingDayTime2Hour = nil
@@ -9277,7 +9624,7 @@ if ExecuteWithDelay then
             dayTime2PollLoop()
         end)
     end
-    dayTime2PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9317,7 +9664,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime3PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime3Hour ~= nil then
                 local hour = pendingDayTime3Hour
                 pendingDayTime3Hour = nil
@@ -9343,7 +9690,7 @@ if ExecuteWithDelay then
             dayTime3PollLoop()
         end)
     end
-    dayTime3PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime3PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9377,7 +9724,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime4PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime4 ~= nil then
                 local req = pendingDayTime4
                 pendingDayTime4 = nil
@@ -9407,7 +9754,7 @@ if ExecuteWithDelay then
             dayTime4PollLoop()
         end)
     end
-    dayTime4PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime4PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9439,7 +9786,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime5PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime5 then
                 pendingDayTime5 = false
                 ExecuteInGameThread(function()
@@ -9481,7 +9828,7 @@ if ExecuteWithDelay then
             dayTime5PollLoop()
         end)
     end
-    dayTime5PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime5PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9517,7 +9864,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime6PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime6 ~= nil then
                 local req = pendingDayTime6
                 pendingDayTime6 = nil
@@ -9569,7 +9916,7 @@ if ExecuteWithDelay then
             dayTime6PollLoop()
         end)
     end
-    dayTime6PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime6PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9613,7 +9960,7 @@ if ExecuteWithDelay then
         return nil, nil
     end
     local function dayTime7PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime7 ~= nil then
                 local req = pendingDayTime7
                 if req.stage == 1 then
@@ -9686,7 +10033,7 @@ if ExecuteWithDelay then
             dayTime7PollLoop()
         end)
     end
-    dayTime7PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime7PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9724,7 +10071,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime8PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime8 ~= false then
                 local req = pendingDayTime8
                 if req.stage == 0 then
@@ -9794,7 +10141,7 @@ if ExecuteWithDelay then
             dayTime8PollLoop()
         end)
     end
-    dayTime8PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime8PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9833,7 +10180,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime9PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime9 ~= false then
                 local req = pendingDayTime9
                 if req.stage == "start" then
@@ -9897,7 +10244,7 @@ if ExecuteWithDelay then
             dayTime9PollLoop()
         end)
     end
-    dayTime9PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime9PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -9930,7 +10277,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime10PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime10 ~= false then
                 local req = pendingDayTime10
                 local comp, name = nil, nil
@@ -9967,7 +10314,7 @@ if ExecuteWithDelay then
             dayTime10PollLoop()
         end)
     end
-    dayTime10PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime10PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10008,7 +10355,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime11PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime11 ~= false then
                 local req = pendingDayTime11
                 local comp, name = nil, nil
@@ -10053,7 +10400,7 @@ if ExecuteWithDelay then
             dayTime11PollLoop()
         end)
     end
-    dayTime11PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime11PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10098,7 +10445,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime12PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime12 ~= false then
                 local req = pendingDayTime12
                 local comp, name = nil, nil
@@ -10143,7 +10490,7 @@ if ExecuteWithDelay then
             dayTime12PollLoop()
         end)
     end
-    dayTime12PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime12PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10182,7 +10529,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime13PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime13 ~= false then
                 local req = pendingDayTime13
                 local comp, name = nil, nil
@@ -10244,7 +10591,7 @@ if ExecuteWithDelay then
             dayTime13PollLoop()
         end)
     end
-    dayTime13PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime13PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10279,7 +10626,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime14PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime14 ~= false then
                 local req = pendingDayTime14
                 local comp, name = nil, nil
@@ -10315,7 +10662,7 @@ if ExecuteWithDelay then
             dayTime14PollLoop()
         end)
     end
-    dayTime14PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime14PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10360,7 +10707,7 @@ if ExecuteWithDelay then
         return nil, nil
     end
     local function dayTime15PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime15 ~= false then
                 local req = pendingDayTime15
                 local comp, name = nil, nil
@@ -10422,7 +10769,7 @@ if ExecuteWithDelay then
             dayTime15PollLoop()
         end)
     end
-    dayTime15PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime15PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10455,7 +10802,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime16PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime16 then
                 pendingDayTime16 = false
                 ExecuteInGameThread(function()
@@ -10515,7 +10862,7 @@ if ExecuteWithDelay then
             dayTime16PollLoop()
         end)
     end
-    dayTime16PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime16PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10550,7 +10897,7 @@ else
 end
 if ExecuteWithDelay then
     local function dayTime17PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDayTime17 ~= false then
                 local req = pendingDayTime17
                 local comp, name = nil, nil
@@ -10613,7 +10960,7 @@ if ExecuteWithDelay then
             dayTime17PollLoop()
         end)
     end
-    dayTime17PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then dayTime17PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10640,7 +10987,7 @@ else
 end
 if ExecuteWithDelay then
     local function weather2PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingWeather2 then
                 pendingWeather2 = false
                 ExecuteInGameThread(function()
@@ -10665,7 +11012,7 @@ if ExecuteWithDelay then
             weather2PollLoop()
         end)
     end
-    weather2PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then weather2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 if RegisterConsoleCommandHandler then
@@ -10737,7 +11084,7 @@ else
 end
 if ExecuteWithDelay then
     local function enableCam2PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingEnableCam2 then
                 pendingEnableCam2 = false
                 ExecuteInGameThread(function()
@@ -10765,7 +11112,7 @@ if ExecuteWithDelay then
             enableCam2PollLoop()
         end)
     end
-    enableCam2PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then enableCam2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -10794,7 +11141,7 @@ else
 end
 if ExecuteWithDelay then
     local function disableCam2PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDisableCam2 then
                 pendingDisableCam2 = false
                 ExecuteInGameThread(function()
@@ -10815,7 +11162,7 @@ if ExecuteWithDelay then
             disableCam2PollLoop()
         end)
     end
-    disableCam2PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then disableCam2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 if RegisterConsoleCommandHandler then
@@ -10900,6 +11247,36 @@ end
 -- -- lower is faster. Safe to re-run any number of times, including after a previous freeze.
 ------------------------------------------------------------
 local pendingPhotoTime = false
+-- True while a time change (lbphototime / the Photo Mode Time dropdown) is running. Read by the status publisher so the
+-- spawn-menu window can refuse to close mid-change (2026-09-29, RedFalcon: closing it left time racing forever).
+-- A late-bound Spawner field, not a local: publishSpawnMenuStatusIfChanged is defined ~7000 lines ABOVE this.
+-- WATCHDOG (2026-09-30): if the poll loop dies, pendingPhotoTime would stay set forever and the window could never be closed.
+-- A change that has been "busy" for over 300s (the loop's own cutoff is ~220s) is declared dead: the flag is cleared and the
+-- clock gets its normal speed back, so neither the lock nor the fast-forward can outlive the loop.
+Spawner.IsPhotoTimeBusy = function()
+    if pendingPhotoTime == false then
+        Spawner._photoBusySince = nil
+        return false
+    end
+    local now = os.time()
+    Spawner._photoBusySince = Spawner._photoBusySince or now
+    if now - Spawner._photoBusySince > 300 then
+        print("[LivingBase] [lbphototime] watchdog: time change stuck for >300s -- clearing it and restoring normal speed.\n")
+        pendingPhotoTime = false
+        Spawner._photoBusySince = nil
+        pcall(function()
+            for _, c in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
+                local okName, n = pcall(function() return c:GetFullName() end)
+                if okName and n and not n:find("Default__") then
+                    if Spawner._photoTimeOrigSpeed then c.DayCycleSpeedInv = Spawner._photoTimeOrigSpeed end
+                    c:SetComponentTickEnabled(true)
+                end
+            end
+        end)
+        return false
+    end
+    return true
+end
 if RegisterConsoleCommandHandler then
     pcall(function()
         RegisterConsoleCommandHandler("lbphototime", function(FullCommand, Parameters, Ar)
@@ -10928,6 +11305,11 @@ if ExecuteWithDelay then
     end
     local function photoTimePollLoop()
         ExecuteWithDelay(200, function()
+            -- The whole body is pcall'd (2026-09-30): an unguarded error here ended this self-rescheduling chain for good, leaving
+            -- the clock fast-forwarding at speedInv with nothing left to stop it (log: "bad argument #1 to '?' (FILE* expected, got
+            -- FILE*)" from tostring, 0.2s after a time change started). On ANY error the change is aborted, normal speed restored,
+            -- and the loop keeps running.
+            local okBody, errBody = pcall(function()
             if pendingPhotoTime ~= false then
                 local req = pendingPhotoTime
                 local comp, name = findPhotoTimeComp()
@@ -10944,6 +11326,9 @@ if ExecuteWithDelay then
                         print("[LivingBase] [lbphototime] could not read current hour -- aborting.\n")
                         pendingPhotoTime = false
                     else
+                        -- Remember the game's own speed BEFORE the fast-forward so any early ending can restore it
+                        -- (otherwise the clock is left racing at speedInv forever). Only the first run of a chain records it.
+                        Spawner._photoTimeOrigSpeed = Spawner._photoTimeOrigSpeed or comp.DayCycleSpeedInv
                         comp.DayCycleSpeedInv = req.speedInv
                         print(string.format("[LivingBase] [lbphototime] current hour~%.2f, heading to real %.2f (raw %.4f) at speedInv=%.4f...\n", h0, req.realHour, req.rawHour, req.speedInv))
                         pendingPhotoTime = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = 0 }
@@ -10957,15 +11342,29 @@ if ExecuteWithDelay then
                         print(string.format("[LivingBase] [lbphototime] ARRIVED at real %.2f (%d ticks) -- %s. Ready for your photo.\n", req.realHour, req.ticks, ok and "frozen exactly" or "freeze call failed, time will keep drifting"))
                         pendingPhotoTime = false
                     elseif req.ticks >= 1100 then
-                        print(string.format("[LivingBase] [lbphototime] safety cutoff (~220s) -- last hour=%s, still heading to real %.2f.\n", tostring(h), req.realHour))
+                        print(string.format("[LivingBase] [lbphototime] safety cutoff (~220s) -- last hour=%s, still heading to real %.2f.\n", tostring(tonumber(h)), req.realHour))
+                        -- Give the clock its normal speed back -- otherwise it keeps racing with nothing left to stop it.
+                        pcall(function() if Spawner._photoTimeOrigSpeed then comp.DayCycleSpeedInv = Spawner._photoTimeOrigSpeed end end)
                         pendingPhotoTime = false
                     else
                         if req.ticks % 10 == 0 then
-                            print(string.format("[LivingBase] [lbphototime] ...en route: hour~%s, remaining~%s (%ds elapsed)\n", tostring(h), tostring(remaining), math.floor(req.ticks * 0.2)))
+                            print(string.format("[LivingBase] [lbphototime] ...en route: hour~%s, remaining~%s (%ds elapsed)\n", tostring(tonumber(h)), tostring(tonumber(remaining)), math.floor(req.ticks * 0.2)))
                         end
                         pendingPhotoTime = { stage = "waiting", realHour = req.realHour, rawHour = req.rawHour, speedInv = req.speedInv, ticks = req.ticks + 1 }
                     end
                 end
+            end
+            end) -- pcall
+            if not okBody then
+                print("[LivingBase] [lbphototime] poll error -- aborting the time change and restoring normal speed: " .. tostring(errBody) .. "\n")
+                pendingPhotoTime = false
+                pcall(function()
+                    local comp = findPhotoTimeComp()
+                    if comp then
+                        if Spawner._photoTimeOrigSpeed then comp.DayCycleSpeedInv = Spawner._photoTimeOrigSpeed end
+                        comp:SetComponentTickEnabled(true)
+                    end
+                end)
             end
             photoTimePollLoop()
         end)
@@ -11414,7 +11813,7 @@ else
 end
 if ExecuteWithDelay then
     local function disableCam3PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDisableCam3 then
                 pendingDisableCam3 = false
                 ExecuteInGameThread(function()
@@ -11461,7 +11860,7 @@ if ExecuteWithDelay then
             disableCam3PollLoop()
         end)
     end
-    disableCam3PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then disableCam3PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -11571,7 +11970,7 @@ else
 end
 if ExecuteWithDelay then
     local function disableCam4PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDisableCam4 then
                 pendingDisableCam4 = false
                 ExecuteInGameThread(function()
@@ -11613,7 +12012,7 @@ if ExecuteWithDelay then
             disableCam4PollLoop()
         end)
     end
-    disableCam4PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then disableCam4PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -11654,7 +12053,7 @@ else
 end
 if ExecuteWithDelay then
     local function enableTogglePollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingEnableToggle then
                 pendingEnableToggle = false
                 ExecuteInGameThread(function()
@@ -11673,7 +12072,7 @@ if ExecuteWithDelay then
             enableTogglePollLoop()
         end)
     end
-    enableTogglePollLoop()
+    if Config.EXPERIMENT_LOOPS == true then enableTogglePollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -11702,7 +12101,7 @@ else
 end
 if ExecuteWithDelay then
     local function enableToggle2PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingEnableToggle2 then
                 pendingEnableToggle2 = false
                 ExecuteInGameThread(function()
@@ -11741,7 +12140,7 @@ if ExecuteWithDelay then
             enableToggle2PollLoop()
         end)
     end
-    enableToggle2PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then enableToggle2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -11772,7 +12171,7 @@ else
 end
 if ExecuteWithDelay then
     local function disableCam5PollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingDisableCam5 then
                 pendingDisableCam5 = false
                 ExecuteInGameThread(function()
@@ -11831,7 +12230,7 @@ if ExecuteWithDelay then
             disableCam5PollLoop()
         end)
     end
-    disableCam5PollLoop()
+    if Config.EXPERIMENT_LOOPS == true then disableCam5PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------
@@ -11933,7 +12332,7 @@ else
 end
 if ExecuteWithDelay then
     local function noClipCheckPollLoop()
-        ExecuteWithDelay(200, function()
+        ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
             if pendingNoClipCheck then
                 pendingNoClipCheck = false
                 ExecuteInGameThread(function()
@@ -11992,7 +12391,7 @@ if ExecuteWithDelay then
             noClipCheckPollLoop()
         end)
     end
-    noClipCheckPollLoop()
+    if Config.EXPERIMENT_LOOPS == true then noClipCheckPollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
 ------------------------------------------------------------

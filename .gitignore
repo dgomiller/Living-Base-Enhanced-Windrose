@@ -15,3 +15,7 @@ R5/Binaries/Win64/ue4ss/Mods/LivingBase/__pycache__/
 
 # Regenerable build output -- gen_socketitems_lua.py's own output, paste-in only, not tracked
 R5/Binaries/Win64/ue4ss/Mods/LivingBase/socketitems_generated.lua
+
+# Hand-rolled ini backups and local tooling state
+R5/Binaries/Win64/ue4ss/Mods/LivingBase/spawn_menu.ini.bak_*
+.claude/

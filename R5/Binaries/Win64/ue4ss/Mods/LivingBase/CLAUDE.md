@@ -4229,6 +4229,70 @@ edit/despawn/undo/cycle toolkit. In order:
      for the statue/posed-actor family, not the walking AI-pawn family. Full writeup:
      `WINDROSE_MODDING_NOTES.md` SS2e's MorphParams addendum (search "body-SHAPE variety").
 
+113. **Session 2026-09-29: spawn-menu GUI overhaul, decor Object Scale, idle-restore fix, Barbie spawn simplification.**
+     Full engine detail is in `WINDROSE_MODDING_NOTES.md` §20-22; summary here.
+     - **Spawn tree filter** (`SpawnMenu.cpp`): replaced the redundant Refresh button with a textbox + Filter + red X clear
+       (case-insensitive substring over leaf labels, empty branches hidden, matches auto-expanded), row sized to the tree width.
+     - **New decor**: Shackles (Decor > Clutter > Misc) and Dead Prisoner 1/2/3 (Decor > Dead) in `fkeys.lua`, mesh-wrapped
+       `R5LootActor` entries. Appending mid-list shifts every later DECOR index, so the stale `roster = DECOR` sections were stripped
+       from the live `spawn_menu.ini` (only DECOR — every other roster's sections untouched) to regenerate.
+     - **Idle restore fix**: idle MONSTEROUS_MOBS/CRABS/NEW_PEOPLE/LIVESTOCK rows (incl. Thomas Richards) now persist an
+       `IDLE::<pose|1>` marker via `reskinTarget` and `restoreOne` re-freezes them immediately (AI off + movement zeroed + 750ms x4).
+     - **Spawn tab buttons**: Confirm (green, spans both rows) + Spawn/Move/Replace over Cancel/Despawn/Undo (moved in from the Move
+       tab), placed with explicit `SetCursorPos` (ImGui row height = tallest item).
+     - **Object Scale** (Move tab): decor-only +/- with readout, step 0.5 x Precision, floor 0.1, works mid-placement; `Spawner.
+       SetActorScaleWithFallback` (K2_SetActorScale3D is unbound on some decor classes -> RootComponent fallbacks); persisted as
+       persist.txt field 18. `lbtestobjectscale <delta>` diagnostic. Undo does not restore scale.
+     - **Barbie spawn**: picker spawns as-built — no underwear strip (`SwapBodyType` underwearArg=nil) and no auto-written default
+       custom-state entry on placement confirm. Existing saved customizations untouched.
+     - **GUI Scale dropdown** (0.5x-3x, next to "Hide GUI"/"Show GUI", formerly Shade): whole-window hi-DPI-style scaling,
+       persisted in `spawn_menu_ui_scale.txt`, height capped to the monitor.
+     - **Open**: the recurring `EngineTick "Ref was not function"` hook death hit again on a fresh launch mid-restore (still
+       unresolved; needs a full restart, not `lbreload`). The spawn-menu DLL only deploys with the game closed.
+
+114. **Session 2026-09-29/30: sign text system, fonts, Sign Post, load-crash triage and restore hardening.**
+     Full detail in `WINDROSE_MODDING_NOTES.md` §23-27 (public mirror: Windrose_Modding_Notes.txt §55-67); summary here.
+     - **Sign text** (`signs.lua` + the Signs tab): up to 4 rows of `TextRenderComponent` text on a sign. `Signs.TYPES` holds one
+       entry per sign type (anchor/depth/yaw/roll, board size, margins, per-font tuning). Wooden wall label + 8 storage
+       containers (measured with `lbsignscan` from real labels placed as rulers) + the Sign Post. Key DELETE = select/release
+       and switches to the tab. Per-sign colour (sRGB->linear), "Ignore lighting" (lighting channel 2 + channel-2 white light,
+       zero indirect), Font dropdown (Greengoth default / Script (Oleo) / Built-in). Persists to `signs_persist_<world>.txt`,
+       BUT the re-apply sweep is OFF (`Config.SIGNS_SWEEP=false`) and text on SPAWNED objects does not yet survive a reload.
+     - **Fonts**: only OFFLINE fonts draw in a text component. Baked headlessly via editor Python (`TrueTypeFontFactory`), cooked
+       in ONE invocation, packed with retoc into `LivingBaseSignFonts-Windows` (optional; release copy in
+       `LivingBaseExtended/Prebuilt/SignFonts/`). Licence rule from the user: ONLY fonts he can distribute -> Greengoth (CC BY)
+       + Oleo (OFL); personal-use fonts (Flowing Romance, Bruta) were deleted everywhere. See `FONT_CREDITS.txt`.
+     - **Sign Post**: hidden decor category (`special_items`, not in DECOR_ORDER) + Special Items dropdown + Spawn on the Signs tab;
+       `Config.MATERIAL_OVERRIDES` covers the baked "X" texture.
+     - **Crashes** (UPDATED, see item 115: the game must run STOCK UE4SS; the 'installed dll is ours' premise held only until ~17:24 on 09-30): Family A
+       (`UE4SS.dll +0x948090` etc.) = Lua table reads (`ltable.c`); family B (`Windrose-Win64-Shipping.exe +0x175d2e0`, null, no Lua
+       frames) = the LONG-STANDING recurring game-exe crash (already in dumps a week before signs existed) -- do not blame signs. Fixes: `Config.RESTORE_PRELOAD` + `RESTORE_SEQUENTIAL` (restore completed
+       40/40), belt-array cache in `findBeltStrapComponent`; sign light reuse + in-place text update + apply gaps are hygiene only. All UNPROVEN
+       beyond the first; retest with fresh launches (no `lbreload`) and read the next dump's address.
+     - **Also**: time-change lock (`TIME_BUSY`), `Spawner.ResolveAsset`/`PickTargetPreferringHover`/`GetIslandId` exposed as fields.
+     - **Open**: text saved on spawned objects + a "Populating Signs n/N" restore phase; guarded sweep for game-placed signs; crash
+       family A root cause; the public notes repo change is local only (not pushed).
+
+115. **Session 2026-09-30 (later): stock UE4SS rule, async-thread theory + game-thread shim, Text tab, loot-mesh items, probe/time fixes.**
+     Full detail in `WINDROSE_MODDING_NOTES.md` §28-31 (public mirror: Windrose_Modding_Notes.txt §68-71; repo copy updated, NOT pushed).
+     - **Stock UE4SS only** (user rule): found the installed dll was OUR build (hash `ca6d86...`), swapped in the Nexus zip's (`12592a08...`),
+       our build kept as `UE4SS.dll.ours_20260930`. No fix may need a patched UE4SS. Check the log's Git SHA + the dll hash first. Memory `feedback_ue4ss_stock_build_only`.
+     - **ExecuteWithDelay shim** (top of `main.lua`, `Config.DELAY_ON_GAME_THREAD`): all delayed callbacks now run on the game thread via
+       `ExecuteInGameThreadWithDelay` (feature-detected). Reason: stock UE4SS runs `ExecuteWithDelay/ExecuteAsync/LoopAsync` on its async thread sharing the Lua
+       state with the game thread, unlocked -> leading explanation of hook deaths ("Ref was not function"), `FILE* expected, got FILE*`, and Lua-table crashes
+       (stock `UE4SS.dll +0x9347f0`/`+0x934f50`, identical chain for a GUI and a command text apply). UNTESTED: needs a fresh launch + many sign applies. `lbreload` does not cancel
+       pending timers (duplicates) but is NOT the cause (crash with no reload).
+     - **Text tab** (was Signs): mock-up layout, per-line limit from the box width, Clear (keeps style) / Reset (wipes), Add Glow, outlined swatches, picker as a
+       ColorButton + popup; text on spawned props persists via `Signs.RestoreSpawned` ("Populating Signs n/N", verified).
+     - **Nine loot-mesh Additional Items** (Wall Flag 1-4, Pirate Banner, Board 1/2/3 (One line), Obelisk): `special_items` + `Config.LOOT_MESH_BASE_ROT` (banner Yaw 90,
+       boards 04/05 Pitch 90, on the mesh component inside `SetLootMesh`) + mesh-keyed `Signs.TYPES` with first-guess placements and `rows`. Keep the three lists
+       (fkeys / main.lua / SignMenu.cpp) in the same order. `lbprobe` prints bounds; `niagaraoff.lua` (`Config.NIAGARA_OFF_CLASSES`, `lbniagara`) switches particle effects off.
+     - **Fixes**: legacy `persist.txt` re-migration bug (`os.rename` returns false), `PreloadDeCorruptAssets`, Original Upright Senkamati -> walker AI + AnimBP (`_LEGACY` remap),
+       photo-time poll `pcall` + 300 s watchdog on the busy lock, `actorInstancePath` type guard, probe sweep rework + GCA_BuildingDestroy exclusion.
+     - **Open**: verify the shim over a long fresh-launch session; painting-in-build-mode probe crash (shelved by the user); "must return true or false" error on every custom
+       console command; text placements for the nine items are first guesses (tune with `lbtestsigntext`); stele sparkle / Original Upright gait / base rotations untested in-game;
+       UnlockBuild repeats per reload; docs (CHANGELOG/README/NEXUS) not updated; public notes repo change not pushed.
+
 - Arrows and the numpad operator keys (`/ * - +`) are outside this build's `Key[]` table
   entirely — bound via raw Windows virtual-key codes (`VK_FALLBACK` in `main.lua`).
   **The engine drops most repeat keydown events for these specific keys** before UE4SS
@@ -5563,3 +5627,20 @@ internally rather than duplicating the search.
   `WBP_SideNotificationsContainer_C` via `AddChild`, and manages removal through one shared
   self-rescheduling ticker rather than a timer per call (see item 24 for why per-call timers
   weren't reliable here).
+
+**115 addendum (2026-10-01):** `Config.DELAY_ON_GAME_THREAD` (the ExecuteWithDelay game-thread shim in main.lua) crashes the game at launch (d3d12 fault ~50 ms after engine init) and is now `false`. Do not enable it. The stock-UE4SS sign-apply crash remains unsolved.
+
+**115 addendum 2 (2026-10-01):** the sign-apply crash is mitigated by Lua-only changes: `Config.EXPERIMENT_LOOPS=false` (25 old lbtest* poll loops off), `Config.BRIDGE_IDLE_WHEN_CLOSED=true` (`Spawner.BridgeIdle`, bridge pollers idle with the window closed; statusPublishLoop stays ungated), and `Config.QUIET_DURING_APPLY=true` (ExecuteWithDelay wrapper at the top of main.lua defers every timer body while Signs.Apply runs; `_G.__LB_SetQuiet`). Confirmed in a first session (no crash over many applies, window open). `DELAY_ON_GAME_THREAD` stays false (it breaks D3D12). Open: window reopens after Numpad '-' (see `[window]` log lines), `lbunlock` added, UnlockBuild now stops after the first confirming scan.
+
+**115 addendum 3 (2026-10-01, final state):** quiet mode also wraps `ExecuteInGameThread` (`Config.QUIET_GAME_THREAD_JOBS`), the Numpad '-' reopening is fixed (Lua waits 450 ms and skips if C++ already closed the window), `lbunlock` exists and UnlockBuild stops after one confirming scan, and the console 'must return true or false' error is a benign stock quirk (all 244 handlers return true). The game-thread shim stays OFF. Full story: WINDROSE_MODDING_NOTES.md §32.
+
+**116 (2026-10-01, decision, not yet implemented):** all R5ModSettings (Settings > Mods) changes REQUIRE A GAME RESTART -- no live apply. The 1.5 s `pollLoop` in main.lua that applies toggles live is therefore redundant and should be removed, and user-facing docs should say so. Revisit with the official example (`Other\R5ModSettingsExample ...zip`, v1.1.3, already installed): numeric settings can now be `type = "slider"` (min/max/step) and dropdowns exist. See memory `reference_r5modsettings_known_issues`.
+
+**117 (2026-10-01):** signs pass 2 -- Pirate Banner removed (3 lists + DLL rebuilt, indexes shifted), RedFalcon's tuned values baked into Signs.TYPES, `Config.LOOT_MESH_BASE_OFFSET` + `Signs.MeshShift` + `lbmeshshift` (Boards 2/3 spawned inside the wall; first-guess X +37/+36, tune live), and ConfirmPlacement sets both the spawn lock and the Text-tab target for sign-capable objects. Untested in game.
+
+**118 (2026-10-01):** Custom-tab camera: Decor View button (decor only; Full Body/Face View non-decor only), `<` `>` orbit + `+` `-` zoom (hold-to-repeat, queue file `custom_camview_request.txt` drained by `BeltStrapPolls.camView`, `Spawner.CameraViewNudge`), `Spawner.DecorViewOnTarget`, `_photoModeCamState` "DECOR". Config: `DECOR_VIEW_DISTANCE_MULT`, `CAMERA_ZOOM_STEP_FRACTION/MIN_FACTOR/MAX_FACTOR`. Also this pass: signs second tuning (Flag 3 z -22, Board 2/3, Obelisk) and board mesh offsets +7/+6. C++ rebuilt + deployed with Lua. Untested in game.
+
+**119 (2026-10-01):** Photo Mode pad/rotate/FOV/Reset active for Custom camera views (offset `Spawner._photoCamOffsets.CUSTOM`, no persistence, a target switch ends the view, `Config.CAMERA_VIEW_EXIT_ON_TARGET_SWITCH`); lock -> Text-tab selection (`Spawner._selectSignIfCapable`). Built, awaiting deploy + test. Deploy needs the game CLOSED (C++ DLL + spawner/main/config.lua together).
+
+120. **Session 2026-10-01 (evening, still v3.0.5):** idle-label restore fallback; restore-once guard (`doneFired`); in-line sign fill incl. build-mode signs + sweep back on + `Signs.RekeyMoved`; all sign `maxSize` 100; `lbhelp find` + shared command registry; light breadcrumbs; `PLACEMENT_FREEBUILD_START_DIST_UU` 650; decor additions (Misc>Water incl. Niagara `fx` rows, Furniture>Tables, Furniture>Shelving); the spawn_menu.ini repair. Details: WINDROSE_MODDING_NOTES.md section 34.
+   - **Rules learned:** (a) never insert into the middle of a `DECOR_ORDER` array -- add a trailing category mapped to the same label path; after ANY decor edit diff original names-by-index. (b) A curated `spawn_menu.ini` is the only home of curated decor names/order: never delete its DECOR sections to "regenerate". (c) `GenerateOnce` only appends, but a glued section (no blank line) is invisible to a blank-line splitter -- check for blocks with more than one `[`. (d) Four places carry the version: `mod.txt`, `modsettings.lua`, `SpawnMenuMod.cpp`, `StandaloneWindow.cpp`. (e) Deploy order: Lua may be copied whenever the game is closed; the game process is `Windrose-Win64-Shipping.exe`.

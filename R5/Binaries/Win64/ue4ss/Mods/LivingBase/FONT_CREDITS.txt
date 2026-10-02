@@ -1,0 +1,27 @@
+LIVING BASE ENHANCED - SIGN FONT CREDITS
+========================================
+
+The optional font pak "LivingBaseSignFonts-Windows" (.pak / .utoc / .ucas, installed in Content\Paks\~mods)
+contains two fonts that the Signs tab can use. Each was converted (rasterised into an offline
+distance-field font asset for the game's text component) from the original font file. The original font
+files themselves are NOT included in the pak or in this download. Each font's own licence text is in
+licenses\fonts\<FontName>\ .
+
+The pak is optional. Without it, signs use the game's default font and everything still works.
+
+1. GREENGOTH
+   Author:   Dimitri Antonov / Blue Curve Designstudio
+   Licence:  Creative Commons Attribution 4.0 International (CC BY 4.0)
+             https://creativecommons.org/licenses/by/4.0/
+             (author's notice: licenses\fonts\Greengoth\readme.txt)
+   Changes:  the font was converted to a game font asset (glyphs rasterised as a distance field), and its declared
+             vertical metrics (ascender/descender in the hhea and OS/2 tables) were enlarged so the tails of
+             "g", "y" and similar letters are no longer clipped during conversion. No glyph outlines were altered.
+             This credit does not imply the author endorses this mod.
+
+2. OLEO SCRIPT
+   Copyright (c) 2012 Soytutype (contact@soytutype.com.ar)
+   Licence:  SIL Open Font License 1.1  (licenses\fonts\OleoScript\OFL.txt)
+   Note:     the converted asset is deliberately NOT named "Oleo Script" (a Reserved Font Name).
+
+Thank you to both font authors.

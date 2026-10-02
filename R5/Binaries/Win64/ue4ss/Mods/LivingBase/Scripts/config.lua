@@ -272,7 +272,7 @@ Config.PLACEMENT_START_DIST_UU = 1800.0
 -- Both bumped +100uu (2026-08-21, RedFalcon: "the distance for spawning and minimum distance while
 -- moving in free build needs to be further. lets add 100 to the distance.") -- 350->450 spawn,
 -- 125->225 grab floor.
-Config.PLACEMENT_FREEBUILD_START_DIST_UU = 450.0
+Config.PLACEMENT_FREEBUILD_START_DIST_UU = 650.0   -- 2026-10-01: was 450 (RedFalcon: new placements start too close)
 Config.PLACEMENT_FREEBUILD_MIN_GRAB_UU = 225.0
 -- NiagaraActor highlight scale (2026-08-21, RedFalcon: "is it possible to resize it to match the
 -- hitbox of the object?") -- BASE_RADIUS_UU is the object size the effect's default 1x scale was
@@ -445,6 +445,104 @@ Config.KEYS = {
   -- caught this) -- HOME confirmed genuinely free via a grep across every installed mod's own
   -- config/keybind list (same collision-check discipline this project's own memory notes require).
   probeDefaultParams = "HOME",
+  -- Sign text (2026-09-29): aim at a sign and press to select it for the "Signs" tab. END was the
+  -- first choice but Summon Ghost Sailors already owns it (R5ModSettings/SummonGhostSailors.lua);
+  -- DELETE confirmed unused across the installed mods' own key lists.
+  signTarget = "DELETE",
+}
+
+-- Master switch for the whole sign-text system (signs.lua: text engine, bridge poll loop, sweep). Added
+-- 2026-09-29 as a bisect switch while diagnosing load-time crashes; set false to fully disable it.
+Config.SIGNS_ENABLED = true
+-- The sign sweep (re-apply saved text + prune destroyed signs) lists every building block in the world. It was
+-- switched off 2026-09-29 while bisecting load-time crashes (whole sign system OFF -> loads fine); staged back on.
+-- Back ON 2026-10-01 (RedFalcon: "turn it on, else the signs are a waste") -- without it text on build-mode signs/chests never came back after a
+-- reload. It waits 45 s after a world load/restore, rebuilds at most 2 signs per pass, and runs on the game thread under quiet mode.
+Config.SIGNS_SWEEP = true
+Config.SIGNS_RESTORE_BUILDING = true   -- the "Populating Signs n/N" restore step also fills the game's own build-mode signs/chests (not just spawned props)
+Config.SIGNS_RESTORE_SPAWNED = true   -- reapply saved sign text to spawned props as a restore phase ("Populating Signs n/N")
+
+-- Load-crash mitigation (2026-09-30, see Spawner.PreloadRestoreClasses): load every not-yet-in-memory saved class one at a time
+-- BEFORE the restore spawns anything, and chain the spawn steps so the next is scheduled only after the current one finishes.
+-- Set either false to get the old behaviour back.
+Config.RESTORE_PRELOAD = true
+Config.DECORRUPT_PRELOAD = true   -- load every de-corrupt skin/hair asset once, sequentially, during the restore (avoids lazy mid-callback LoadAsset)
+Config.DELAY_ON_GAME_THREAD = false   -- run every ExecuteWithDelay callback on the game thread (see the shim at the top of main.lua); set false to restore UE4SS's async-thread timers
+Config.SIGNS_GC_GUARD = true   -- stop Lua's garbage collector while a sign text apply runs (crash mitigation, see signs.lua)
+Config.SIGNS_IN_PLACE = false   -- reuse text pieces on re-apply via K2_SetRelativeLocationAndRotation({}) -- crashed stock UE4SS (2026-10-01); rebuild instead
+Config.EXPERIMENT_LOOPS = false   -- the 25 old lbtest* poll loops (lbtestdaytime2..17, lbtestweather2, lbtestenablecam2, lbtestdisablecam2..5, lbtestenabletoggle/2, lbtestnoclipcheck): false = never started, their commands queue but do nothing. true + lbreload/relaunch re-enables them.
+Config.BRIDGE_IDLE_WHEN_CLOSED = true   -- skip the C++-menu bridge polls (spawn, custom tab, Barbie, move drain/flush, photo pad) while the spawn-menu window is closed; false = poll always
+Config.QUIET_DURING_APPLY = true   -- while a sign text apply runs, every ExecuteWithDelay callback re-arms itself instead of running (async-thread Lua crash mitigation; see main.lua top)
+Config.DECOR_VIEW_MAX_SIZE = 5000.0       -- Decor View: bounds bigger than this (uu) are treated as bogus (e.g. a ship with a huge attached volume)
+Config.DECOR_VIEW_FALLBACK_SIZE = 300.0   -- ...and the view then uses the actor's own location and this size instead
+Config.DECOR_VIEW_DISTANCE_MULT = 1.3   -- Custom tab "Decor View": camera distance = this x the object's largest dimension (length/width/height)
+Config.CAMERA_ZOOM_STEP_FRACTION = 0.05 -- each "+" / "-" press moves the camera this fraction of the CALCULATED STARTING distance (linear, not of the current distance)
+Config.CAMERA_ZOOM_MIN_FACTOR = 0.2    -- closest the zoom may get, as a fraction of the starting distance
+Config.CAMERA_ZOOM_MAX_FACTOR = 4.0    -- farthest, as a multiple of the starting distance
+Config.CAMERA_VIEW_EXIT_ON_TARGET_SWITCH = true   -- locking a DIFFERENT object while a Custom camera view is active ends the view (camera back to normal)
+Config.QUIET_GAME_THREAD_JOBS = true   -- also run quiet mode around EVERY ExecuteInGameThread job (moves, customizations, spawns); false = sign applies only
+Config.PROBE_IGNORE_BUILDING_BLOCKS = false  -- lbprobe skips R5BuildingBlock actors (and their BP subclasses) so it reaches what is behind them
+Config.RESTORE_SEQUENTIAL = true
+Config.RESTORE_PRELOAD_GAP_MS = 250
+
+-- Per-class material override applied at spawn/restore (see Spawner.ApplyMaterialOverride): [classPath] = material.
+-- The SignCacheTMP pole sign has an "X" painted into its single shared albedo texture; MI_BuildingPier_01 (a plain
+-- pier-wood material) covers it and looks right (RedFalcon, 2026-09-29).
+Config.MATERIAL_OVERRIDES = {
+  ["/Game/Environment/Props/POIElements/BP_SignCacheTMP_01.BP_SignCacheTMP_01_C"] =
+      "/Game/Environment/Gameplay/Building/Materials/MI_BuildingPier_01",
+}
+
+-- Base rotation of a loot-mesh decor piece, keyed by its mesh path (applied to the MESH COMPONENT inside Spawner.SetLootMesh, so it holds on
+-- spawn AND restore and does not fight the placement code, which owns the actor's yaw). RedFalcon 2026-09-30: the pirate banner needs +90 on Z
+-- (so its face looks along the actor's +X like the flags), Pier boards 04 and 05 need +90 on Y (pitch) to stand up as wide plaques.
+Config.LOOT_MESH_BASE_ROT = {
+  ["/Game/Environment/Gameplay/Constructor/CampTent/PirateTent/SM_PirateTent_WallBanner_01.SM_PirateTent_WallBanner_01"] = { Yaw = 90.0 },
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board04.SM_WoodElements_01_Board04"] = { Pitch = 90.0 },
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board05.SM_WoodElements_01_Board05"] = { Pitch = 90.0 },
+}
+
+-- Base OFFSET of a loot-mesh decor piece, keyed by mesh path like LOOT_MESH_BASE_ROT, applied to the mesh component relative to its actor inside Spawner.SetLootMesh
+-- (spawn AND restore); Signs.MeshShift adds the same amount to the text anchor so the text follows. ACTOR frame: +X = out from the wall, +Y = right, +Z = up.
+-- RedFalcon 2026-10-01: Boards 2 and 3 (Pier Board04/05, rotated Pitch 90) spawn inside the wall, so move them out by about their width. FIRST GUESS from the probe
+-- bounds (their narrow dimension, 36.9 / 36.2uu, is what lies along X after the rotation). 2026-10-01 second pass: +37/+36 stuck far out; RedFalcon moved them back
+-- 4 presses at 1x precision (0.25 x LIVE_EDIT_MOVE_STEP 30 = 7.5uu each = 30uu), so the offsets are now about +7/+6. Tune live with `lbmeshshift x=<n> y=<n> z=<n>` and send me the printed line.
+-- SOLID loot-mesh decor (2026-10-01, RedFalcon: tested live with `lbsolid` on the boards and the obelisk -- "worked perfectly"; the wall flags stay passthrough).
+-- Raw meshes spawn inside R5LootActor, whose collision defaults to an overlap pickup trigger, so a mesh listed here (keyed by mesh path) is made a real blocker
+-- (collision enabled + Block on all channels, mesh and root) when its placement is CONFIRMED and again on every restore. Add a path to make another mesh solid.
+Config.LOOT_MESH_SOLID = {
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board02.SM_WoodElements_01_Board02"] = true,   -- Board 1 (One line)
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board04.SM_WoodElements_01_Board04"] = true,   -- Board 2 (One line)
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board05.SM_WoodElements_01_Board05"] = true,   -- Board 3 (One line)
+  ["/Game/Environment/Props/Obelisk/SM_Obelisk.SM_Obelisk"] = true,                                -- Obelisk
+  ["/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01"] = true,   -- Empty fountain 1
+  ["/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_02.SM_GardenFountain_02"] = true,   -- Empty fountain 2
+  ["/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_03.SM_GardenFountain_03"] = true,   -- Empty fountain 3
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_01.SM_TableTortuga_01"] = true,   -- Table - Merchant Empty
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_02.SM_TableTortuga_02"] = true,   -- Table - Merchant Empty with Fur Display
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_03.SM_TableTortuga_03"] = true,   -- Display Tray - Lg
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_04.SM_TableTortuga_04"] = true,   -- Display Tray - Sm
+  ["/Game/TMP/Bioms/Ashlands/Environment/Props/SM_TMP_Table_02.SM_TMP_Table_02"] = true,   -- Table - Round
+  ["/Game/Ships/Misc/SM_CaptainsTable_01.SM_CaptainsTable_01"] = true,   -- Table - Captain's Full
+  ["/Game/Ships/Misc/SM_CaptainsTable_02.SM_CaptainsTable_02"] = true,   -- Table - Captain's Half
+  ["/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Resources.SM_Table_Trader_Resources"] = true,   -- Table - Resource Trader - Empty
+  ["/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Food.SM_Table_Trader_Food"] = true,   -- Table - Food Trader - Empty
+  ["/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Animals.SM_Table_Trader_Animals"] = true,   -- Table - Animal Trader - Empty
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_01.SM_ShelfTortuga_01"] = true,   -- Shelves - Empty - Thin
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_02.SM_ShelfTortuga_02"] = true,   -- Shelves - Empty - Wide
+  ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_03.SM_ShelfTortuga_03"] = true,   -- Shelves with Scrolls
+}
+
+Config.LOOT_MESH_BASE_OFFSET = {
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board04.SM_WoodElements_01_Board04"] = { X = 7.0 },
+  ["/Game/Environment/Props/Pier/SM_WoodElements_01_Board05.SM_WoodElements_01_Board05"] = { X = 6.0 },
+}
+
+-- Per-class "no particle effects" list (see niagaraoff.lua): [classPath] = true. Every NiagaraComponent on a spawned actor of that
+-- class is deactivated and hidden on spawn AND restore. The stele's "pick-up" sparkle is FX_PickUP_Chest_01 (RedFalcon, 2026-09-30).
+-- Test live with: lbniagara list / off / on (acts on the locked target, else the last-probed actor).
+Config.NIAGARA_OFF_CLASSES = {
+  ["/Game/Gameplay/Scenario/POI/BIOMS/Swamp/FaitOfTheProphet/Ruins/BP_Sc_POI_Swamp_FaitOfTheProphet_Stele_01.BP_Sc_POI_Swamp_FaitOfTheProphet_Stele_01_C"] = true,
 }
 
 -- Decor key bindings + category data live in fkeys.lua (see that file's own header) -- merge them
@@ -971,9 +1069,20 @@ Config.SENKAMATI_LOOKS = {
 -- livingbase_debug.log/ue4ss.log showing "AI override class unresolved: BP_Mob_AIController_Crew_
 -- Officer_C" on every single Original Upright spawn/restore. The real full path already exists
 -- above for this same class (Config.CREW_AI_CONTROLLERS or similar, see the Officer entry ~line 701).
+-- 2026-09-30 (RedFalcon: "they cant fight, we should just use the regular walking AI ... like we do for marita"):
+-- these rows are cosmetic-only, so they no longer borrow the Officer CREW brain. They use the same generic ambient-wander
+-- controller the Mobile quest NPCs (Marita) use, Config.MOBILE_QUEST_NPC_AI_CONTROLLER (path inlined: that constant is
+-- defined further down this file). The AnimBP changes to the walker one as well (see below).
 Config.ORIGINAL_UPRIGHT_AI_CONTROLLER =
+    "/Game/Gameplay/Character/AI/NPC/Citizen/Walker/Behavior/BP_NPC_AIController_Citizen_Walker.BP_NPC_AIController_Citizen_Walker_C"
+-- The old controller: entries SAVED before the change carry it in persist.txt; restore remaps it to the walker brain.
+Config.ORIGINAL_UPRIGHT_AI_CONTROLLER_LEGACY =
     "/Game/Gameplay/Character/AI/Crew/Officer/Behavior/BP_Mob_AIController_Crew_Officer.BP_Mob_AIController_Crew_Officer_C"
+-- Walker AnimBP too (RedFalcon, 2026-09-30: "use walker for both") -- the same shared human NPC walk AnimBP the Mobile quest
+-- NPCs (Marita) use, Config.MOBILE_QUEST_NPC_ANIM_CLASS (inlined, defined further down). Replaces the Sailor AnimBP.
 Config.ORIGINAL_UPRIGHT_ANIM_CLASS =
+  "/Game/Character/Animation_Blueprints/Human/Regular/NPC/ABP_Human_NPC.ABP_Human_NPC_C"
+Config.ORIGINAL_UPRIGHT_ANIM_CLASS_LEGACY =
   "/Game/Character/Animation_Blueprints/Human/Regular/BlackBeard/ABP_BlackBeard_Regular_Sailor.ABP_BlackBeard_Regular_Sailor_C"
 
 -- DECORRUPT_MOB_ORIGINAL_UPRIGHT_CASTER is defined further down, right after Config.DECORRUPT_MOB
@@ -4008,6 +4117,14 @@ Config.INTERACTIVE_STATUES = {
 -- Detection is free: NotifyOnNewObject fires the instant the boar is constructed (technique learned
 -- from PlagueWitchPet_FollowHelper). Only the BASE tier is touched; Lvl2 is left alone.
 ------------------------------------------------------------------
+-- PROTECT_STRUCTURES: make every building block invulnerable so hostile mobs (and anything else)
+-- can't damage the base. RESTORED 2026-09-28 (RedFalcon: "when we started we had a mode that made
+-- building items were not destructible. I removed it when i removed blackbeard") -- was standalone
+-- back through v2.0.0 too (see Spawner.ShieldStructure's own header comment for why it was never
+-- actually raid-specific), fully removed in v2.1.0 purely for maintenance-burden reasons, not
+-- because it didn't work. Runtime-only (resets on reload, re-applied on the next mod load).
+Config.PROTECT_STRUCTURES = true
+
 Config.WHISTLE_CREW = false        -- SHIPPED DEFAULT: OFF. Enable in config.txt.
 Config.WHISTLE_PET_CLASS_PATH =
   "/Game/Gameplay/Character/AI/Mob/Boar/Friend/BP_Mob_Boar_Friend.BP_Mob_Boar_Friend_C"

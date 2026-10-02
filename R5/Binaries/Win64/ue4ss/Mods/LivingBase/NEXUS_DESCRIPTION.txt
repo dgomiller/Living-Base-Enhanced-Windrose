@@ -1,6 +1,21 @@
 [size=5][b]Living Base Enhanced[/b][/size]
 [color=#D4D4D8]A base-building, population, and character-customization toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base; build a fully custom character from scratch and dress it piece by piece; set up a camera and lighting rig for screenshots; and have it all persist across reloads. The ONLY way to spawn, move, or customize anything is a real clickable GUI window — press '-' (Numpad Minus) in-game to open it.[/color]
 
+[size=4][b]What's new in 3.0.5[/b][/size]
+[color=#D4D4D8]
+[b]New Text tab: write on signs, chests and more[/b] — aim at a text object and press Delete (or click Select Object), type up to four lines, then Apply, Clear or Reset. Works on signs, wooden chests, bales, boxes, barrels and sacks, plus a new Additional Items list: Sign Post, Wall Flag 1-4, Board 1-3 (one line) and the Obelisk (boards and obelisk are solid). Choose a colour (ten presets plus last used), a font (Greengoth, Script or built-in; the two custom fonts come in a small pak included in the download) and tick Add Glow for text that ignores lighting. Text is saved per world and returns on load.
+
+[b]Custom tab camera: Decor View, orbit and zoom[/b] — a new Decor View button frames any decor object from a distance based on its size; Full Body and Face View are now for people and animals only. The orbit buttons gain + and - zoom, and all four repeat while held. While a Custom view is active, Photo Mode's move pad, rotate arrows, FOV slider and Reset also steer it.
+
+[b]Custom water features and furniture[/b] — Decor > Misc > Water has flat water planes, the fountain's water flow, spouts, spray and splash effects and three empty solid fountains for building your own pools and fountains; Decor > Furniture gains ten tables/display trays and a new Shelving folder. New console command: lbhelp find <text>.
+
+[b]More[/b] — spawn tree filter box, Object Scale for decor, GUI Scale dropdown (0.5x-3x), new decor (Shackles, Dead Prisoner 1-3), Barbie picker characters spawn exactly as built, frozen Idle rows re-freeze immediately on reload, Original Upright Senkamati use the Marita-style walker AI, the Swamp stele sparkle is gone, and Numpad Minus no longer re-opens the window after closing it.
+
+[b]Fixed[/b] — a crash while applying sign text (and some arrow-key moves and customization changes): the mod now pauses its background timers during heavy game work and idles its GUI polling while the window is closed. World-reload hardening too. Runs on the stock UE4SS posted on Nexus.
+
+[b]Note[/b] — don't use the lbreload console command to apply changes (a reload can leave timers stale and freeze the GUI); restart the game instead. Update both mod folders (LivingBase and LivingBaseSpawnMenu) together.
+[/color]
+
 [size=4][b]What's new in 3.0.0 — MAJOR REWORK[/b][/size]
 [color=#D4D4D8]This release changed enough that it's easier to treat as a new baseline than as an incremental diff.
 
@@ -52,6 +67,10 @@ Everything from the previous preview/relocate/statue-targeting rebuild and the f
 
 [b]Target List tab[/b] — scans tracked actors within a chosen radius (3/5/8/10/15m), filtered by People/Monsterous/Animals/Decor, listed nearest-first with a "+" to lock any one directly — even something out of view. A "Mark Target" checkbox highlights whatever's locked (a glowing marker on decor, a following flame-ring effect on people/animals/monsters) until unchecked or untargeted.
 
+[b]Text tab[/b] — write up to four lines on signs, wooden chests, bales, boxes, barrels, sacks, the Sign Post, wall flags, one-line boards and the obelisk. Per-sign colour, font (Greengoth, Script, built-in) and glow; Clear erases just the text, Reset wipes every customization; everything is saved per world.
+
+[b]Structure shield[/b] — building blocks are invulnerable to damage by default (config.txt toggle), protecting your base from hostile mobs. Applied instantly to newly-placed blocks and swept over the base shortly after each load.
+
 [b]No more duplicate spawns on load[/b] — every mod key and the GUI's buttons are locked from the moment a world load starts until your base finishes restoring.
 
 [b]Per-world saves[/b] — if you play more than one Windrose world, each one keeps its own separate base save automatically.
@@ -78,7 +97,7 @@ Back up your saves before first use — standard caution for an Early Access gam
 [color=#D4D4D8]
 [list]
 [*]Windrose (Kraken Express) — single-player. Built against the current Early Access build.
-[*]UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise.
+[*]UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise. Tested on the stock experimental build posted on Nexus -- no patched UE4SS needed.
 [*]No other mods required.
 [*]Note: this is an unofficial mod, so a game patch may change internal class paths (all centralized in config.lua for quick fixing). Keep save backups.
 [/list]

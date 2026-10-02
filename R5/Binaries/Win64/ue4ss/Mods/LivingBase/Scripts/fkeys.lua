@@ -98,7 +98,13 @@ FKeys.DECOR_ORDER = {
   "new_drops_treasure",
   "new_drops_weapons",
   "new_drops_wood",
-  "new_drops_writings"
+  "new_drops_writings",
+  -- Water planes (2026-10-01, RedFalcon): Decor > Misc > Water, appended at the very end so no existing index shifts.
+  "new_misc_water",
+  -- Furniture > Tables, more (2026-10-01): trailing category mapped to the existing Furniture > Tables folder, so no existing index shifts.
+  "new_furniture_tables_more",
+  -- Furniture > Shelving (2026-10-01): trailing category, a new folder, so no existing index shifts.
+  "new_furniture_shelving"
 }
 
 -- DECORATIONS: static world props placed as scenery — dodo nests, mushroom clusters, shipwrecks,
@@ -604,6 +610,11 @@ FKeys.DECOR_CATEGORIES = {
     { name = "BP_Shared_PirateProps_01", label = "Effigy with Hook", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/FillingProps/Pirate/BP_Shared_PirateProps_01.BP_Shared_PirateProps_01_C" },
     { name = "BP_BrokenStockade_Flag_01", label = "Stockade Flag", zoffset = 0.0, path = "/Game/Gameplay/POI/CoastJungle/CoastJungle_Props/BP_BrokenStockade_Flag_01.BP_BrokenStockade_Flag_01_C" },
     { name = "BP_Shared_DestructibleStructures_WoodenTrough_01", label = "Trough", zoffset = 0.0, path = "/Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/CampProps/BP_Shared_DestructibleStructures_WoodenTrough_01.BP_Shared_DestructibleStructures_WoodenTrough_01_C" },
+    -- Appended 2026-09-29, RedFalcon: a raw static-mesh piece (via lbtestmesh, same R5LootActor
+    -- wrapper Decor > Drops' own mesh-based entries above already use) -- added at this array's own
+    -- trailing end so no existing decor entry's flattened index shifts, per this project's own
+    -- "Decor Order Append Only" rule.
+    { name = "SM_Shackles_01", label = "Shackles", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/RuinsTEMP/SM_Shackles_01.SM_Shackles_01_C" },
   },
   -- NewItems.xlsx batch (2026-09-25): Decor > Clutter > Water Goods (4)
   new_clutter_water_goods = {
@@ -637,6 +648,11 @@ FKeys.DECOR_CATEGORIES = {
     { name = "BP_ChestVisual_Shared_Boneman_Pirate_01", label = "Skeleton Pirate - Sitting Cobwebs 1", zoffset = 0.0, path = "/Game/Gameplay/Scenario/POI/ChestVisual/BP_ChestVisual_Shared_Boneman_Pirate_01.BP_ChestVisual_Shared_Boneman_Pirate_01_C" },
     { name = "BP_BrokenStockade_SkeletonComposition_01", label = "Skeleton Pole", zoffset = 0.0, path = "/Game/Gameplay/POI/CoastJungle/CoastJungle_Props/BP_BrokenStockade_SkeletonComposition_01.BP_BrokenStockade_SkeletonComposition_01_C" },
     { name = "BP_BrokenStockade_SkeletonComposition_02", label = "Skeleton Strung Up", zoffset = 0.0, path = "/Game/Gameplay/POI/CoastJungle/CoastJungle_Props/BP_BrokenStockade_SkeletonComposition_02.BP_BrokenStockade_SkeletonComposition_02_C" },
+    -- Appended 2026-09-29, RedFalcon: 3 raw static-mesh pieces (via lbtestmesh), same wrapper/
+    -- trailing-append reasoning as new_clutter_misc's Shackles entry above.
+    { name = "SM_PrisonerStand_01", label = "Dead Prisoner 1", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/RuinsTEMP/SM_PrisonerStand_01.SM_PrisonerStand_01_C" },
+    { name = "SM_PrisonerStand_02", label = "Dead Prisoner 2", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/RuinsTEMP/SM_PrisonerStand_02.SM_PrisonerStand_02_C" },
+    { name = "SM_PrisonerStand_03", label = "Dead Prisoner 3", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/RuinsTEMP/SM_PrisonerStand_03.SM_PrisonerStand_03_C" },
   },
   -- NewItems.xlsx batch (2026-09-25): Decor > Drops > Belt Bags (15)
   new_drops_belt_bags = {
@@ -1588,6 +1604,64 @@ FKeys.DECOR_CATEGORIES = {
     { name = "SM_Belt_Misc_Book_01", label = "Book", zoffset = 20.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Character/Skeletal_Meshes/Armor/ArmorRegular/Belt/Miscs/SM_Belt_Misc_Book_01.SM_Belt_Misc_Book_01" },
     { name = "SM_LootT02_CultistNoteBlood_01", label = "Cultist Note - Bloody", zoffset = 20.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Resources/Loot/SM_LootT02_CultistNoteBlood_01.SM_LootT02_CultistNoteBlood_01" },
     { name = "SM_LootT01_PirateOrders_01", label = "Pirate Orders", zoffset = 20.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Resources/Loot/SM_LootT01_PirateOrders_01.SM_LootT01_PirateOrders_01" },
+  },
+  -- Decor > Misc > Water (2026-10-01): the fountain's own flat water meshes (they already carry MI_ObjectWater_CleanGreen_01), spawned as loot-mesh decor.
+  new_misc_water = {
+    { name = "SM_WaterPlane_01_LOD0", label = "Circle Water", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_WaterPlane_01_LOD0.SM_WaterPlane_01_LOD0" },
+    { name = "SM_WaterPlane_02_LOD0", label = "Octagon Water", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_WaterPlane_02_LOD0.SM_WaterPlane_02_LOD0" },
+    { name = "SM_WaterPlane_03_LOD0", label = "Archlike Water", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_WaterPlane_03_LOD0.SM_WaterPlane_03_LOD0" },
+    { name = "SM_WaterPlane_04_LOD0", label = "Semicircular Water", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_WaterPlane_04_LOD0.SM_WaterPlane_04_LOD0" },
+    { name = "SM_FountainShockDisk", label = "Water Flow - Circle", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/FX/Materials/Distortion/DistortionWave/SM_FountainShockDisk.SM_FountainShockDisk" },
+    { name = "SM_Fountain_HR_02", label = "Water Spout - Upward", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/FX/Meshes/Buildings/Fountain/SM_Fountain_HR_02.SM_Fountain_HR_02" },
+    { name = "FX_Fountain_Sprite_03", label = "Fountain Spray - Lg", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_03.FX_Fountain_Sprite_03" },
+    { name = "FX_Fountain_Sprite_03b", label = "Fountain Spray - Sm", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_03b.FX_Fountain_Sprite_03b" },
+    { name = "FX_Fountain_Tube", label = "Water Spout - Side Sm", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Tube.FX_Fountain_Tube" },
+    { name = "FX_Fountain_Sprite_Smaller_Impact_01", label = "Water Splashes - Single", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_Smaller_Impact_01.FX_Fountain_Sprite_Smaller_Impact_01" },
+    { name = "FX_Fountain_Sprite_Small_01", label = "Water Splashes - Sm", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_Small_01.FX_Fountain_Sprite_Small_01" },
+    { name = "FX_Fountain_Sprite_Large_01b", label = "Water Splashes - Md", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_Large_01b.FX_Fountain_Sprite_Large_01b" },
+    { name = "FX_Fountain_Sprite_Large_01", label = "Water Splashes - Lg", zoffset = 0.0, path = "/Script/Niagara.NiagaraActor", fx = "/Game/FX/Particles/Buildings/Fountain/FX_Fountain_Sprite_Large_01.FX_Fountain_Sprite_Large_01" },
+    { name = "SM_GardenFountain_01", label = "Empty Small Fountain", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01" },
+    { name = "SM_GardenFountain_02", label = "Empty Medium Fountain", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_02.SM_GardenFountain_02" },
+    { name = "SM_GardenFountain_03", label = "Empty Large Fountain", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_03.SM_GardenFountain_03" },
+  },
+  -- Decor > Furniture > Tables (2026-10-01): raw table meshes (lbtestdropmesh recipe), made solid via Config.LOOT_MESH_SOLID.
+  new_furniture_tables_more = {
+    { name = "SM_TableTortuga_01", label = "Table - Merchant Empty", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_01.SM_TableTortuga_01" },
+    { name = "SM_TableTortuga_02", label = "Table - Merchant Empty with Fur Display", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_02.SM_TableTortuga_02" },
+    { name = "SM_TableTortuga_03", label = "Display Tray - Lg", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_03.SM_TableTortuga_03" },
+    { name = "SM_TableTortuga_04", label = "Display Tray - Sm", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_TableTortuga_04.SM_TableTortuga_04" },
+    { name = "SM_TMP_Table_02", label = "Table - Round", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Bioms/Ashlands/Environment/Props/SM_TMP_Table_02.SM_TMP_Table_02" },
+    { name = "SM_CaptainsTable_01", label = "Table - Captain's Full", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Ships/Misc/SM_CaptainsTable_01.SM_CaptainsTable_01" },
+    { name = "SM_CaptainsTable_02", label = "Table - Captain's Half", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Ships/Misc/SM_CaptainsTable_02.SM_CaptainsTable_02" },
+    { name = "SM_Table_Trader_Resources", label = "Table - Resource Trader - Empty", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Resources.SM_Table_Trader_Resources" },
+    { name = "SM_Table_Trader_Food", label = "Table - Food Trader - Empty", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Food.SM_Table_Trader_Food" },
+    { name = "SM_Table_Trader_Animals", label = "Table - Animal Trader - Empty", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Workbenches/SM_Table_Trader_Animals.SM_Table_Trader_Animals" },
+  },
+  -- Decor > Furniture > Shelving (2026-10-01): raw shelf meshes, solid via Config.LOOT_MESH_SOLID.
+  new_furniture_shelving = {
+    { name = "SM_ShelfTortuga_01", label = "Shelves - Empty - Thin", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_01.SM_ShelfTortuga_01" },
+    { name = "SM_ShelfTortuga_02", label = "Shelves - Empty - Wide", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_02.SM_ShelfTortuga_02" },
+    { name = "SM_ShelfTortuga_03", label = "Shelves with Scrolls", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_03.SM_ShelfTortuga_03" },
+  },
+  -- SPECIAL ITEMS (2026-09-29, RedFalcon: a "Special Items" dropdown + Spawn button on the Signs tab, just "Sign Post" for now).
+  -- DELIBERATELY not in FKeys.DECOR_ORDER: the Spawn tab's Decor tree flattens by DECOR_ORDER, so this stays out of the tree
+  -- and shifts no existing spawn_menu.ini index. It is still in DECOR_CATEGORIES, which is what Spawner.IsDecorClass reads, so
+  -- a Sign Post gets the full decor treatment (solid collision, movable, Object Scale, restore) like any other prop.
+  -- Spawned via Testbed.SpawnSpecialByName from main.lua's SPECIAL_ITEMS handler. The pole sign's plain-wood material comes
+  -- from Config.MATERIAL_OVERRIDES.
+  special_items = {
+    { name = "BP_SignCacheTMP_01", label = "Sign Post", zoffset = 0.0, path = "/Game/Environment/Props/POIElements/BP_SignCacheTMP_01.BP_SignCacheTMP_01_C" },
+    -- 2026-09-30 (RedFalcon): raw static-mesh pieces that can carry text, spawned through the same R5LootActor + SetLootMesh +
+    -- MakeLootDecor path as lbtestmesh. Order MUST match SignMenu.cpp's kSpecialItems and main.lua's SPAWN_MENU_SPECIAL_ITEMS. The
+    -- banner and boards need a base rotation on the mesh (Config.LOOT_MESH_BASE_ROT, applied inside Spawner.SetLootMesh).
+    { name = "SM_FlagWall_01", label = "Wall Flag 1", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_FlagWall_01.SM_FlagWall_01" },
+    { name = "SM_FlagWall_02", label = "Wall Flag 2", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_FlagWall_02.SM_FlagWall_02" },
+    { name = "SM_FlagWall_03", label = "Wall Flag 3", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_FlagWall_03.SM_FlagWall_03" },
+    { name = "SM_FlagWall_04", label = "Wall Flag 4", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_FlagWall_04.SM_FlagWall_04" },
+    { name = "SM_WoodElements_01_Board02", label = "Board 1 (One line)", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Pier/SM_WoodElements_01_Board02.SM_WoodElements_01_Board02" },
+    { name = "SM_WoodElements_01_Board04", label = "Board 2 (One line)", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Pier/SM_WoodElements_01_Board04.SM_WoodElements_01_Board04" },
+    { name = "SM_WoodElements_01_Board05", label = "Board 3 (One line)", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Pier/SM_WoodElements_01_Board05.SM_WoodElements_01_Board05" },
+    { name = "SM_Obelisk", label = "Obelisk", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Obelisk/SM_Obelisk.SM_Obelisk" },
   },
 }
 

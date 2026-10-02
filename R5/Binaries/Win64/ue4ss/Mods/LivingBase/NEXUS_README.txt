@@ -7,11 +7,12 @@
 
 [size=4][b]Requirements / install[/b][/size]
 [color=#D4D4D8][list]
-[*]UE4SS (latest experimental / GitHub RE-UE4SS build) with [EngineVersionOverride] MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini.
+[*]UE4SS (latest experimental / GitHub RE-UE4SS build) with [EngineVersionOverride] MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini. Tested on the stock experimental build posted on Nexus; no patched UE4SS is needed.
+[*]Included: the LivingBaseSignFonts pak (Greengoth and Script sign fonts) installs to …\R5\Content\Paks\~mods\. Delete it and signs use the game's built-in font.
 [*]This download contains TWO mod folders — install both: …\R5\Binaries\Win64\ue4ss\Mods\LivingBase\ (the mod itself) and …\R5\Binaries\Win64\ue4ss\Mods\LivingBaseSpawnMenu\ (the GUI window). LivingBaseSpawnMenu is optional in principle — LivingBase works fine with only keyboard controls if you skip it — but it's the intended way to use the mod now.
 [*]Enable both with mods.txt lines: LivingBase : 1 and LivingBaseSpawnMenu : 1 (an empty enabled.txt in each mod's own folder also works).
 [*]Load into a game world. Press '-' to open the GUI, or use the keyboard controls below directly.
-[*]Hot reload: run the lbreload console command to reload LivingBase's scripts without restarting the game or the world (see Console Commands below). UE4SS's own Ctrl+R hot-reload keybind does NOT work in this game — Windrose's native Dodge action is bound to plain Ctrl and claims it before UE4SS's key-hook layer ever sees a Ctrl+X combo reach it, so lbreload exists specifically as the working replacement. Note it wipes the mod's in-memory tracking — despawn (Delete) before running it, or just reload the world; placement keys re-recover tracking from the ledger automatically. (lbreload only reloads LivingBase's Lua — LivingBaseSpawnMenu is a compiled DLL and needs a full game restart to pick up an update.)
+[*]Hot reload: run the lbreload console command to reload LivingBase's scripts without restarting the game or the world (see Console Commands below). UE4SS's own Ctrl+R hot-reload keybind does NOT work in this game — Windrose's native Dodge action is bound to plain Ctrl and claims it before UE4SS's key-hook layer ever sees a Ctrl+X combo reach it, so lbreload exists specifically as the working replacement. Note it wipes the mod's in-memory tracking — despawn (Delete) before running it, or just reload the world; placement keys re-recover tracking from the ledger automatically. (lbreload only reloads LivingBase's Lua — LivingBaseSpawnMenu is a compiled DLL and needs a full game restart to pick up an update.) [b]Caution:[/b] prefer restarting the game over lbreload -- a reload can leave the mod's background timers stale, which freezes the GUI window until you relaunch.
 [/list][/color]
 
 [size=4][b]The GUI (LivingBaseSpawnMenu)[/b][/size]
@@ -133,8 +134,10 @@ lblook list / lblook list <category> / lblook list all — Lists categories (cre
 
 lbspawn <ShortName|full /Game/... path> — Spawns a raw engine class, with none of this mod's re-skin/de-corrupt/pacify recipe applied — just the game's own default look/behavior. Short names resolve through a generated index of ~2,500 known BP_ classes; anything not in that index needs the full path (e.g. lbspawn BP_Mob_Wolf).
 lbspawn list / lbspawn list <category> / lbspawn list all — Same idea, for LivingBase's own statue/decor rosters specifically — reference only, not a guarantee those exact names resolve as short-name input.
+lbhelp find <text> — Searches every LivingBase console command by name, usage or description (for example: lbhelp find fx).
+Decor > Misc > Water / Furniture — flat water planes, the fountain's water and spray/splash effects and three empty solid fountains for building your own pools; ten new tables and display trays and a Shelving folder. New Floor Clipping placements start 650 uu out.
 
-lbreload — Reloads LivingBase's Lua from disk without restarting the game or reloading the world — picks up script edits immediately. Doesn't affect content-pak changes or the GUI's own compiled DLL (both need a full relaunch); tracked spawns recover automatically afterward.
+lbreload — Reloads LivingBase's Lua from disk without restarting the game or reloading the world — picks up script edits immediately. Doesn't affect content-pak changes or the GUI's own compiled DLL (both need a full relaunch); tracked spawns recover automatically afterward. [b]Caution:[/b] prefer restarting the game over lbreload -- a reload can leave the mod's background timers stale, which freezes the GUI window until you relaunch.
 
 lbunlockclothes — Toggles the Custom > Clothes fit-safety net on/off (see the Custom category section above) — off by default. Prints a one-time caveat when turned on: an unlocked piece/body combination hasn't been visually reviewed and may clip.
 

@@ -1,0 +1,36 @@
+Living Base Enhanced v3.0.5 (previous version on Nexus: v3.0.0)
+
+Full breakdown in the shipped CHANGELOG.txt and README.md; highlights below.
+
+===== NEW "TEXT" TAB: WRITE ON SIGNS, CHESTS AND MORE =====
+
+Aim at a text object and press Delete (or click Select Object), type up to four lines, then Apply / Clear / Reset. Works on wooden labels, wooden chests, bales, boxes, barrels and sacks, plus a new Additional Items list: Sign Post, Wall Flag 1-4, Board 1-3 (one line) and the Obelisk (boards and obelisk are solid). Pick a colour (ten presets plus last used), a font (Greengoth, Script or built-in), and tick Add Glow for text that ignores lighting. Text is saved per world and comes back on load. The two custom fonts ship in a small pak included in the download; delete it and signs use the built-in font.
+
+===== CUSTOM TAB CAMERA: DECOR VIEW, ORBIT AND ZOOM =====
+
+A new Decor View button frames any decor object from a distance based on its size. Full Body and Face View are now for people/animals only. The orbit buttons gain + and - zoom, and all four repeat while held. While a Custom view is active, Photo Mode's move pad, rotate arrows, FOV slider and Reset also steer it.
+
+===== NEW CUSTOM WATER FEATURES AND FURNITURE =====
+
+Decor > Misc > Water has flat water planes (circle, octagon, arch, semicircle), the fountain's water flow, spouts, spray and splash effects, and three empty solid garden fountains -- pieces for building your own pools and fountains. Decor > Furniture gains ten tables and display trays plus a new Shelving folder (three shelves); all solid. New console command: lbhelp find <text> searches every command by name, usage or description.
+
+===== MORE =====
+
+- Spawn tree filter box, Object Scale (decor), GUI Scale dropdown (0.5x-3x), new decor (Shackles, Dead Prisoner 1-3).
+- Barbie picker characters spawn exactly as built (no underwear strip, no automatic customization entry).
+- Frozen "Idle" rows re-freeze immediately on reload; Original Upright Senkamati use the Marita-style walker AI; the Swamp stele sparkle is gone.
+- Numpad Minus no longer re-opens the window after closing it.
+- Sign text fills the board (short words are as large as the board allows); saved text is refilled in line at the end of the world restore with a count, for build-mode signs too; moving a spawned sign keeps its text.
+- Floor Clipping placements start 650 uu out (was 450).
+
+===== FIXED =====
+
+- A crash while applying sign text (and some arrow-key moves / customization changes): the mod now pauses its background timers during heavy game work, idles its GUI polling while the window is closed, and drops about 25 retired test-command loops.
+- World reload hardening (pre-loaded classes, one-at-a-time spawning, a legacy save-file migration bug); a restore can no longer run its mover pass more than once; older frozen Idle actors (Sow, Thomas Richards, Marita) come back frozen.
+- The Decor section of spawn_menu.ini is repaired (curated names and order restored; the Shackles/Dead Prisoner insert no longer shifts later items).
+
+===== NOTES =====
+
+- Runs on the stock UE4SS posted on Nexus; no patched UE4SS needed.
+- Do not use the lbreload console command to apply changes -- reloading can leave the mod's timers stale and freeze the GUI until you relaunch. Restart the game instead.
+- Update BOTH mod folders together (LivingBase and LivingBaseSpawnMenu).

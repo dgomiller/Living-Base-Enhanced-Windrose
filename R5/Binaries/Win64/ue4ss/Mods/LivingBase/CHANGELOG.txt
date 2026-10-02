@@ -1,6 +1,104 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v3.0.5 (2026-10-01) -- previous version: v3.0.0
+======================================================================
+
+ADDED -- New "Text" tab: write on signs, chests and more
+- Aim at a text object and press Delete (or click "Select Object") to select it, type up to
+  four lines, then Apply / Clear / Reset. Clear erases only the text and keeps the colour/font;
+  Reset wipes every customization back to default. The number of characters per line follows the
+  width of the text box, so what you type is what fits.
+- Works on signs (wooden labels), Wooden Chests, Bale, Box, Barrel and Sack, plus the new
+  Additional Items below (the boards take a single line). Text, colour, font and glow are saved per world and come back on
+  load (a "Populating Signs" progress toast shows while they are re-applied to spawned props).
+- Three fonts per sign: Greengoth (default), Script and the game's built-in font. The two custom
+  fonts ship in a small pak included in this download (LivingBaseSignFonts, in R5\Content\Paks\~mods\,
+  licences in FONT_CREDITS.txt); delete it and every sign quietly uses the built-in font.
+- Colour picker with ten presets plus the last colour used, and an "Add Glow" checkbox (text that
+  ignores scene lighting).
+- Additional Items dropdown (spawn them from the Text tab): Sign Post, Wall Flag 1-4, Board 1-3
+  (One line) and Obelisk. The boards and the obelisk are solid; the wall flags can be walked
+  through. Each is placed with the normal spawn/confirm flow and is target-locked AND selected for
+  text the moment you place it. Locking anything with Numpad + that can carry text also selects it
+  in the Text tab.
+
+ADDED -- Custom tab camera: Decor View, orbit and zoom
+- New Decor View button (only for decor targets): looks at the centre of the object from a
+  distance based on its largest dimension, level, starting on the side you are looking from.
+  Full Body and Face View are now for non-decor targets only.
+- The orbit row is now < > + - : < > orbit around the target, + - zoom in/out (5% of the starting
+  distance per press, with limits). All four repeat while held, like the move buttons, and work
+  for Full Body and Face View too.
+- While a Custom view is active, the Photo Mode tab's move pad, Rotate arrows, FOV slider and
+  Reset also drive it (not Coords or Selfie). Nothing persists: every new view starts fresh, and
+  locking a different object ends the view and returns the normal camera.
+
+ADDED -- Custom water features and furniture (Decor > Misc > Water, Decor > Furniture)
+- Decor > Misc > Water: four flat water planes (Circle, Octagon, Archlike, Semicircular), the fountain's
+  water flow and upward spout, three empty (solid) garden fountains, and the fountain's spray, splash and
+  side-spout particle effects -- for building your own pools and fountains. The particle effects are placed
+  and saved like any other decor.
+- Decor > Furniture > Tables: ten new tables and display trays (merchant, captain's, trader and round
+  tables); Decor > Furniture > Shelving (new): three Tortuga shelves. All are solid.
+- New console command: lbhelp find <text> searches every console command by name, usage or description
+  (for example "lbhelp find fx"). The sign commands and lbunlock now appear in lbhelp too.
+
+ADDED -- Spawn menu and Move tab
+- Spawn tree filter box (with a red X) replaces the old Refresh button.
+- Object Scale (Move tab): resize decor objects with +/- buttons.
+- GUI Scale dropdown (0.5x - 3x); the window height is capped to the monitor.
+- New decor: Shackles and Dead Prisoner 1-3. Spawn tab: the green Confirm button spans two rows,
+  with Spawn/Move/Replace above Cancel/Despawn/Undo.
+- New console commands: lbunlock (re-run the hidden build-piece unlock scan), lbmeshshift (tune
+  where a spawned loot mesh sits relative to its actor), lbsolid [on|off] (test whether a placed
+  mesh blocks you), lbniagara (turn an object's particle effect off/on), lbtestsigntext and
+  lbsignmargin (sign layout tuning).
+
+CHANGED
+- Barbie picker characters now spawn exactly as built: no underwear strip and no automatic default
+  customization entry, so your own customizations are never affected by the spawn.
+- Idle rows (frozen animals/monsters/NPCs) now re-freeze immediately on reload instead of walking
+  until their restore pass finishes.
+- Original Upright Senkamati (Warrior, Hunter, Thrall, Caster) now use the Marita-style walker AI and
+  animation, like the other upright variants.
+- The Swamp stele's pick-up sparkle effect is removed.
+- The hidden build-piece unlock now stops scanning once it has confirmed everything is unlocked,
+  instead of repeating.
+- The GUI window refuses to close while a Photo Mode time change is running (with a safety timeout),
+  and an aborted time change restores the original day speed.
+- Numpad Minus no longer re-opens the window right after closing it.
+- Sign text now fills the board: short words are as large as the board's height and width allow (the old
+  per-sign size caps are gone). The built-in font keeps its own cap of 25.
+- Saved sign text is refilled in line at the end of the world restore ("Populating Signs n/N"), for
+  build-mode signs and chests as well as spawned items, instead of waiting for a background timer.
+  Moving a spawned sign after writing on it no longer loses its text on reload.
+- Wall Flag 2's text board is now 80 x 100.
+- New placements in Floor Clipping mode now start 650 uu from the camera (was 450).
+
+FIXED -- Stability
+- A crash that struck mid-way through applying sign text (and some arrow-key moves and
+  customization changes) is fixed. Cause: the mod's background timers ran at the same moment as
+  heavy game work. The mod now pauses its timers during that work, idles its GUI polling while the
+  window is closed, and no longer runs about 25 retired test-command loops (Config.EXPERIMENT_LOOPS).
+- World reload: classes are pre-loaded and spawned one at a time, a belt-array crash site is fixed,
+  decor/Senkamati warm-up assets are loaded ahead of time, and a legacy save-file migration bug that
+  could re-import old data into a brand-new world is fixed.
+- The mod now runs on the stock UE4SS posted on Nexus -- no patched UE4SS is needed.
+- Idle (frozen) actors saved by an older version, such as Sow, Thomas Richards and Marita, now come back frozen
+  after a world load instead of walking off.
+- A world-load restore can no longer run its mover/customization passes more than once.
+- The Decor section of spawn_menu.ini was repaired: the curated names and order are restored, and rows added
+  after the 3.0.0 ini (Shackles, Dead Prisoner 1-3) no longer shift later items onto the wrong spawn.
+
+NOTES
+- Run the game on the stock UE4SS (experimental build from Nexus). Do NOT use the lbreload console
+  command to apply changes: reloading can leave the mod's timers stale, which freezes the GUI until
+  you relaunch. Restart the game instead.
+- Because the GUI window is a compiled companion (LivingBaseSpawnMenu), update both mod folders
+  together; a Lua-only update with an old companion will mis-number the Additional Items list.
+
+======================================================================
 v3.0.0 (2026-09-26) -- previous version: v2.1.7.1 -- MAJOR REWORK
 ======================================================================
 
@@ -96,6 +194,13 @@ FIXED -- Non-statue characters (Senkamati, named NPCs) now nudge relative to the
   character (crew reskins, named NPCs) incorrectly moved along a fixed world axis instead,
   the same as decor. Now any character moves relative to whichever way it's facing, matching
   statue behavior; decor is unchanged.
+
+RESTORED -- Structure shield (PROTECT_STRUCTURES), independent of the old Blackbeard raid
+- Building blocks are invulnerable to damage again (on by default -- config.txt toggle),
+  the same mechanism removed in v2.1.0 alongside the Blackbeard raid feature. It was never
+  actually tied to the raid's own logic -- it shields the block itself against damage from
+  any source, so it protects the base from ordinary hostile mobs exactly as it always did.
+  Applied instantly to newly-placed blocks and swept over the base shortly after each load.
 
 Everything from the v3.0.0 (2026-08-22) preview/relocate/statue-targeting rebuild, and the
 first version of the "Custom" GUI category (Poses/Skin Tones/Hair/Clothes), also ships in

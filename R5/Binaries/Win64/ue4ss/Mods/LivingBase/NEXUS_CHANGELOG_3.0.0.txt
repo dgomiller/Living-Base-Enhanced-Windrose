@@ -35,4 +35,8 @@ A new "Mark Target" checkbox on this tab highlights whatever's currently locked 
 - The GUI window no longer confuses Steam's F12 screenshot / FPS counter -- it now waits a few seconds before creating its own render device, so the game's real one gets recognized first. The window takes a moment to appear after loading; this is expected.
 - Live-edit movement now moves any character (not just statues) relative to its own facing direction -- Senkamati crew and named NPCs previously moved along a fixed world axis instead, the same as decor.
 
+===== RESTORED =====
+
+- Structure shield: building blocks are invulnerable to damage again (on by default -- config.txt toggle), independent of the old Blackbeard raid feature it originally shipped alongside. Protects the base from ordinary hostile mobs, applied instantly to newly-placed blocks and swept over the base shortly after each load.
+
 Everything from the previous preview/relocate/statue-targeting rebuild and the first "Custom" GUI category also ships in this release, superseded in UX by the Customize tab above but unchanged in underlying behavior.

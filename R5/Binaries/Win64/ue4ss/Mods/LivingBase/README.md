@@ -22,7 +22,11 @@ REQUIREMENTS / INSTALL
 ======================================================================
 
 - UE4SS (latest experimental / GitHub RE-UE4SS build) with [EngineVersionOverride]
-  MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini.
+  MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini. Tested on the stock experimental UE4SS posted
+  on Nexus -- no patched or self-built UE4SS is needed.
+- Included: the LivingBaseSignFonts pak (Greengoth and Script sign fonts, see FONT_CREDITS.txt) installs
+  to ...\R5\Content\Paks\~mods\. Delete LivingBaseSignFonts-Windows.* there and signs use the game's
+  built-in font instead.
 - This download contains TWO mod folders -- install both:
     ...\R5\Binaries\Win64\ue4ss\Mods\LivingBase\ -- the mod itself (Lua).
     ...\R5\Binaries\Win64\ue4ss\Mods\LivingBaseSpawnMenu\ -- the GUI window (compiled). Required
@@ -42,6 +46,9 @@ REQUIREMENTS / INSTALL
   it, or just reload the world; placement/spawn actions re-recover tracking from the ledger
   automatically. (lbreload only reloads LivingBase's Lua -- LivingBaseSpawnMenu is a compiled DLL
   and needs a full game restart to pick up an update.)
+  CAUTION: prefer restarting the game over lbreload. A reload can leave the mod's background
+  timers stale, which freezes the GUI window (it stops responding and Numpad Minus can't bring it
+  back) until the game is relaunched.
 
 ======================================================================
 THE GUI (LivingBaseSpawnMenu)
@@ -134,6 +141,42 @@ live-updating distance readout shows how far away whatever's locked currently is
 Mark Target checkbox -- while checked, highlights whatever's currently locked: a glowing marker
 material on decor, or a following flame-ring effect (on people, animals, and monsters) that tracks
 the target as it moves. Automatically clears when unchecked or when nothing's targeted.
+
+Text (Delete)
+----------------------------------------------------------------------
+Write on signs and other objects. Aim at a text object and press Delete or click "Select Object"
+(Numpad + lock also selects it, and so does placing one). Type up to four lines -- the characters
+per line follow the width of the text box -- then Apply to assign the text, Clear to erase just the
+text (colour and font are kept), or Reset to remove every customization.
+
+  Valid objects   Signs (wooden labels), Wooden Chests, Bale, Box, Barrel, Sack and everything
+                  in the Additional Items dropdown: Sign Post, Wall Flag 1-4, Board 1-3 (One line)
+                  and Obelisk. The boards and obelisk are solid; the wall flags are not.
+  Font            Greengoth (default), Script, or Built-in. The first two need the optional
+                  LivingBaseSignFonts pak included in the download; if you delete it the built-in font is used.
+  Text colour     A colour picker, ten presets and the last colour used. "Add Glow" makes the text
+                  ignore scene lighting.
+  Saved           Text, colour, font and glow persist per world and are re-applied on load.
+
+Console helpers for tuning or testing: lbtestsigntext (apply text with layout overrides),
+lbsignmargin, lbmeshshift (move a spawned mesh relative to its actor), lbsolid [on|off] (test
+whether a mesh blocks you), lbniagara (turn an object's particle effect off/on).
+
+Customize tab camera: Decor View, orbit and zoom
+----------------------------------------------------------------------
+Decor View (decor targets only) looks at the centre of the object from a distance based on its
+largest dimension, level, starting from the side you are looking from. Full Body and Face View are
+for non-decor targets only. The row under them is < > + - : < > orbit around the target and + -
+zoom in and out (5% of the starting distance per press, within limits); all four repeat while
+held. While a Custom view is active, the Photo Mode tab's move pad, Rotate arrows, FOV slider and
+Reset also drive it (not Coords or Selfie). Nothing is remembered: every new view starts fresh, and
+locking a different object ends the view and restores the normal camera.
+
+lbhelp find <text> (console) searches every LivingBase console command by name, usage or description.
+New placements in Floor Clipping mode start 650 uu from the camera.
+
+Other recent additions: a spawn tree filter box, Object Scale (Move tab, decor only), and a GUI
+Scale dropdown (0.5x-3x).
 
 Instructions & History
 ----------------------------------------------------------------------
@@ -282,6 +325,15 @@ ingredients, and treasure -- Animal Parts, Artifacts, Clothes, Currency, Ingredi
 Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood,
 Writings. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01").
 
+Misc > Water and Furniture (custom water features and furniture)
+----------------------------------------------------------------------
+Decor > Misc > Water: flat water planes (Circle, Octagon, Archlike, Semicircular), the fountain's water
+flow and upward spout, three empty solid garden fountains (Small/Medium/Large), and the fountain's spray,
+splash and side-spout particle effects -- pieces for building your own pools and fountains. The particle
+effects are placed, moved and saved like any other decor (use the Target tab to select one). Decor >
+Furniture > Tables gained ten tables and display trays, and Decor > Furniture > Shelving has three
+Tortuga shelves; all of these are solid.
+
 Console commands
 ----------------------------------------------------------------------
 Type these into UE4SS's console (the same input used for the game's own dev/cheat commands) for
@@ -425,6 +477,12 @@ Surfaces build-menu pieces that are hidden from standard play (cut/dev content) 
 normal progression intact -- it never unlocks pieces you're meant to earn. Runtime-only; open the
 build menu once after loading so the catalog is present.
 
+Structure shield (PROTECT_STRUCTURES)
+----------------------------------------------------------------------
+Makes every building block invulnerable to damage, protecting your base from hostile mobs. On by
+default. Applied instantly to newly-placed blocks and swept over the whole base shortly after each
+load. Runtime-only (re-applied on the next mod load, same as the other toggles here).
+
 ======================================================================
 CONFIGURATION
 ======================================================================
@@ -434,7 +492,7 @@ There are two files:
 config.txt          Plain-text overrides you can edit without touching Lua. Lines are
                      NAME = value (true/false or numbers). This is the one file you
                      normally edit; it overrides the defaults. Current toggles include
-                     WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, LIVE_EDIT.
+                     WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, PROTECT_STRUCTURES, LIVE_EDIT.
 Scripts/config.lua  The shipped defaults and all class paths. Highlights:
   - Config.KEYS -- the numpad keymap (see NUMPAD CONTROLS above).
   - Config.VERBOSE -- false (quiet); true for per-spawn debug logging.
@@ -454,6 +512,13 @@ Scripts/config.lua  The shipped defaults and all class paths. Highlights:
     SEATED_STATUES, CHAIR_STATUES, INTERACTIVE_STATUES.
   - Config.HANDYMAN_FOR_TOWNSFOLK (true) -- townsmen wander AND use furniture.
   - Config.HIDE_NAMEPLATES (true) -- hide floating name/role tags on placed NPCs.
+  - Config.LOOT_MESH_SOLID -- which Additional Items meshes are solid (boards and obelisk by
+    default; add a mesh path to make another one solid).
+  - Config.DECOR_VIEW_DISTANCE_MULT (1.3) and Config.CAMERA_ZOOM_STEP_FRACTION (0.05) -- Decor View
+    distance and the + / - zoom step.
+  - Config.BRIDGE_IDLE_WHEN_CLOSED (true) / Config.QUIET_DURING_APPLY (true) /
+    Config.QUIET_GAME_THREAD_JOBS (true) -- the stability measures (GUI polling idles while the
+    window is closed; background timers pause during heavy game work).
 
 ======================================================================
 KNOWN LIMITATIONS
@@ -481,6 +546,10 @@ KNOWN LIMITATIONS
   hard engine restriction; it turned out to be reachable via the same Custom Primitive Data
   mechanism the game's own character customization uses, just not through any UI the base game
   exposes.
+
+- Signs: the Text tab only writes on objects with a sign entry (see the Valid objects list); the
+  text shrinks automatically to fit the board, and the boards take a single line.
+- Do not use lbreload to apply changes (see Hot reload above) -- restart the game.
 
 Note on townsfolk: the townsman entry spawns a mixed-sex crowd of dressed, wandering NPCs (men and
 women) that also use nearby furniture. The statue entries are intentionally static posed actors --

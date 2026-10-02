@@ -62,7 +62,18 @@ function UnlockBuild.Run(listNames)
         if hidden > #sample then log(string.format("   ... and %d more", hidden - #sample)) end
     end
     if total == 0 then log("0 items found — build catalog not loaded yet (open the build menu once); will retry.") end
-    return total
+    return total, hidden
 end
+
+-- lbunlock: run one scan by hand (2026-10-01) -- e.g. after changing worlds, to see whether the unlock survived (a scan that reports hidden items again = it was reset).
+pcall(function()
+    if RegisterConsoleCommandHandler then
+        do local reg = rawget(_G, "__LB_RegisterCmdInfo"); if reg then reg("lbunlock", "lbunlock", "Runs one hidden build-piece unlock scan now, e.g. after changing worlds.") end end
+        RegisterConsoleCommandHandler("lbunlock", function(FullCommand, Parameters, Ar)
+            pcall(function() UnlockBuild.Run(true) end)
+            return true
+        end)
+    end
+end)
 
 return UnlockBuild

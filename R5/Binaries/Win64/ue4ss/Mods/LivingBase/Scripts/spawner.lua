@@ -323,7 +323,22 @@ local function migrateIfNeeded(baseName, oldPaths)
             f:close()
             print(string.format("[LivingBase] Migrated %s -> %s (world %s) from old shared save.\n", foundOld, p, id))
             local bakPath = foundOld:gsub("%.txt$", ".bak")
-            local okRename = pcall(function() os.rename(foundOld, bakPath) end)
+            -- os.rename returns false (it does not throw) when the target already exists, so the pcall alone always
+            -- "succeeded" and the legacy file was re-migrated into every new world (2026-09-30). Check the result;
+            -- on failure clear the old .bak and retry, then fall back to a unique name.
+            local function tryRename(dst)
+                local okP, res = pcall(os.rename, foundOld, dst)
+                return okP and res and true or false
+            end
+            local okRename = tryRename(bakPath)
+            if not okRename then
+                pcall(os.remove, bakPath)
+                okRename = tryRename(bakPath)
+            end
+            if not okRename then
+                bakPath = foundOld:gsub("%.txt$", "") .. ".migrated_" .. tostring(os.time())
+                okRename = tryRename(bakPath)
+            end
             if okRename then
                 print(string.format("[LivingBase] Renamed %s -> %s so no other world re-claims it.\n", foundOld, bakPath))
             else
@@ -335,6 +350,36 @@ local function migrateIfNeeded(baseName, oldPaths)
 end
 local function LEDGER_PATHS() return worldPaths("spawn_ledger.txt", OLD_LEDGER_PATHS) end
 local function PERSIST_PATHS() return worldPaths("persist.txt", OLD_PERSIST_PATHS) end
+-- Exposed for signs.lua (2026-09-29): per-world file naming. Table field, not a new local (200-local ceiling).
+Spawner.GetIslandId = getIslandId
+
+-- Spawner.ApplyMaterialOverride(actor, classPath) (2026-09-29, RedFalcon: the SignCacheTMP pole sign has an "X" baked
+-- into its one shared albedo texture; MI_BuildingPier_01 on it "looks pretty good"). Config.MATERIAL_OVERRIDES maps a
+-- spawned class path -> a /Game/... material path; slot 0 of the actor's static mesh gets that material. Called from
+-- Spawner.Spawn, so it applies on a fresh spawn and on every restore.
+function Spawner.ApplyMaterialOverride(actor, classPath)
+    local map = Config and Config.MATERIAL_OVERRIDES
+    local base = map and map[classPath]
+    if not base then return false end
+    local name = base:match("([^/%.]+)$")
+    local path = base:find("%.") and base or (base .. "." .. name)
+    local mat = StaticFindObject(path)
+    if not (mat and mat:IsValid()) then
+        pcall(function() LoadAsset((base:gsub("%..*$", ""))) end)
+        mat = StaticFindObject(path)
+    end
+    if not (mat and mat:IsValid()) then
+        print("[LivingBase] material override: could not load " .. path .. "\n")
+        return false
+    end
+    local comp
+    for _, n in ipairs({ "StaticMeshComponent", "MeshComponent", "StaticMesh" }) do
+        pcall(function() local c = actor[n]; if c and c:IsValid() and not comp then comp = c end end)
+    end
+    if not comp then return false end
+    local ok = pcall(function() comp:SetMaterial(0, mat) end)
+    return ok
+end
 local function getGameplayStatics()
     local gs = StaticFindObject("/Script/Engine.Default__GameplayStatics")
     if gs and gs:IsValid() then return gs end
@@ -1127,6 +1172,11 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     table.insert(Spawner.spawned, { actor = actor, label = finalLabel, class = classPath,
         hasLook = hasLook and true or false, home = { X = loc.X, Y = loc.Y, Z = loc.Z }, yaw = yawUsed,
         idle = markIdle and true or false })
+    -- Per-class material override (2026-09-29) -- see Config.MATERIAL_OVERRIDES / Spawner.ApplyMaterialOverride.
+    -- Spawner.Spawn is also what a world restore calls, so this one hook covers a fresh spawn AND every reload.
+    pcall(function() Spawner.ApplyMaterialOverride(actor, classPath) end)
+    -- Per-class "no particle effects" (2026-09-30) -- see Config.NIAGARA_OFF_CLASSES / niagaraoff.lua. Same hook, so it covers restores too.
+    pcall(function() require("niagaraoff").ApplyForClass(actor, classPath) end)
     ledgerAppend(actor)
     persistAppend(classPath, loc, aiControllerClassPath, yawUsed, makeFriendly, compositeLook, finalLabel, animClassPath)
     log(string.format("SPAWNED [%s] -> %s at (%.0f, %.0f, %.0f)",
@@ -1149,6 +1199,7 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
     -- uses. Same restoring-only gate as the probe target above.
     if not Spawner.restoring then
         Spawner.lockedTarget = { actor = actor, label = finalLabel, class = classPath }
+        pcall(function() Spawner._selectSignIfCapable(actor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
         Spawner.StartTargetLockTick()
     end
     -- Only for live placements, not the dozens of Spawn calls RestoreFromPersist fires on world load,
@@ -1637,6 +1688,10 @@ local function resolveAsset(path)
     if o and o:IsValid() then return o end
     return nil
 end
+
+-- Exposed for signs.lua (2026-09-29): sign fonts live under /Game/Mods/..., which only resolve through this function's
+-- AssetRegistry fallback (a bare LoadAsset on the package name silently finds nothing). Table field, not a new local.
+Spawner.ResolveAsset = resolveAsset
 
 -- Spawner.DeCorrupt(actor) — swap corrupted materials to clean ones per
 -- Config.DECORRUPT_SWAPS. Runs post-build (materials must exist). For each mesh
@@ -3504,7 +3559,51 @@ function Spawner.SetLootMesh(actor, meshPath)
     end
     local ok = pcall(function() mc:SetStaticMesh(mesh) end)
     print(string.format("[LivingBase] SetLootMesh: %s -> %s\n", ok and "ok" or "FAILED", tostring(meshPath)))
+    -- Per-mesh base rotation (2026-09-30, Config.LOOT_MESH_BASE_ROT): turns the MESH COMPONENT, never the actor, so it survives restore
+    -- (restoreOne re-runs this with the persisted mesh path) and the placement code keeps owning the actor's own yaw.
+    local rot = ok and Config.LOOT_MESH_BASE_ROT and Config.LOOT_MESH_BASE_ROT[meshPath]
+    if rot then
+        local okR = pcall(function()
+            mc:K2_SetRelativeRotation({ Pitch = rot.Pitch or 0.0, Yaw = rot.Yaw or 0.0, Roll = rot.Roll or 0.0 }, false, {}, true)
+        end)
+        print(string.format("[LivingBase] SetLootMesh: base rotation (P%.0f Y%.0f R%.0f) %s\n", rot.Pitch or 0, rot.Yaw or 0, rot.Roll or 0, okR and "applied" or "FAILED"))
+    end
+    -- Per-mesh base OFFSET (2026-10-01, Config.LOOT_MESH_BASE_OFFSET): Boards 2 and 3 spawn half inside the wall once rotated, so the MESH COMPONENT is moved
+    -- relative to the actor (actor frame: +X out from the wall). Same reasoning as the rotation above -- applied here so it holds on spawn AND restore, and
+    -- Signs.MeshShift moves the text anchor by the same amount.
+    local off = ok and Config.LOOT_MESH_BASE_OFFSET and Config.LOOT_MESH_BASE_OFFSET[meshPath]
+    if off then
+        local okO = pcall(function()
+            mc:K2_SetRelativeLocation({ X = off.X or 0.0, Y = off.Y or 0.0, Z = off.Z or 0.0 }, false, {}, true)
+        end)
+        print(string.format("[LivingBase] SetLootMesh: base offset (X%.1f Y%.1f Z%.1f) %s\n", off.X or 0, off.Y or 0, off.Z or 0, okO and "applied" or "FAILED"))
+    end
     return ok
+end
+
+-- Spawner.ApplyLootSolid(actor) (2026-10-01): if the actor is a loot-mesh decor piece whose mesh is listed in Config.LOOT_MESH_SOLID, make it a real physical blocker --
+-- the same proven idiom `lbsolid` tested live (SetCollisionEnabled(3 = QueryAndPhysics) + SetCollisionResponseToAllChannels(2 = Block) on the mesh and the root).
+-- Called when a placement is confirmed and on restore (the placement follow-loop and R5LootActor's own overlap defaults would otherwise leave it passthrough).
+function Spawner.ApplyLootSolid(actor)
+    if not (actor and actor:IsValid()) then return false end
+    local tbl = Config.LOOT_MESH_SOLID
+    if type(tbl) ~= "table" then return false end
+    local mc
+    pcall(function() mc = actor.MeshComponent end)
+    if not (mc and mc:IsValid()) then return false end
+    local path
+    pcall(function() path = mc.StaticMesh:GetFullName():match("^%S+%s+(.+)$") end)
+    if not (path and tbl[path]) then return false end
+    pcall(function() actor:SetActorEnableCollision(true) end)
+    local root
+    pcall(function() root = actor:K2_GetRootComponent() end)
+    for _, c in ipairs({ mc, root }) do
+        if c and c:IsValid() then
+            pcall(function() c:SetCollisionEnabled(3) end)
+            pcall(function() c:SetCollisionResponseToAllChannels(2) end)
+        end
+    end
+    return true
 end
 
 -- Spawner.MakeLootDecor(actor) — converts a dropped-item actor (R5LootActor, the single native class
@@ -3539,6 +3638,71 @@ function Spawner.MakeLootDecor(actor)
     -- class and restore-on-reload behavior for it is unverified.
     Spawner.EnsureRaytraceChannel(actor)
     return true
+end
+
+-- Spawner.ShieldStructure/ShieldAllStructures/WatchNewStructures (RESTORED 2026-09-28, RedFalcon:
+-- "when we started we had a mode that made building items were not destructible. I removed it when
+-- i removed blackbeard") -- this existed as Config.PROTECT_STRUCTURES back through v2.0.0, always as
+-- its own standalone mechanism (a per-actor damage-flag shield applied at load + on construction),
+-- never actually wired to the Blackbeard raid's own spawn/damage logic -- the raid only ever called
+-- ShieldAllStructures() a second time at wave-start as cheap insurance for anything built since the
+-- last sweep. WINDROSE_MODDING_NOTES.md's own note on this game's damage model ("damage flows
+-- through the GAS ability system, not UE's damage path") is about making an ATTACKER immune
+-- (Config.CREATURE_INVINCIBLE); this is the opposite side -- making the DEFENDER (the building
+-- block) refuse damage regardless of attacker -- so it was never raid-specific to begin with and
+-- restoring it standalone, with the raid gone, still covers ordinary hostile mobs same as it always
+-- did. Full removal was CHANGELOG'd in v2.1.0 ("lack of interest and ongoing maintenance burden"),
+-- not because it was broken -- ported back verbatim from Distribution/LivingBaseEnhanced/2.0.0.
+function Spawner.ShieldStructure(actor)
+    if not (actor and actor:IsValid()) then return end
+    pcall(function() actor.bCanBeDamaged = false end)
+    pcall(function()
+        local item = actor.BuildingItem
+        if item and item:IsValid() then item.bIsDamageable = false end
+    end)
+    -- Belt-and-suspenders: deactivate the block's damageable component if it has one.
+    pcall(function()
+        local dcClass = StaticFindObject("/Script/R5.R5NoASCDamageableComponent")
+        if not dcClass then return end
+        local dc = actor:GetComponentByClass(dcClass)
+        if dc and dc:IsValid() then dc:SetActive(false, false) end
+    end)
+end
+
+-- Spawner.ShieldAllStructures() — make every building block in the world invulnerable. Player bases are
+-- almost entirely building blocks; shielding world ones too is harmless (session-only, resets on reload,
+-- and it never blocks the player's own deconstruct). Returns the count.
+--------------------------------------------------------------------
+function Spawner.ShieldAllStructures()
+    if Config.PROTECT_STRUCTURES == false then return 0 end
+    local blocks = nil
+    pcall(function() blocks = FindAllOf("R5BuildingBlock") end)
+    if not blocks then return 0 end
+    local n = 0
+    for _, b in ipairs(blocks) do
+        if b and b:IsValid() then Spawner.ShieldStructure(b); n = n + 1 end
+    end
+    return n
+end
+
+-- Spawner.WatchNewStructures() — shield every building block AT CONSTRUCTION via NotifyOnNewObject, so a
+-- piece the player builds mid-session is protected the instant it exists (the periodic sweep left those
+-- unshielded until the next check) and we never re-scan the whole UObject list to catch them. Hooking the
+-- native base R5BuildingBlock catches every BP_BuildingBlock_* subclass, same as the FindAllOf sweep.
+-- Deferred to the game thread so BuildingItem is populated before ShieldStructure reads it (the boar hook
+-- uses the same defer). Idempotent — installs once; the hook is global so it also covers post-reload
+-- reconstruction with no per-load work.
+function Spawner.WatchNewStructures()
+    if Config.PROTECT_STRUCTURES == false then return false end
+    if Spawner._structureHookInstalled then return true end
+    local ok = pcall(function()
+        NotifyOnNewObject("/Script/R5.R5BuildingBlock", function(o)
+            ExecuteInGameThread(function() pcall(function() Spawner.ShieldStructure(o) end) end)
+        end)
+    end)
+    Spawner._structureHookInstalled = ok
+    if not ok then log("Structure-shield hook unavailable (NotifyOnNewObject) — sweep-only fallback.") end
+    return ok
 end
 
 -- Spawner.MakeLootDecorNearest(say) — console-command entry point (lbdecorloot). A dropped item is a
@@ -3963,6 +4127,14 @@ function Spawner.ProbeNearestActor(maxDist)
         -- cross-fetch comparison -- see this file's own documented wrapper-identity pitfall).
         local volumeClass
         pcall(function() volumeClass = StaticFindObject("/Script/Engine.Volume") end)
+        -- Building blocks (walls, floors, roofs, signs...) are skipped so the probe sees what is BEHIND them (2026-09-30, RedFalcon:
+        -- "make the probe ignore r5buildingblock"). IsA() against the native base class covers every BP_BuildingBlock_* subclass.
+        -- Switch: Config.PROBE_IGNORE_BUILDING_BLOCKS (default true). Note: a wooden label / storage chest placed as a building
+        -- block cannot be probed while this is on; the Text tab's own Delete-key selection is unaffected.
+        local blockClass
+        if Config.PROBE_IGNORE_BUILDING_BLOCKS ~= false then
+            pcall(function() blockClass = StaticFindObject("/Script/R5.R5BuildingBlock") end)
+        end
 
         local list
         local ok = pcall(function() list = FindAllOf("Actor") end)
@@ -3974,50 +4146,20 @@ function Spawner.ProbeNearestActor(maxDist)
         pcall(function() n = list:GetArrayNum() end)
         if n == 0 then pcall(function() n = #list end) end
 
+        -- REWORKED 2026-09-30 (RedFalcon: probing the paintings from build mode crashed the game every time; the UE4SS log's last
+        -- line was "[probe] key received", i.e. it died INSIDE this sweep). Build mode constantly creates and destroys preview /
+        -- ghost actors, and the old loop ran IsA / GetClass():GetFullName() / GetFullName on EVERY actor in the world before it
+        -- ever looked at where the actor was. Now: (1) validity first, (2) only the cheap location + view-cone test on each actor,
+        -- (3) the class / path exclusions ONLY for the few actors that are actually in front of the camera and closer than the
+        -- current best. Breadcrumbs go to the persistent livingbase_debug.log (Spawner.dbg) so a crash shows how far it got.
+        pcall(function() Spawner.dbg(string.format("[probe] sweep start: %d actors", n)) end)
         for i = 1, n do
             local a = list[i]
             if not a then pcall(function() a = list:Get(i) end) end
-            local isController = false
-            if a and controllerClass then pcall(function() isController = a:IsA(controllerClass) end) end
-            local isVolumeOrBare = false
-            if a and volumeClass then pcall(function() isVolumeOrBare = a:IsA(volumeClass) end) end
-            -- BUG FIX (2026-08-21): `a:GetClass() == bareActorClass` never actually matched --
-            -- confirmed live, bare Actor still won every probe after this shipped. `a:GetClass()` is
-            -- fetched fresh per candidate here, a DIFFERENT wrapper handle each time than the ONE
-            -- `bareActorClass` fetched outside the loop -- exactly this file's own documented
-            -- cross-fetch wrapper-identity pitfall (raw `==` between independently-fetched handles to
-            -- the same underlying UObject can silently read as unequal). String-compare the resolved
-            -- class's own FullName instead, same low-risk pattern already used everywhere else in
-            -- this file for class/asset-path matching.
-            if a and not isVolumeOrBare then
-                pcall(function()
-                    local cf = a:GetClass():GetFullName()
-                    if cf == "Class /Script/Engine.Actor" then isVolumeOrBare = true end
-                end)
-            end
-            -- Always-excluded classes (2026-09-27, RedFalcon: "the hammer i am holding is getting in
-            -- the way ... i will never want to probe that") -- the build-tool GameplayCue actor sits
-            -- right in front of the camera while placing, out-competing the actual item being placed
-            -- for "nearest in cone" the same way the pawn/controller/camera-manager already are
-            -- excluded above. A fixed table rather than a single check, in case another
-            -- never-probe-this class turns up later.
-            local isAlwaysExcluded = false
-            if a then
-                pcall(function()
-                    -- Same GetFullName()+regex extraction this function's own tail (below) already
-                    -- uses to log the class path -- GetPathName() alone (tried first, didn't match
-                    -- live) evidently doesn't return the same dotted /Game/...Name.Name_C format for
-                    -- a Blueprint class in this UE4SS binding.
-                    local full = a:GetClass():GetFullName()
-                    local classPath = full:match("(/Game/[%w_/%.]+)$") or full
-                    for _, excludedPath in ipairs({
-                        "/Game/Gameplay/Character/Player/GameplayCue/GCA_BuildingCreate.GCA_BuildingCreate_C",
-                    }) do
-                        if classPath == excludedPath then isAlwaysExcluded = true; break end
-                    end
-                end)
-            end
-            if a and a:IsValid() and not isController and not isVolumeOrBare and not isAlwaysExcluded and not exclude[actorInstancePath(a)] then
+            if i % 500 == 0 then pcall(function() Spawner.dbg(string.format("[probe] sweep %d/%d", i, n)) end) end
+            local okV, valid = false, false
+            if a then okV, valid = pcall(function() return a:IsValid() end) end
+            if okV and valid then
                 local dist, cosAngle
                 pcall(function()
                     local l = a:K2_GetActorLocation()
@@ -4027,10 +4169,48 @@ function Spawner.ProbeNearestActor(maxDist)
                 end)
                 if dist and cosAngle and dist >= minDist and cosAngle >= minViewDot and dist <= maxDist
                    and (not bestD or dist < bestD) then
-                    best, bestD = a, dist
+                    -- In the cone and closer than the current best: NOW run the exclusion checks.
+                    local function crumb(step) pcall(function() Spawner.dbg(string.format("[probe] #%d %.0fuu -> %s", i, dist, step)) end) end
+                    crumb("IsA(Controller)")
+                    local isController = false
+                    if controllerClass then pcall(function() isController = a:IsA(controllerClass) end) end
+                    crumb("IsA(Volume)")
+                    local isVolumeOrBare = false
+                    if volumeClass then pcall(function() isVolumeOrBare = a:IsA(volumeClass) end) end
+                    crumb("GetClass():GetFullName()")
+                    -- String-compare the class's FullName for the bare-Actor case (raw == between separately fetched wrapper
+                    -- handles silently reads unequal -- this file's documented wrapper-identity pitfall).
+                    local classPath = nil
+                    pcall(function()
+                        local full = a:GetClass():GetFullName()
+                        classPath = full:match("(/Game/[%w_/%.]+)$") or full
+                        if full == "Class /Script/Engine.Actor" then isVolumeOrBare = true end
+                    end)
+                    -- Always-excluded classes (2026-09-27 GCA_BuildingCreate: the build-tool cue sits in front of the camera while
+                    -- placing; 2026-09-30 GCA_BuildingDestroy, same reason).
+                    crumb("class=" .. tostring(classPath))
+                    local isAlwaysExcluded = false
+                    if classPath then
+                        for _, excludedPath in ipairs({
+                            "/Game/Gameplay/Character/Player/GameplayCue/GCA_BuildingCreate.GCA_BuildingCreate_C",
+                            "/Game/Gameplay/Character/Player/GameplayCue/GCA_BuildingDestroy.GCA_BuildingDestroy_C",
+                        }) do
+                            if classPath == excludedPath then isAlwaysExcluded = true; break end
+                        end
+                    end
+                    crumb("IsA(BuildingBlock)")
+                    local isBlock = false
+                    if blockClass then pcall(function() isBlock = a:IsA(blockClass) end) end
+                    crumb("actorInstancePath")
+                    if not isController and not isVolumeOrBare and not isAlwaysExcluded and not isBlock
+                       and not exclude[actorInstancePath(a)] then
+                        best, bestD = a, dist
+                        crumb("accepted as best")
+                    end
                 end
             end
         end
+        pcall(function() Spawner.dbg("[probe] sweep done") end)
         if not best then
             print(string.format("[LivingBase] [probe] nothing within %.0fuu ahead.\n", maxDist))
             return
@@ -4051,6 +4231,35 @@ function Spawner.ProbeNearestActor(maxDist)
     local instName = "?"
     pcall(function() instName = best:GetFullName() end)
     print(string.format("[LivingBase] [probe] TARGET @ %.0fuu: %s (instance: %s)\n", bestD, cls, instName))
+    -- BOUNDS readout (2026-09-30, RedFalcon: probing objects that cannot carry a real sign as a ruler, so the Text tab's placement
+    -- numbers have to be estimated). Prints the object's world bounds, the centre's offset from the actor origin in the actor's OWN
+    -- frame (yaw only), and the actor's rotation. A probe dump alone has no sizes, so this is what makes a first Signs.TYPES guess
+    -- close. Uses the proven 4-arg GetActorBounds form (out tables), falling back to the two-return form.
+    pcall(function()
+        local origin, extent = {}, {}
+        local okB = pcall(function() best:GetActorBounds(false, origin, extent, false) end)
+        if not (okB and origin.X and extent.X) then
+            local o2, e2
+            local ok2 = pcall(function() o2, e2 = best:GetActorBounds(false) end)
+            if ok2 and o2 and e2 then origin, extent = o2, e2 end
+        end
+        if not (origin.X and extent.X) then
+            print("[LivingBase] [probe] bounds: unavailable for this actor.\n")
+            return
+        end
+        local loc = best:K2_GetActorLocation()
+        local rot = best:K2_GetActorRotation()
+        local dx, dy, dz = origin.X - loc.X, origin.Y - loc.Y, origin.Z - loc.Z
+        local yaw = math.rad(rot.Yaw)
+        local lx = dx * math.cos(yaw) + dy * math.sin(yaw)
+        local ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        local line = string.format(
+            "bounds: centre=(%.1f,%.1f,%.1f) halfExtent=(%.1f,%.1f,%.1f) size=(%.1f x %.1f x %.1f)uu | actor=(%.1f,%.1f,%.1f) yaw=%.1f pitch=%.1f roll=%.1f | centre-in-actor-frame=(fwd %.1f, right %.1f, up %.1f)",
+            origin.X, origin.Y, origin.Z, extent.X, extent.Y, extent.Z, extent.X * 2, extent.Y * 2, extent.Z * 2,
+            loc.X, loc.Y, loc.Z, rot.Yaw, rot.Pitch, rot.Roll, lx, ly, dz)
+        print("[LivingBase] [probe] " .. line .. "\n")
+        discoveryAppend("BOUNDS: " .. line)
+    end)
     -- On-screen confirmation (2026-08-25, RedFalcon's own request) -- lbprobe/lbprobedump are
     -- console commands with no other feedback while actually playing, so it's easy to fire lbprobe,
     -- look away, and never notice it silently latched onto the wrong thing (or nothing at all, in
@@ -4095,6 +4304,51 @@ end
 -- value in this dump that's worth going deeper on -- it's the same reflection walk, so it isn't
 -- inherently safer against a crash-prone live component either, but it doesn't cost editing/
 -- redeploying this file to try, and it's the community-standard tool for exactly this job.
+-- 2026-09-29 (RedFalcon, while scoping the sign-text feature: "add those questions to a probe") --
+-- plain value structs used to print as "ScriptStruct /Script/CoreUObject.Vector" with no numbers, so
+-- a component's RelativeLocation/Rotation/Scale and its Bounds were invisible in every dump. These
+-- are simple POD structs whose fields are directly bracket-readable (same access the rest of this
+-- file already uses on FVector/FRotator returns), so expand them inline. Deliberately a fixed
+-- whitelist of known-safe math structs -- NOT a general struct walk (see the crash note above).
+Spawner.PROBE_STRUCT_FIELDS = {
+    ["/Script/CoreUObject.Vector"]      = { "X", "Y", "Z" },
+    ["/Script/CoreUObject.Vector2D"]    = { "X", "Y" },
+    ["/Script/CoreUObject.Rotator"]     = { "Pitch", "Yaw", "Roll" },
+    ["/Script/CoreUObject.Quat"]        = { "X", "Y", "Z", "W" },
+    ["/Script/CoreUObject.LinearColor"] = { "R", "G", "B", "A" },
+    ["/Script/CoreUObject.Color"]       = { "R", "G", "B", "A" },
+}
+function Spawner.probeStructValue(val, full)
+    local path = full and full:match("^ScriptStruct%s+(%S+)")
+    if not path then return nil end
+    if path == "/Script/CoreUObject.BoxSphereBounds" then
+        local parts = {}
+        for _, sub in ipairs({ "Origin", "BoxExtent" }) do
+            local okS, s = pcall(function() return val[sub] end)
+            local x, y, z
+            if okS and s ~= nil then
+                pcall(function() x, y, z = s.X, s.Y, s.Z end)
+            end
+            parts[#parts + 1] = string.format("%s=(%s, %s, %s)", sub, tostring(x), tostring(y), tostring(z))
+        end
+        local okR, r = pcall(function() return val.SphereRadius end)
+        parts[#parts + 1] = "SphereRadius=" .. tostring(okR and r or nil)
+        return table.concat(parts, " ")
+    end
+    local fields = Spawner.PROBE_STRUCT_FIELDS[path]
+    if not fields then return nil end
+    local parts = {}
+    for _, f in ipairs(fields) do
+        local okF, v = pcall(function() return val[f] end)
+        if okF and type(v) == "number" then
+            parts[#parts + 1] = string.format("%s=%.3f", f, v)
+        else
+            parts[#parts + 1] = f .. "=?"
+        end
+    end
+    return "(" .. table.concat(parts, ", ") .. ")"
+end
+
 local function dumpObjectProperties(obj, tag)
     local cls
     pcall(function() cls = obj:GetClass() end)
@@ -4114,6 +4368,8 @@ local function dumpObjectProperties(obj, tag)
                     elseif type(val) == "userdata" then
                         local okc, full = pcall(function() return val:GetFullName() end)
                         valStr = okc and full or tostring(val)
+                        local okE, expanded = pcall(Spawner.probeStructValue, val, okc and full or nil)
+                        if okE and expanded then valStr = expanded end
                     else
                         valStr = tostring(val)
                     end
@@ -9892,11 +10148,12 @@ end
 function Spawner.PhotoCamAdjustOffset(kind, key, amount, say)
     say = say or function(m) print("[LivingBase] [photocam-move] " .. tostring(m) .. "\n") end
     local mode = Spawner._photoModeCamState or "OFF"
-    if mode ~= "TRIPOD" and mode ~= "SELFIE" then
-        say("movement pad only applies to Tripod/Selfie -- current mode is " .. tostring(mode) .. ".")
+    local isCustomView = (mode == "FULLBODY" or mode == "FACE" or mode == "DECOR")
+    if mode ~= "TRIPOD" and mode ~= "SELFIE" and not isCustomView then
+        say("movement pad only applies to Tripod/Selfie and the Custom camera views -- current mode is " .. tostring(mode) .. ".")
         return false
     end
-    local o = Spawner._photoCamOffsets[mode]
+    local o = isCustomView and Spawner._photoCamOffsets.CUSTOM or Spawner._photoCamOffsets[mode]
     if kind == "move" then
         if key == "forward" then o.fwd = o.fwd + amount
         elseif key == "back" then o.fwd = o.fwd - amount
@@ -9917,6 +10174,7 @@ function Spawner.PhotoCamAdjustOffset(kind, key, amount, say)
         say(string.format("unknown offset kind '%s'.", tostring(kind)))
         return false
     end
+    if isCustomView then return Spawner.CameraViewNudge(0.0, 0, say) end
     local base = (mode == "SELFIE") and Spawner._computeSelfieBasePose() or Spawner._photoCamTripodBase
     return Spawner._photoCamApplyPose(base, say)
 end
@@ -9989,6 +10247,9 @@ function Spawner.PhotoCamSetMode(mode, say)
             if pawn and pawn:IsValid() then pcall(function() arm = pawn.CameraBoom end) end
             if arm and arm:IsValid() then pcall(function() arm.SocketOffset = { X = 0.0, Y = 0.0, Z = 0.0 } end) end
             return true
+        elseif cur == "FULLBODY" or cur == "FACE" or cur == "DECOR" then
+            Spawner._zeroCustomOffsets()
+            return Spawner.CameraViewNudge(0.0, 0, say)
         else
             say("no active camera mode to reset.")
             return false
@@ -10009,7 +10270,7 @@ function Spawner.PhotoCamSetMode(mode, say)
     -- Mode-native cases.
     if cur == "FIRSTPERSON" then
         pcall(function() Spawner.SetFirstPerson("off", say) end)
-    elseif cur == "TRIPOD" or cur == "SELFIE" or cur == "FULLBODY" or cur == "FACE" then
+    elseif cur == "TRIPOD" or cur == "SELFIE" or cur == "FULLBODY" or cur == "FACE" or cur == "DECOR" then
         Spawner.SetPhotoTripod("off", nil, nil, say)
     end
 
@@ -10331,6 +10592,11 @@ function Spawner.SetPhotoTripod(mode, distance, heightOffset, say, faceMode)
         -- destroys the tripod).
         Spawner._cameraFaceViewOrbitOffset = 0.0
         Spawner._cameraFullBodyOrbitOffset = 0.0
+        Spawner._cameraDecorOrbitOffset = 0.0
+        Spawner._cameraDecorBase = nil
+        Spawner._cameraZoomSteps = 0
+        Spawner._zeroCustomOffsets()
+        Spawner._camViewTarget = nil
         local ok = pcall(function() pc:SetViewTargetWithBlend(pawn, 0.0, 0, 0.0, false) end)
         say("view target restored to player pawn: " .. tostring(ok))
         if Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid() then
@@ -10602,6 +10868,9 @@ function Spawner.ZoomTripodOnTarget(say, pullbackUU)
     -- to 0 every time Full Body (re)activates, same "set back to before zooming in" guarantee Face
     -- View's own orbit already has.
     Spawner._cameraFullBodyOrbitOffset = 0.0
+    Spawner._cameraZoomSteps = 0
+    Spawner._zeroCustomOffsets()
+    Spawner._camViewTarget = actor
 
     local base = Spawner._computeChestCenterPose(actor, pullbackUU)
     if not base then
@@ -10706,6 +10975,9 @@ function Spawner.FaceViewOnTarget(say)
     -- re-clicking Face View) so a leftover orbit never carries into a fresh framing ("When done I
     -- want rotation set back to before zooming in").
     Spawner._cameraFaceViewOrbitOffset = 0.0
+    Spawner._cameraZoomSteps = 0
+    Spawner._zeroCustomOffsets()
+    Spawner._camViewTarget = actor
 
     local camRot = { Pitch = 0.0, Yaw = pose.yaw, Roll = 0.0 }
     local okPos = pcall(function() cam:K2_SetActorLocation(pose.pos, false, {}, false) end)
@@ -10791,6 +11063,177 @@ function Spawner.RotateFullBodyYaw(deltaDegrees, say)
     say(string.format("orbit %s%.1f deg -> cam @ %.1f,%.1f,%.1f yaw=%.1f (pos=%s rot=%s)",
         deltaDegrees >= 0 and "+" or "", deltaDegrees, base.pos.X, base.pos.Y, base.pos.Z, base.yaw, tostring(okPos), tostring(okRot)))
     return okPos and okRot
+end
+
+
+-- ====================================================================================================================================
+-- DECOR VIEW + ZOOM (2026-10-01, RedFalcon). Custom tab camera buttons: "Decor View" (decor targets only; Full Body/Face View are non-decor only),
+-- "<" ">" orbit and "+" "-" zoom, all hold-to-repeat, for decor AND people.
+--   * Decor View looks at the CENTRE of the object's bounds, level (pitch 0), from a distance = Config.DECOR_VIEW_DISTANCE_MULT (1.3) x its largest
+--     dimension (length, width or height), starting on the side the PLAYER'S CAMERA is on (an object's own "front" is arbitrary), FOV 90.
+--   * Zoom moves the camera 5% (Config.CAMERA_ZOOM_STEP_FRACTION) of the CALCULATED STARTING DISTANCE per press -- linear, not 5% of the current
+--     distance -- clamped to 20%..400% of the start (Config.CAMERA_ZOOM_MIN_FACTOR / _MAX_FACTOR). Works for Full Body (start 200uu x mesh scale, orbit
+--     around the chest bone) and Face View (start 100uu, head bone) too. Orbit and zoom both reset whenever a view (re)starts or is torn down.
+-- ====================================================================================================================================
+Spawner._cameraZoomSteps = Spawner._cameraZoomSteps or 0
+Spawner._cameraDecorOrbitOffset = Spawner._cameraDecorOrbitOffset or 0.0
+-- The Photo Mode tab's movement pad / rotate / FOV / Reset also drive the Custom views (Decor / Full Body / Face View), 2026-10-01 (RedFalcon): the pad adds an
+-- OFFSET in the view's own local frame (same model as Tripod/Selfie, Spawner._photoCamApplyPose) on top of the orbit/zoom pose. NOT persisted: it is zeroed
+-- every time any Custom view (re)starts or is torn down (Spawner._zeroCustomOffsets), and a target switch ends the view. No Coords, no Selfie behaviour.
+Spawner._photoCamOffsets = Spawner._photoCamOffsets or {}
+Spawner._photoCamOffsets.CUSTOM = Spawner._photoCamOffsets.CUSTOM or { fwd = 0.0, right = 0.0, up = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0 }
+function Spawner._zeroCustomOffsets()
+    Spawner._photoCamOffsets.CUSTOM = { fwd = 0.0, right = 0.0, up = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0 }
+end
+
+-- World bounds of an actor: origin (centre) + extent (half sizes). Proven 4-arg form with out tables, falling back to the two-return form.
+-- ROBUST (2026-10-01): a PortBoat measured "biggest dimension 811456" (something huge is attached to it) and the camera landed a million units away. Bounds larger
+-- than Config.DECOR_VIEW_MAX_SIZE (5000uu) are rejected: first retried with colliding components only, then it falls back to the actor's own location and
+-- Config.DECOR_VIEW_FALLBACK_SIZE (300uu) so the view is still usable.
+function Spawner._decorBounds(actor)
+    local limit = Config.DECOR_VIEW_MAX_SIZE or 5000.0
+    for _, onlyColliding in ipairs({ false, true }) do
+        local origin, extent = {}, {}
+        pcall(function() actor:GetActorBounds(onlyColliding, origin, extent, false) end)
+        if not (origin.X and extent.X) then
+            local o2, e2
+            local ok2 = pcall(function() o2, e2 = actor:GetActorBounds(onlyColliding) end)
+            if ok2 and o2 and e2 then origin, extent = o2, e2 end
+        end
+        if origin.X and extent.X and math.max(extent.X, extent.Y, extent.Z) * 2.0 <= limit then
+            return origin, extent
+        end
+    end
+    local loc
+    pcall(function() loc = actor:K2_GetActorLocation() end)
+    if not loc then return nil end
+    local h = (Config.DECOR_VIEW_FALLBACK_SIZE or 300.0) / 2.0
+    return { X = loc.X, Y = loc.Y, Z = loc.Z }, { X = h, Y = h, Z = h }
+end
+
+-- Spawner.DecorViewOnTarget(say) -- the Custom tab's "Decor View" button (custom_zoom_request.txt payload "DECOR").
+function Spawner.DecorViewOnTarget(say)
+    say = say or function(m) print("[LivingBase] [decorview] " .. tostring(m) .. "\n") end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then
+        say("no target-locked actor -- Num+ on something first.")
+        return false
+    end
+    if Spawner._photoModeCamState == "FIRSTPERSON" then
+        pcall(function() Spawner.SetFirstPerson("off", say) end)
+    end
+    local origin, extent = Spawner._decorBounds(actor)
+    if not origin then
+        say("could not read the target's bounds.")
+        return false
+    end
+    local biggest = math.max(extent.X, extent.Y, extent.Z) * 2.0
+    local baseDist = math.max(biggest * (Config.DECOR_VIEW_DISTANCE_MULT or 1.3), 60.0)
+
+    -- Start on the side the player's own camera is on.
+    local baseYaw = 0.0
+    pcall(function()
+        local pc = UEHelpers.GetPlayerController()
+        local cm = pc and pc.PlayerCameraManager
+        local l = cm and cm:GetCameraLocation()
+        if l then baseYaw = math.deg((math.atan2 or math.atan)(l.Y - origin.Y, l.X - origin.X)) end
+    end)
+    Spawner._cameraDecorBase = { dist = baseDist, yaw = baseYaw }
+    Spawner._cameraDecorOrbitOffset = 0.0
+    Spawner._cameraZoomSteps = 0
+    Spawner._zeroCustomOffsets()
+    Spawner._camViewTarget = actor
+
+    if not (Spawner._photoTripodActor and Spawner._photoTripodActor:IsValid()) then
+        if not Spawner.SetPhotoTripod("on", 150.0, 160.0, say) then
+            say("could not start the tripod camera.")
+            return false
+        end
+    else
+        local pc = UEHelpers.GetPlayerController()
+        if pc and pc:IsValid() then
+            pcall(function() pc:SetViewTargetWithBlend(Spawner._photoTripodActor, 0.0, 0, 0.0, false) end)
+        end
+    end
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then
+        say("tripod camera unavailable after start attempt.")
+        return false
+    end
+    local th = math.rad(baseYaw)
+    local pos = { X = origin.X + math.cos(th) * baseDist, Y = origin.Y + math.sin(th) * baseDist, Z = origin.Z }
+    local okPos = pcall(function() cam:K2_SetActorLocation(pos, false, {}, false) end)
+    local okRot = pcall(function() cam:K2_SetActorRotation({ Pitch = 0.0, Yaw = baseYaw + 180.0, Roll = 0.0 }, false) end)
+    local camComp
+    pcall(function() camComp = cam.CameraComponent end)
+    if camComp and camComp:IsValid() then
+        pcall(function() camComp.FieldOfView = 90.0 end)
+    end
+    say(string.format("decor view -- centre %.0f,%.0f,%.0f biggest dimension %.0f -> distance %.0f, start yaw %.0f (pos=%s rot=%s)",
+        origin.X, origin.Y, origin.Z, biggest, baseDist, baseYaw, tostring(okPos), tostring(okRot)))
+    Spawner._photoModeCamState = "DECOR"
+    return okPos and okRot
+end
+
+-- Spawner.CameraViewNudge(orbitDeg, zoomDelta, say) -- applies a batch of held-button presses to whichever target view is active
+-- (FULLBODY / FACE / DECOR): orbit adds degrees around the view's centre, zoomDelta adds zoom steps (+ = closer). Silent on success (it runs ~10x/s
+-- while a button is held); returns false if there is nothing to move.
+function Spawner.CameraViewNudge(orbitDeg, zoomDelta, say)
+    say = say or function(m) print("[LivingBase] [camview] " .. tostring(m) .. "\n") end
+    local mode = Spawner._photoModeCamState
+    if mode ~= "FULLBODY" and mode ~= "FACE" and mode ~= "DECOR" then return false end
+    local lt = Spawner.lockedTarget
+    local actor = lt and lt.actor
+    if not (actor and actor:IsValid()) then return false end
+    local cam = Spawner._resolveTripodActor()
+    if not (cam and cam:IsValid()) then return false end
+
+    orbitDeg, zoomDelta = orbitDeg or 0.0, zoomDelta or 0
+    local step = Config.CAMERA_ZOOM_STEP_FRACTION or 0.05
+    local lo, hi = Config.CAMERA_ZOOM_MIN_FACTOR or 0.2, Config.CAMERA_ZOOM_MAX_FACTOR or 4.0
+    local nMax, nMin = (1.0 - lo) / step, (1.0 - hi) / step
+    local n = (Spawner._cameraZoomSteps or 0) + zoomDelta
+    if n > nMax then n = nMax elseif n < nMin then n = nMin end
+    Spawner._cameraZoomSteps = n
+    local f = 1.0 - step * n
+
+    local pos, yaw, pitch
+    if mode == "FULLBODY" then
+        Spawner._cameraFullBodyOrbitOffset = (Spawner._cameraFullBodyOrbitOffset or 0.0) + orbitDeg
+        local base = Spawner._computeChestCenterPose(actor, 200.0 * f, Spawner._cameraFullBodyOrbitOffset)
+        if not base then say("could not recompute the Full Body pose.") return false end
+        pos, yaw, pitch = base.pos, base.yaw, -10.0
+    elseif mode == "FACE" then
+        Spawner._cameraFaceViewOrbitOffset = (Spawner._cameraFaceViewOrbitOffset or 0.0) + orbitDeg
+        local base = Spawner._computeHeadCenterPose(actor, 100.0 * f, Spawner._cameraFaceViewOrbitOffset)
+        if not base then say("could not recompute the Face View pose.") return false end
+        pos, yaw, pitch = base.pos, base.yaw, 0.0
+    else
+        local b = Spawner._cameraDecorBase
+        if not b then return false end
+        Spawner._cameraDecorOrbitOffset = (Spawner._cameraDecorOrbitOffset or 0.0) + orbitDeg
+        local origin = Spawner._decorBounds(actor)
+        if not origin then say("could not read the target's bounds.") return false end
+        local ang = b.yaw + Spawner._cameraDecorOrbitOffset
+        local d = b.dist * f
+        local th = math.rad(ang)
+        pos = { X = origin.X + math.cos(th) * d, Y = origin.Y + math.sin(th) * d, Z = origin.Z }
+        yaw, pitch = ang + 180.0, 0.0
+    end
+    -- Photo Mode pad offset, in the view's own local frame (same maths as Spawner._photoCamApplyPose)
+    local o = Spawner._photoCamOffsets.CUSTOM
+    local roll = 0.0
+    if o then
+        local yr, pr = math.rad(yaw), math.rad(pitch)
+        local fx, fy, fz = math.cos(yr) * math.cos(pr), math.sin(yr) * math.cos(pr), math.sin(pr)
+        local rx, ry = math.cos(yr + math.pi / 2.0), math.sin(yr + math.pi / 2.0)
+        pos = { X = pos.X + fx * o.fwd + rx * o.right, Y = pos.Y + fy * o.fwd + ry * o.right, Z = pos.Z + fz * o.fwd + o.up }
+        yaw, pitch, roll = yaw + o.yaw, pitch + o.pitch, o.roll or 0.0
+    end
+    pcall(function() cam:K2_SetActorLocation(pos, false, {}, false) end)
+    pcall(function() cam:K2_SetActorRotation({ Pitch = pitch, Yaw = yaw, Roll = roll }, false) end)
+    return true
 end
 
 -- Spawner.CenterOnHeadTarget(say, pullbackUU) -- "lbheadcenter [pullback]" (2026-09-14, RedFalcon:
@@ -11760,7 +12203,9 @@ end
 function actorInstancePath(actor)
     local full = nil
     pcall(function() full = actor:GetFullName() end)
-    if not full then return nil end
+    -- A candidate whose GetFullName() does not yield a string (seen 2026-09-30 right after an lbreload: "bad argument #1 to 'find'
+    -- (string expected, got function)" aborted the whole probe) is treated as having no path instead of erroring.
+    if type(full) ~= "string" then return nil end
     local sp = string.find(full, " ", 1, true) -- strip leading "ClassName "
     return sp and string.sub(full, sp + 1) or full
 end
@@ -11874,9 +12319,12 @@ function persistAppend(classPath, loc, aiPath, yaw, makeFriendly, look, instance
     for _, p in ipairs(PERSIST_PATHS()) do
         local f = io.open(p, "a")
         if f then
-            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%.1f|%.1f|%s|%s\n",
+            -- Field 18 = decor Object Scale (2026-09-29) -- always an empty placeholder here (a fresh
+            -- spawn is scale 1.0); Spawner.PersistUpdateScale fills it in when the GUI's Object Scale
+            -- +/- changes it. Empty/absent = leave the actor at its default scale on restore.
+            f:write(string.format("%s|%.1f|%.1f|%.1f|%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%.1f|%.1f|%s|%s|%s\n",
                 classPath, loc.X, loc.Y, loc.Z, aiPath or "", yaw or 0.0,
-                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll, 0.0, 0.0, "", ac))
+                makeFriendly and "1" or "0", lp, la, ls, lb, lr, ll, 0.0, 0.0, "", ac, ""))
             f:close(); return
         end
     end
@@ -12947,9 +13395,27 @@ local function restoreOne(line)
     local pitch, roll = tonumber(parts[14]) or 0.0, tonumber(parts[15]) or 0.0
     local lootMesh = parts[16]
     local animClassPath = (parts[17] and parts[17] ~= "") and parts[17] or nil
+    local savedScale = tonumber(parts[18]) -- field 18: decor Object Scale (2026-09-29), nil on older lines
     if not (cls and x and y and z) then return end
+    -- 2026-09-29: a mesh-less R5LootActor line is a failed lbtestmesh -- persistAppend writes the line at
+    -- spawn time and Spawner.PersistUpdateLootMesh fills field 16 only if the mesh actually loaded, so a
+    -- bad mesh path leaves an EMPTY lootMesh behind forever. Restoring one spawned a bare loot actor with
+    -- no mesh and (RedFalcon's saved list, two such "TestMesh" lines) the game crashed inside UE4SS.dll on
+    -- every load. Skip it instead of trying to rebuild it.
+    if cls == "/Script/R5.R5LootActor" and (lootMesh == nil or lootMesh == "") then
+        print("[LivingBase] restore: skipping a mesh-less R5LootActor entry (" .. tostring(parts[13]) .. ") -- a failed test mesh.\n")
+        return
+    end
     local loc = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) }
     local aiPath = (ai and ai ~= "") and ai or nil
+    -- Original Upright Senkamati saved with the old Officer crew brain -> the walker brain (2026-09-30); see
+    -- Config.ORIGINAL_UPRIGHT_AI_CONTROLLER. Matched by the reskinTarget marker, never by class, so real crew are untouched.
+    if aiPath and aiPath == Config.ORIGINAL_UPRIGHT_AI_CONTROLLER_LEGACY and type(lr) == "string" and lr:find("^OriginalUpright::") then
+        aiPath = Config.ORIGINAL_UPRIGHT_AI_CONTROLLER
+    end
+    if animClassPath and animClassPath == Config.ORIGINAL_UPRIGHT_ANIM_CLASS_LEGACY and type(lr) == "string" and lr:find("^OriginalUpright::") then
+        animClassPath = Config.ORIGINAL_UPRIGHT_ANIM_CLASS
+    end
     local yaw = tonumber(yw) or 0.0
     local friendly = (fr == "1")
     local look = nil
@@ -13028,9 +13494,25 @@ local function restoreOne(line)
         local aiLine = CS.findPersistedLine(resolvedLabel, "AITOGGLE:")
         savedAiOff = aiLine == "AITOGGLE:0"
     end
+    -- ORed in "^IDLE::" too (2026-09-29 fix, see the IDLE:: restore block below) -- a restored
+    -- idle actor should behave exactly like a frozen Senkamati for ConfirmPlacement/
+    -- CancelPlacement's own idle check, same reasoning as the two existing ORs above.
     local markIdle = savedAiOff or (look and look.reskinTarget and tostring(look.reskinTarget):match("::true$") and true or false)
+        or (look and type(look.reskinTarget) == "string" and look.reskinTarget:match("^IDLE::") and true or false)
+    -- Niagara decor (Decor > Misc > Water): field 16 holds the system asset path; set it in the deferred-spawn window like the live spawn does.
+    local restorePre = nil
+    if look and look.lootMesh and tostring(cls):find("NiagaraActor", 1, true) then
+        local fxPath = look.lootMesh
+        restorePre = function(actor)
+            pcall(function()
+                local sys = Spawner.ResolveAsset(fxPath)
+                local niag = actor.NiagaraComponent
+                if sys and niag and niag:IsValid() then niag.Asset = sys end
+            end)
+        end
+    end
     local ok, a = pcall(function()
-        return Spawner.Spawn(cls, resolvedLabel, loc, nil, aiPath, yaw, friendly, look, resolvedLabel, markIdle, animClassPath)
+        return Spawner.Spawn(cls, resolvedLabel, loc, restorePre, aiPath, yaw, friendly, look, resolvedLabel, markIdle, animClassPath)
     end)
     if ok and a and a:IsValid() then
         if needsMigration then
@@ -13079,6 +13561,10 @@ local function restoreOne(line)
             pcall(function() Spawner.SetDecorSolid(a) end)
             pcall(function() Spawner.MakeMovable(a) end)
             pcall(function() a:K2_SetActorLocation({ X = loc.X, Y = loc.Y, Z = loc.Z }, false, {}, true) end)
+            -- Saved Object Scale (2026-09-29) -- decor only, same block/timing as the collision setup.
+            if savedScale and savedScale > 0 and math.abs(savedScale - 1.0) > 0.001 then
+                pcall(function() Spawner.SetActorScaleWithFallback(a, savedScale) end)
+            end
         end
         -- Pitch/roll (2026-08-18): Spawner.Spawn's own placement transform is yaw-only (matches
         -- every OTHER spawn path, upright by default), so a saved non-zero pitch/roll from a prior
@@ -13099,9 +13585,10 @@ local function restoreOne(line)
         -- decor actor (SetDecorSolid/MakeMovable) -- this is a plain SetSkeletalMeshAsset swap, not
         -- crash-prone component surgery, so there's no reason it needs the deferred/staggered
         -- pipeline movers require.
-        if look and look.lootMesh then
+        if look and look.lootMesh and not tostring(cls):find("NiagaraActor", 1, true) then
             pcall(function() Spawner.SetLootMesh(a, look.lootMesh) end)
             pcall(function() Spawner.MakeLootDecor(a) end)
+            pcall(function() Spawner.ApplyLootSolid(a) end)   -- Config.LOOT_MESH_SOLID
         end
         -- Idle Senkamati (2026-08-23 fix, RedFalcon: "they do eventually freeze, but they need
         -- to freeze immediately... they are supposed to be frozen like statues"). testbed.lua's
@@ -13140,6 +13627,65 @@ local function restoreOne(line)
                         pcall(function() Spawner.SetAILogic(a, false) end)
                         break
                     end
+                end
+            end
+        end
+        -- Generic "IDLE::<poseOrOne>" marker (2026-09-29 fix, RedFalcon: "Thomas Richards (Bosun)
+        -- isn't idle on reload"). Covers every idle row that goes through testbed.lua's
+        -- applyIdleFreeze at LIVE spawn time (MONSTEROUS_MOBS/CRABS/NEW_PEOPLE/LIVESTOCK idle
+        -- entries -- see spawnCreature's/spawnMonsterousMob's own idleMarker comment) but, unlike
+        -- the two Senkamati-specific checks just above, had NO restore-side counterpart at all --
+        -- persist.txt never recorded these actors as idle in the first place, so every one of them
+        -- silently came back walking on a world reload, not just Thomas Richards. Same immediate-
+        -- not-deferred placement as the checks above (RestoreHook/RESTORE_RULES never sees a class
+        -- this generic and doesn't fire for ~8s anyway), plus the SAME belt-and-suspenders movement-
+        -- zero + 750ms x4 retry applyIdleFreeze itself uses live -- a Boss-class actor (Thomas
+        -- Richards) doesn't reliably stop from a single SetAILogic(false) call alone.
+        -- LEGACY lines (2026-10-01, RedFalcon: "the sow and Thomas Richards are no longer removing AI at
+        -- the start"): every idle actor saved BEFORE the 09-29 marker existed has an empty field 12, so
+        -- the check below never matched and they came back walking. Their saved label still ends in
+        -- "(Idle) N", so infer the freeze from that -- plus the pose, for NEW_PEOPLE rows that carry one.
+        do
+            local noMarker = not (look and type(look.reskinTarget) == "string" and look.reskinTarget ~= "")
+            if noMarker and type(resolvedLabel) == "string" then
+                local base = resolvedLabel:match("^(.-%(Idle%))%s*%d*$")
+                if base then
+                    local pose = "1"
+                    for _, p in ipairs(Config.NEW_PEOPLE or {}) do
+                        if type(p.idlePose) == "string" and p.label == base then pose = p.idlePose; break end
+                    end
+                    look = look or {}
+                    look.reskinTarget = "IDLE::" .. pose
+                end
+            end
+        end
+        if look and type(look.reskinTarget) == "string" then
+            local idleVal = look.reskinTarget:match("^IDLE::(.+)$")
+            if idleVal then
+                local function doFreeze()
+                    pcall(function() Spawner.SetAILogic(a, false) end)
+                    pcall(function()
+                        local cm = a.CharacterMovement
+                        if cm and cm:IsValid() then
+                            cm.MaxWalkSpeed = 0.0
+                            pcall(function() cm:StopMovementImmediately() end)
+                        end
+                    end)
+                    if idleVal ~= "1" then
+                        pcall(function() Spawner.ApplyFrozenPose(a, idleVal, 0) end)
+                    end
+                end
+                doFreeze()
+                if ExecuteWithDelay then
+                    local n = 0
+                    local function again()
+                        ExecuteInGameThread(function() pcall(function()
+                            if a and a:IsValid() then doFreeze() end
+                        end) end)
+                        n = n + 1
+                        if n < 4 and ExecuteWithDelay then ExecuteWithDelay(750, again) end
+                    end
+                    ExecuteWithDelay(750, again)
                 end
             end
         end
@@ -13263,6 +13809,107 @@ end
 -- something, found nothing to restore, or hit the debounce/re-entrancy guards. Lets main.lua's
 -- keybind lock release the instant it's actually safe, instead of guessing a fixed delay (see the
 -- restoreLockActive comment in main.lua for why this exists at all).
+-- Spawner.PreloadRestoreClasses(lines, onDone) (2026-09-30, RedFalcon: the game keeps crashing on load). Before a restore spawns
+-- anything, find every saved class that is not in memory yet and load them ONE AT A TIME, the next step scheduled only after the
+-- previous LoadAsset has RETURNED. Why: the old restore queued each next spawn on a timer without waiting for the current one, and
+-- a mid-restore LoadAsset lets the engine run its queued callbacks INSIDE the running one -- e.g. the log of 2026-09-30 09:46,
+-- "Asset loaded" then "StaticFindObject cannot be called with 0 parameters" then "Ref was not function ... removing hook!" (the
+-- delayed-callback hook dies for the rest of the session). With the loads done first, in a strictly sequential chain with nothing
+-- else queued, that overlap cannot happen. Switch: Config.RESTORE_PRELOAD (default on). Table field, not a new local.
+function Spawner.PreloadRestoreClasses(lines, onDone)
+    local seen, need = {}, {}
+    local total = 0
+    for _, line in ipairs(lines) do
+        local cls = line:match("^([^|]*)")
+        if cls and cls ~= "" and not seen[cls] then
+            seen[cls] = true
+            total = total + 1
+            local ok, o = pcall(StaticFindObject, cls)
+            if not (ok and o and o:IsValid()) then need[#need + 1] = cls end
+        end
+    end
+    if #need == 0 then
+        onDone()
+        return
+    end
+    always(string.format("Preload: %d of %d saved classes are not in memory yet -- loading them one at a time before restoring.", #need, total))
+    pcall(function() Spawner.Toast(string.format("LivingBase: loading %d class(es) before restoring...", #need), 3.0) end)
+    local i = 0
+    local finished = false
+    local function finish()
+        if finished then return end
+        finished = true
+        always("Preload: done.")
+        onDone()
+    end
+    local function step()
+        i = i + 1
+        if i > #need then
+            finish()
+            return
+        end
+        local idx = i
+        ExecuteInGameThread(function()
+            pcall(function()
+                local cls = need[idx]
+                always(string.format("Preload %d/%d -> %s", idx, #need, cls:match("([^/%.]+)$") or cls))
+                LoadAsset(cls)
+            end)
+            -- The NEXT step is scheduled only now, after LoadAsset returned -- never queued alongside another callback.
+            ExecuteWithDelay(Config.RESTORE_PRELOAD_GAP_MS or 250, step)
+        end)
+    end
+    ExecuteWithDelay(Config.RESTORE_PRELOAD_LEAD_IN_MS or 500, step)
+end
+
+-- Spawner.PreloadDeCorruptAssets(onDone) (2026-09-30). Spawner.DeCorrupt resolves its skin/eye/hair assets lazily through resolveAsset
+-- -> LoadAsset, the first time a Senkamati/crew look is built in a session, from INSIDE timer callbacks. Log evidence: four "Asset
+-- loaded" lines in a row during a fresh Caster (Mobile) spawn, then "[UE4SS.EngineTick.LuaModImpl] Hook threw exception: Ref was not
+-- function ... removing hook!" 0.3s later -- the same mid-callback LoadAsset re-entrancy PreloadRestoreClasses fixes for classes. So load
+-- every DECORRUPT_* asset ONCE, one at a time, with nothing else queued (chained from inside the finished step), in the same quiet
+-- window as the class preload. Switch: Config.DECORRUPT_PRELOAD (default on). Table field, not a new local.
+function Spawner.PreloadDeCorruptAssets(onDone)
+    if Config.DECORRUPT_PRELOAD == false or Spawner._decorruptWarmed then onDone() return end
+    Spawner._decorruptWarmed = true
+    local seen, need = {}, {}
+    local function want(p)
+        if type(p) ~= "string" or p == "" or seen[p] then return end
+        seen[p] = true
+        local probe = p
+        if not probe:match("%.[^/%.]+$") then local b = probe:match("([^/]+)$"); if b then probe = probe .. "." .. b end end
+        local ok, o = pcall(StaticFindObject, probe)
+        if not (ok and o and o:IsValid()) then need[#need + 1] = p end
+    end
+    for k, rules in pairs(Config) do
+        if type(k) == "string" and k:find("^DECORRUPT_") and type(rules) == "table" then
+            for _, sw in ipairs(rules.swaps or {}) do want(sw.to) end
+            for _, rp in ipairs(rules.replaces or {}) do
+                want(rp.to)
+                for _, p in ipairs(rp.toList or {}) do want(p) end
+            end
+        end
+    end
+    if #need == 0 then onDone() return end
+    always(string.format("Preload: %d de-corrupt asset(s) not in memory yet -- loading them one at a time.", #need))
+    local i, finished = 0, false
+    local function finish()
+        if finished then return end
+        finished = true
+        always("Preload: de-corrupt assets done.")
+        onDone()
+    end
+    local function step()
+        i = i + 1
+        if i > #need then finish() return end
+        local idx = i
+        ExecuteInGameThread(function()
+            pcall(function() resolveAsset(need[idx]) end)
+            ExecuteWithDelay(Config.RESTORE_PRELOAD_GAP_MS or 250, step)
+        end)
+    end
+    ExecuteWithDelay(Config.RESTORE_PRELOAD_LEAD_IN_MS or 500, step)
+end
+
 function Spawner.RestoreFromPersist(onComplete)
     if Spawner.restoring then return 0 end                 -- re-entrancy guard (another restore owns completion)
     local now = os.time()
@@ -13271,7 +13918,7 @@ function Spawner.RestoreFromPersist(onComplete)
     end
     local lines = persistReadLines()
     if #lines == 0 then
-        if onComplete then pcall(onComplete) end
+        Spawner.PreloadDeCorruptAssets(function() if onComplete then pcall(onComplete) end end)
         return 0
     end
     Spawner._lastRestore = now
@@ -13348,9 +13995,18 @@ function Spawner.RestoreFromPersist(onComplete)
         local i = 0
         local successCount = 0
         local lastToastAt = 0
+        local doneFired = false
         local function step()
             i = i + 1
-            if i > #list then onDone(successCount); return end
+            -- ONCE ONLY (2026-10-01, RedFalcon: "everything ran 3 times" -- movers restored 3x, post-processing 33/33, customizations and the
+            -- ready toast all tripled). Extra step() chains share `i`, so each one runs off the end of the list and called onDone again, which
+            -- started a whole extra movers pass per chain. The first completion wins; later ones are logged and dropped.
+            if i > #list then
+                if doneFired then always("Restore: duplicate list-complete ignored (" .. tostring(phaseLabel) .. ")"); return end
+                doneFired = true
+                onDone(successCount)
+                return
+            end
             -- Snapshot BEFORE scheduling (2026-09-18, RedFalcon: "long ben doesnt always spawn all
             -- the time and i do see an error in the log" -- traced to
             -- "spawner.lua:11036: attempt to index a nil value (field '?')"). `i` used to be read
@@ -13372,6 +14028,7 @@ function Spawner.RestoreFromPersist(onComplete)
                 -- branch) -- this line was VERBOSE-gated, so even the "which entry is this" trace
                 -- was silent by default. Always log BEFORE the spawn: a native crash inside the
                 -- engine leaves no trace otherwise, and "which entry died" is the whole question.
+                local okBody, errBody = pcall(function()
                 local raw = list[idx]:match("^([^|]*)") or "?"
                 always(string.format("Restore %d/%d -> %s", idx, #list, raw:match("([^/%.]+)$") or raw))
                 local a, cls, look = restoreOne(list[idx])
@@ -13395,8 +14052,13 @@ function Spawner.RestoreFromPersist(onComplete)
                         Spawner.Toast(string.format("%s: %d/%d", phaseLabel, idx, #list), 1.5)
                     end)
                 end
+                end) -- pcall of the step body: an unexpected error must not stall the chain
+                if not okBody then always("Restore step error: " .. tostring(errBody)) end
+                -- SEQUENTIAL (2026-09-30): the next step is scheduled only once THIS one has finished, so two restore
+                -- steps are never queued at once (see Spawner.PreloadRestoreClasses for why that overlap is dangerous).
+                if Config.RESTORE_SEQUENTIAL ~= false then ExecuteWithDelay(interval, step) end
             end)
-            ExecuteWithDelay(interval, step)
+            if Config.RESTORE_SEQUENTIAL == false then ExecuteWithDelay(interval, step) end
         end
         -- LEAD-IN before the FIRST item, not just between items. step() used to spawn item 1
         -- in the same frame as "Restore: starting". That was harmless when statues led the
@@ -13410,6 +14072,7 @@ function Spawner.RestoreFromPersist(onComplete)
         end
     end
 
+    local function beginSpawning()
     spawnList(statics, Config.RESTORE_STATIC_STAGGER_MS or 40, false, function(staticSuccesses)
         spawnList(movers, Config.RESTORE_STAGGER_MS or 250, true, function(moverSuccesses)
             Spawner.restoring = false
@@ -13454,6 +14117,12 @@ function Spawner.RestoreFromPersist(onComplete)
             end)
         end, "Restoring movers")
     end, "Restoring decor/statues")
+    end -- beginSpawning
+    if Config.RESTORE_PRELOAD ~= false then
+        Spawner.PreloadRestoreClasses(lines, function() Spawner.PreloadDeCorruptAssets(beginSpawning) end)
+    else
+        beginSpawning()
+    end
     return 0    -- reported asynchronously
 end
 
@@ -17088,6 +17757,131 @@ function Spawner.SetStaticActorScale(value, say)
     return true
 end
 
+-- Spawner.GetLockedTargetScale() -- MoveMenu.cpp's "Object Scale" readout (2026-09-29). Plain read,
+-- same K2_GetActorScale3D() the diagnostic tools already trust (see e.g. line ~17112 above); 1.0
+-- default whenever nothing's locked or the read fails, matching every other TARGET_* status field's
+-- "meaningless until TargetLabel() is checked" convention on the C++ side.
+-- Spawner.GetActorScaleWithFallback(actor) -- read, same fallback chain as the SET side below.
+-- K2_GetActorScale3D first (proven elsewhere in this file), then actor.RootComponent's own plain
+-- RelativeScale3D property (a root component with no parent has RelativeScale3D == world scale).
+function Spawner.GetActorScaleWithFallback(actor)
+    if not (actor and actor:IsValid()) then return 1.0, "none" end
+    local ok, s = pcall(function() return actor:K2_GetActorScale3D() end)
+    if ok and s and s.X then return s.X, "K2_GetActorScale3D" end
+    local ok2, val = pcall(function()
+        local root = actor.RootComponent
+        if root and root:IsValid() and root.RelativeScale3D then return root.RelativeScale3D.X end
+        return nil
+    end)
+    if ok2 and val then return val, "RootComponent.RelativeScale3D" end
+    return 1.0, "none"
+end
+
+function Spawner.GetLockedTargetScale()
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return 1.0 end
+    local cur = Spawner.GetActorScaleWithFallback(lt.actor)
+    return cur
+end
+
+-- Spawner.SetActorScaleWithFallback(actor, newScale) -- CONFIRMED LIVE (2026-09-29) that
+-- K2_SetActorScale3D is not callable on every decor class: a "Composition" foliage-prop actor
+-- (BP_Shared_Camp_PropsComposition_71) threw "attempt to call a TrivialObject value" on that exact
+-- UFUNCTION, even though the SAME actor reference already works fine for K2_GetActorLocation/
+-- Rotation elsewhere -- a genuine per-class UE4SS reflection/binding gap, not a stale-reference
+-- issue (see feedback_ue4ss_component_identity's own class of problem, but this is a different
+-- root cause -- confirmed by the pcall error TEXT, not guessed). Same "function vs property"
+-- fallback discipline this file already uses elsewhere (e.g. SetAnimationMode's own fallback,
+-- MoveMenu's RelativeLocation fix) rather than trusting one call shape unconditionally: tries the
+-- actor-level UFUNCTION first (works for most decor -- Spawner.SetStaticActorScale/lbsetstaticscale
+-- already proved this generally), then the component-level UFUNCTION on RootComponent
+-- (SetWorldScale3D), then a plain property write (RootComponent.RelativeScale3D) as the last
+-- resort -- a root component with no parent has RelativeScale3D == world scale, so this is a
+-- correct equivalent, not just a guess. Returns (ok, methodUsed, lastErr) so callers/diagnostics can
+-- report exactly which path worked.
+function Spawner.SetActorScaleWithFallback(actor, newScale)
+    if not (actor and actor:IsValid()) then return false, "none", "actor invalid" end
+    local v = { X = newScale, Y = newScale, Z = newScale }
+    local ok, err = pcall(function() actor:K2_SetActorScale3D(v) end)
+    if ok then return true, "K2_SetActorScale3D", nil end
+    local lastErr = err
+    local ok2, err2 = pcall(function()
+        local root = actor.RootComponent
+        if not (root and root:IsValid()) then error("no valid RootComponent") end
+        root:SetWorldScale3D(v)
+    end)
+    if ok2 then return true, "RootComponent:SetWorldScale3D", nil end
+    lastErr = err2
+    local ok3, err3 = pcall(function()
+        local root = actor.RootComponent
+        if not (root and root:IsValid()) then error("no valid RootComponent") end
+        root.RelativeScale3D = v
+    end)
+    if ok3 then return true, "RootComponent.RelativeScale3D", nil end
+    return false, "none", tostring(err3 or lastErr)
+end
+
+-- Spawner.NudgeTargetScale(delta) -- MoveMenu.cpp's Object Scale +/- buttons (2026-09-29,
+-- RedFalcon: "Object Scale with + and - buttons and a number representing scale... allow precision
+-- to affect it... don't let scale go below .1. This feature should only be available for decor").
+-- Reuses Spawner.SetActorScaleWithFallback (the correct generic decor-scale knob, not the per-Mesh
+-- CS.setActorScaleGrounded convention people/NPC scale uses) rather than duplicating it. Re-checks
+-- IsDecorClass itself rather than trusting the C++ side's own TargetIsDecor() gate -- that's a
+-- UI-only disable, this is the actual enforcement, same belt-and-suspenders discipline every other
+-- server-side gate in this file already applies.
+function Spawner.NudgeTargetScale(delta)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return end
+    if not (Spawner.IsDecorClass and lt.class and Spawner.IsDecorClass(lt.class)) then return end
+    local newScale = math.max(0.1, Spawner.GetLockedTargetScale() + delta)
+    local ok = Spawner.SetActorScaleWithFallback(lt.actor, newScale)
+    if ok then
+        -- Persist to persist.txt field 18 so the scale survives a world reload (RedFalcon: "since
+        -- its decor in the persist is fine"). Matched by the tracked entry's class + home, the same
+        -- key PersistUpdatePose uses for live-edit moves.
+        pcall(function()
+            for _, e in ipairs(Spawner.spawned) do
+                if e.actor == lt.actor then
+                    Spawner.PersistUpdateScale(e.class, e.home, newScale)
+                    break
+                end
+            end
+        end)
+    end
+end
+
+-- Spawner.TestNudgeTargetScale(deltaArg, say) -- "lbtestobjectscale <delta>" (2026-09-29, RedFalcon:
+-- "the scale isnt working, what command can i use to test this"). Console-callable diagnostic that
+-- exercises the EXACT same fallback chain NudgeTargetScale/the GUI's +/- buttons use, but reports
+-- every gate AND which method actually worked (or the final error if all three failed) instead of
+-- silently no-op'ing like the GUI path does.
+function Spawner.TestNudgeTargetScale(deltaArg, say)
+    say = say or function(m) print("[LivingBase] [test-object-scale] " .. tostring(m) .. "\n") end
+    local delta = tonumber(deltaArg)
+    if not delta then
+        say("usage: lbtestobjectscale <delta> -- e.g. lbtestobjectscale 0.5 or lbtestobjectscale -0.5")
+        return false
+    end
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then
+        say("no locked target -- press Num+ (or the Target List tab's '+' row) on a decor prop first.")
+        return false
+    end
+    local isDecor = (Spawner.IsDecorClass and lt.class and Spawner.IsDecorClass(lt.class)) and true or false
+    say(string.format("target=%s class=%s isDecor=%s", tostring(lt.label), tostring(lt.class), tostring(isDecor)))
+    if not isDecor then
+        say("target's class is NOT in Spawner.IsDecorClass's lookup -- Object Scale only works on actual Config.DECOR_CATEGORIES entries.")
+        return false
+    end
+    local before, readMethod = Spawner.GetActorScaleWithFallback(lt.actor)
+    local newScale = math.max(0.1, before + delta)
+    local setOk, method, err = Spawner.SetActorScaleWithFallback(lt.actor, newScale)
+    local after = Spawner.GetActorScaleWithFallback(lt.actor)
+    say(string.format("read via %s | set ok=%s method=%s err=%s | scale %.4f -> %.4f (requested delta=%.4f)",
+        tostring(readMethod), tostring(setOk), tostring(method), tostring(err), before, after, delta))
+    return true
+end
+
 -- Spawner.SetNiagaraComponentScale(value, say) -- "lbsetniagarascale <value>|<x,y,z>" (2026-09-26,
 -- RedFalcon: "niagara scale specifically as its an effect" -- a follow-up to lbsetstaticscale,
 -- which resizes the WHOLE actor root. Quest Sparkle (and any other FX-only decor prop) usually
@@ -17988,6 +18782,7 @@ end
 -- "follows body rotation like the other spawns."
 function Spawner.EnableLight(slot, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "enable")   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     slot = tonumber(slot)
     if not (slot and slot >= 1 and slot <= 3) then say("invalid light slot: " .. tostring(slot)); return false end
     if Spawner.Lights[slot] then say("Light " .. slot .. " is already enabled."); return false end
@@ -18117,6 +18912,7 @@ end
 -- light's persist.txt line at spawn time), so this doesn't reintroduce persistence.
 function Spawner.DisableLight(slot, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "disable")   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     slot = tonumber(slot)
     local entry = slot and Spawner.Lights[slot]
     if not entry then say("Light " .. tostring(slot) .. " is not enabled."); return false end
@@ -18138,6 +18934,7 @@ end
 -- to SetLightIntensity/SetLightThrowDistance below for the exact same reason.
 function Spawner.SetLightColor(slot, r, g, b, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "color " .. tostring(r) .. "," .. tostring(g) .. "," .. tostring(b))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.color = { R = r, G = g, B = b }
@@ -18152,6 +18949,7 @@ end
 -- Spawner.SetLightIntensity(slot, value, say) -- "Brightness" slider, 10-3000.
 function Spawner.SetLightIntensity(slot, value, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "brightness " .. tostring(value))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.intensity = value
@@ -18167,6 +18965,7 @@ end
 -- 300-2000.
 function Spawner.SetLightThrowDistance(slot, value, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "throw " .. tostring(value))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.radius = value
@@ -18184,6 +18983,7 @@ end
 -- reasoning). The plate (mc) is the pivot -- lightComp carries the offset.
 function Spawner.SetLightShieldDistance(slot, value, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "shieldDist " .. tostring(value))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.lightComp and entry.lightComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.shieldDistance = value
@@ -18196,6 +18996,7 @@ end
 -- same "not taller" convention Spawner.TestSpawnTiltedLitMesh's own scale already uses.
 function Spawner.SetLightShieldSize(slot, value, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "shieldSize " .. tostring(value))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.plateComp and entry.plateComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.shieldSize = value
@@ -18210,6 +19011,7 @@ end
 -- separation already established for this project).
 function Spawner.SetLightShieldVisible(slot, visible, say)
     say = say or function(m) print("[LivingBase] [light" .. tostring(slot) .. "] " .. tostring(m) .. "\n") end
+    pcall(lbLogFile, "[light] slot=" .. tostring(slot) .. " " .. "shieldVisible " .. tostring(visible))   -- breadcrumb for crash triage (2026-10-01): a dump now shows which light action was running
     local entry = Spawner.Lights[tonumber(slot) or -1]
     if not (entry and entry.plateComp and entry.plateComp:IsValid()) then say("Light " .. tostring(slot) .. " is not enabled."); return false end
     entry.shieldVisible = visible and true or false
@@ -23610,6 +24412,15 @@ do
 -- FIRST call per Read Current pass in practice since TestReadBeltStrapStyles' own checkpoints 2/3
 -- already bracket each call -- these add per-ARRAY-INDEX granularity inside it specifically.
 local function findBeltStrapComponent(actor, bodyPart)
+    -- 2026-09-30 (RedFalcon: the game crashed loading a base; crash dump UE4SS.dll +0x948090, the SAME address as 2026-09-16's
+    -- four belt/strap crashes and as two more crashes earlier the same day). The trail (find-beltstrap breadcrumbs) showed
+    -- Spawner.RestoreCustomState calling this once per piece -- bodyPart 10, then 11, then 12 -- each a FULL element-by-element
+    -- walk of the same 11-entry BuildedCompositeMeshes TArray a fraction of a second apart, and the game dying on index 3 of the
+    -- third walk. That is exactly the "repeated re-indexing of one array in a tight loop" pattern buildBeltStrapMap's own
+    -- comment (2026-09-16) traced these crashes to -- but that fix only reached the Read Current path. So: read the array
+    -- ONCE per actor, remember EVERY body part's target, and answer later lookups from that map. The map is trusted while the
+    -- array's element COUNT is unchanged (a piece being added changes it) and for at most 20s; a cached target that has
+    -- become invalid triggers a fresh walk. Absent pieces are cached too (that repeated "not found" walk is what crashed).
     local function cp(m) print("[LivingBase] [find-beltstrap] " .. tostring(m) .. "\n") end
     local comp = nil
     pcall(function() comp = actor.CompositeMeshComponent end)
@@ -23620,10 +24431,23 @@ local function findBeltStrapComponent(actor, bodyPart)
     local n = 0
     pcall(function() n = list:GetArrayNum() end)
     if n == 0 then pcall(function() n = #list end) end
-    cp("bodyPart=" .. tostring(bodyPart) .. " n=" .. tostring(n) .. " -- entering array walk.")
     local wantBodyPart = tonumber(bodyPart)
+
+    local key = nil
+    pcall(function() key = actor:GetFullName() end)
+    Spawner._beltMapCache = Spawner._beltMapCache or {}
+    local cached = key and Spawner._beltMapCache[key]
+    if cached and cached.n == n and (os.clock() - cached.t) < 20 then
+        local t = cached.map[wantBodyPart]
+        if t == nil then return nil end                      -- cached "this actor has no such piece"
+        local okV, v = pcall(function() return t:IsValid() end)
+        if okV and v then return t end
+        -- stale target: fall through to one fresh walk
+    end
+
+    cp("bodyPart=" .. tostring(bodyPart) .. " n=" .. tostring(n) .. " -- ONE walk of the array (result cached for this actor).")
+    local map = {}
     for i = 1, n do
-        cp("index " .. i .. "/" .. n .. " -- reading element.")
         local el = nil
         pcall(function() el = list[i] end)
         if el == nil then pcall(function() el = list:Get(i) end) end
@@ -23631,19 +24455,26 @@ local function findBeltStrapComponent(actor, bodyPart)
         if el then
             local bp = nil
             pcall(function() bp = el.BodyPart end)
-            cp("index " .. i .. " -- BodyPart=" .. tostring(bp) .. ".")
-            if tonumber(bp) == wantBodyPart then
+            bp = tonumber(bp)
+            if bp ~= nil and map[bp] == nil then
                 local target = nil
                 pcall(function() target = el.EquippedMesh end)
                 local targetValid = false
                 pcall(function() targetValid = target ~= nil and target:IsValid() end)
-                cp("index " .. i .. " -- matched, EquippedMesh read -- valid=" .. tostring(targetValid) .. ".")
-                if targetValid then return target end
+                if targetValid then map[bp] = target end
             end
         end
     end
-    cp("bodyPart=" .. tostring(bodyPart) .. " -- walk finished, no match.")
-    return nil
+    if key then
+        -- forget entries not touched for a while so this never grows without bound
+        local now = os.clock()
+        for k, v in pairs(Spawner._beltMapCache) do
+            if (now - v.t) > 120 then Spawner._beltMapCache[k] = nil end
+        end
+        Spawner._beltMapCache[key] = { n = n, t = now, map = map }
+    end
+    cp("walk finished: " .. (map[wantBodyPart] and ("found bodyPart " .. tostring(wantBodyPart)) or ("no bodyPart " .. tostring(wantBodyPart))) .. ".")
+    return map[wantBodyPart]
 end
 
 -- buildBeltStrapMap(actor) -- (2026-09-16 crash fix) walks BuildedCompositeMeshes ONCE and returns
@@ -29111,6 +29942,21 @@ local function pickTargetPreferringHover()
     return false, nil
 end
 
+-- Exposed for signs.lua (2026-09-30, RedFalcon: "can we not use the same targeting mechanism as the regular targeting?") so the
+-- Signs tab's Delete/Select uses the SAME hover-raycast pick as Numpad+ for anything the mod spawned. Table field, not a new local.
+Spawner.PickTargetPreferringHover = pickTargetPreferringHover
+
+-- Spawner._selectSignIfCapable(actor) (2026-10-01, RedFalcon: "targeting with + isnt selecting in text"): whenever an object becomes the live-edit lock (Num+, Target List,
+-- spawn, replace/cycle), ALSO make it the Text tab's selected object if it has a sign entry. No-op for everything else.
+function Spawner._selectSignIfCapable(actor)
+    if not (actor and actor:IsValid()) then return end
+    local okS, SignsMod = pcall(require, "signs")
+    if not (okS and SignsMod and SignsMod.FindType and SignsMod.SetTarget) then return end
+    if Config.SIGNS_ENABLED == false then return end
+    if SignsMod._target == actor then return end   -- already the selected object: no repeat toast
+    if SignsMod.FindType(actor) then SignsMod.SetTarget(actor) end
+end
+
 function Spawner.ToggleTargetLock()
     print("[LivingBase] target-lock key received.\n")
     if Spawner.lockedTarget then
@@ -29122,6 +29968,7 @@ function Spawner.ToggleTargetLock()
         if bestI and e.actor ~= Spawner.lockedTarget.actor then
             local oldLabel = Spawner.lockedTarget.label
             Spawner.lockedTarget = { actor = e.actor, label = e.label, class = e.class }
+            pcall(function() Spawner._selectSignIfCapable(e.actor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
             print("[LivingBase] Target lock moved: " .. tostring(oldLabel) .. " -> " .. tostring(e.label) .. ".\n")
             pcall(function() Spawner.Toast("Target lock moved to: " .. tostring(e.label), 2.5) end)
             -- _targetLockTickRunning is already true from the original lock (never released here) --
@@ -29144,6 +29991,7 @@ function Spawner.ToggleTargetLock()
         return
     end
     Spawner.lockedTarget = { actor = e.actor, label = e.label, class = e.class }
+    pcall(function() Spawner._selectSignIfCapable(e.actor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
     print("[LivingBase] Target lock ON: " .. tostring(e.label) .. ".\n")
     pcall(function() Spawner.Toast("Target lock ON: " .. tostring(e.label) .. " — despawn/cycle/live-edit now act on it.", 3.0) end)
     Spawner.StartTargetLockTick()
@@ -29251,6 +30099,7 @@ function Spawner.TargetListSelect(index)
     local row = Spawner._targetListResults and Spawner._targetListResults[index + 1]
     if not (row and row.actor and row.actor:IsValid()) then return false end
     Spawner.lockedTarget = { actor = row.actor, label = row.label, class = row.class }
+    pcall(function() Spawner._selectSignIfCapable(row.actor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
     print("[LivingBase] Target lock ON (from Target List): " .. tostring(row.label) .. ".\n")
     pcall(function() Spawner.Toast("Target lock ON: " .. tostring(row.label), 2.5) end)
     Spawner.StartTargetLockTick()
@@ -29593,6 +30442,33 @@ function Spawner.PersistUpdateLootMesh(classPath, loc, meshPath)
         if bestParts[f] == nil then bestParts[f] = "" end
     end
     bestParts[16] = meshPath
+    lines[bestI] = table.concat(bestParts, "|")
+    persistWriteLines(lines)
+    return true
+end
+
+-- Spawner.PersistUpdateScale(classPath, loc, scale) -- writes field 18 (2026-09-29, decor Object
+-- Scale persistence). Same "match by classPath + nearest location, rewrite one field" shape as
+-- PersistUpdateLootMesh above; pads any missing fields 8-17 with empty strings first so the write
+-- never leaves a hole table.concat can't handle on an older, shorter line.
+function Spawner.PersistUpdateScale(classPath, loc, scale)
+    if not (classPath and loc and tonumber(scale)) then return false end
+    local lines = persistReadLines()
+    local bestI, bestD, bestParts
+    for i, line in ipairs(lines) do
+        local parts = {}
+        for f in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = f end
+        if parts[1] == classPath and tonumber(parts[2]) then
+            local x, y, z = tonumber(parts[2]), tonumber(parts[3]), tonumber(parts[4])
+            local d = (x - loc.X) ^ 2 + (y - loc.Y) ^ 2 + (z - loc.Z) ^ 2
+            if not bestD or d < bestD then bestI, bestD, bestParts = i, d, parts end
+        end
+    end
+    if not bestI then return false end
+    for f = 8, 17 do
+        if bestParts[f] == nil then bestParts[f] = "" end
+    end
+    bestParts[18] = string.format("%.3f", scale)
     lines[bestI] = table.concat(bestParts, "|")
     persistWriteLines(lines)
     return true
@@ -30580,6 +31456,7 @@ function Spawner.ConfirmPlacement()
     Spawner._placementStatueBottomOffset = nil
     Spawner._placementCenterOffset = nil
     pcall(function() Spawner.SetDecorSolid(actor) end)
+    pcall(function() Spawner.ApplyLootSolid(actor) end)   -- boards / obelisk become real blockers once placed (Config.LOOT_MESH_SOLID)
     local entry
     for _, e in ipairs(Spawner.spawned) do
         if e.actor == actor then entry = e; break end
@@ -30601,6 +31478,19 @@ function Spawner.ConfirmPlacement()
     end
     print("[LivingBase] Placement confirmed.\n")
     pcall(function() Spawner.Toast("Placed.", 1.5) end)
+    -- A placed object that can carry text (a Sign Post, wall flag, board, obelisk, chest...) becomes BOTH the spawn/live-edit target (Num+ lock) and the Text tab's
+    -- selected object (2026-10-01, RedFalcon), so it can be moved and written on straight away.
+    pcall(function()
+        local okS, SignsMod = pcall(require, "signs")
+        if okS and SignsMod and SignsMod.FindType and SignsMod.FindType(actor) then
+            if SignsMod.RekeyMoved then pcall(SignsMod.RekeyMoved, actor) end   -- keep its saved text attached to the new spot
+            if entry then
+                Spawner.lockedTarget = { actor = actor, label = entry.label, class = entry.class }
+                Spawner.StartTargetLockTick()
+            end
+            SignsMod.SetTarget(actor)
+        end
+    end)
 
     -- Barbie auto-detect, moved here from the moment of SPAWN (2026-09-16, RedFalcon: "on the spawn
     -- of a barbie, it is detecting info before it's stripped. Maybe wait to detect until officially
@@ -30649,7 +31539,11 @@ function Spawner.ConfirmPlacement()
         -- outcome -- so there's nothing that actually needs reading. Spawner.
         -- WriteBarbieDefaultCustomState writes the equivalent saved lines directly, no actor read at
         -- all, so it carries none of the crash risk and needs no settle delay.
-        pcall(function() Spawner.WriteBarbieDefaultCustomState(actor, function() end) end)
+        -- DISABLED 2026-09-29 (RedFalcon: "spawn them as they are without removing anything and no
+        -- custom entries") -- that default state describes the post-strip look, which Barbies no
+        -- longer get (see pollBarbieSpawnRequest's underwearArg=nil), so writing it would now record
+        -- a look that doesn't match the actor. Function kept, just not called.
+        -- pcall(function() Spawner.WriteBarbieDefaultCustomState(actor, function() end) end)
         --
         -- ORIGINAL, READ-BASED auto-save -- TEMPORARILY DISABLED (2026-09-16, RedFalcon: "scanning
         -- and saving the extant statues were fine, placing the barbie wasnt. can we remove the auto
@@ -32174,6 +33068,7 @@ function Spawner.CycleNearestInFront(direction)
     if Spawner.lockedTarget and Spawner.lockedTarget.actor == e.actor then
         local resolvedLabel = Spawner.spawned[#Spawner.spawned] and Spawner.spawned[#Spawner.spawned].label or newLabel
         Spawner.lockedTarget = { actor = newActor, label = resolvedLabel, class = nextEntry.path }
+        pcall(function() Spawner._selectSignIfCapable(newActor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
     end
 
     if kind == "statue" then
@@ -32290,6 +33185,7 @@ function Spawner.ReplaceNearestInFront(spawnFn, newLabelHint)
 
     if wasLocked then
         Spawner.lockedTarget = { actor = newActor, label = newEntry.label, class = newEntry.class }
+        pcall(function() Spawner._selectSignIfCapable(newActor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
     end
 
     local shownLabel = newLabelHint or newEntry.label

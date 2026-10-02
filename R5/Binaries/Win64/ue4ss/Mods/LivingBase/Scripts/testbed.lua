@@ -319,14 +319,23 @@ local function announceCreatureClass(label, path)
     end
 end
 
-local function spawnCreature(candidates, label, aiPath, disable)
+-- `idleMarker` (2026-09-29, RedFalcon: "Thomas Richards (Bosun) isn't idle on reload"): an
+-- optional "IDLE::<poseOrOne>" string (see applyIdleFreeze's own header) threaded through to
+-- Spawner.Spawn as compositeLook.reskinTarget + markIdle=true. Every idle-freeze wrapper below
+-- (spawnMonsterousMob/spawnCreatureFrozen, used by MONSTEROUS_MOBS/CRABS/NEW_PEOPLE/LIVESTOCK
+-- idle rows) passes this so restoreOne (spawner.lua) can recognize the actor as idle and re-freeze
+-- it immediately on world reload -- previously nothing persisted that fact at all, so every idle
+-- row of every class silently came back walking after a save/reload, not just Thomas Richards.
+local function spawnCreature(candidates, label, aiPath, disable, idleMarker)
     local friendly = Config.MAKE_CREATURES_FRIENDLY == true
     if friendly and not Spawner.GetFriendlyFactionParams() then
         log("No crew found to copy a friendly faction from — spawn a crew (F2) " ..
             "first, or " .. label .. " will be hostile.")
     end
+    local look = idleMarker and { reskinTarget = idleMarker } or nil
     for _, path in ipairs(candidates or {}) do
-        local a = Spawner.Spawn(path, label, frontSpot(300), nil, aiPath, nil, friendly)
+        local a = Spawner.Spawn(path, label, frontSpot(300), nil, aiPath, nil, friendly,
+            look, nil, idleMarker and true or false)
         if a and a:IsValid() then
             snapToFloor(a, playerFloorZ())
             -- Copy the friendly faction; goats also get their battle/target components
@@ -352,8 +361,8 @@ end
 -- 2026-09-25 after the first pass shipped these genuinely hostile ("none of the new monsterous are
 -- friendly") -- these are placeable set-dressing like every other roster, not real threats. Reuses
 -- spawnCreature itself (single-path `candidates` list of one) rather than duplicating its logic.
-local function spawnMonsterousMob(path, label)
-    return spawnCreature({ path }, label, nil, nil)
+local function spawnMonsterousMob(path, label, idleMarker)
+    return spawnCreature({ path }, label, nil, nil, idleMarker)
 end
 
 local function monsterousMobLabel(m)
@@ -430,8 +439,14 @@ local function applyIdleFreeze(a, idlePose)
     end
 end
 
+-- idleMarkerFor(idlePose) -- "IDLE::1" for a bare freeze, "IDLE::<poseName>" when a specific
+-- pose is also being locked -- see restoreOne's own matching parse in spawner.lua.
+local function idleMarkerFor(idlePose)
+    return "IDLE::" .. (type(idlePose) == "string" and idlePose or "1")
+end
+
 local function spawnFrozenIdleNewPerson(path, label, idlePose)
-    local a = spawnMonsterousMob(path, label)
+    local a = spawnMonsterousMob(path, label, idleMarkerFor(idlePose))
     applyIdleFreeze(a, idlePose)
     return a
 end
@@ -442,7 +457,7 @@ end
 -- spawnCreature for the exact same pacify/friendly/AI-override treatment its "(Mobile)" sibling
 -- gets, then freezes on top via the shared applyIdleFreeze helper.
 local function spawnCreatureFrozen(candidates, label, aiPath, disable, idlePose)
-    local a = spawnCreature(candidates, label, aiPath, disable)
+    local a = spawnCreature(candidates, label, aiPath, disable, idleMarkerFor(idlePose))
     applyIdleFreeze(a, idlePose)
     return a
 end
@@ -637,7 +652,19 @@ local function placeDecorEntry(d)
     -- uses (spawner.lua ~19707) to skip writing a persist.txt line for one spawn.
     local _prevTransient = Spawner.transient
     if d.noPersist then Spawner.transient = true end
-    local a = Spawner.Spawn(d.path, spawnLabel, spot)
+    -- `d.fx` (2026-10-01, Decor > Misc > Water): a Niagara system asset path. The row spawns a plain NiagaraActor and the system is set inside the
+    -- deferred-spawn window (the same recipe lbtestniagarapath uses), then the asset path is saved in persist.txt's field 16 so a reload re-creates it.
+    local fxPre
+    if d.fx then
+        fxPre = function(actor)
+            pcall(function()
+                local sys = Spawner.ResolveAsset(d.fx)
+                local niag = actor.NiagaraComponent
+                if sys and niag and niag:IsValid() then niag.Asset = sys end
+            end)
+        end
+    end
+    local a = Spawner.Spawn(d.path, spawnLabel, spot, fxPre)
     Spawner.transient = _prevTransient
     if not (a and a:IsValid()) then
         log("Decoration " .. d.name .. " failed — path may be wrong; probe a wild one for its class.")
@@ -650,6 +677,9 @@ local function placeDecorEntry(d)
     -- rule route is unusable). Force the mesh, then immediately convert it to inert decor (no pickup
     -- prompt, no toss physics, no sparkle) the same way lbdecorloot handles an already-dropped item —
     -- these are meant to be pure set-dressing like every other decor category, not real pickups.
+    if d.fx then
+        pcall(function() Spawner.PersistUpdateLootMesh(d.path, spot, d.fx) end)
+    end
     if d.mesh then
         Spawner.SetLootMesh(a, d.mesh)
         Spawner.MakeLootDecor(a)
@@ -780,6 +810,17 @@ function Testbed.SpawnDecorByName(name)
         end
     end
     return nil, "no decoration named '" .. tostring(name) .. "'"
+end
+
+-- Testbed.SpawnSpecialByName(name) (2026-09-29) -- same as SpawnDecorByName but looks ONLY in the hidden
+-- DECOR_CATEGORIES.special_items category (which is deliberately not in DECOR_ORDER; see fkeys.lua).
+function Testbed.SpawnSpecialByName(name)
+    for _, d in ipairs((Config.DECOR_CATEGORIES or {}).special_items or {}) do
+        if d.name:lower() == tostring(name):lower() then
+            return placeDecorEntry(d)
+        end
+    end
+    return nil, "no special item named '" .. tostring(name) .. "'"
 end
 
 -- (Fixed per-category wrapper functions removed 2026-08-13, replaced by the active-category

@@ -1,167 +1,124 @@
 [size=5][b]Living Base Enhanced[/b][/size]
-[color=#D4D4D8]A base-building, population, and character-customization toolkit for Windrose — hand-place ambient NPCs, animals, posed statues, and decorations anywhere around your base; build a fully custom character from scratch and dress it piece by piece; set up a camera and lighting rig for screenshots; and have it all persist across reloads. The ONLY way to spawn, move, or customize anything is a real clickable GUI window — press '-' (Numpad Minus) in-game to open it.[/color]
+[color=#D4D4D8]Living Base Enhanced is a base-building and population tool to extend Windrose's native build mode. It allows hand placement of NPCs, decor, plants, animals, monsters and much more. It also allows fine tuned adjustment to those placements both by moving them around and rotating. Additional features allow for customization of clothing and colors and a full photo mode. Keyboard hotkeys and a full GUI window make changes easy to do. All creations and changes are stored persistently outside of the world save, ensuring that no data can be corrupted and uninstalling simply involves removing the mod.[/color]
 
-[size=4][b]What's new in 3.0.5[/b][/size]
-[color=#D4D4D8]
-[b]New Text tab: write on signs, chests and more[/b] — aim at a text object and press Delete (or click Select Object), type up to four lines, then Apply, Clear or Reset. Works on signs, wooden chests, bales, boxes, barrels and sacks, plus a new Additional Items list: Sign Post, Wall Flag 1-4, Board 1-3 (one line) and the Obelisk (boards and obelisk are solid). Choose a colour (ten presets plus last used), a font (Greengoth, Script or built-in; the two custom fonts come in a small pak included in the download) and tick Add Glow for text that ignores lighting. Text is saved per world and returns on load.
-
-[b]Custom tab camera: Decor View, orbit and zoom[/b] — a new Decor View button frames any decor object from a distance based on its size; Full Body and Face View are now for people and animals only. The orbit buttons gain + and - zoom, and all four repeat while held. While a Custom view is active, Photo Mode's move pad, rotate arrows, FOV slider and Reset also steer it.
-
-[b]Custom water features and furniture[/b] — Decor > Misc > Water has flat water planes, the fountain's water flow, spouts, spray and splash effects and three empty solid fountains for building your own pools and fountains; Decor > Furniture gains ten tables/display trays and a new Shelving folder. New console command: lbhelp find <text>.
-
-[b]More[/b] — spawn tree filter box, Object Scale for decor, GUI Scale dropdown (0.5x-3x), new decor (Shackles, Dead Prisoner 1-3), Barbie picker characters spawn exactly as built, frozen Idle rows re-freeze immediately on reload, Original Upright Senkamati use the Marita-style walker AI, the Swamp stele sparkle is gone, and Numpad Minus no longer re-opens the window after closing it.
-
-[b]Fixed[/b] — a crash while applying sign text (and some arrow-key moves and customization changes): the mod now pauses its background timers during heavy game work and idles its GUI polling while the window is closed. World-reload hardening too. Runs on the stock UE4SS posted on Nexus.
-
-[b]Note[/b] — don't use the lbreload console command to apply changes (a reload can leave timers stale and freeze the GUI); restart the game instead. Update both mod folders (LivingBase and LivingBaseSpawnMenu) together.
-[/color]
-
-[size=4][b]What's new in 3.0.0 — MAJOR REWORK[/b][/size]
-[color=#D4D4D8]This release changed enough that it's easier to treat as a new baseline than as an incremental diff.
-
-[b]Numpad-only controls, GUI-only spawning[/b] — every keyboard-only spawn/decoration/live-edit key from earlier versions is retired. The GUI window is now the only way to spawn, replace, or customize anything; the numpad works identically in-game or with the GUI focused, for movement, confirmation, despawn, and undo.
-
-[b]Two new GUI tabs: Customize and Photo Mode[/b] — Customize lets you spawn a from-scratch custom character (pick a sex, Body Type, and Origin), then dress and pose ANY target-locked actor: Body (skin tone, eye color, physique, height, AI toggle, one-way "Make Ghost"), Hair, Clothes (with a toggleable fit-safety net), Belts and Straps (plus accessory detect/randomize), and Poses and Actions. "Read Current" reads a target's live look into every control; "Save Customizations" pins the current setup so it survives a reload. Photo Mode adds camera positioning presets, a directional move pad, target highlight, a precise coordinate editor, and a 3-slot portable lighting rig for setting up screenshots.
-
-[b]Appearance no longer locks in permanently by default[/b] — most rosters now regenerate a fresh randomized look on every world reload, the same as a brand-new spawn, instead of keeping whatever was rolled the first time. Use "Save Customizations" on a specific actor to keep its exact current appearance instead.
-
-[b]Senkamati: a new "Original Upright" presentation, plus a curated legs fix[/b] — every Senkamati archetype (Warrior, Hunter, Thrall, Caster) now has two full presentations, each Mask On/Off with a moving and frozen "Idle" version of every entry: the original "Wild" crew-based re-skins, and a new "Original Upright" using the native mob body with an upright walking gait (cosmetic only — can't fight with real weapons). Both correctly restore mask/weapon/idle state on a world reload. Wild's Caster/Hunter/Thrall mask-off look also gets a specific curated legs piece + color instead of showing plain default underwear.
-
-[b]Animals: every look now has a frozen "(Idle)" version[/b] — boars, goats, dodos, wolves, crocodiles, and crabs each get a wandering "(Mobile)" and a frozen, statue-like "(Idle)" version of every individual look.
-
-[b]Fixed[/b] — several world-reload bugs found building the above (an "Idle" actor silently un-freezing after restore; a new roster misidentified by an older restore rule sharing the same native class; a restored Thrall misidentified as a Warrior). The GUI window also no longer confuses Steam's F12 screenshot / FPS counter — it now waits a few seconds before creating its own render device so the game's real one is recognized first; the window takes a moment to appear after loading, which is expected.
-
-Everything from the previous preview/relocate/statue-targeting rebuild and the first "Custom" GUI category also ships in this release, superseded in UX by the Customize tab above but unchanged in underlying behavior.
-[/color]
-
-[size=4][b]The GUI[/b][/size]
-[color=#D4D4D8]LivingBaseSpawnMenu, a second, compiled companion mod bundled with this download, is a genuinely separate, always-on-top native window (drag it to another monitor, resize it) — not an overlay drawn on the game. It's required in practice: there is no keyboard-only spawn scheme anymore.[/color]
-
-[color=#D4D4D8]
-[b]Six tabs[/b] — Spawn and Move (F5): a categorized spawn tree plus a held-repeat move/edit panel with full X/Y/Z rotation and a precise coordinate editor. Customize (F6): spawn-from-scratch character creation plus a full body/hair/clothes/belts/pose editor for any target-locked actor. Photo Mode (F7): camera + lighting for screenshots. Target List: scan and lock any tracked actor by name/distance, even out of view, plus a "Mark Target" highlight toggle. Instructions (F1) and History (F10): an in-window reference and a running log of every on-screen toast.
-
-[b]A categorized spawn tree[/b] — every roster (crew, statues, Senkamati — both "Wild" and "Original Upright" — decor, animals, walking women, and more) laid out as a browsable, clickable tree. Click an entry, then Spawn a new copy or Replace whatever's currently target-locked with it.
-
-[b]A real held-repeat move panel[/b] — Forward/Left/Right/Backward/Up/Down and full X/Y/Z rotate as actual UI buttons you can hold down for continuous movement, sidestepping this UE4SS build's well-known "most rapid repeat keypresses get dropped" limitation on the equivalent keyboard keys.
-
-[b]A precise coordinate editor[/b] — type exact X/Y/Z position and X/Y/Z rotation for whatever's target-locked, with Preview (try it live), Apply (commit), Reset, and Cancel.
-
-[b]Unique per-placement names[/b] — every object you place gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman 2"). Stored in your save, so names stay stable across reloads.
-[/color]
-
-[size=4][b]The full toolkit[/b][/size]
-[color=#D4D4D8]
-[b]Real Undo (Ctrl+Z or the GUI's Undo button)[/b] — restores the last despawned object (or an entire Delete All wipe, as one batch) at its exact spot, including AI/composite-look appearance where recorded. Steps back through your last 20 actions.
-
-[b]Cycle statues AND decorations (] and [)[/b] — swap the targeted statue or decoration for the next (or previous) entry in its own roster, in place. Undo-able.
-
-[b]Senkamati — Wild and Original Upright[/b] — Warrior, Hunter, Thrall, and Caster, each as both the original crew-based "Wild" re-skin and the native-mob-bodied "Original Upright" (cosmetic upright gait, no real combat), each Mask On/Off with a moving and frozen "Idle" version.
-
-[b]Animals — Mobile and Idle[/b] — boars, goats, dodos, wolves, crocodiles, and crabs, each with a wandering and a frozen version of every look.
-
-[b]Walking Women[/b] — a real, walking female NPC. Letty, Marita Suares, and the Buccaneers Merchant each wear their own real, distinct outfit; a fourth, plain "Woman" look rounds out the roster with an outfit, hat presence, and hair that all vary naturally on their own. Every placement rolls a random skin tone.
-
-[b]Customize tab — spawn-from-scratch character + full appearance/pose editor[/b] — Spawn (pick a sex, Body Type, and Origin, then "Spawn Custom" — spawns nude except underwear, auto-locked); Body (skin tone, eye color, physique, height, AI toggle, one-way "Make Ghost"); Hair (109 entries); Clothes (304 entries, with a toggleable fit-safety net that substitutes underwear instead of clipping, plus a dedicated Remove branch); Belts and Straps (plus accessory detect/randomize); Poses and Actions (221 entries). "Read Current" reads a target's live look; "Save Customizations" pins it against a reload.
-
-[b]Photo Mode tab[/b] — Camera (Tripod/Selfie/First Person presets, a move pad, target highlight, precise Coords) and Lights (3 slots: enable, color, brightness, throw). Not persisted by design.
-
-[b]Target List tab[/b] — scans tracked actors within a chosen radius (3/5/8/10/15m), filtered by People/Monsterous/Animals/Decor, listed nearest-first with a "+" to lock any one directly — even something out of view. A "Mark Target" checkbox highlights whatever's locked (a glowing marker on decor, a following flame-ring effect on people/animals/monsters) until unchecked or untargeted.
-
-[b]Text tab[/b] — write up to four lines on signs, wooden chests, bales, boxes, barrels, sacks, the Sign Post, wall flags, one-line boards and the obelisk. Per-sign colour, font (Greengoth, Script, built-in) and glow; Clear erases just the text, Reset wipes every customization; everything is saved per world.
-
-[b]Structure shield[/b] — building blocks are invulnerable to damage by default (config.txt toggle), protecting your base from hostile mobs. Applied instantly to newly-placed blocks and swept over the base shortly after each load.
-
-[b]No more duplicate spawns on load[/b] — every mod key and the GUI's buttons are locked from the moment a world load starts until your base finishes restoring.
-
-[b]Per-world saves[/b] — if you play more than one Windrose world, each one keeps its own separate base save automatically.
-[/color]
-
-[size=4][b]Installation[/b][/size]
-[color=#D4D4D8]
-[list=1]
-[*]Install UE4SS (latest experimental / RE-UE4SS build) into Windrose. In ue4ss\UE4SS-settings.ini, under [EngineVersionOverride], set MajorVersion=5 and MinorVersion=6. The mod will not load without this override.
-[*]Extract the download so BOTH mod folders sit at:
-...\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\
-...\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBaseSpawnMenu\
-(you should have ...\Mods\LivingBase\Scripts\... and config.txt inside the first one, and ...\Mods\LivingBaseSpawnMenu\dlls\main.dll inside the second). Both are required — there's no keyboard-only mode anymore.
-[*]Enable both: open ...\ue4ss\Mods\mods.txt and add the lines:
-LivingBase : 1
-LivingBaseSpawnMenu : 1
-[*]Launch the game, load into a world, and wait a few seconds for the GUI window to appear (deliberate delay, see Known Limitations), then press Numpad Minus to open it.
-[/list]
-
-Optional: edit LivingBase\config.txt (plain text, no coding) to toggle features.
-Back up your saves before first use — standard caution for an Early Access game with unofficial mods.[/color]
-
-[size=4][b]Requirements[/b][/size]
-[color=#D4D4D8]
+[size=4][b][u]What's new in 3.0.6[/u][/b][/size]
+[color=#D4D4D8]Almost everything. [/color]
 [list]
-[*]Windrose (Kraken Express) — single-player. Built against the current Early Access build.
-[*]UE4SS — latest experimental / RE-UE4SS build, with the engine version override set to 5.6 (MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini). Required — the mod won't load otherwise. Tested on the stock experimental build posted on Nexus -- no patched UE4SS needed.
-[*]No other mods required.
-[*]Note: this is an unofficial mod, so a game patch may change internal class paths (all centralized in config.lua for quick fixing). Keep save backups.
+[*][color=#D4D4D8]Over 1000+ NPCs and decor items have been added. [/color][/*]
+[*][color=#D4D4D8]Placement now moves and drops just like the native build tools. [/color][/*]
+[*][color=#D4D4D8]Targeting uses a raytrace allowing for precision instead of best effort. [/color][/*]
+[*][color=#D4D4D8]Spawns now highlight to make it clear what will be selected.[/color][/*]
+[*][color=#D4D4D8]A full Customization section for NPCs has been created.[/color][/*]
+[*][color=#D4D4D8]A full Photo Mode was added.[/color][/*]
+[*][color=#d4d4d8]Adding text to containers and signs![/color][/*]
+[*][color=#d4d4d8]Full instructions for use are both in the mod and [url=https://www.nexusmods.com/windrose/articles/14]this article[/url].[/color][/*]
 [/list]
-[/color]
-
-[size=4][b]Controls[/b][/size]
-[color=#D4D4D8]NumLock must be ON for the numpad keys to register. The GUI window (Numpad Minus) is required — there is no keyboard-only spawn scheme.[/color]
-
-[color=#D4D4D8][b]Move mode (default) / Rotate mode (after Numpad 2)[/b]:
-7 — Up / Rotate X-
-8 — Forward / Rotate Y-
-9 — Down / Rotate X+
-4 — Left / Rotate Z-
-5 — Backward / Rotate Y+
-6 — Right / Rotate Z+
-2 — Change Mode (Move ↔ Rotate)[/color]
-
-[color=#D4D4D8][b]Everything else[/b]:
-Numpad 1 — Release Cursor: steal OS focus for the GUI window
-Numpad 3 — Despawn whatever's in front of you, on your floor
-Numpad + — Target Lock: toggle locking onto whatever's in front of you
-Numpad / — Cancel the current placement
-Numpad * — Grab: pick up the target-locked object and carry it like a fresh placement
-Numpad - — Open/close the GUI window
-Numpad 0 — Confirm Placement
-Numpad . (decimal) — Floor Clipping toggle[/color]
-
-[color=#D4D4D8]While the GUI window has focus, it also responds to: Arrows = slide, PageUp/PageDown = height; F1/F5/F6/F7/F10 = tab switches; F2/F3/F4 = Spawn/Replace/Despawn; Ctrl+Z = Undo.[/color]
-
-[color=#D4D4D8]Remap anything by editing Config.KEYS in Scripts\config.lua.[/color]
-
-[size=4][b]Optional: Windrose Mod Settings Support[/b][/size]
-[color=#D4D4D8]If you also have [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url] by [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] installed, Living Base Enhanced registers itself with it automatically — no setup needed. Every key this mod binds, plus several feature toggles, become editable from the game's native Settings > Mods screen instead of hand-editing config.lua/config.txt.[/color]
-
-[color=#D4D4D8]Entirely optional both directions: Living Base Enhanced works exactly the same without Windrose Mod Settings installed, and Windrose Mod Settings works fine without this mod. See Known Limitations below for a stability note.[/color]
-
-[size=4][b]Known Limitations[/b][/size]
-[color=#D4D4D8]
+[line]
+[size=4][b][u]Installation and Uninstallation[/u][/b][/size]
+[color=#D4D4D8][b]Prerequisites For Use[/b][/color]
 [list]
-[*]The GUI window takes a few seconds to appear after the game finishes loading — deliberate: it waits so Steam's overlay hook attaches to the game's real render swapchain first instead of the GUI's own, otherwise Steam's F12 screenshot and FPS counter target the GUI instead of the game. Not a bug.
-[*]Because it's an unofficial mod, a game patch can change internal class paths and temporarily break a feature. Everything version-dependent lives in config.lua, so fixes are quick once paths are updated.
-[*]The posed statue entries place static actors on purpose — that's the feature, not a bug.
-[*]The numpad direction/operator keys drop most rapid repeat presses before UE4SS ever sees them when used IN-GAME — an engine-level limitation. The GUI's move panel buttons don't have this problem.
-[*]The Brethren of the Coast "woman" crew re-skin currently has a male body under the female clothing — known, not yet fixed.
-[*]Original Upright Senkamati (the upright-gait cosmetic variants) walk convincingly upright but cannot fight with real weapons — melee/magic/unarmed attack animations are baked per character family and don't transfer to the foreign skeleton pairing used to get the gait. Cosmetic only, by design.
-[*]If using the optional Windrose Mod Settings integration: keybind changes made there need a game restart to fully take effect. Separately, moving the mouse cursor quickly over its settings list has been observed to crash the game — this is a Windrose Mod Settings issue, not this mod. Move the cursor slowly there for now.
+[*][color=#D4D4D8]UE4SS (Latest Experimental) for Windrose: [url=https://www.nexusmods.com/windrose/mods/43]nexusmods.com/windrose/mods/43[/url][/color][/*]
 [/list]
-[/color]
-
-[size=4][b]Permissions / License[/b][/size]
-[color=#D4D4D8]All rights reserved by default, except for the specific permissions below — nothing here is implied beyond what's listed.
-
-Permitted, without needing to ask:
-[list=1]
-[*]Modify this mod for your own personal use.
-[*]Reuse this mod's code or assets in your own separate mod, with credit.
-[*]Convert or port this mod to other games, with credit.
+[color=#D4D4D8][b]Install Instructions[/b][/color]
+[spoiler][list]
+[*][color=#D4D4D8]Automatic: This mod is designed to be able to be installed using Vortex Mod Manager.[/color][/*]
+[*][color=#D4D4D8]Manual:[/color]
+[list]
+[*][color=#D4D4D8]Extract all contents to the root of the Windrose game folder, they will distribute accordingly.[/color][/*]
+[*][color=#D4D4D8]If a previous version is installed, overwrite any files prompted.[/color][/*]
+[/list]
+[/*]
+[/list]
+[color=#D4D4D8]Any previous persistence files will be converted to the proper new format on load of the related world.[/color][/spoiler]
+[color=#D4D4D8][b]Uninstall Instructions[/b][/color]
+[spoiler][list]
+[*][color=#D4D4D8]Automatic: If installed with Vortex, uninstall may be completed using it. Any persistence and temporary files in the [b]ue4ss/mods/LivingBase[/b] folder will not be removed. This is done on purpose to prevent loss of data when attempting a reinstall. These may be removed manually.[/color][/*]
+[*][color=#D4D4D8]Manual:[/color]
+[list]
+[*][color=#D4D4D8][b]..\Windrose\R5\Content\Paks\~mods[/b]: remove all [i]LivingBaseSignFonts-Windows[/i], [i]LivingBaseBarbieRoster-Windows[/i], and [i]SplitFacial-Windows[/i] files.[/color][/*]
+[*][color=#D4D4D8][b]..\Windrose\R5\Binaries\Win64\ue4ss\Mods[/b]: Remove both [i]LivingBase [/i]and [i]LivingBaseSpawnMenu [/i]folders.[/color][/*]
+[/list]
+[/*]
+[/list]
+[/spoiler]
+[line]
+[size=4][b][u]Custom Configuration[/u][/b][/size]
+[spoiler][color=#D4D4D8]Settings and keybinds may be changed one of two ways.[/color]
+[list]
+[*][color=#D4D4D8][b]Windrose Mod Settings[/b]: This mod is designed to be compatible with the [i]Windrose Mod Settings[/i] mod, allowing for changes in game using a GUI. All settings need a restart of Windrose to take effect. [url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url][/color][/*]
+[*][color=#D4D4D8][b]Manual[/b]: Edit [b]..\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\config.txt[/b]. Again, if this is edited while the game is running, a restart is necessary.[/color][/*]
+[/list]
+[/spoiler]
+[line]
+[size=4][b][u]Changelog - v2.1.7.1 - v3.0.6[/u][/b][/size]
+[spoiler][b][size=3][u]ADDED[/u][/size][/b]
+[list]
+[*][color=#D4D4D8][b]A real drag-and-drop placement system, entirely new.[/b] Spawn or grab-and-relocate any object and it follows your camera live; Confirm locks it in place, Cancel destroys it (or returns it to where it was picked up from), Replace swaps a locked target for a different look in the same spot, Despawn removes it, and Undo reverses the last 20 despawns/moves/replacements. Floor Clipping toggles whether a new placement snaps to the floor or can be positioned freely through it. The GUI is now the only way to drive any of this, via a numpad-only control scheme that works identically in-game or with the GUI focused.[/color][/*]
+[*][color=#D4D4D8][b]Thousands of new spawnable entries[/b] — the spawn tree grew from 472 to 2,195 total entries. A single 848-item content batch alone added large new rosters of people, monstrous mobs, and crabs, with many existing and new NPC rosters split into a wandering "(Mobile)" and a frozen "(Idle)" version of each look. Also added: a Senkamati "Original Upright" presentation alongside the original "Wild" look, Shackles and Dead Prisoner 1-3, a full water-features set (flat water planes, fountain flow/spout meshes, solid empty fountains, spray/splash particle effects), ten tables/display trays, three shelves, and Blacksmith feet/hands/legs clothing items, on top of a broad general decor/furniture expansion.[/color][/*]
+[*][color=#D4D4D8][b]Four new GUI tabs:[/b][/color]
+[list]
+[*][color=#D4D4D8][b]Target List[/b] — scan tracked actors within a chosen radius, filtered by category (People/Monsterous/Animals/Decor/Lights/Build Signs/Labels/Placed Signs), listed nearest-first with a "+" to target-lock any one by index and a "Del" to jump straight to the Signs tab for editing. "Mark Target" highlights whatever's locked with a glowing marker or a tracking flame-ring.[/color][/*]
+[*][color=#D4D4D8][b]Customize[/b] — spawn a from-scratch custom character: choose sex, Body Type/Origin, and an optional underwear-only look (auto-fits a complete default outfit otherwise), then dress/pose any target-locked actor through Body (skin tone, eye color, physique, height, AI toggle, one-way Make Ghost), Hair (its own Remove option alongside Clothes), Clothes, Belts and Straps (plus Accessories detect/randomize), and Poses and Actions. Decor View/Full Body/Face View camera presets with held-repeat orbit/zoom. Most spawned looks regenerate fresh on every reload like native NPCs; "Save Customizations" pins a specific actor's look so it survives instead.[/color][/*]
+[*][color=#D4D4D8][b]Photo Mode[/b] — Tripod/Selfie/First Person camera presets, a directional move pad, FOV, target highlight, a 3-slot portable lighting rig, a frame-by-frame pose scrubber, Hand item dropdowns, and Weather and Time Set (pick any weather type; freeze the clock at a chosen hour, with an Unfreeze checkbox to resume). Not persisted by design.[/color][/*]
+[*][color=#D4D4D8][b]Signs/Labels[/b] — aim at a sign-capable object and press Delete (or click Select Object) to select it, type up to four lines, then Apply/Clear/Reset; text fills the board automatically and is saved/restored per world. Three fonts, a ten-preset color picker, and an "Add Glow" option. A new "Additional Items" roster (Sign Post, Wall Flags, Boards, Obelisk) to place purpose-built signs anywhere.[/color][/*]
+[/list]
+[/*]
+[*][color=#D4D4D8][b]Resource nodes[/b] (shipwrecks, boulders) are now protected from being mined/salvaged.[/color][/*]
+[*][color=#D4D4D8][b]Structure shield (PROTECT_STRUCTURES) restored[/b] — building blocks are invulnerable to damage by default (config.txt toggle), independent of the long-removed Blackbeard raid it was originally tied to.[/color][/*]
+[*][color=#D4D4D8][b]config.txt reached full parity with Windrose Mod Settings[/b] — every rebindable keybind can be set directly via [size=2][font=Monaco, Menlo, Consolas, monospace][i]KEY_<name> = <UE4SS key name>[/i][/font][/size] lines.[/color][/*]
 [/list]
 
-Not permitted: reuploading or rehosting this mod — modified or unmodified — anywhere other than this page; selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus's own Donation Points system is fine — that's Nexus's own charity-linked mechanism, not third-party monetization.)
+[b][u]CHANGED[/u][/b]
+[list]
+[*][color=#D4D4D8]Non-statue characters (Senkamati, named NPCs) now nudge relative to their own facing during live-edit movement, matching statue behavior (previously moved along a fixed world axis).[/color][/*]
+[/list]
 
-This covers this fork's own code and content. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see Credits below). Windrose and its game assets, class names, and IP belong to Kraken Express — this is an unofficial, unaffiliated mod.[/color]
+[b][u]FIXED[/u][/b]
+[list]
+[*][color=#D4D4D8]The mask-off DeCorrupt pass for Wild Caster/Hunter/Thrall Senkamati no longer leaves plain default underwear showing — they get a curated legs piece + palette color instead.[/color][/*]
+[/list]
 
-[size=4][b]Credits[/b][/size]
-[color=#D4D4D8]This project started as a fork of [url=https://www.nexusmods.com/windrose/mods/519][b]Living Base[/b][/url] by [url=https://www.nexusmods.com/profile/me123420][b]me123420[/b][/url] — thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place. The amount that's changed since then means this page no longer walks through it point-by-point, but the debt is real and gladly acknowledged.
+[b][u]REMOVED[/u][/b]
+[list]
+[*][color=#D4D4D8]The entire old keyboard-only control scheme: Num1–Num8, the apostrophe/semicolon decor keys, ]/[ cycle keys, PageUp/PageDown+arrow live-edit, the old F5–F8 placement-preview keys, Insert, \.[/color][/*]
+[*][color=#D4D4D8]Two config.txt settings tied to the old keyboard-only scheme (KEYS_ENABLED_ONSTART, LIVE_EDIT), which no longer do anything now that scheme is gone.[/color][/*]
+[/list]
+[/spoiler]
 
-Thanks also to [url=https://www.nexusmods.com/windrose/users/77413713][b]IceBoxStudio[/b][/url] for [url=https://www.nexusmods.com/windrose/mods/442][b]Windrose Mod Settings[/b][/url], which this mod optionally integrates with for in-game keybind/toggle configuration.
+[line]
+[size=4][b][u]Credits and Attribution[/u][/b][/size]
+[color=#D4D4D8][i]Living Base Enhanced[/i] is an unofficial, unaffiliated fan project for [i]Windrose[/i]. [i]Windrose [/i]itself, its game assets, class names, and all related IP belong to Kraken Express.[/color]
+[list]
+[*][color=#D4D4D8][b]Living Base (original mod)[/b] - This project started as a fork of Living Base by me123420 - thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place.
+[url=https://www.nexusmods.com/windrose/mods/519]nexusmods.com/windrose/mods/519[/url][/color][/*]
+[*][color=#D4D4D8][b]UE4SS / RE-UE4SS[/b] - This mod would not exist without UE4SS, the Lua scripting and C++ modding framework for Unreal Engine games that both Living Base Enhanced and its companion menu are built on.
+[url=https://www.nexusmods.com/windrose/mods/43]nexusmods.com/windrose/mods/43[/url]
+[url=https://github.com/UE4SS-RE/RE-UE4SS]github.com/UE4SS-RE/RE-UE4SS[/url][/color][/*]
+[*][color=#D4D4D8][b]Windrose Mod Settings[/b], by IceBoxStudio - [i]Living Base Enhanced[/i] optionally integrates with it for in-game keybind/toggle configuration. Not required.
+[url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url][/color][/*]
+[/list]
+[color=#D4D4D8]
+[b]Sign Fonts[/b][/color]
+[list]
+[*][color=#D4D4D8]Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).[/color][/*]
+[*][color=#D4D4D8]Oleo Script, Copyright © 2012 Soytutype (SIL Open Font License 1.1).[/color][/*]
+[/list]
+[line]
+[size=4][b][u]License[/u][/b][/size]
+[color=#D4D4D8]Copyright © 2026 RedFalcon/Dan Gomiller. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.
+
+[b]Permitted, without needing to ask first[/b][/color]
+[list]
+[*][color=#D4D4D8]Modify this mod for your own personal use.[/color][/*]
+[*][color=#D4D4D8]Reuse this mod's code or assets in your own separate mod, as long as you credit the original author(s).[/color][/*]
+[*][color=#D4D4D8]Convert or port this mod to other games, as long as you credit the original author(s).[/color][/*]
+[/list]
+[color=#D4D4D8]
+[b]Not permitted[/b][/color]
+[list]
+[*][color=#D4D4D8]Reuploading or rehosting this mod, modified or unmodified, anywhere other than the copyright holder's own page. If you build something on top of this mod, link back to the original instead of rehosting it.[/color][/*]
+[*][color=#D4D4D8]Selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus Mods' own Donation Points system is fine - that's Nexus's own charity-linked mechanism, not third-party monetization.)[/color][/*]
+[/list]
+[color=#D4D4D8]All other rights are reserved by the copyright holder.
+
+This license covers this mod's own code and content only. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see Credits and Attribution above). Windrose and its game assets, class names, and intellectual property belong to Kraken Express - this is an unofficial, unaffiliated mod and is not covered by this license.[/color]

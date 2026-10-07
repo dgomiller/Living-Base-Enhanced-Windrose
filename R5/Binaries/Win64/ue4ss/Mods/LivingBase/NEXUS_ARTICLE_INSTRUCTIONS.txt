@@ -1,57 +1,56 @@
 [size=5][b]Living Base Enhanced — Full Instructions[/b][/size]
-[color=#D4D4D8]Living Base Enhanced is a base-building and population tool to extend Windrose's native build mode. It allows hand placement of NPCs, decor, plants, animals, monsters and much more. It also allows fine tuned adjustment to those placements both by moving them around and rotating. Additional features allow for customization of clothing and colors and a full photo mode. Keyboard hotkeys and a full GUI window make changes easy to do. All creations and changes are stored persistently outside of the world save, ensuring that no data can be corrupted and uninstalling simply involves removing the mod.
+[color=#D4D4D8]Living Base Enhanced is a base-building and population tool to extend Windrose's native build mode. It allows hand placement of NPCs, decor, plants, animals, monsters and much more. It also allows fine tuned adjustment to those placements both by moving them around and rotating. Additional features allow for customization of clothing and colors and a full photo mode. Keyboard hotkeys and a full GUI window make changes easy to do. All creations and changes are stored persistently outside of the world save, ensuring that no data can be corrupted and uninstalling simply involves removing the mod.[/color]
 
-This article mirrors the in-game Instructions tab (press F1 in the GUI window) one-for-one.[/color]
 
-[size=4][b]Installation and Uninstallation[/b][/size]
-[color=#D4D4D8][b]Prerequisites For Use[/b]
+[size=4][b][u]Installation and Uninstallation[/u][/b][/size]
+[color=#D4D4D8][b]Prerequisites For Use[/b][/color]
 [list]
-[*]UE4SS (Latest Experimental) for Windrose: [url=https://www.nexusmods.com/windrose/mods/43]nexusmods.com/windrose/mods/43[/url]
+[*][color=#D4D4D8]UE4SS (Latest Experimental) for Windrose: [url=https://www.nexusmods.com/windrose/mods/43]nexusmods.com/windrose/mods/43[/url][/color][/*]
+[/list]
+[color=#D4D4D8][b]Install Instructions[/b][/color]
+[list]
+[*][color=#D4D4D8]Automatic: This mod is designed to be able to be installed using Vortex Mod Manager.[/color][/*]
+[*][color=#D4D4D8]Manual:[/color]
+[list]
+[*][color=#D4D4D8]Extract all contents to the root of the Windrose game folder, they will distribute accordingly.[/color][/*]
+[*][color=#D4D4D8]If a previous version is installed, overwrite any files prompted.[/color][/*]
+[/list]
+[/*]
+[/list]
+[color=#D4D4D8]Any previous persistence files will be converted to the proper new format on load of the related world.
+
+[b]Uninstall Instructions[/b][/color]
+[list]
+[*][color=#D4D4D8]Automatic: If installed with Vortex, uninstall may be completed using it. Any persistence and temporary files in the [b]ue4ss/mods/LivingBase[/b] folder will not be removed. This is done on purpose to prevent loss of data when attempting a reinstall. These may be removed manually.[/color][/*]
+[*][color=#D4D4D8]Manual:[/color]
+[list]
+[*][color=#D4D4D8][b]..\Windrose\R5\Content\Paks\~mods[/b]: remove all [i]LivingBaseSignFonts-Windows[/i], [i]LivingBaseBarbieRoster-Windows[/i], and [i]SplitFacial-Windows[/i] files.[/color][/*]
+[*][color=#D4D4D8][b]..\Windrose\R5\Binaries\Win64\ue4ss\Mods[/b]: Remove both [i]LivingBase [/i]and [i]LivingBaseSpawnMenu [/i]folders.[/color][/*]
+[/list]
+[/*]
 [/list]
 
-[b]Install Instructions[/b]
+[size=4][b][u]Custom Configuration[/u][/b][/size]
+[color=#D4D4D8]Settings and keybinds may be changed one of two ways.[/color]
 [list]
-[*]Automatic: This mod is designed to be able to be installed using Vortex Mod Manager.
-[*]Manual:
-[list]
-[*]Extract all contents to the root of the Windrose game folder, they will distribute accordingly.
-[*]If a previous version is installed, overwrite any files prompted.
-[/list]
+[*][color=#D4D4D8][b]Windrose Mod Settings[/b]: This mod is designed to be compatible with the [i]Windrose Mod Settings[/i] mod, allowing for changes in game using a GUI. All settings need a restart of Windrose to take effect. [url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url][/color][/*]
+[*][color=#D4D4D8][b]Manual[/b]: Edit [b]..\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\config.txt[/b]. Again, if this is edited while the game is running, a restart is necessary.[/color][/*]
 [/list]
 
-Any previous persistence files will be converted to the proper new format on load of the related world.
-
-[b]Uninstall Instructions[/b]
-[list]
-[*]Automatic: If installed with Vortex, uninstall may be completed using it. Any persistence and temporary files in the ue4ss/mods/LivingBase folder will not be removed. This is done on purpose to prevent loss of data when attempting a reinstall. These may be removed manually.
-[*]Manual:
-[list]
-[*]..\Windrose\R5\Content\Paks\~mods: remove all LivingBaseSignFonts-Windows, LivingBaseBarbieRoster-Windows, and SplitFacial-Windows files.
-[*]..\Windrose\R5\Binaries\Win64\ue4ss\Mods: Remove both LivingBase and LivingBaseSpawnMenu folders.
-[/list]
-[/list][/color]
-
-[size=4][b]Custom Configuration[/b][/size]
-[color=#D4D4D8]Settings and keybinds may be changed one of two ways.
-[list]
-[*][b]Windrose Mod Settings[/b]: This mod is designed to be compatible with the Windrose Mod Settings mod, allowing for changes in game using a GUI. All settings need a restart of Windrose to take effect. [url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url]
-[*][b]Manual[/b]: Edit ..\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\config.txt. Again, if this is edited while the game is running, a restart is necessary.
-[/list][/color]
-
-[size=4][b]Loading In the Game[/b][/size]
+[size=4][b][u]Loading In the Game[/u][/b][/size]
 [color=#D4D4D8]Since this mod is an overlay of the game and nothing is modified in the save, everything placed must be loaded in when the world starts. The mod waits until the player's pawn has moved a certain amount and then begins loading. It is strongly encouraged not to move during this period as the load is memory intensive and could cause a crash.
 
-This is the order of operations during load:
+This is the order of operations during load:[/color]
 [list=1]
-[*][b]Restoring decor / statues[/b] - These items do not have AI and are quick to place.
-[*][b]Restoring movers[/b] - These are any people / animals / monsters with AI, even if they are idle.
-[*][b]Post-processing movers[/b] - This step is what strips animals and monsters' aggressiveness to the player as well as adjusting preset views on others.
-[*][b]Restoring customizations[/b] - This step applies any custom changes made to the people such as clothes, colors, and poses.
-[*][b]Populating Signs[/b] - At this point, text is applied to all applicable objects.
-[*][b]Restored and Ready[/b] - At this point everything is loaded and the player is welcome to play as normal.
-[/list][/color]
+[*][color=#D4D4D8][b]Restoring decor / statues[/b] - These items do not have AI and are quick to place.[/color][/*]
+[*][color=#D4D4D8][b]Restoring movers[/b] - These are any people / animals / monsters with AI, even if they are idle.[/color][/*]
+[*][color=#D4D4D8][b]Post-processing movers[/b] - This step is what strips animals and monsters' aggressiveness to the player as well as adjusting preset views on others.[/color][/*]
+[*][color=#D4D4D8][b]Restoring customizations[/b] - This step applies any custom changes made to the people such as clothes, colors, and poses.[/color][/*]
+[*][color=#D4D4D8][b]Populating Signs[/b] - At this point, text is applied to all applicable objects.[/color][/*]
+[*][color=#D4D4D8][b]Restored and Ready[/b] - At this point everything is loaded and the player is welcome to play as normal.[/color][/*]
+[/list]
 
-[size=4][b]Basic Controls[/b][/size]
+[size=4][b][u]Basic Controls[/u][/b][/size]
 [color=#D4D4D8]Many functions in Living Base Enhanced can be controlled by the keyboard, mainly the number pad. When in the separate Living Base Enhanced menu window vs in game, there are more options since it will not be overridden by native Windrose controls nor other Mods. In the descriptions below, keys available in game will be marked with an asterisk (*).
 
 [i]NOTE: Due to how ue4ss (the tool that integrates this mod with Windrose) handles key inputs, in game controls can be sluggish and slow to respond. This issue does not exist in the menu window.[/i]
@@ -60,306 +59,353 @@ This is the order of operations during load:
 [img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_01.png&w=600[/img]
 
 [b]In Game LBE Keybinds[/b]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_02.png&w=600[/img]
+[img width=283]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_02.png&w=600[/img]
 
 [b]Legend Of Keybind Usage[/b]
 [img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_03.png[/img]
 
 [b]Menu Access[/b]
-Until the Living Base Menu window is open, all the keybinds and functions are disabled. This allows for some overlap with other mods that may also have a toggle.
+Until the Living Base Menu window is open, all the keybinds and functions are disabled. This allows for some overlap with other mods that may also have a toggle.[/color]
 [list]
-[*]* Num - : This opens the menu window, providing access to all the tools.
-[*]* Num 1: This releases the game's capture of the mouse to look around, allowing easy access to the menu.
+[*][color=#D4D4D8][b]* Num -[/b] : This opens the menu window, providing access to all the tools.[/color][/*]
+[*][color=#D4D4D8][b]* Num 1[/b]: This releases the game's capture of the mouse to look around, allowing easy access to the menu.[/color]
+[/*]
 [/list]
-
-[b]Spawning Controls[/b]
-The main purpose of this mod is to provide people and objects not normally available to the player when building. To do this you need to be able to spawn, move, and destroy items.
+[color=#D4D4D8][b]Spawning Controls[/b]
+The main purpose of this mod is to provide people and objects not normally available to the player when building. To do this you need to be able to spawn, move, and destroy items.[/color]
 [list]
-[*]F2: Spawn selected item from the spawn menu.
-[*]F3: Swap target with the selected item from the spawn menu.
-[*]* Num 3 / F4: Despawn current target.
-[*]* Num * : Relocate current target.
-[*]* Num / : Cancel current placement of spawn or target.
-[*]* Num 0: Confirm placement of current spawn or target.
+[*][color=#D4D4D8][b]F2:[/b] Spawn selected item from the spawn menu.[/color][/*]
+[*][color=#D4D4D8][b]F3:[/b] Swap target with the selected item from the spawn menu.[/color][/*]
+[*][color=#D4D4D8][b]* Num 3 / F4:[/b] Despawn current target.[/color][/*]
+[*][color=#D4D4D8][b]* Num * :[/b] Relocate current target.[/color][/*]
+[*][color=#D4D4D8][b]* Num / :[/b] Cancel current placement of spawn or target.[/color][/*]
+[*][color=#D4D4D8]* Num 0: Confirm placement of current spawn or target.[/color]
+[/*]
 [/list]
-
-[b]Targeting[/b]
-Many functions in the mod require some sort of active target to know what to act on.
+[color=#D4D4D8][b]Targeting[/b]
+Many functions in the mod require some sort of active target to know what to act on.[/color]
 [list]
-[*]* Num + : Target any spawned item. Pressing again will release the target.
-[*]* Delete: Target any native or spawned item that can have text attached.
+[*][color=#D4D4D8][b]* Num + :[/b] Target any spawned item. Pressing again will release the target.[/color][/*]
+[*][color=#D4D4D8][b]* Delete:[/b] Target any native or spawned item that can have text attached.[/color]
+[/*]
 [/list]
-
-[b]Movement[/b]
-After an item is spawned and placed, it's usually not in an optimal location. The movement keys can be used to nudge it in all directions, as well as rotate the object. This movement is relative to the "front" of the person or object.
+[color=#D4D4D8][b]Movement[/b]
+After an item is spawned and placed, it's usually not in an optimal location. The movement keys can be used to nudge it in all directions, as well as rotate the object. This movement is relative to the "front" of the person or object.[/color]
 [list]
-[*]* Num 2: Change number pad controls between move and rotate.
-[*]Page Up: Move object up.
-[*]Page Down: Move object down.
-[*]Arrow Keys: Move object forward/backward/left/right.
+[*][color=#D4D4D8][b]* Num 2:[/b] Change number pad controls between move and rotate.[/color][/*]
+[*][color=#D4D4D8][b]Page Up:[/b] Move object up.[/color][/*]
+[*][color=#D4D4D8][b]Page Down:[/b] Move object down.[/color][/*]
+[*][color=#D4D4D8][b]Arrow Keys:[/b] Move object forward/backward/left/right.[/color][/*]
 [/list]
-
-[b]In Movement Mode[/b]
+[color=#D4D4D8][b][i]In Movement Mode[/i][/b][/color]
 [list]
-[*]* Num 7: Up.
-[*]* Num 9: Down.
-[*]* Num 4/5/6/8: Forward/backward/left/right.
+[*][color=#D4D4D8][b]* Num 7:[/b] Up.[/color][/*]
+[*][color=#D4D4D8][b]* Num 9:[/b] Down.[/color][/*]
+[*][color=#D4D4D8][b]* Num 4/5/6/8:[/b] Forward/backward/left/right.[/color][/*]
 [/list]
-
-[b]In Rotate Mode[/b]
+[color=#D4D4D8][b][i]In Rotate Mode[/i][/b][/color]
 [list]
-[*]* Num 4/6: Rotate in a circle.
-[*]* Num 7/9: Tilt left and right.
-[*]* Num 5/8: Tilt forwards and backwards.
+[*][color=#D4D4D8][b]* Num 4/6:[/b] Rotate in a circle.[/color][/*]
+[*][color=#D4D4D8][b]* Num 7/9:[/b] Tilt left and right.[/color][/*]
+[*][color=#D4D4D8][b]* Num 5/8:[/b] Tilt forwards and backwards.[/color][/*]
 [/list]
-
+[color=#D4D4D8]
 [b]Tab Selection[/b]
-When in the spawn menu, there are various tabs to allow access to several different tools.
+When in the spawn menu, there are various tabs to allow access to several different tools.[/color]
 [list]
-[*]F1: Instructions / Help
-[*]F5: Spawn / Move
-[*]F6: Target List
-[*]F7: Customize
-[*]F8: Signs / Labels
-[*]F10: Photo Mode
-[*]F11: History
-[/list][/color]
+[*][color=#D4D4D8][b]F1:[/b] Instructions / Help[/color][/*]
+[*][color=#D4D4D8][b]F5:[/b] Spawn / Move[/color][/*]
+[*][color=#D4D4D8][b]F6:[/b] Target List[/color][/*]
+[*][color=#D4D4D8][b]F7:[/b] Customize[/color][/*]
+[*][color=#D4D4D8][b]F8:[/b] Signs / Labels[/color][/*]
+[*][color=#D4D4D8][b]F10:[/b] Photo Mode[/color][/*]
+[*][color=#D4D4D8][b]F11:[/b] History[/color][/*]
+[/list]
 
-[size=4][b]Menu Tab Overview[/b][/size]
-[color=#D4D4D8]The Living Base Enhanced (LBE) window contains several tabs to better organize access to various functions. The tab area also contains features for better viewing and visibility.
+[size=4][b][u]Menu Tab Overview[/u][/b][/size]
+[color=#D4D4D8]The[i] Living Base Enhanced[/i] (LBE) window contains several tabs to better organize access to various functions. The tab area also contains features for better viewing and visibility.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/menu_tab_overview_01.png&w=600[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/menu_tab_overview_01.png&w=600[/img][/color]
 
 [list=1]
-[*][b]Hide GUI[/b] - This button toggles window shade mode. It hides and displays everything underneath it, giving a better view of the screen without closing the window, allowing the keyboard tools to continue to work.
-[*][b]GUI Scale[/b] - This dropdown resizes the entirety of the window contents to change size, from .5x up to 3x to allow better visibility on smaller and larger resolution displays.
-[*][b]Various Tabs[/b] - These are the various tabs that provide all the functionality available in LBE.
+[*][color=#D4D4D8][b]Hide GUI[/b] - This button toggles window shade mode. It hides and displays everything underneath it, giving a better view of the screen without closing the window, allowing the keyboard tools to continue to work.[/color]
+[/*]
+[*][color=#D4D4D8][b]GUI Scale[/b] - This dropdown resizes the entirety of the window contents to change size, from .5x up to 3x to allow better visibility on smaller and larger resolution displays.[/color]
+[/*]
+[*][color=#D4D4D8][b]Various Tabs[/b] - These are the various tabs that provide all the functionality available in LBE.[/color]
 [list]
-[*]Spawn / Move - This tab allows the spawning, despawning, movement, and rotation of all the people and objects in the mod.
-[*]Target List - This allows easier selection of already spawned people and objects.
-[*]Customize - Contains a few tools including custom zoom, special spawns, and customization of colors, outfits, and poses of the spawned people.
-[*]Signs / Labels - Allows the placement of text on specific in-game containers and specially spawned objects.
-[*]Photo Mode - Allows viewing via various camera and up to three lights to light the scene to create a photo view to take pictures.
-[*]Instructions - Contains the documentation to use this mod.
-[*]History - Maintains a list of everything LBE has done during the current gaming session.
+[*][color=#D4D4D8][b]Spawn / Move[/b] - This tab allows the spawning, despawning, movement, and rotation of all the people and objects in the mod.[/color][/*]
+[*][color=#D4D4D8][b]Target List[/b] - This allows easier selection of already spawned people and objects.[/color][/*]
+[*][color=#D4D4D8][b]Customize[/b] - Contains a few tools including custom zoom, special spawns, and customization of colors, outfits, and poses of the spawned people.[/color][/*]
+[*][color=#D4D4D8][b]Signs / Labels[/b] - Allows the placement of text on specific in-game containers and specially spawned objects.[/color][/*]
+[*][color=#D4D4D8][b]Photo Mode[/b] - Allows viewing via various camera and up to three lights to light the scene to create a photo view to take pictures.[/color][/*]
+[*][color=#D4D4D8][b]Instructions[/b] - Contains the documentation to use this mod.[/color][/*]
+[*][color=#D4D4D8][b]History[/b] - Maintains a list of everything LBE has done during the current gaming session.[/color][/*]
 [/list]
-[/list][/color]
+[/*]
+[/list]
 
-[size=4][b]Spawn / Move Tab[/b][/size]
-[color=#D4D4D8]The Spawn / Move tab is the primary tab where Living Base Enhanced's functionality lives. From this tab people, animals, monsters, and decor may be spawned, placed, moved, and deleted.
+[size=4][b][u]Spawn / Move Tab[/u][/b][/size]
+[color=#D4D4D8]The Spawn / Move tab is the primary tab where [i]Living Base Enhanced[/i]'s functionality lives. From this tab people, animals, monsters, and decor may be spawned, placed, moved, and deleted.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/spawn_move_tab_01.png&w=600[/img]
-
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/spawn_move_tab_01.png&w=600[/img][/color]
 [list=1]
-[*][b]Spawn Menu[/b] - The spawn menu contains a tree of all 1,000+ people, items, decor, etc. available to place in your base. Highlight the selection and choose one of the options below.
-[*][b]Filter Box[/b] - Use this box to whittle down visible selections. It will search for anything that contains the letter combination entered. This means that "wood" would return "Wooden Box" and "Driftwood".
-[*][b]Spawn / Target Buttons[/b] - These buttons are used to process placing spawned items or remove them.
+[*][color=#D4D4D8][b]Spawn Menu[/b] - The spawn menu contains a tree of all 1,000+ people, items, decor, etc. available to place in your base. Highlight the selection and choose one of the options below.[/color]
+[/*]
+[*][color=#D4D4D8][b]Filter Box[/b] - Use this box to whittle down visible selections. It will search for anything that contains the letter combination entered. This means that "wood" would return "Wooden Box" and "Driftwood".[/color]
+[/*]
+[*][color=#D4D4D8][b]Spawn / Target Buttons[/b] - These buttons are used to process placing spawned items or remove them.[/color]
 [list]
-[*]Spawn - This button will drop a copy of the selection in the spawn menu. It will behave like the native build tool where it can be moved while looking around until placed. Pressing F2 when in the window will spawn as well.
-[*]Move - This will pick the current target up and maintain its rotation and distance initially. Then it can be placed the same as the spawn option. Pressing Numpad * either in game or the window will also do so.
-[*]Confirm - When spawning or moving an item, once it is in a preferred spot, clicking this button will finalize placement. Pressing Numpad 0 either in game or in the window will confirm too.
-[*]Cancel - Pressing this while spawning an item will stop the placement process and remove the spawned item. Pressing it while moving an item will put it back where it was picked up from. Pressing Numpad / in game or the window will also cancel.
-[*]Replace - If a targeted item is the wrong type, replace will swap that item with the item selected in the spawn menu using the same location and rotation. Pressing F3 while in the window will also initiate replacement.
-[*]Despawn - This will remove the targeted item. Pressing Numpad 3 either in game or in the window will work. Doesn't necessarily need a target. If pressing 3 while no target is selected, the closest item in front of the player will be removed.
-[*]Undo - this will restore despawns, moves, and replacements to their prior state. Up to 20 changes are tracked.
+[*][color=#D4D4D8][b]Spawn [/b]- This button will drop a copy of the selection in the spawn menu. It will behave like the native build tool where it can be moved while looking around until placed. Pressing F2 when in the window will spawn as well.[/color][/*]
+[*][color=#D4D4D8][b]Move [/b]- This will pick the current target up and maintain its rotation and distance initially. Then it can be placed the same as the spawn option. Pressing Numpad * either in game or the window will also do so.[/color][/*]
+[*][color=#D4D4D8][b]Confirm [/b]- When spawning or moving an item, once it is in a preferred spot, clicking this button will finalize placement. Pressing Numpad 0 either in game or in the window will confirm too.[/color][/*]
+[*][color=#D4D4D8][b]Cancel [/b]- Pressing this while spawning an item will stop the placement process and remove the spawned item. Pressing it while moving an item will put it back where it was picked up from. Pressing Numpad / in game or the window will also cancel.[/color][/*]
+[*][color=#D4D4D8][b]Replace [/b]- If a targeted item is the wrong type, replace will swap that item with the item selected in the spawn menu using the same location and rotation. Pressing F3 while in the window will also initiate replacement.[/color][/*]
+[*][color=#D4D4D8][b]Despawn [/b]- This will remove the targeted item. Pressing Numpad 3 either in game or in the window will work. Doesn't necessarily need a target. If pressing 3 while no target is selected, the closest item in front of the player will be removed.[/color][/*]
+[*][color=#D4D4D8][b]Undo [/b]- this will restore despawns, moves, and replacements to their prior state. Up to 20 changes are tracked.[/color]
+[/*]
 [/list]
-[*][b]Target Box[/b] - This displays the currently targeted item that can be manipulated. Placing an item automatically targets it. Pressing the "+/-" button or using Numpad + in either the window or game toggles selection. When no target is selected, pointing at an item will highlight it indicating + will select it.
-[*][b]Floor Clipping[/b] - Floor clipping mode will disable the floor snap placement usually uses, allowing items to passthrough the floor. New spawns will appear a set distance away and may be adjusted after the fact. Pressing Numpad . toggles this both in game and in menu. Note this only takes effect on the next spawn or move.
-[*][b]Movement Controls[/b] - The buttons allow the movement of objects in three-dimensional space. The directions are relative to the direction the item is facing. See Basic Controls for keyboard movement information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.
-[*][b]Rotation Controls[/b] - The buttons will rotate the item in three dimensions, also relative to the object. See Basic Controls for keyboard rotation information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.
-[*][b]Scale Object[/b] - Increases the scale of the targeted item. Minimum size is .1. The textbox allows typing a size and +/- increments the scale.
-[*][b]Precision[/b] - This slider adjusts the step size for all the movement, rotation, and scale tools. It is a multiplier that goes from 1/8x to 4x to help with minute and big movements.
-[/list][/color]
+[/*]
+[*][color=#D4D4D8][b]Target Box[/b] - This displays the currently targeted item that can be manipulated. Placing an item automatically targets it. Pressing the "+/-" button or using Numpad + in either the window or game toggles selection. When no target is selected, pointing at an item will highlight it indicating + will select it.[/color]
+[/*]
+[*][color=#D4D4D8][b]Floor Clipping[/b] - Floor clipping mode will disable the floor snap placement usually uses, allowing items to passthrough the floor. New spawns will appear a set distance away and may be adjusted after the fact. Pressing Numpad . toggles this both in game and in menu. Note this only takes effect on the next spawn or move.[/color]
+[/*]
+[*][color=#D4D4D8][b]Movement Controls[/b] - The buttons allow the movement of objects in three-dimensional space. The directions are relative to the direction the item is facing. See Basic Controls for keyboard movement information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.[/color]
+[/*]
+[*][color=#D4D4D8][b]Rotation Controls[/b] - The buttons will rotate the item in three dimensions, also relative to the object. See Basic Controls for keyboard rotation information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.[/color]
+[/*]
+[*][color=#D4D4D8][b]Scale Object[/b] - Increases the scale of the targeted item. Minimum size is .1. The textbox allows typing a size and +/- increments the scale.[/color]
+[/*]
+[*][color=#D4D4D8][b]Precision[/b] - This slider adjusts the step size for all the movement, rotation, and scale tools. It is a multiplier that goes from 1/8x to 4x to help with minute and big movements.[/color][/*]
+[/list]
 
-[size=4][b]Target List[/b][/size]
+[u][size=4][b]Target List[/b][/size][/u]
 [color=#D4D4D8]The target list is used to more easily locate and select items when bunched together or on the move.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/target_list_01.png&w=600[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/target_list_01.png&w=600[/img][/color]
 
 [list=1]
-[*][b]Target List[/b] - The list of all targets found in the currently selected radius. Pressing the "+" button next to the item will target it.
-[*][b]Selected Target[/b] - Works the same as the target in the Spawn / Move tab.
-[*][b]Categories[/b] - These checkboxes allow filtering based upon the various top level item types.
-[*][b]Scan and Scan Radius[/b] - Allows the ability to set a scan radius to better help target a specific item. The "Scan" button then populates the target list based on the radius and filter.
-[*][b]Mark Target[/b] - When it is uncertain which item is the targeted item, checking this box will place a circle of flame around the bottom of the item.
-[*][b]Distance Tracker[/b] - Helps locate an item by displaying the straight-line distance between the user and it.
-[/list][/color]
+[*][color=#D4D4D8][b]Target List[/b] - The list of all targets found in the currently selected radius. Pressing the "+" button next to the item will target it.[/color]
+[/*]
+[*][color=#D4D4D8][b]Selected Target[/b] - Works the same as the target in the [b]Spawn / Move[/b] tab.[/color]
+[/*]
+[*][color=#D4D4D8][b]Categories[/b] - These checkboxes allow filtering based upon the various top level item types.[/color]
+[/*]
+[*][color=#D4D4D8][b]Scan and Scan Radius[/b] - Allows the ability to set a scan radius to better help target a specific item. The "Scan" button then populates the target list based on the radius and filter.[/color]
+[/*]
+[*][color=#D4D4D8][b]Mark Target[/b] - When it is uncertain which item is the targeted item, checking this box will place a circle of flame around the bottom of the item.[/color]
+[/*]
+[*][color=#D4D4D8][b]Distance Tracker[/b] - Helps locate an item by displaying the straight-line distance between the user and it.[/color][/*]
+[/list]
 
-[size=4][b]Customize[/b][/size]
+[size=4][b][u]Customize[/u][/b][/size]
 [color=#D4D4D8]The Customize tab contains many features to help place and modify people to better suit the base you are building. Note some spawns randomize looks on every load. This is the game doing so, not the mod. Clothing and look changes on these ones may not stick, but colors should. Also the mod may only swap existing clothing slots, so if the person does not have something in that slot, it will be greyed out in the list.
 
 [i]NOTE: Changes in this tab are not saved real time as this caused consistent crashes of the game. Making changes still occasionally does so. It is highly recommended to save often to avoid losing changes.[/i]
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_01.png&w=600[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_01.png&w=600[/img][/color]
 
 [list=1]
-[*][b]Save Customizations[/b] - The most important button in this screen. Customizations are not saved until this button is pressed.
-[*][b]Selected Target[/b] - Works the same as selected target on the other screens.
-[*][b]Read Current[/b] - Required to begin customizing. Read current scans the selected person and populates their default look in the various customization sections. Note: If any current changes are not saved, this will reset to the last changes saved or the default look if none was saved.
-[*][b]View Buttons[/b] - These buttons allow for various views that can help with customization, but are also useful in placing and moving objects from the Spawn / Move tab.
+[*][color=#D4D4D8][b]Save Customizations[/b] - The most important button in this screen. Customizations are not saved until this button is pressed.[/color]
+[/*]
+[*][color=#D4D4D8][b]Selected Target[/b] - Works the same as selected target on the other screens.[/color]
+[/*]
+[*][color=#D4D4D8][b]Read Current[/b] - Required to begin customizing. Read current scans the selected person and populates their default look in the various customization sections.
+[i]Note: If any current changes are not saved, this will reset to the last changes saved or the default look if none was saved.[/i][/color]
+[/*]
+[*][color=#D4D4D8][b]View Buttons[/b] - These buttons allow for various views that can help with customization, but are also useful in placing and moving objects from the [b]Spawn / Move[/b] tab.[/color]
 [list]
-[*]Decor View - A view that specifically scales itself to better display the entirety of a decor item in place.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_02.png&w=600[/img]
-[*]Full Body - A view that specifically scales itself to better display the entire body of a non-decor item.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_03.jpg&h=300[/img]
-[*]Face View - Similar to the others, this zooms in to better focus on just the face.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_04.png&w=600[/img]
-[*]Rotation Buttons - Pressing the "<" and ">" buttons will orbit around the target.
-[*]Zoom Buttons - Pressing the "+" and "-" buttons will move the camera closer and further from the object.
+[*][color=#D4D4D8][b]Decor View[/b] - A view that specifically scales itself to better display the entirety of a decor item in place.
+[img width=254]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_02.png&w=600[/img][/color][/*]
+[*][color=#D4D4D8][b]Full Body[/b] - A view that specifically scales itself to better display the entire body of a non-decor item.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_03.jpg&h=300[/img][/color][/*]
+[*][color=#D4D4D8][b]Face View[/b] - Similar to the others, this zooms in to better focus on just the face.
+[img width=319]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_04.png&w=600[/img][/color][/*]
+[*][color=#D4D4D8][b]Rotation Buttons[/b] - Pressing the "<" and ">" buttons will orbit around the target.[/color][/*]
+[*][color=#D4D4D8][b]Zoom Buttons[/b] - Pressing the "+" and "-" buttons will move the camera closer and further from the object.[/color]
+[/*]
 [/list]
-[*][b]Customization Sections[/b] - The various sections allow for the customization and modification of existing human spawns.
+[/*]
+[*][color=#D4D4D8][b]Customization Sections[/b] - The various sections allow for the customization and modification of existing human spawns.[/color]
 [list]
-[*]Spawn - This section allows the player to spawn a custom "barbie" person using an existing body/face shape and in game origins. Body type determines the sex of the spawn. Clicking spawn then generates a person that has every clothing slot populated to ensure any item can be set.
-[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_05.png[/img]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_06.png&h=300[/img]
-[*]Body - This section allows the change of various body colors and textures.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_07.png&w=600[/img]
-[list]
-[*]Skin tone changes the color of the skin, but not the features.
-[*]Eye color changes the eyes.
-[*]Physique changes the overlay of the body between boney, muscley, and soft.
-[*]Height allows changing of the person's height between the range of three feet and eight feet. Entering text in the textbox allows exceeding that limit with a minimum of .5.
-[*]Enable AI will allow a movable but idle person to walk around. Note this does not work on every person, only specific types.
-[*]Make Ghost assigns ghosty features to the person and clothes. This is irreversible so be careful before saving.
-[/list]
-[*]Hair - This allows the changing of various hair features and colors. Every selection has a swatch for selecting color and an X button to clear it.
-[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_08.png[/img]
-[list]
-[*]Hair sets the hair on top of the head; this will set the proper hair format to work with the various types of hats and bandanas.
-[*]Eyebrows selects from a handful of shapes.
-[*]Facial hair has mustaches, beards, and whiskers. Sets will select a matching combination all at once.
-[/list]
-[*]Clothes - This allows the setting and changing of various available clothes slots. Most clothes have three color sections, and the game uses set palettes. Choosing an outfit will set every available clothing item for the selection but does not clear any other slot.
-[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_09.png[/img]
-[*]Belts and Straps - These are the various items criss crossing the person's body.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_10.png&w=600[/img]
-[list]
-[*]Set - Like the others, this will apply every matching item available.
-[*]Belt - The item that goes along the waist.
-[*]Sling - The item that goes from the right shoulder to the left hip.
-[*]Strap - Does the opposite, going from the left shoulder to the right hip.
-[*]Frog - The holder for the swords sitting on the belt's left side.
-[*]Detect Accessories - Due to the amount of accessories these items have, to reduce loading and crashing on detect these are detected separately.
-[*]Randomize Accessories - Populates the belts, etc. from a curated and weighted list of accessories.
-[*]Lantern - This places a lantern on the belt of the person, similar to what the player can use.
-[/list]
-[*]Accessories - Allows populating every belt and weapon's slot with a custom item. Due to the number of slots, a guide may be viewed in the GUI to help locate where each item may be placed.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_11.png&w=600[/img]
-[*]Poses and Actions - As the name implies, this allows the assignment of various actions and poses to the person.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_12.png&w=600[/img]
-[list]
-[*]Pose List - On the left hand side is a list of various poses and actions. Clicking + next to one will assign it to the targeted person.
-[*]Current Pose - Displays what pose is currently running.
-[*]Player Controls - These allow the pausing and playing of the pose or action, as well as frame skipping and scrubbing with a slider. A paused animation is saved and persists between loads.
-[*]Hand Dropdowns - Allows placement of items and weapons in people's hands. The four dropdown categories are for organization; only one item may be assigned to each hand.
-[/list]
-[/list]
-[/list][/color]
+[*][color=#D4D4D8][b]Spawn [/b]- This section allows the player to spawn a custom "barbie" person using an existing body/face shape and in game origins. Body type determines the sex of the spawn. Clicking spawn then generates a person that has every clothing slot populated to ensure any item can be set.
+[img width=356]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_05.png[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_06.png&h=300[/img][/color][/*]
+[*][color=#D4D4D8][b]Body [/b]- This section allows the change of various body colors and textures.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_07.png&w=600[/img][/color]
 
-[size=4][b]Signs / Labels[/b][/size]
+[list]
+[*][color=#D4D4D8]Skin tone changes the color of the skin, but not the features.[/color][/*]
+[*][color=#D4D4D8]Eye color changes the eyes.[/color][/*]
+[*][color=#D4D4D8]Physique changes the overlay of the body between boney, muscley, and soft.[/color][/*]
+[*][color=#D4D4D8]Height allows changing of the person's height between the range of three feet and eight feet. Entering text in the textbox allows exceeding that limit with a minimum of .5.[/color][/*]
+[*][color=#D4D4D8]Enable AI will allow a movable but idle person to walk around. Note this does not work on every person, only specific types.[/color][/*]
+[*][color=#D4D4D8]Make Ghost assigns ghosty features to the person and clothes. This is irreversible so be careful before saving.[/color]
+[/*]
+[/list]
+[/*]
+[*][color=#D4D4D8][b]Hair [/b]- This allows the changing of various hair features and colors. Every selection has a swatch for selecting color and an X button to clear it.
+[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_08.png[/img][/color]
+
+[list]
+[*][color=#D4D4D8]Hair sets the hair on top of the head; this will set the proper hair format to work with the various types of hats and bandanas.[/color][/*]
+[*][color=#D4D4D8]Eyebrows selects from a handful of shapes.[/color][/*]
+[*][color=#D4D4D8]Facial hair has mustaches, beards, and whiskers. Sets will select a matching combination all at once.[/color]
+[/*]
+[/list]
+[/*]
+[*][color=#D4D4D8][b]Clothes [/b]- This allows the setting and changing of various available clothes slots. Most clothes have three color sections, and the game uses set palettes. Choosing an outfit will set every available clothing item for the selection but does not clear any other slot.
+[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_09.png[/img][/color]
+[/*]
+[*][color=#D4D4D8][b]Belts and Straps[/b] - These are the various items criss crossing the person's body.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_10.png&w=600[/img][/color]
+
+[list]
+[*][color=#D4D4D8][b]Set [/b]- Like the others, this will apply every matching item available.[/color][/*]
+[*][color=#D4D4D8][b]Belt[/b] - The item that goes along the waist.[/color][/*]
+[*][color=#D4D4D8][b]Sling [/b]- The item that goes from the right shoulder to the left hip.[/color][/*]
+[*][color=#D4D4D8][b]Strap [/b]- Does the opposite, going from the left shoulder to the right hip.[/color][/*]
+[*][color=#D4D4D8][b]Frog [/b]- The holder for the swords sitting on the belt's left side.[/color][/*]
+[*][color=#D4D4D8][b]Detect Accessories[/b] - Due to the amount of accessories these items have, to reduce loading and crashing on detect these are detected separately.[/color][/*]
+[*][color=#D4D4D8][b]Randomize Accessories[/b] - Populates the belts, etc. from a curated and weighted list of accessories.[/color][/*]
+[*][color=#D4D4D8][b]Lantern[/b] - This places a lantern on the belt of the person, similar to what the player can use.[/color]
+[/*]
+[/list]
+[/*]
+[*][color=#D4D4D8][b]Accessories [/b]- Allows populating every belt and weapon's slot with a custom item. Due to the number of slots, a guide may be viewed in the GUI to help locate where each item may be placed.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_11.png&w=600[/img][/color]
+[/*]
+[*][color=#D4D4D8]Poses and Actions - As the name implies, this allows the assignment of various actions and poses to the person.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_12.png&w=600[/img][/color]
+
+[list]
+[*][color=#D4D4D8][b]Pose List[/b] - On the left hand side is a list of various poses and actions. Clicking + next to one will assign it to the targeted person.[/color][/*]
+[*][color=#D4D4D8][b]Current Pose[/b] - Displays what pose is currently running.[/color][/*]
+[*][color=#D4D4D8][b]Player Controls[/b] - These allow the pausing and playing of the pose or action, as well as frame skipping and scrubbing with a slider. A paused animation is saved and persists between loads.[/color][/*]
+[*][color=#D4D4D8][b]Hand Dropdowns[/b] - Allows placement of items and weapons in people's hands. The four dropdown categories are for organization; only one item may be assigned to each hand.[/color][/*]
+[/list]
+[/*]
+[/list]
+[/*]
+[/list]
+
+[u][size=4][b]Signs / Labels[/b][/size][/u]
 [color=#D4D4D8]To help with organization or even to just provide ambience with road or building signs, Living Base Enhanced allows adding text to several in-game build objects as well as other spawnable decor objects.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_01.png&w=600[/img]
-
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_01.png&w=600[/img][/color]
 [list=1]
-[*][b]Selected Object[/b] - What text object is selected.
-[*][b]"Select / Deselect" Toggle Button[/b] - Selects the build menu or spawned items that may be modified. Pressing Delete (Del) in game or in the window also selects.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_02.jpg&w=600[/img]
-[*][b]Text Box[/b] - Most objects will allow up to four lines of text. This text will resize based on the available canvas size so shorter sentences are usually better.
-[*][b]Font Settings[/b] - Allows changes to how the text looks.
+[*][color=#D4D4D8][b]Selected Object[/b] - What text object is selected.[/color]
+[/*]
+[*][color=#D4D4D8][b]"Select / Deselect" Toggle Button[/b] - Selects the build menu or spawned items that may be modified. Pressing Delete (Del) in game or in the window also selects.
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_02.jpg&w=600[/img][/color]
+[/*]
+[*][color=#D4D4D8][b]Text Box[/b] - Most objects will allow up to four lines of text. This text will resize based on the available canvas size so shorter sentences are usually better.[/color]
+[/*]
+[*][color=#D4D4D8][b]Font Settings[/b] - Allows changes to how the text looks.[/color]
 [list]
-[*]Select from three different fonts.
-[*]Apply will apply the text.
-[*]Clear will remove only the text.
-[*]Reset will clear everything and set the object back to its vanilla state.
-[*]Below are various color swatches. The first large box is a color selector and the second one stores the most recently selected color.
-[*]Add Glow will make the text glow in the dark for easy viewing or a ghostly feel.
+[*][color=#D4D4D8]Select from three different fonts.[/color][/*]
+[*][color=#D4D4D8]Apply will apply the text.[/color][/*]
+[*][color=#D4D4D8]Clear will remove only the text.[/color][/*]
+[*][color=#D4D4D8]Reset will clear everything and set the object back to its vanilla state.[/color][/*]
+[*][color=#D4D4D8]Below are various color swatches. The first large box is a color selector and the second one stores the most recently selected color.[/color][/*]
+[*][color=#D4D4D8]Add Glow will make the text glow in the dark for easy viewing or a ghostly feel.[/color]
+[/*]
 [/list]
-[*][b]Additional Items[/b] - Contains a list of spawnable signs that can be used in addition to the build mode items. They are placed the same way other spawns are.
-[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_03.png[/img]
-[/list][/color]
+[/*]
+[*][color=#D4D4D8][b]Additional Items[/b] - Contains a list of spawnable signs that can be used in addition to the build mode items. They are placed the same way other spawns are.
+[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_03.png[/img][/color][/*]
+[/list]
 
 [size=4][b]Photo Mode[/b][/size]
-[color=#D4D4D8]Inspired by Cyberpunk 2077's Appearance Menu Mod and being shocked at the lack of a photo mode in a game in 2026, Photo Mode allows for taking fun pictures in the world and provides tools to hopefully allow for a large range of options.
+[color=#D4D4D8]Inspired by [i]Cyberpunk 2077's Appearance Menu Mod[/i] and being shocked at the lack of a photo mode in a game in 2026, Photo Mode allows for taking fun pictures in the world and provides tools to hopefully allow for a large range of options.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_01.png&w=600[/img]
-
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_01.png&w=600[/img][/color]
 [list=1]
-[*][b]Camera Mode[/b] - Photo Mode includes three custom cameras to get the picture you want. Any placement and changes to the camera location are remembered until their specific "Reset" button is pressed.
+[*][color=#D4D4D8][b]Camera Mode[/b] - Photo Mode includes three custom cameras to get the picture you want. Any placement and changes to the camera location are remembered until their specific "Reset" button is pressed.[/color]
 [list]
-[*]Tripod - As the name implies, this is a stationary camera that allows the player to stand in front of it. To set the initial position, stand and face approximately where you want the camera to look and then press the "Tripod" button. This will set the camera in that exact spot with that exact rotation. Zooming out and reentering tripod view will not reset placement. If "Reset" is hit, the camera will move to the player's location as if it were the initial trigger.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_02.png&w=600[/img]
-[*]Selfie - Points the camera in the direction of the player's face.
+[*][color=#D4D4D8][b]Tripod [/b]- As the name implies, this is a stationary camera that allows the player to stand in front of it. To set the initial position, stand and face approximately where you want the camera to look and then press the "Tripod" button. This will set the camera in that exact spot with that exact rotation. Zooming out and reentering tripod view will not reset placement. If "Reset" is hit, the camera will move to the player's location as if it were the initial trigger.
+[img width=337]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_02.png&w=600[/img][/color][/*]
+[*][color=#D4D4D8][b]Selfie [/b]- Points the camera in the direction of the player's face.
 [i]NOTE: This view can be a bit flaky and can crash at times.[/i]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_03.png&w=600[/img]
-[*]First Person - Set the camera inside the player's head, allowing visibility as if viewing via the player pawn's eyes.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_04.png&w=600[/img]
+[img width=336]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_03.png&w=600[/img][/color][/*]
+[*][color=#D4D4D8][b]First Person[/b] - Set the camera inside the player's head, allowing visibility as if viewing via the player pawn's eyes.
+[img width=338]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_04.png&w=600[/img][/color]
+[/*]
 [/list]
-[*][b]Target Highlight[/b] - Disables the highlight function used while targeting to ensure clean pictures.
-[*][b]Movement Buttons[/b] - Allows the camera to be shifted around to improve the view. Can also be used for the Custom tab camera views as well.
-[*][b]Rotation Buttons[/b] - Allows rotation of the camera. Same availability as the movement buttons.
-[*][b]FOV[/b] - Changes the Field of View. Allows "zooming in" without moving. Can distort the image at extremes.
-[*][b]Precision[/b] - Same as Spawn / Move tab's precision but applies to the camera.
-[*][b]Lights[/b] - Photo mode provides three lights to provide custom lighting for taking pictures. These lights are not persistent. They are spawned like regular items and are able to be placed, picked up, and moved using the tools in the Spawn / Move tab.
+[/*]
+[*][color=#D4D4D8][b]Target Highlight[/b] - Disables the highlight function used while targeting to ensure clean pictures.[/color]
+[/*]
+[*][color=#D4D4D8][b]Movement Buttons[/b] - Allows the camera to be shifted around to improve the view. Can also be used for the [b]Custom [/b]tab camera views as well.[/color]
+[/*]
+[*][color=#D4D4D8][b]Rotation Buttons[/b] - Allows rotation of the camera. Same availability as the movement buttons.[/color]
+[/*]
+[*][color=#D4D4D8][b]FOV[/b] - Changes the Field of View. Allows "zooming in" without moving. Can distort the image at extremes.[/color]
+[/*]
+[*][color=#D4D4D8][b]Precision[/b] - Same as Spawn / Move tab's precision but applies to the camera.[/color]
+[/*]
+[*][color=#D4D4D8][b]Lights[/b] - Photo mode provides three lights to provide custom lighting for taking pictures. These lights are not persistent. They are spawned like regular items and are able to be placed, picked up, and moved using the tools in the Spawn / Move tab.[/color]
 [list]
-[*]Enable - Make the light visible. Does not remember light position when disabled.
-[*]Color - Sets the color of the light using a color selector.
-[*]Select Button - Make the light the active target, allowing it to be moved using the keyboard or Spawn / Move controls.
-[*]Show Spill Shield - Hides and displays the circle that prevents the light from bleeding behind it.
-[*]Brightness - Sets how bright the light is.
-[*]Throw Distance - How far does the light reach before falling off.
-[*]Spill Shield Distance - How far is the light from the spill shield. This can affect the amount of light shining to the side.
-[*]Spill Shield Size - Blocks more or less light from lighting up behind it.
+[*][color=#D4D4D8][b]Enable [/b]- Make the light visible. Does not remember light position when disabled.[/color][/*]
+[*][color=#D4D4D8][b]Color [/b]- Sets the color of the light using a color selector.[/color][/*]
+[*][color=#D4D4D8][b]Select Button[/b] - Make the light the active target, allowing it to be moved using the keyboard or Spawn / Move controls.[/color][/*]
+[*][color=#D4D4D8][b]Show Spill Shield[/b] - Hides and displays the circle that prevents the light from bleeding behind it.[/color][/*]
+[*][color=#D4D4D8][b]Brightness[/b] - Sets how bright the light is.[/color][/*]
+[*][color=#D4D4D8][b]Throw Distance[/b] - How far does the light reach before falling off.[/color][/*]
+[*][color=#D4D4D8][b]Spill Shield Distance[/b] - How far is the light from the spill shield. This can affect the amount of light shining to the side.[/color][/*]
+[*][color=#D4D4D8][b]Spill Shield Size[/b] - Blocks more or less light from lighting up behind it.[/color][/*]
 [/list]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_05.png&w=600[/img]
-[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_06.png[/img]
-[*][b]Weather and Time Set[/b] - The drop downs will allow setting the perfect conditions for pictures.
+[color=#D4D4D8][img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_05.png&w=600[/img]
+[img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_06.png[/img][/color]
+[/*]
+[*][color=#D4D4D8][b]Weather and Time Set[/b] - The drop downs will allow setting the perfect conditions for pictures.[/color]
 [list]
-[*]Weather - This drop down allows selection of every available Windrose weather type. It can't prevent it changing over time so it may need to be set again.
-[*]Time - Simulates the action of lying in bed except it stops at the requested hour and freezes time, not allowing it to change.
-[*]Unfreeze Time - Unchecking this will return to the march of time. The game still tracks what time it is in the background so likely the time will be significantly different once unfrozen.
+[*][color=#D4D4D8][b]Weather [/b]- This drop down allows selection of every available Windrose weather type. It can't prevent it changing over time so it may need to be set again.[/color][/*]
+[*][color=#D4D4D8][b]Time [/b]- Simulates the action of lying in bed except it stops at the requested hour and freezes time, not allowing it to change.[/color][/*]
+[*][color=#D4D4D8][b]Unfreeze Time[/b] - Unchecking this will return to the march of time. The game still tracks what time it is in the background so likely the time will be significantly different once unfrozen.[/color][/*]
 [/list]
-[/list][/color]
+[/*]
+[/list]
 
-[size=4][b]Instructions and History[/b][/size]
-[color=#D4D4D8]The last two tabs are Instructions and History. Instructions contains this documentation, and History lists everything Living Base Enhanced has done during the current gaming session.
+[size=4][b][u]Instructions and History[/u][/b][/size]
+[color=#D4D4D8]The last two tabs are Instructions and History. Instructions contains this documentation, and History lists everything [i]Living Base Enhanced[/i] has done during the current gaming session.
 
 [img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_01.png&w=600[/img]
 [img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_02.png&w=600[/img][/color]
 
-[size=4][b]Credits and Attribution[/b][/size]
-[color=#D4D4D8]Living Base Enhanced is an unofficial, unaffiliated fan project for Windrose. Windrose itself, its game assets, class names, and all related IP belong to Kraken Express.
+[size=4][b][u]Credits and Attribution[/u][/b][/size]
+[color=#D4D4D8][i]Living Base Enhanced[/i] is an unofficial, unaffiliated fan project for [i]Windrose[/i]. [i]Windrose [/i]itself, its game assets, class names, and all related IP belong to Kraken Express.[/color]
 [list]
-[*][b]Living Base (original mod)[/b] - This project started as a fork of Living Base by me123420 - thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place.
-[url=https://www.nexusmods.com/windrose/mods/519]nexusmods.com/windrose/mods/519[/url]
-[*][b]UE4SS / RE-UE4SS[/b] - This mod would not exist without UE4SS, the Lua scripting and C++ modding framework for Unreal Engine games that both Living Base Enhanced and its companion menu are built on.
-[url=https://github.com/UE4SS-RE/RE-UE4SS]github.com/UE4SS-RE/RE-UE4SS[/url]
-[*][b]Windrose Mod Settings[/b], by IceBoxStudio - Living Base Enhanced optionally integrates with it for in-game keybind/toggle configuration. Not required.
-[url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url]
+[*][color=#D4D4D8][b]Living Base (original mod)[/b] - This project started as a fork of Living Base by me123420 - thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place.
+[url=https://www.nexusmods.com/windrose/mods/519]nexusmods.com/windrose/mods/519[/url][/color][/*]
+[*][color=#D4D4D8][b]UE4SS / RE-UE4SS[/b] - This mod would not exist without UE4SS, the Lua scripting and C++ modding framework for Unreal Engine games that both Living Base Enhanced and its companion menu are built on.
+[url=https://www.nexusmods.com/windrose/mods/43]nexusmods.com/windrose/mods/43[/url]
+[url=https://github.com/UE4SS-RE/RE-UE4SS]github.com/UE4SS-RE/RE-UE4SS[/url][/color][/*]
+[*][color=#D4D4D8][b]Windrose Mod Settings[/b], by IceBoxStudio - [i]Living Base Enhanced[/i] optionally integrates with it for in-game keybind/toggle configuration. Not required.
+[url=https://www.nexusmods.com/windrose/mods/442]nexusmods.com/windrose/mods/442[/url][/color][/*]
+[/list]
+[color=#D4D4D8]
+[b]Sign Fonts[/b][/color]
+[list]
+[*][color=#D4D4D8]Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).[/color][/*]
+[*][color=#D4D4D8]Oleo Script, Copyright © 2012 Soytutype (SIL Open Font License 1.1).[/color][/*]
 [/list]
 
-[b]Sign Fonts[/b]
-[list]
-[*]Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).
-[*]Oleo Script, Copyright © 2012 Soytutype (SIL Open Font License 1.1).
-[/list][/color]
+[size=4][b][u]License[/u][/b][/size]
+[color=#D4D4D8]Copyright © 2026 RedFalcon/Dan Gomiller. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.
 
-[size=4][b]License[/b][/size]
-[color=#D4D4D8]Copyright © 2026 RedFalcon. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.
-
-[b]Permitted, without needing to ask first[/b]
+[b]Permitted, without needing to ask first[/b][/color]
 [list]
-[*]Modify this mod for your own personal use.
-[*]Reuse this mod's code or assets in your own separate mod, as long as you credit the original author(s).
-[*]Convert or port this mod to other games, as long as you credit the original author(s).
+[*][color=#D4D4D8]Modify this mod for your own personal use.[/color][/*]
+[*][color=#D4D4D8]Reuse this mod's code or assets in your own separate mod, as long as you credit the original author(s).[/color][/*]
+[*][color=#D4D4D8]Convert or port this mod to other games, as long as you credit the original author(s).[/color][/*]
 [/list]
-
-[b]Not permitted[/b]
+[color=#D4D4D8]
+[b]Not permitted[/b][/color]
 [list]
-[*]Reuploading or rehosting this mod, modified or unmodified, anywhere other than the copyright holder's own page. If you build something on top of this mod, link back to the original instead of rehosting it.
-[*]Selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus Mods' own Donation Points system is fine - that's Nexus's own charity-linked mechanism, not third-party monetization.)
+[*][color=#D4D4D8]Reuploading or rehosting this mod, modified or unmodified, anywhere other than the copyright holder's own page. If you build something on top of this mod, link back to the original instead of rehosting it.[/color][/*]
+[*][color=#D4D4D8]Selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus Mods' own Donation Points system is fine - that's Nexus's own charity-linked mechanism, not third-party monetization.)[/color][/*]
 [/list]
-
+[color=#D4D4D8]
 All other rights are reserved by the copyright holder.
 
 This license covers this mod's own code and content only. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see Credits and Attribution above). Windrose and its game assets, class names, and intellectual property belong to Kraken Express - this is an unofficial, unaffiliated mod and is not covered by this license.[/color]

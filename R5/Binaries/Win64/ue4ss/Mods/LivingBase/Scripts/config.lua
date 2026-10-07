@@ -4495,6 +4495,15 @@ Config.CUSTOM_POSES = {
 --   name = value    lines (e.g.  WHISTLE_CREW = true   or   FOLLOW_SPEED_MAX = 900 ).
 -- true/false -> boolean, numbers -> number, anything else -> string. '#' starts a comment.
 -- This is the ONE override file: config.lua holds the shipped defaults, config.txt overrides them.
+--
+-- KEY_<name> = VALUE lines (2026-10-06, RedFalcon: "not everyone wants a GUI for keybinds" --
+-- bring config.txt up to parity with what R5ModSettings' keybind panel offers, for players who
+-- don't have/want that mod installed) override Config.KEYS[<name>] instead of a flat Config field
+-- -- e.g. "KEY_numpadUp = NUM_SEVEN" rebinds the same entry Settings > Mods would call "Move/Rotate:
+-- Up / X-". <name> must be a real Config.KEYS field (see that table's own header comment for the
+-- full list and what each does); an unrecognized name is ignored with a printed warning rather than
+-- silently creating a dead key, same "don't fail silently" instinct as everything else in this
+-- block. Values are always UE4SS key names, same as Config.KEYS' own Lua-side entries.
 ------------------------------------------------------------------
 do
     local function coerce(s)
@@ -4512,7 +4521,19 @@ do
         for rawline in f:lines() do
             local line = (rawline:gsub("%s*#.*$", ""))              -- strip comments
             local key, val = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
-            if key and val ~= "" then Config[key] = coerce(val); n = n + 1 end
+            if key and val ~= "" then
+                local keyName = key:match("^KEY_(.+)$")
+                if keyName then
+                    if Config.KEYS[keyName] ~= nil then
+                        Config.KEYS[keyName] = tostring(coerce(val))
+                        n = n + 1
+                    else
+                        print("[LivingBase] config.txt: unknown keybind name '" .. keyName .. "' (KEY_" .. keyName .. ") ignored -- see config.lua's Config.KEYS for valid names\n")
+                    end
+                else
+                    Config[key] = coerce(val); n = n + 1
+                end
+            end
         end
         f:close()
         if n > 0 then print("[LivingBase] config.txt applied " .. tostring(n) .. " override(s)\n") end

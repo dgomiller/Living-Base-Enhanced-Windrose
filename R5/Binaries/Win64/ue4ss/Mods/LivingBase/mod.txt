@@ -1,1 +1,1 @@
-LivingBase:3.0.5
+LivingBase:3.0.6

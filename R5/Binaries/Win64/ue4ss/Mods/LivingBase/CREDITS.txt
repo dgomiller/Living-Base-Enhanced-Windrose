@@ -1,0 +1,38 @@
+LIVING BASE ENHANCED - CREDITS AND ATTRIBUTIONS
+================================================
+
+This mod is an unofficial, unaffiliated fan project for Windrose. Windrose itself, its game
+assets, class names, and all related IP belong to Kraken Express. See LICENSE for this project's
+own permissions/restrictions.
+
+1. LIVING BASE (original mod)
+   Author:  me123420
+   Link:    https://www.nexusmods.com/windrose/mods/519
+   This project started as a fork of Living Base by me123420 -- thank you to them for the
+   original concept and toolkit, and for open-sourcing it into the public domain in the first
+   place. The amount that has changed since then means this file no longer walks through it
+   point-by-point, but the debt is real and gladly acknowledged. The original toolkit remains
+   public domain under its own author's terms; this project's own additions are covered by
+   LICENSE instead.
+
+2. UE4SS / RE-UE4SS
+   Project: https://github.com/UE4SS-RE/RE-UE4SS
+   This mod would not exist without UE4SS, the Lua scripting and C++ modding framework for
+   Unreal Engine games that both LivingBase (Lua) and LivingBaseSpawnMenu (the compiled GUI
+   companion) are built on. Not bundled with this download -- install it separately per the
+   instructions (the stock experimental build posted on Nexus, not a patched one).
+
+3. WINDROSE MOD SETTINGS
+   Author:  IceBoxStudio
+   Link:    https://www.nexusmods.com/windrose/mods/442
+   Thanks to IceBoxStudio for Windrose Mod Settings, which this mod optionally integrates with
+   for in-game keybind/toggle configuration. Not required -- LivingBase works fully without it.
+
+4. SIGN FONTS (Greengoth, Oleo Script)
+   See FONT_CREDITS.txt for the full writeup -- author names, licences, and the exact changes
+   made converting each into a game font asset. Short version: Greengoth is by Dimitri Antonov /
+   Blue Curve Designstudio (CC BY 4.0); Oleo Script is Copyright (c) 2012 Soytutype (SIL Open
+   Font License 1.1). Both fonts ship in the optional LivingBaseSignFonts pak and are not
+   required -- signs fall back to the game's built-in font without it.
+
+Thank you to everyone listed above.

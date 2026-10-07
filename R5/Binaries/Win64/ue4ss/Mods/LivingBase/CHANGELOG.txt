@@ -1,6 +1,47 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v3.0.6 (2026-10-06) -- previous version: v3.0.5
+======================================================================
+
+ADDED -- Target List tab
+- Three new categories: Lights (the Photo Mode tab's own active lights), Build Signs/Labels
+  (populated text on build-menu pieces like wall plaques -- Del only, since those aren't props
+  this mod can move/despawn), and Placed Signs (populated text on props this mod spawned --
+  both + and Del). "Del" jumps to the Signs tab and selects that object for editing, the same
+  thing the physical Delete key already does.
+
+ADDED -- Instructions tab rework
+- The tab now opens to a Table of Contents with the Overview text above it; click any entry to
+  open that section, with a "Back to Contents" button at both the top and bottom of the page.
+- Inline images throughout, each in its own folder for cleanliness, with a thin outline so
+  screenshots of the GUI itself don't blend into the window background.
+- Numbered steps that match each screenshot's own callout numbers, with nested bullets (dot for
+  one level in, dash for two) preserved from the original written documentation.
+- Links (install prerequisites, Credits) are now real clickable hyperlinks that open in your
+  browser, each on its own line.
+
+ADDED -- config.txt keybind parity
+- Every keybind Windrose Mod Settings can rebind can now also be set directly in config.txt via
+  KEY_<name> = <UE4SS key name> lines, for anyone who doesn't want to install that mod just to
+  remap a key. Also added the 3 feature toggles config.txt was missing (RESTORE_ON_LOAD,
+  DECOR_COLLISION, LEASH_ENABLED) and removed 2 stale lines that silently did nothing
+  (KEYS_ENABLED_ONSTART, LIVE_EDIT -- removed from the code back in the 2026-08-24 numpad rebuild).
+
+CHANGED
+- Custom tab: the Hair section's "Sets" row now has an X button (clears Beard/Mustache/Whiskers
+  together) -- it never had one, which was also throwing the Mustache row's label slightly out of
+  alignment on the line below it.
+- Photo Mode: Selfie is now 50uu closer to your face by default.
+
+FIXED
+- Replace now preserves the target's full rotation (pitch/roll, not just yaw), matching Despawn's
+  own undo. Move (grab + relocate) is now tracked by Undo too, captured at Confirm with the
+  original position and rotation from pickup.
+- The Precision slider's in-game tooltip claimed it "doesn't affect rotate" -- it does (fixed back
+  on 2026-08-19); the tooltip just never got updated to say so until now.
+
+======================================================================
 v3.0.5 (2026-10-01) -- previous version: v3.0.0
 ======================================================================
 

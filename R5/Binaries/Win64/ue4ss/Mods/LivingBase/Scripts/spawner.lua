@@ -2524,6 +2524,120 @@ function Spawner.ApplyPose(actor, animSequencePath, bLooping)
     return true
 end
 
+-- Spawner.TestPlayerPose(pathArg, say) -- "lbtestplayerpose <path>|off" (2026-10-05, RedFalcon: "is
+-- there a way, with all we learned, to apply poses to the player pawn?"). Spawner.ApplyPose already
+-- works on ANY actor with a Mesh (not just composite-built NPCs -- see
+-- feedback_custom_tab_works_on_any_actor), and the player's own base body shares the same Human/
+-- Regular skeleton as most human pose assets, so the same single-node PlayAnimation mechanism should
+-- apply cleanly. What's DIFFERENT from posing a decorative NPC: the player's own CharacterMovement is
+-- live and will fight the pose the instant you move or just stand under gravity, so this freezes it
+-- the same way idle NPCs are frozen elsewhere (MaxWalkSpeed = 0 + StopMovementImmediately, see the
+-- IDLE:: restore block's own doFreeze), and reasserts both the freeze and the pose a few times
+-- (750ms x4, same reassertion convention as feedback_live_write_needs_reassertion) since a live write
+-- here can be silently reverted a moment later just like everywhere else this project has hit that.
+-- "off" (or no path) restores AnimationMode via SetAnimationMode(0, false) (the real UFUNCTION
+-- signature is (InAnimationMode, bForceInitAnimScriptInstance) -- confirmed via
+-- UE4SS_ObjectDump.txt, NOT a 1-arg call; calling it with only 1 arg fails silently every time and
+-- the pose never visually clears even though a bare property write LOOKS like it succeeded) and the
+-- saved MaxWalkSpeed.
+--
+-- KNOWN SESSION-SCOPED SIDE EFFECT (2026-10-05, RedFalcon, confirmed live): after round-tripping the
+-- player's own AnimationMode through this tool even once, the player's locomotion occasionally gets
+-- stuck holding the idle pose while sliding for a moment before catching up to a movement animation
+-- -- intermittent, not tied to any specific `off` call, and NOT limited to right after using the
+-- tool. Confirmed to fully clear on a relaunch, and confirmed to NOT happen at all on a session that
+-- never calls this tool -- so it's a real, lasting side effect of forcing the player's own AnimBP
+-- instance through a mode round-trip, not a bug in this function's own logic (tried both
+-- bForceInitAnimScriptInstance=true and false, no difference). Acceptable for a quick dev/test tool;
+-- would need a real fix (or an entirely different mechanism) before this could be anything more than
+-- that. Only ever tested as a quick console tool -- not wired into the GUI.
+function Spawner.TestPlayerPose(pathArg, say)
+    say = say or function(m) print("[LivingBase] [player-pose] " .. tostring(m) .. "\n") end
+    if not pathArg or pathArg == "" or pathArg:lower() == "off" then
+        return Spawner.TestPlayerPoseOff(say)
+    end
+    local pc = UEHelpers.GetPlayerController()
+    local pawn = pc and pc:IsValid() and pc.Pawn
+    if not (pawn and pawn:IsValid()) then say("no player pawn"); return false end
+    local cm = nil
+    pcall(function() cm = pawn.CharacterMovement end)
+    if not Spawner._playerPoseSaved then
+        local savedSpeed = 600.0
+        pcall(function() if cm and cm:IsValid() then savedSpeed = cm.MaxWalkSpeed end end)
+        Spawner._playerPoseSaved = { maxWalkSpeed = savedSpeed }
+    end
+    local function freezeAndPose()
+        pcall(function()
+            if cm and cm:IsValid() then
+                cm.MaxWalkSpeed = 0.0
+                cm:StopMovementImmediately()
+            end
+        end)
+        return Spawner.ApplyPose(pawn, pathArg)
+    end
+    local ok = freezeAndPose()
+    if ok and ExecuteWithDelay then
+        local tries = 0
+        local function reassert()
+            tries = tries + 1
+            ExecuteInGameThread(function()
+                pcall(function() if pawn and pawn:IsValid() then freezeAndPose() end end)
+            end)
+            if tries < 4 then ExecuteWithDelay(750, reassert) end
+        end
+        ExecuteWithDelay(750, reassert)
+    end
+    say(ok and "pose applied -- movement frozen. 'lbtestplayerpose off' to restore."
+        or "pose FAILED to apply -- see the [LivingBase:Pose] line just above for which step failed.")
+    return ok
+end
+
+function Spawner.TestPlayerPoseOff(say)
+    say = say or function(m) print("[LivingBase] [player-pose] " .. tostring(m) .. "\n") end
+    local pc = UEHelpers.GetPlayerController()
+    local pawn = pc and pc:IsValid() and pc.Pawn
+    if not (pawn and pawn:IsValid()) then say("no player pawn"); return false end
+    -- ROOT CAUSE FOUND (2026-10-05, from the diagnostic this same fix added a moment earlier):
+    -- `mesh:SetAnimationMode(0)` was failing EVERY time -- "UFunction expected 2 parameters,
+    -- received 1" -- because this UFUNCTION's real signature (confirmed via UE4SS_ObjectDump.txt,
+    -- /Script/Engine.SkeletalMeshComponent:SetAnimationMode) is
+    -- SetAnimationMode(InAnimationMode, bForceInitAnimScriptInstance), not just the mode. The
+    -- second bool is exactly the "also rebuilds the internal AnimScriptInstance" behavior
+    -- ApplyPose's own header comment already suspected -- passing true forces that rebuild, which
+    -- going BACK to AnimationBlueprint mode needs to actually get a fresh AnimInstance driving the
+    -- mesh again instead of leaving the old single-node one in charge.
+    local beforeMode, afterMode, modeVia, errMode = "?", "?", "none", nil
+    pcall(function()
+        local mesh = pawn.Mesh
+        if mesh and mesh:IsValid() then
+            pcall(function() beforeMode = tostring(mesh.AnimationMode) end)
+            local okFn
+            -- bForceInitAnimScriptInstance=false (2026-10-05, RedFalcon: "the pawn stays in its
+            -- natural idle anim and slides" after off) -- forcing a full rebuild (true) discards
+            -- the existing AnimBP instance's own locomotion state, so the fresh one starts blank
+            -- and needs a tick or two of real velocity to resync, which is what looked like sliding
+            -- idle. The ORIGINAL bug was the call failing outright from the wrong argument count,
+            -- not the bool's value -- false still makes a valid 2-arg call (so the mode genuinely
+            -- flips) while reusing the existing instance instead of discarding it.
+            okFn, errMode = pcall(function() mesh:SetAnimationMode(0, false) end) -- 0 = EAnimationMode::AnimationBlueprint
+            modeVia = okFn and "function" or "property-fallback"
+            if not okFn then pcall(function() mesh.AnimationMode = 0 end) end
+            pcall(function() afterMode = tostring(mesh.AnimationMode) end)
+        end
+    end)
+    local speed = (Spawner._playerPoseSaved and Spawner._playerPoseSaved.maxWalkSpeed) or 600.0
+    pcall(function()
+        local cm = pawn.CharacterMovement
+        if cm and cm:IsValid() then cm.MaxWalkSpeed = speed end
+    end)
+    Spawner._playerPoseSaved = nil
+    say(string.format("AnimationMode %s -> %s via %s%s | MaxWalkSpeed restored to %.0f.",
+        beforeMode, afterMode, modeVia,
+        (modeVia == "property-fallback") and (" (function call failed: " .. tostring(errMode) .. ")") or "",
+        speed))
+    return true
+end
+
 -- Spawner.ApplyBlueprintPose(actor, animClassPath, animSequencePath) -- TEMP DEV/TEST TOOL
 -- (2026-08-14). The REAL mechanism behind ApplyPose's dead end: a live AnimInstance property dump
 -- (item 62 follow-up, dumpAnimInfo -> dumpObjectProperties(animInstance, "ANIMINSTANCE")) found
@@ -10021,7 +10135,11 @@ end
 -- FollowCamera rig (matching Spawner.SetFirstPerson's mechanism, "so it's smoother") was tried and
 -- REVERTED -- RedFalcon: "that does not work at all. let's put it back." Kept as a spawned
 -- CameraActor, same as Tripod.
-Spawner.PHOTOCAM_SELFIE_DISTANCE_UU = 160.0
+-- 2026-10-06, RedFalcon: "can we adjust selfie mode so its zoomed in 50uu more" -- distance dropped
+-- 160->110 (50uu closer to the face). A same-day attempt to ALSO add a 15uu lateral shift to the
+-- camera's right (plus a real look-at so the face stayed centered despite the shift) didn't look
+-- right in practice ("didnt really work") -- REVERTED, keeping just the 50uu-closer distance.
+Spawner.PHOTOCAM_SELFIE_DISTANCE_UU = 110.0
 function Spawner._computeSelfieBasePose()
     local pc, pawn
     pcall(function()
@@ -17829,25 +17947,95 @@ end
 -- IsDecorClass itself rather than trusting the C++ side's own TargetIsDecor() gate -- that's a
 -- UI-only disable, this is the actual enforcement, same belt-and-suspenders discipline every other
 -- server-side gate in this file already applies.
+-- Animals/monsters/characters take the Custom tab's grounded mesh-scale path (CS.setActorScaleGrounded)
+-- instead of decor's root-actor scale, since scaling a pawn's root also scales its gameplay capsule.
+function Spawner._getPawnMeshScale(actor)
+    local s = 1.0
+    pcall(function()
+        local mesh = actor.Mesh
+        if mesh and mesh:IsValid() then s = mesh:K2_GetComponentScale().Z end
+    end)
+    return s
+end
+
+function Spawner._applyTargetScale(lt, newScale)
+    if Spawner.IsDecorClass and lt.class and Spawner.IsDecorClass(lt.class) then
+        local ok = Spawner.SetActorScaleWithFallback(lt.actor, newScale)
+        if ok then
+            -- Persist to persist.txt field 18 so the scale survives a world reload (RedFalcon: "since
+            -- its decor in the persist is fine"). Matched by the tracked entry's class + home, the same
+            -- key PersistUpdatePose uses for live-edit moves.
+            pcall(function()
+                for _, e in ipairs(Spawner.spawned) do
+                    if e.actor == lt.actor then
+                        Spawner.PersistUpdateScale(e.class, e.home, newScale)
+                        break
+                    end
+                end
+            end)
+        end
+        return ok
+    end
+    local ok = CS.setActorScaleGrounded(lt.actor, newScale, nil)
+    if ok then Spawner._persistPawnHeight(lt.actor, newScale * CS.FEET_PER_SCALE_UNIT) end
+    return ok
+end
+
+-- Updates only the HEIGHT line of this actor's custom-state block (same block SaveCustomState
+-- writes and CS.applyLine restores on world load), leaving its other customization lines alone.
+function Spawner._persistPawnHeight(actor, feet)
+    local label = nil
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label; break end
+    end
+    if not label then return false end
+    local blocks = CS.readBlocks()
+    local block = nil
+    for _, b in ipairs(blocks) do
+        if b.label == label then block = b; break end
+    end
+    if not block then
+        block = { label = label, lines = {} }
+        table.insert(blocks, block)
+    end
+    local heightLine = string.format("HEIGHT:%.4f", feet)
+    local replaced = false
+    for i, l in ipairs(block.lines) do
+        if l:match("^HEIGHT:") then block.lines[i] = heightLine; replaced = true; break end
+    end
+    if not replaced then table.insert(block.lines, heightLine) end
+    CS.writeBlocks(blocks)
+    return true
+end
+
 function Spawner.NudgeTargetScale(delta)
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then return end
-    if not (Spawner.IsDecorClass and lt.class and Spawner.IsDecorClass(lt.class)) then return end
-    local newScale = math.max(0.1, Spawner.GetLockedTargetScale() + delta)
-    local ok = Spawner.SetActorScaleWithFallback(lt.actor, newScale)
-    if ok then
-        -- Persist to persist.txt field 18 so the scale survives a world reload (RedFalcon: "since
-        -- its decor in the persist is fine"). Matched by the tracked entry's class + home, the same
-        -- key PersistUpdatePose uses for live-edit moves.
-        pcall(function()
-            for _, e in ipairs(Spawner.spawned) do
-                if e.actor == lt.actor then
-                    Spawner.PersistUpdateScale(e.class, e.home, newScale)
-                    break
-                end
-            end
-        end)
+    local current
+    if Spawner.IsDecorClass and lt.class and Spawner.IsDecorClass(lt.class) then
+        current = Spawner.GetLockedTargetScale()
+    else
+        current = Spawner._getPawnMeshScale(lt.actor)
     end
+    Spawner._applyTargetScale(lt, math.max(0.1, current + delta))
+end
+
+-- Photo Mode "Select" on a light: locks that light's spill-shield actor exactly as Num+ would.
+function Spawner.LockLightSlot(slot)
+    local L = Spawner.Lights and Spawner.Lights[slot]
+    if not (L and L.actor and L.actor:IsValid()) then
+        print("[LivingBase] [light-select] light " .. tostring(slot) .. " is not enabled.\n")
+        return false
+    end
+    Spawner.lockedTarget = { actor = L.actor, label = "Light " .. tostring(slot), class = nil }
+    Spawner.StartTargetLockTick()
+    return true
+end
+
+function Spawner.SetTargetScaleAbsolute(value)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return end
+    Spawner._applyTargetScale(lt, math.max(0.1, value))
 end
 
 -- Spawner.TestNudgeTargetScale(deltaArg, say) -- "lbtestobjectscale <delta>" (2026-09-29, RedFalcon:
@@ -22726,10 +22914,19 @@ function Spawner.ApplyHairCategoryMesh(categoryKey, friendlyName, say, actorOver
     -- SetHiddenInGame + zero collision, re-dressable afterward) rather than a new mechanism.
     -- categoryKey "Hairs" maps to RemoveHairOnActor's own slot name "Hair" (singular, matches its
     -- "/Hair/" path-based classification) -- every other categoryKey (Beard/Mustache/Whiskers)
-    -- already matches facialSlotOf's own return strings exactly. Not offered for "Sets" (that row
-    -- is a multi-slot convenience applier, not a real slot of its own -- same reasoning it never
-    -- gets a Read Current line either).
+    -- already matches facialSlotOf's own return strings exactly.
+    -- "Sets" (2026-10-06, RedFalcon: its row's own "X" was missing entirely -- now restored on the
+    -- CustomMenu.cpp side, see DrawHairRow's own comment) clears all three facial slots it applies
+    -- to together, same multi-slot reasoning its OWN apply path (just below) already follows --
+    -- "Sets" itself is never a real slot name RemoveHairOnActor could resolve.
     if friendlyName == "(Remove)" then
+        if categoryKey == "Sets" then
+            local anyHidden = false
+            for _, bp in ipairs({ "Beard", "Mustache", "Whiskers" }) do
+                if Spawner.RemoveHairOnActor(actor, bp, name) then anyHidden = true end
+            end
+            return anyHidden
+        end
         local slotArg = (categoryKey == "Hairs") and "Hair" or categoryKey
         return Spawner.RemoveHairOnActor(actor, slotArg, name)
     end
@@ -30042,15 +30239,29 @@ function Spawner.CategoryForClassPath(classPath)
     return Spawner._targetListCategoryMap[classPath] or "People"
 end
 
--- Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor) --
--- backing function for the Target List tab's "Scan" button. Deliberately scoped to
--- Spawner.spawned (everything THIS mod is tracking) rather than a world-wide FindAllOf("Actor")
--- sweep like Spawner.ScanNearbyCustomization does -- "any spawned items" (RedFalcon's own
+-- Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor, wantBuildSigns,
+-- wantPlacedSigns, wantLights) -- backing function for the Target List tab's "Scan" button. The original four
+-- categories stay scoped to Spawner.spawned (everything THIS mod is tracking) rather than a world-wide
+-- FindAllOf("Actor") sweep like Spawner.ScanNearbyCustomization does -- "any spawned items" (RedFalcon's own
 -- phrasing) means this mod's own placed/tracked actors, not every wild vanilla NPC on the island.
+-- 2026-10-06 additions (RedFalcon: "detection and targeting of populated signs/labels of build menu items
+-- (Del key only) and all Placed signs (+ and Del Key). Also ... a lights category"):
+--   Lights       -- Spawner.Lights[1..3]'s enabled slots (the same actor Photo Mode's own "Select" button
+--                   locks via LockLightSlot). + only, same as every other category -- there's no sign-style
+--                   Del action on a light.
+--   Build Sign   -- populated signs/labels the GAME's build menu placed (R5BuildingBlock, via
+--                   Signs.ListPopulated's isBuilt=true half). canTarget=false: this mod doesn't own/move/
+--                   despawn a build piece, so the usual "+" target-lock (which feeds Move/Scale/Despawn)
+--                   would be a dead end here -- only Del (jump to the Signs tab and select it for editing)
+--                   makes sense.
+--   Placed Sign  -- populated signs/labels on props THIS mod spawned (isBuilt=false half). Both + (full
+--                   target lock, usable with Move/Scale same as any other spawned prop) and Del apply.
+-- Each row now also carries canTarget/canDelete so the GUI knows which of "+"/"Del" to draw per row; the
+-- original four categories are canTarget=true, canDelete=false (unchanged behaviour).
 -- Returns a plain array sorted nearest-first (distM in meters); also cached on
--- Spawner._targetListResults in the SAME order so a later Spawner.TargetListSelect(index) can
--- resolve straight back to the actor without a second scan.
-function Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor)
+-- Spawner._targetListResults in the SAME order so a later Spawner.TargetListSelect/TargetListSignSelect(index)
+-- can resolve straight back to the actor without a second scan.
+function Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAnimals, wantDecor, wantBuildSigns, wantPlacedSigns, wantLights)
     local radiusUU = (tonumber(radiusMeters) or 10.0) * 100.0
     local px, py, pz
     pcall(function()
@@ -30078,15 +30289,76 @@ function Spawner.ScanTargetList(radiusMeters, wantPeople, wantMonsterous, wantAn
                     end)
                     if dist and dist <= radiusUU then
                         results[#results + 1] = { actor = a, label = entry.label or "?", class = entry.class,
-                            category = cat, distM = dist / 100.0 }
+                            category = cat, distM = dist / 100.0, canTarget = true, canDelete = false }
                     end
                 end
             end
         end
+
+        if wantLights then
+            for slot, L in pairs(Spawner.Lights or {}) do
+                if L and L.actor and L.actor:IsValid() then
+                    local dist
+                    pcall(function()
+                        local l = L.actor:K2_GetActorLocation()
+                        local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    end)
+                    if dist and dist <= radiusUU then
+                        results[#results + 1] = { actor = L.actor, label = "Light " .. tostring(slot), class = nil,
+                            category = "Lights", distM = dist / 100.0, canTarget = true, canDelete = false }
+                    end
+                end
+            end
+        end
+
+        if wantBuildSigns or wantPlacedSigns then
+            local okS, SignsMod = pcall(require, "signs")
+            if okS and SignsMod and SignsMod.ListPopulated then
+                local okL, populated = pcall(SignsMod.ListPopulated)
+                if okL and populated then
+                    for _, row in ipairs(populated) do
+                        local want = (row.isBuilt and wantBuildSigns) or ((not row.isBuilt) and wantPlacedSigns)
+                        if want and row.actor and row.actor:IsValid() then
+                            local dist
+                            pcall(function()
+                                local l = row.actor:K2_GetActorLocation()
+                                local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                            end)
+                            if dist and dist <= radiusUU then
+                                results[#results + 1] = { actor = row.actor, label = row.label, class = nil,
+                                    category = row.isBuilt and "Build Sign" or "Placed Sign", distM = dist / 100.0,
+                                    canTarget = not row.isBuilt, canDelete = true }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
         table.sort(results, function(x, y) return x.distM < y.distM end)
     end
     Spawner._targetListResults = results
     return results
+end
+
+-- Spawner.TargetListSignSelect(index) -- 0-based, same Spawner._targetListResults array TargetListSelect
+-- reads (2026-10-06): backing function for the Target List tab's "Del" button on Signs/Labels rows. Mirrors
+-- the physical Delete key's real behaviour (select this object as the Signs tab's target + jump to that
+-- tab) via Signs.SelectFromTargetList, deterministically rather than the key's own toggle -- a GUI button
+-- press should always do the same thing.
+function Spawner.TargetListSignSelect(index)
+    local row = Spawner._targetListResults and Spawner._targetListResults[index + 1]
+    if not (row and row.actor and row.actor:IsValid()) then return false end
+    local okS, SignsMod = pcall(require, "signs")
+    if not (okS and SignsMod and SignsMod.SelectFromTargetList) then return false end
+    local ok = SignsMod.SelectFromTargetList(row.actor)
+    if ok then
+        print("[LivingBase] Sign selected (from Target List): " .. tostring(row.label) .. ".\n")
+        pcall(function() Spawner.Toast("Sign selected: " .. tostring(row.label), 2.5) end)
+    end
+    return ok
 end
 
 -- Spawner.TargetListSelect(index) -- 0-based (matches the C++ side's own array indexing over the
@@ -30278,12 +30550,12 @@ function Spawner.DespawnNearestInFront(maxDist)
     -- No generation bump: this despawns ONE actor. Bumping the wipe marker here silently cancelled
     -- pending post-spawn work (shield, dark hair, de-corrupt) on every other live spawn. The
     -- despawned actor drops out of Spawner.spawned, so its own callbacks bail via IsTracked().
-    local undoPos, undoYaw
+    local undoPos, undoYaw, undoPitch, undoRoll
     pcall(function()
         local l = entry.actor:K2_GetActorLocation()
         local r = entry.actor:K2_GetActorRotation()
         undoPos = { X = l.X, Y = l.Y, Z = l.Z }
-        undoYaw = r.Yaw
+        undoYaw, undoPitch, undoRoll = r.Yaw, r.Pitch, r.Roll
     end)
     -- VALIDATE against persist.txt before removing anything: find the saved record for this exact
     -- class + spawn position and log it explicitly, so there's a concrete, checkable record of what's
@@ -30301,6 +30573,7 @@ function Spawner.DespawnNearestInFront(maxDist)
     if undoPos then
         Spawner.PushUndo({ {
             class = entry.class, label = entry.label, pos = undoPos, yaw = undoYaw,
+            pitch = undoPitch, roll = undoRoll,
             aiPath = persisted and persisted.aiPath, makeFriendly = persisted and persisted.makeFriendly,
             look = persisted and persisted.look,
         } })
@@ -31443,6 +31716,23 @@ function Spawner.ConfirmPlacement()
         return
     end
     local actor = Spawner._placementActor
+    local mode = Spawner._placementMode
+    -- Move undo (2026-10-06, RedFalcon: "capture the original location on confirm or on pickup if
+    -- we remove the entry if cancel is pressed during the move") -- only RELOCATE (grabbing an
+    -- EXISTING placed object) pushes an undo entry; a brand-new NEW placement has nothing to "undo
+    -- back to." Captured here at CONFIRM, not at pickup -- Cancel already puts the actor back
+    -- exactly where it was grabbed from on its own (see CancelPlacement below), so there's never
+    -- anything to undo if the session ends in Cancel instead, and nothing needs removing. Full
+    -- rotation (pitch/yaw/roll), not just yaw, from StartRelocatePreview's own capture.
+    if mode == "RELOCATE" and Spawner._placementOriginalLoc then
+        Spawner.PushUndo({ {
+            kind = "move", actor = actor, label = (function()
+                for _, e in ipairs(Spawner.spawned) do if e.actor == actor then return e.label end end
+                return nil
+            end)(),
+            pos = Spawner._placementOriginalLoc, rot = Spawner._placementOriginalRot,
+        } })
+    end
     Spawner._placementActive = false
     Spawner._placementActor = nil
     Spawner._placementMode = nil
@@ -32704,13 +32994,10 @@ function Spawner.EditNearestInFront(dZ, dYaw, dFwd, dRight, dPitch, dRoll)
     -- Same actor.Mesh-valid character test UpdateHoverHighlight/Spawner.UpdateMarkTargetHighlight
     -- already use to draw this exact person-vs-decor line elsewhere in this file -- reused here rather
     -- than growing the substring list class-by-class.
-    local statueFrame = isStatueClass(e.class)
-    if not statueFrame then
-        pcall(function()
-            local m = e.actor.Mesh
-            statueFrame = (m ~= nil) and m:IsValid()
-        end)
-    end
+    -- ALL targets slide along their own facing now (2026-10-03, RedFalcon: building pieces are rarely on
+    -- straight world lines, so fixed world axes made angled walls hard to adjust). Decor's facing is
+    -- whatever yaw it was spawned with.
+    local statueFrame = true
     local newX, newY, newZ, newYaw, newPitch, newRoll
     pcall(function()
         local l = e.actor:K2_GetActorLocation()
@@ -32795,17 +33082,18 @@ function Spawner.DespawnAll()
     local undoBatch = {}
     for _, entry in ipairs(Spawner.spawned) do
         if entry.actor and entry.actor:IsValid() then
-            local undoPos, undoYaw
+            local undoPos, undoYaw, undoPitch, undoRoll
             pcall(function()
                 local l = entry.actor:K2_GetActorLocation()
                 local r = entry.actor:K2_GetActorRotation()
                 undoPos = { X = l.X, Y = l.Y, Z = l.Z }
-                undoYaw = r.Yaw
+                undoYaw, undoPitch, undoRoll = r.Yaw, r.Pitch, r.Roll
             end)
             local persisted = Spawner.PersistFindMatching(entry.class, entry.home)
             if undoPos then
                 undoBatch[#undoBatch + 1] = {
                     class = entry.class, label = entry.label, pos = undoPos, yaw = undoYaw,
+                    pitch = undoPitch, roll = undoRoll,
                     aiPath = persisted and persisted.aiPath, makeFriendly = persisted and persisted.makeFriendly,
                     look = persisted and persisted.look,
                 }
@@ -32875,30 +33163,62 @@ function Spawner.UndoDespawn()
     local restoredLabels = {}
     Spawner._suppressSpawnToast = true
     for _, item in ipairs(batch) do
-        -- Cycle-pose undo: the roster swap didn't despawn its replacement -- it's still live at this
-        -- spot -- so remove IT first, or restoring the old pose on top just stacks duplicates (and
-        -- cycling again before undoing would pile up a third).
-        if item.replaceActor then
-            pcall(function()
-                if item.replaceActor:IsValid() then item.replaceActor:K2_DestroyActor() end
+        -- "move" items (2026-10-06, RedFalcon: "add move to the undo list") never destroyed
+        -- anything, so there's nothing to respawn -- just teleport the actor back to where it was
+        -- grabbed from, and rewrite persist.txt to match (same PersistUpdatePose call
+        -- ConfirmPlacement itself makes) so a later reload doesn't bring it back at the confirmed
+        -- spot instead of the undone one.
+        if item.kind == "move" then
+            local ok = pcall(function()
+                if item.actor and item.actor:IsValid() then
+                    item.actor:K2_SetActorLocation(item.pos, false, {}, true)
+                    if item.rot then item.actor:K2_SetActorRotation(item.rot, false) end
+                    for _, e in ipairs(Spawner.spawned) do
+                        if e.actor == item.actor then
+                            Spawner.PersistUpdatePose(e.class, e.home, item.pos,
+                                item.rot and item.rot.Yaw, item.rot and item.rot.Pitch, item.rot and item.rot.Roll)
+                            e.home = item.pos
+                            e.yaw = item.rot and item.rot.Yaw
+                            break
+                        end
+                    end
+                    restored = restored + 1
+                    restoredLabels[#restoredLabels + 1] = tostring(item.label or "moved object")
+                end
             end)
-            for si, s in ipairs(Spawner.spawned) do
-                if s.actor == item.replaceActor then table.remove(Spawner.spawned, si); break end
+            if not ok then print("[LivingBase] Undo: failed to move back one item (class " .. tostring(item.class) .. ").\n") end
+        else
+            -- Replace undo: the replacement actor is still live at this spot (Replace never
+            -- despawned it, it swapped in beside the old one's destroy) -- remove IT first, or
+            -- restoring the old one on top just stacks duplicates.
+            if item.replaceActor then
+                pcall(function()
+                    if item.replaceActor:IsValid() then item.replaceActor:K2_DestroyActor() end
+                end)
+                for si, s in ipairs(Spawner.spawned) do
+                    if s.actor == item.replaceActor then table.remove(Spawner.spawned, si); break end
+                end
+                Spawner.PersistRemoveMatching(item.replaceClass, item.replacePos or item.pos)
+                Spawner.ReleaseTargetLockIfDestroyed(item.replaceActor)
             end
-            Spawner.PersistRemoveMatching(item.replaceClass, item.replacePos or item.pos)
-            -- If this cycle's replacement had inherited the target lock (CycleNearestInFront re-points
-            -- the lock onto whatever it creates -- see that function's own comment), undoing the cycle
-            -- just destroyed the locked actor. Release immediately rather than leaving a dangling lock.
-            Spawner.ReleaseTargetLockIfDestroyed(item.replaceActor)
+            local ok = pcall(function()
+                local actor = Spawner.Spawn(item.class, item.label, item.pos, nil, item.aiPath, item.yaw, item.makeFriendly, item.look)
+                if actor and actor:IsValid() then
+                    -- Spawn's own signature only takes yaw (see its header) -- pitch/roll are
+                    -- applied as a follow-up write, same as ConfirmPlacement/Replace already do
+                    -- elsewhere, so a tilted item's undo comes back at its real original tilt
+                    -- instead of leveling out.
+                    if item.pitch or item.roll then
+                        pcall(function()
+                            actor:K2_SetActorRotation({ Pitch = item.pitch or 0.0, Yaw = item.yaw or 0.0, Roll = item.roll or 0.0 }, false)
+                        end)
+                    end
+                    restored = restored + 1
+                    restoredLabels[#restoredLabels + 1] = tostring(item.label)
+                end
+            end)
+            if not ok then print("[LivingBase] Undo: failed to restore one item (class " .. tostring(item.class) .. ").\n") end
         end
-        local ok = pcall(function()
-            local actor = Spawner.Spawn(item.class, item.label, item.pos, nil, item.aiPath, item.yaw, item.makeFriendly, item.look)
-            if actor and actor:IsValid() then
-                restored = restored + 1
-                restoredLabels[#restoredLabels + 1] = tostring(item.label)
-            end
-        end)
-        if not ok then print("[LivingBase] Undo: failed to restore one item (class " .. tostring(item.class) .. ").\n") end
     end
     Spawner._suppressSpawnToast = false
     print(string.format("[LivingBase] Undo: restored %d/%d.\n", restored, #batch))
@@ -32918,187 +33238,6 @@ function Spawner.UndoDespawn()
 end
 
 
--- Spawner.CycleNearestInFront() -- swap the placed statue OR decoration in front of you for the NEXT
--- entry in its own roster (STANDING/SEATED/CHAIR/INTERACTIVE_STATUES, or a Config.DECOR_CATEGORIES
--- entry), in place: same spot, one shared PAIR of keys (']' forward / '[' backward -- briefly moved
--- to 'O'/'U' when ']'/'[' turned out to collide with the game's own "Change Target" bind, then moved
--- back the same day: more intuitive, and low-risk since Insert can disable every mod key outright
--- and cycling isn't happening mid-combat anyway; previously a single Num+ forward-only key until
--- 2026-08-07) auto-detecting which kind of roster the targeted
--- actor's class belongs to -- user asked for one key rather than a separate one per type (2026-08-06),
--- since the target is already uniquely identified by class either way. Undo-able: the replaced
--- actor is pushed onto the same undo stack Num9/DEL use, so Num0 reverts one cycle step if the new
--- pick isn't actually better than the old one.
--- Statues get a baked per-entry yaw correction (so a "faces backwards" quirk on one pose doesn't carry
--- onto another) and bounds-based re-leveling to the old floor height (poses can have different
--- root-to-ground offsets). Decorations get neither: no per-entry yaw field exists for them, and
--- placeDecorEntry's own comment in testbed.lua explains decoration bounds are unreliable for
--- floor-snapping (mesh often sits offset above the root) -- fresh placement uses playerFloorZ()+
--- zoffset instead of bounds for exactly that reason, so reusing bounds math here would reintroduce the
--- same problem. Decorations instead keep the EXACT old X/Y/Z; live-edit height fixes it if the new
--- entry's natural resting height differs, same as a fresh placement would need anyway.
-local STATUE_ROSTERS = {
-    { list = Config.STANDING_STATUES,    label = "standing" },
-    { list = Config.SEATED_STATUES,      label = "seated" },
-    { list = Config.CHAIR_STATUES,       label = "chairseat" },
-    { list = Config.INTERACTIVE_STATUES, label = "interactive" },
-}
--- One roster per Config.DECOR_CATEGORIES entry -- a targeted decoration cycles within its own
--- category (nature/boats/wrecks/tents/storage/furniture), regardless of which key spawned it.
-local DECOR_ROSTERS
-local function decorRosters()
-    if not DECOR_ROSTERS then
-        DECOR_ROSTERS = {}
-        for cat, list in pairs(Config.DECOR_CATEGORIES or {}) do
-            DECOR_ROSTERS[#DECOR_ROSTERS + 1] = { list = list, label = cat }
-        end
-    end
-    return DECOR_ROSTERS
-end
-
-function Spawner.CycleNearestInFront(direction)
-    direction = direction or 1
-    print(string.format("[LivingBase] cycle key received (direction=%d).\n", direction))
-    local maxDist = Config.LIVE_EDIT_MAX_DIST or 200.0
-    local bestI, e = findNearestSpawnInFront(maxDist)
-    if not bestI then
-        print(string.format("[LivingBase] Cycle: nothing within %.0fuu ahead -- walk closer / face it.\n", maxDist))
-        return
-    end
-
-    -- Which roster (if any) does this actor's class belong to, and at what index? Check statues first,
-    -- then decorations -- the two roster sets never share a class path, so order doesn't matter for
-    -- correctness, only for which error message a truly uncycleable actor gets (irrelevant either way).
-    local kind, roster, curIdx, label
-    for _, r in ipairs(STATUE_ROSTERS) do
-        local list = r.list or {}
-        for i, w in ipairs(list) do
-            if w.path == e.class then kind, roster, curIdx, label = "statue", list, i, r.label; break end
-        end
-        if roster then break end
-    end
-    if not roster then
-        for _, r in ipairs(decorRosters()) do
-            local list = r.list or {}
-            for i, d in ipairs(list) do
-                if d.path == e.class then kind, roster, curIdx, label = "decor", list, i, r.label; break end
-            end
-            if roster then break end
-        end
-    end
-    if not roster then
-        print("[LivingBase] Cycle: " .. tostring(e.label) .. " isn't from a cycleable roster (Num3-6 statues or a decor list).\n")
-        pcall(function() Spawner.Toast("Cycle: not a cycleable object.", 2.5) end)
-        return
-    end
-
-    -- Lua's % is floored (result always in [0, #roster) even for a negative dividend), so this
-    -- wraps correctly in BOTH directions: direction=1 steps forward, direction=-1 steps backward.
-    local nextIdx = ((curIdx - 1 + direction) % #roster) + 1
-    local curEntry, nextEntry = roster[curIdx], roster[nextIdx]
-    local nextName = kind == "statue" and tostring(nextEntry.faction) or nextEntry.name
-
-    -- Capture the CURRENT floor level (bottom of bounds, statues only) + live X/Y/yaw before destroying
-    -- anything, so the replacement lands exactly where the old one was resting regardless of where the
-    -- player is now.
-    local oldX, oldY, oldZ, oldYaw, floorZ
-    pcall(function()
-        local l = e.actor:K2_GetActorLocation()
-        local r = e.actor:K2_GetActorRotation()
-        oldX, oldY, oldZ, oldYaw = l.X, l.Y, l.Z, r.Yaw
-        if kind == "statue" then
-            local origin, extent = e.actor:GetActorBounds(false)
-            if origin and extent then floorZ = origin.Z - extent.Z end
-        end
-    end)
-    if not oldX then
-        print("[LivingBase] Cycle: couldn't read the current actor's transform.\n")
-        return
-    end
-    -- Statues: preserve the conceptual facing across the swap by undoing the OLD entry's own baked yaw
-    -- correction (if any), then applying the NEW entry's. Decorations have no such field -- keep yaw as-is.
-    local newYaw = kind == "statue"
-        and ((oldYaw - (curEntry.yaw or 0) + (nextEntry.yaw or 0)) % 360.0)
-        or oldYaw
-
-    local persisted = Spawner.PersistFindMatching(e.class, e.home)
-    local oldShort = tostring(e.class):match("([%w_]+)%.[%w_]+$") or tostring(e.class)
-    local newShort = tostring(nextEntry.path):match("([%w_]+)%.[%w_]+$") or tostring(nextEntry.path)
-    print(string.format("[LivingBase] Cycle %s %d/%d: %s -> %s\n", label, nextIdx, #roster, oldShort, newShort))
-
-    -- Same undo shape as a despawn: capture class/pos/yaw + persisted AI/look BEFORE removing, so Num0
-    -- can bring the old one back if the new pick turns out to be worse. `replaceActor`/`replaceClass`
-    -- get filled in below once the new actor exists -- Num0 needs to destroy THAT before respawning
-    -- the old one, or the two end up stacked on top of each other at the same spot.
-    local undoItem = {
-        class = e.class, label = e.label, pos = { X = oldX, Y = oldY, Z = oldZ }, yaw = oldYaw,
-        aiPath = persisted and persisted.aiPath, makeFriendly = persisted and persisted.makeFriendly,
-        look = persisted and persisted.look,
-    }
-    Spawner.PushUndo({ undoItem })
-
-    pcall(function() e.actor:K2_DestroyActor() end)
-    table.remove(Spawner.spawned, bestI)
-    Spawner.PersistRemoveMatching(e.class, e.home)
-
-    local newLabel = kind == "statue" and (label:upper() .. "_" .. tostring(nextEntry.faction))
-        or (nextEntry.label or nextEntry.name) -- see placeDecorEntry's own comment for why no "DECOR_" prefix
-    Spawner._suppressSpawnToast = true
-    local ok, newActor = pcall(function()
-        return Spawner.Spawn(nextEntry.path, newLabel, { X = oldX, Y = oldY, Z = oldZ }, nil, nil, newYaw)
-    end)
-    Spawner._suppressSpawnToast = false
-    if not (ok and newActor and newActor:IsValid()) then
-        print("[LivingBase] Cycle: replacement spawn failed -- the old one is gone; Num0 can restore it.\n")
-        pcall(function() Spawner.Toast("Cycle failed to spawn replacement -- Num0 to restore.", 3.0) end)
-        return
-    end
-    undoItem.replaceActor = newActor
-    undoItem.replaceClass = nextEntry.path
-    undoItem.replacePos = { X = oldX, Y = oldY, Z = oldZ }
-
-    -- Carry a target lock forward onto the replacement: e.actor (just destroyed) is exactly what
-    -- Spawner.lockedTarget would be pointing at if this spot was locked, so re-point the lock at
-    -- newActor rather than letting it fall through to "locked target no longer exists". Lets you lock
-    -- once, cycle through several looks in place, and keep nudging with live-edit the whole time without
-    -- re-locking after every cycle press. label reads back from Spawner.spawned (its just-inserted
-    -- LAST entry) rather than the raw `newLabel` passed to Spawn above -- Spawn resolves that into a
-    -- unique numbered instance label internally (2026-08-16), so the raw value here is stale/wrong,
-    -- same fix ReplaceNearestInFront already applies below via its own `newEntry.label` read.
-    if Spawner.lockedTarget and Spawner.lockedTarget.actor == e.actor then
-        local resolvedLabel = Spawner.spawned[#Spawner.spawned] and Spawner.spawned[#Spawner.spawned].label or newLabel
-        Spawner.lockedTarget = { actor = newActor, label = resolvedLabel, class = nextEntry.path }
-        pcall(function() Spawner._selectSignIfCapable(newActor) end)   -- 2026-10-01: a locked sign-capable object is also the Text tab's selected object
-    end
-
-    if kind == "statue" then
-        -- Re-level to the OLD floor position (same trick as spawnPosed's snapToFloor in testbed.lua) --
-        -- different poses can have slightly different root-to-ground offsets.
-        if floorZ then
-            pcall(function()
-                local origin, extent = newActor:GetActorBounds(false)
-                if origin and extent then
-                    local bottom = origin.Z - extent.Z
-                    local loc = newActor:K2_GetActorLocation()
-                    local dz = floorZ - bottom
-                    if math.abs(dz) <= 1000 then
-                        newActor:K2_SetActorLocation({ X = loc.X, Y = loc.Y, Z = loc.Z + dz }, false, {}, true)
-                    end
-                end
-            end)
-        end
-    else
-        if Config.DECOR_COLLISION == false then
-            pcall(function() newActor:SetActorEnableCollision(false) end)
-        else
-            pcall(function() Spawner.SetDecorSolid(newActor) end)
-        end
-        pcall(function() Spawner.MakeMovable(newActor) end)
-    end
-
-    print(string.format("[LivingBase] Cycle: now showing %s (%d/%d in %s).\n", nextName, nextIdx, #roster, label))
-    pcall(function() Spawner.Toast(string.format("%s: %d/%d (%s)", label, nextIdx, #roster, nextName), 2.5) end)
-end
 
 -- Spawner.ReplaceNearestInFront(spawnFn, newLabelHint) -- generalizes CycleNearestInFront above to
 -- ANY roster kind, not just statues/decor. Cycle can get away with spawning the replacement
@@ -33123,23 +33262,25 @@ function Spawner.ReplaceNearestInFront(spawnFn, newLabelHint)
         return false, "nothing in front"
     end
 
-    local oldX, oldY, oldZ, oldYaw
+    local oldX, oldY, oldZ, oldYaw, oldPitch, oldRoll
     pcall(function()
         local l = e.actor:K2_GetActorLocation()
         local r = e.actor:K2_GetActorRotation()
-        oldX, oldY, oldZ, oldYaw = l.X, l.Y, l.Z, r.Yaw
+        oldX, oldY, oldZ, oldYaw, oldPitch, oldRoll = l.X, l.Y, l.Z, r.Yaw, r.Pitch, r.Roll
     end)
     if not oldX then
         print("[LivingBase] Replace: couldn't read the current actor's transform.\n")
         return false, "transform read failed"
     end
 
-    -- Same undo shape as Cycle/despawn: capture the OLD actor's info BEFORE removing it, so Num0
-    -- can bring it back if the replacement turns out wrong. replaceActor/replaceClass/replacePos
-    -- get filled in below once the new actor exists (Num0 needs to destroy THAT first).
+    -- Same undo shape as despawn: capture the OLD actor's info BEFORE removing it, so Num0 can
+    -- bring it back if the replacement turns out wrong. replaceActor/replaceClass/replacePos get
+    -- filled in below once the new actor exists -- Num0's own restore (UndoDespawn) destroys THAT
+    -- first before respawning the old one, or the two would end up stacked on the same spot.
     local persisted = Spawner.PersistFindMatching(e.class, e.home)
     local undoItem = {
         class = e.class, label = e.label, pos = { X = oldX, Y = oldY, Z = oldZ }, yaw = oldYaw,
+        pitch = oldPitch, roll = oldRoll,
         aiPath = persisted and persisted.aiPath, makeFriendly = persisted and persisted.makeFriendly,
         look = persisted and persisted.look,
     }
@@ -33170,11 +33311,15 @@ function Spawner.ReplaceNearestInFront(spawnFn, newLabelHint)
     -- correct persist.txt's record of it to the OLD position before overwriting our own copy of
     -- newEntry.home, or PersistUpdatePose's own class+position lookup won't find the row it just wrote.
     pcall(function()
-        Spawner.PersistUpdatePose(newEntry.class, newEntry.home, { X = oldX, Y = oldY, Z = oldZ }, oldYaw)
+        Spawner.PersistUpdatePose(newEntry.class, newEntry.home, { X = oldX, Y = oldY, Z = oldZ }, oldYaw, oldPitch, oldRoll)
     end)
+    -- Full rotation preserved (2026-10-06, RedFalcon: "is replace ensuring the target maintains
+    -- position and rotation" -- it wasn't: pitch/roll were hard-reset to 0 here, leveling out any
+    -- tilted item). oldPitch/oldRoll default to 0 via `or 0.0` only if the original read somehow
+    -- failed to populate them, never unconditionally.
     pcall(function()
         newActor:K2_SetActorLocation({ X = oldX, Y = oldY, Z = oldZ }, false, {}, true)
-        newActor:K2_SetActorRotation({ Pitch = 0.0, Yaw = oldYaw, Roll = 0.0 }, false)
+        newActor:K2_SetActorRotation({ Pitch = oldPitch or 0.0, Yaw = oldYaw, Roll = oldRoll or 0.0 }, false)
     end)
     newEntry.home = { X = oldX, Y = oldY, Z = oldZ }
     newEntry.yaw = oldYaw

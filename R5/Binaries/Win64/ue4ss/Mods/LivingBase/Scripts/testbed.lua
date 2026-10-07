@@ -3,8 +3,8 @@
  Numpad: SpawnCrew, SpawnWalker (townsman), the statue cyclers (standing/seated/chair/interactive),
  SpawnNextPlague (Senkamati), SpawnNextLivestock (boar/goat/dodo/wolf/crocodile), DespawnInFront
  (undo), Cleanup (DEL).
- Decor: SpawnActiveDecorCategory places from the active category, CycleDecorCategory changes which
- one is active (Config.DECOR_ORDER / Config.DECOR_CATEGORIES) — see fkeys.lua.
+ Decor: SpawnDecorCategory/SpawnDecorByName place from Config.DECOR_ORDER / Config.DECOR_CATEGORIES
+ (see fkeys.lua) — the old cycling keys that drove an "active category" cursor are gone.
  Every placement goes through Spawner.Spawn, which records it to persist.txt for restore on reload.
 ]]
 
@@ -767,39 +767,11 @@ function Testbed.TestSpawnDropMesh(meshPath, label, say)
     end
 end
 
--- ACTIVE DECOR CATEGORY (';'/''' -- see fkeys.lua): ''' advances which category is "active"
--- (wraps through Config.DECOR_ORDER, announced via toast/log so you know what ';' will place next)
--- without spawning anything; ';' places one entry from whichever category is currently active,
--- via the same Testbed.SpawnDecorCategory/decorIdx cursor a fixed per-category key would have used.
--- Resets to the first category (Config.DECOR_ORDER[1]) every load -- in-memory only, same as
--- decorIdx itself, not written to persist.txt.
-local activeDecorIdx = 1
-local function activeDecorCategoryName()
-    local order = Config.DECOR_ORDER or {}
-    if #order == 0 then return nil end
-    return order[((activeDecorIdx - 1) % #order) + 1]
-end
-
-function Testbed.CycleDecorCategory()
-    local order = Config.DECOR_ORDER or {}
-    if #order == 0 then log("No decor categories configured (Config.DECOR_ORDER empty)."); return end
-    activeDecorIdx = (activeDecorIdx % #order) + 1
-    local name = order[activeDecorIdx]
-    log("Decor category: " .. name)
-    pcall(function() Spawner.Toast("Decor category: " .. name, 2.0) end)
-end
-
-function Testbed.SpawnActiveDecorCategory()
-    local name = activeDecorCategoryName()
-    if not name then log("No decor categories configured (Config.DECOR_ORDER empty)."); return end
-    Testbed.SpawnDecorCategory(name)
-end
-
 -- By-name lookup (console validation, 2026-08-13) -- case-insensitive match against ANY decor
 -- entry's `name` field, searched across every category in Config.DECOR_ORDER (first match wins;
 -- names are unique per-category by construction but not checked across categories). Reuses
 -- placeDecorEntry directly, so it's the exact same floor-placement/zoffset/collision recipe the
--- ';' key uses, not a raw spawn. Returns the spawned actor, or nil + a reason string on no match.
+-- GUI spawn tree uses, not a raw spawn. Returns the spawned actor, or nil + a reason string on no match.
 function Testbed.SpawnDecorByName(name)
     local cats = Config.DECOR_CATEGORIES or {}
     for _, catKey in ipairs(Config.DECOR_ORDER or {}) do
@@ -822,9 +794,6 @@ function Testbed.SpawnSpecialByName(name)
     end
     return nil, "no special item named '" .. tostring(name) .. "'"
 end
-
--- (Fixed per-category wrapper functions removed 2026-08-13, replaced by the active-category
--- design above -- see Testbed.SpawnActiveDecorCategory / Testbed.CycleDecorCategory.)
 
 -- rulesWithHelmet(baseRules, showHelmet) -- 2026-08-10: the "full armor" comparison entries in
 -- Config.SENKAMATI_LOOKS need the SAME ruleset as the "no helmet" ones, minus whatever

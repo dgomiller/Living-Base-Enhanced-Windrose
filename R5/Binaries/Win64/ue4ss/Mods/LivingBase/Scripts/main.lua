@@ -2418,7 +2418,9 @@ BeltStrapPolls.targetList = function()
     end
 
     if verb == "SCAN" then
-        local radius, wp, wm, wa, wd = rest:match("^([%d%.]+):([01]):([01]):([01]):([01])$")
+        -- 2026-10-06: 3 more trailing 0/1 flags (Build Signs, Placed Signs, Lights) appended after the
+        -- original 4 -- see Spawner.ScanTargetList's own header comment for what each means.
+        local radius, wp, wm, wa, wd, wbs, wps, wl = rest:match("^([%d%.]+):([01]):([01]):([01]):([01]):([01]):([01]):([01])$")
         if not radius then
             print("[LivingBase] [target-list] malformed SCAN request, ignored: '" .. tostring(content) .. "'\n")
             return
@@ -2426,10 +2428,11 @@ BeltStrapPolls.targetList = function()
         if not restoreGate("Target List: scan") then return end
         ExecuteInGameThread(function()
             local ok, err = pcall(function()
-                local results = Spawner.ScanTargetList(tonumber(radius), wp == "1", wm == "1", wa == "1", wd == "1")
+                local results = Spawner.ScanTargetList(tonumber(radius), wp == "1", wm == "1", wa == "1", wd == "1", wbs == "1", wps == "1", wl == "1")
                 local lines = { "COUNT=" .. tostring(#results) }
                 for i, row in ipairs(results) do
-                    lines[#lines + 1] = string.format("ITEM_%d=%s|%.1f|%s", i - 1, tostring(row.label), row.distM, tostring(row.category))
+                    lines[#lines + 1] = string.format("ITEM_%d=%s|%.1f|%s|%d|%d", i - 1, tostring(row.label), row.distM, tostring(row.category),
+                        row.canTarget and 1 or 0, row.canDelete and 1 or 0)
                 end
                 local outF = io.open("ue4ss/Mods/LivingBase/target_list_status.txt", "w")
                 if outF then
@@ -2448,6 +2451,19 @@ BeltStrapPolls.targetList = function()
         if not restoreGate("Target List: select") then return end
         ExecuteInGameThread(function()
             pcall(function() Spawner.TargetListSelect(idx) end)
+        end)
+    elseif verb == "SIGNTARGET" then
+        -- "Del" button on a Signs/Labels row (2026-10-06) -- mirrors the physical Delete key's real
+        -- behaviour (select for editing on the Signs tab), not an actual destructive delete. See
+        -- Spawner.TargetListSignSelect's own header comment.
+        local idx = tonumber(rest)
+        if not idx then
+            print("[LivingBase] [target-list] malformed SIGNTARGET request, ignored: '" .. tostring(content) .. "'\n")
+            return
+        end
+        if not restoreGate("Target List: sign select") then return end
+        ExecuteInGameThread(function()
+            pcall(function() Spawner.TargetListSignSelect(idx) end)
         end)
     elseif verb == "MARK" then
         -- "Mark Target" checkbox (2026-09-27) -- same request file as SCAN/TARGET, new verb. See
@@ -2495,6 +2511,31 @@ BeltStrapPolls.lightEnable = function()
             if onStr == "1" then Spawner.EnableLight(slot, say) else Spawner.DisableLight(slot, say) end
         end)
         if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
+BeltStrapPolls.lightSelect = function()
+    local path = nil
+    for _, p in ipairs({
+        "ue4ss/Mods/LivingBase/custom_light_select_request.txt",
+        "Mods/LivingBase/custom_light_select_request.txt",
+        "custom_light_select_request.txt",
+    }) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local slot = content:match("^%s*(%d+)%s*$")
+    if not slot then return end
+    if not restoreGate("Photo Mode: light select") then return end
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function() Spawner.LockLightSlot(tonumber(slot)) end)
+        if not ok then print("[LivingBase] [light-select] FAILED: " .. tostring(err) .. "\n") end
     end)
 end
 
@@ -2989,6 +3030,7 @@ if ExecuteWithDelay then
             BeltStrapPolls.scrubStep()
             BeltStrapPolls.scrubSeek()
             BeltStrapPolls.lightEnable()
+            BeltStrapPolls.lightSelect()
             BeltStrapPolls.lightColor()
             BeltStrapPolls.lightBrightness()
             BeltStrapPolls.lightThrow()
@@ -3531,8 +3573,11 @@ local function drainMoveMenuQueue()
             end
         else
             local precisionStr = line:match("^PRECISION:([%d%.]+)$")
+            local scaleSetStr = line:match("^SCALE_SET:([%d%.]+)$")
             if precisionStr then
                 handleMoveMenuPrecision(tonumber(precisionStr))
+            elseif scaleSetStr then
+                Spawner._movePendingScaleSet = tonumber(scaleSetStr)
             elseif line == "ACTION:CLEAR_ALL" then
                 handleMoveMenuClearAll()
             elseif line == "ACTION:TARGET_LOCK" then
@@ -3596,12 +3641,15 @@ end
 -- Spawner.NudgeTargetScale itself re-checks IsDecorClass server-side regardless of what the C++ UI
 -- already greyed out.
 local function flushObjectScaleQueue()
+    local setTo = Spawner._movePendingScaleSet
     local count = Spawner._movePendingScaleCount or 0
-    if count == 0 then return end
+    if not setTo and count == 0 then return end
     local delta = Spawner._movePendingScale or 0.0
     Spawner._movePendingScale, Spawner._movePendingScaleCount = 0.0, 0
+    Spawner._movePendingScaleSet = nil
     ExecuteInGameThread(function()
-        pcall(function() Spawner.NudgeTargetScale(delta) end)
+        if setTo then pcall(function() Spawner.SetTargetScaleAbsolute(setTo) end) end
+        if count > 0 then pcall(function() Spawner.NudgeTargetScale(delta) end) end
     end)
 end
 
@@ -5552,32 +5600,6 @@ else
     log("lbprobeniagarasig unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console commands "lbtestniagara"/"lbtestniagaraclear" (2026-08-21) -- TEMP DEV TOOL, see
--- Spawner.TestSpawnNiagara's own comment. First live test of spawning/attaching the confirmed
--- FX_PickUP_Chest_01 NiagaraSystem onto whatever lbprobe last cached. Manual on/off, NOT wired into
--- the real hover-highlight flow yet.
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestniagara", function(FullCommand, Parameters, Ar)
-            local ok, err = pcall(function() Spawner.TestSpawnNiagara() end)
-            if not ok then print("[LivingBase] [lbtestniagara] FAILED: " .. tostring(err) .. "\n") end
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestniagara")
-    registerCmdInfo("lbtestniagara", "lbtestniagara", "Spawns a hardcoded test Niagara effect for a quick visual check.")
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestniagaraclear", function(FullCommand, Parameters, Ar)
-            local ok, err = pcall(function() Spawner.TestSpawnNiagaraClear() end)
-            if not ok then print("[LivingBase] [lbtestniagaraclear] FAILED: " .. tostring(err) .. "\n") end
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestniagaraclear")
-    registerCmdInfo("lbtestniagaraclear", "lbtestniagaraclear", "Clears/despawns the effect lbtestniagara spawned.")
-else
-    log("lbtestniagara/lbtestniagaraclear unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 -- Console command "lbprobecpd" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCustomPrimitiveData's
 -- own comment. Read-only diagnostic: checks whether PrimitiveComponent exposes Custom Primitive Data
@@ -5867,23 +5889,6 @@ else
     log("lbprobecpdsig unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- Console command "lbprobecpdnames" (2026-08-21) -- TEMP DEV TOOL, see Spawner.ProbeCPDNames' own
--- comment. Pure read-only query, low risk: run lbprobe on a chest/statue/decor first, then this --
--- tries a batch of plausible tint/highlight parameter names and prints which ones (if any) resolve
--- to a real Custom Primitive Data index on that target's material.
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbprobecpdnames", function(FullCommand, Parameters, Ar)
-            local ok, err = pcall(function() Spawner.ProbeCPDNames() end)
-            if not ok then print("[LivingBase] [lbprobecpdnames] FAILED: " .. tostring(err) .. "\n") end
-            return true
-        end)
-    end)
-    log("Console command registered: lbprobecpdnames")
-    registerCmdInfo("lbprobecpdnames", "lbprobecpdnames", "Dumps CPD-related property/function names for discovery.")
-else
-    log("lbprobecpdnames unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 -- Console commands "lbtestniagaraactor"/"lbtestniagaraactorclear" (2026-08-21) -- TEMP DEV TOOL, see
 -- Spawner.TestSpawnNiagaraActor's own comment. Spawns a stock NiagaraActor at the probed target's
@@ -6129,6 +6134,24 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbtestpose", "lbtestpose <path>", "Applies a specific real AnimSequence to the nearest spawned/locked actor via PlayAnimation -- see WINDROSE_MODDING_NOTES.md section 14 for what does and does not work.")
 else
     log("lbtestpose unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbtestplayerpose <path>|off" (2026-10-05) -- same ApplyPose mechanism as
+-- lbtestpose, but targets the PLAYER's own pawn instead of a spawned/locked actor, and freezes
+-- movement so the pose actually holds. See Spawner.TestPlayerPose's own comment.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestplayerpose", function(FullCommand, Parameters, Ar)
+            local arg1 = Parameters and Parameters[1]
+            local ok, err = pcall(function() Spawner.TestPlayerPose(arg1) end)
+            if not ok then print("[LivingBase] [lbtestplayerpose] FAILED: " .. tostring(err) .. "\n") end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestplayerpose <path>|off")
+    registerCmdInfo("lbtestplayerpose", "lbtestplayerpose <path>|off", "Applies a real AnimSequence to the PLAYER's own pawn (single-node PlayAnimation, same mechanism as lbtestpose) and freezes movement so it holds. 'off' (or no path) restores normal movement and animation.")
+else
+    log("lbtestplayerpose unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console commands "lbposescrub <path>" / "lbposenext [n]" / "lbposeprev [n]" (2026-09-21,
@@ -9133,15 +9156,6 @@ else
     log("lbghosttest unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
--- "lbghosttest2" (2026-08-19, build-ghost-preview spike, 4th pass) -- same idea as lbghosttest, but
--- forces a consistent solid color via a per-slot dynamic material instance instead of applying
--- MI_Building_SimplifiedPreview's raw (inconsistent) default colors. See
--- Spawner.ApplyGhostMaterialSolid's own comment in spawner.lua.
-if RegisterConsoleCommandHandler then
-    registerDumpCommand("lbghosttest2", function() Spawner.ApplyGhostMaterialSolid() end, "ApplyGhostMaterialSolid")
-else
-    log("lbghosttest2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 -- "lboutlinetest" (2026-08-19, build-ghost-preview spike, 5th pass) -- tests whether Windrose's
 -- rendering pipeline has an active CustomDepth outline post-process pass at all, by enabling
@@ -9470,94 +9484,6 @@ else
     log("Leash unavailable — ExecuteWithDelay missing; wanderers roam free.")
 end
 
-------------------------------------------------------------
--- lbphotoscene / lbfreecam -- BOTH DISABLED (2026-09-08), CONFIRMED to crash the game natively.
--- RedFalcon confirmed live: `lbfreecam on` crashed, and separately `lbphotoscene 14` also
--- crashed. Parsed all 3 crash dumps directly (a minimal from-scratch minidump parser -- no
--- debugger installed on this machine -- reading the MINIDUMP_EXCEPTION_STREAM +
--- MINIDUMP_MODULE_LIST to find which module contains the faulting instruction pointer): all 3 are
--- EXCEPTION_ACCESS_VIOLATION (0xC0000005), and all 3 land inside UE4SS.dll itself at nearly
--- IDENTICAL offsets (0x3a9114 for both lbphotoscene attempts, 0x3a9139 for lbfreecam -- 37 bytes
--- apart, same code region) -- NOT inside the game's own Windrose-Win64-Shipping.exe. This means
--- the crash is in UE4SS's own generic Lua<->native reflection bridge, triggered by touching a
--- property/function shape it's never been asked to touch before in this project -- not a logic
--- bug in the Lua written here.
---
--- Confirmed NOT stale/wrong names: R5N_DayCycleTimeComponent/R5N_WeatherComponent and their
--- WorldDayTime/DayCycleSpeedInv/CheatWeatherID properties, plus UCheatManager::
--- EnableDebugCamera()/DisableDebugCamera(), all genuinely exist in this exact build's own SDK
--- header dump -- this isn't a version-drift problem the way a stale class path usually is here.
---
--- One real, structural difference worth following up when this is picked back up: CheatWeatherID
--- (and its siblings CurrentWeatherID/NextWeatherID/SeasonID) are declared `int8` and only
--- `EditAnywhere` (NOT `BlueprintReadWrite`) -- unlike WorldDayTime/DayCycleSpeedInv, which are
--- ordinary `float`+`BlueprintReadWrite`, the exact shape this project writes constantly elsewhere
--- without incident. A narrow, non-Blueprint-exposed int8 property is a genuinely different,
--- untested shape for this project's own property-write code -- plausible trigger for the weather
--- write specifically, though it doesn't obviously explain EnableDebugCamera's crash landing at a
--- near-identical offset (a totally different operation: a UFUNCTION CALL, not a property SET).
---
--- NEXT STEP, not yet done: isolate which SPECIFIC one of the 3 writes/calls
--- (DayCycleTimeComponent's floats / WeatherComponent's int8 / CheatManager's EnableDebugCamera)
--- is the actual trigger, one at a time, rather than re-testing the combined crash-confirmed
--- commands again. Do NOT re-enable either command above as originally written until that's done.
-------------------------------------------------------------
-
-------------------------------------------------------------
--- lbtestdaytime [hour] / lbtestweather / lbtestenablecam -- (2026-09-08) the 3 isolated pieces of
--- the crash-confirmed lbphotoscene/lbfreecam above, split apart so each can be tried ONE AT A
--- TIME rather than risking the combined crash again. Each logs a "starting attempt" line BEFORE
--- the risky call, not just after -- if it crashes, a native access violation leaves NO further log
--- output at all (confirmed 3 times already), so the LAST line printed is the only evidence of
--- which specific operation was running at the moment of the crash. Try lbtestdaytime FIRST (a
--- plain float write, the same property shape this project already writes constantly elsewhere
--- without incident -- most likely to be safe), then lbtestweather (the int8, non-
--- BlueprintReadWrite property -- prime suspect), then lbtestenablecam (the protected UFUNCTION
--- call) only once the first two are known-safe or known-bad. Report back after EACH one, in order,
--- rather than running all three before reporting -- a crash means the game needs restarting before
--- the next test anyway.
-------------------------------------------------------------
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime", function(FullCommand, Parameters, Ar)
-            local function say(msg)
-                print("[LivingBase] [lbtestdaytime] " .. msg .. "\n")
-                pcall(function()
-                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
-                        Ar:Log(msg)
-                    end
-                end)
-            end
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            ExecuteInGameThread(function()
-                say(string.format("starting attempt -- FindAllOf('R5N_DayCycleTimeComponent') then write WorldDayTime=%.2f/DayCycleSpeedInv=0 (float-only, ISOLATED from the weather int8 write and the CheatManager call).", hour))
-                local count = 0
-                local ok, err = pcall(function()
-                    for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
-                        local okName, name = pcall(function() return comp:GetFullName() end)
-                        if okName and name and not name:find("Default__") then
-                            comp.DayCycleSpeedInv = 0
-                            comp.WorldDayTime = hour
-                            count = count + 1
-                        end
-                    end
-                end)
-                if ok then
-                    say(string.format("done, no crash -- %d component(s) written.", count))
-                else
-                    say("Lua-level error (not a crash): " .. tostring(err))
-                end
-            end)
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime [hour]")
-    registerCmdInfo("lbtestdaytime", "lbtestdaytime [hour]", "ISOLATED crash-diagnostic (2026-09-08): freezes JUST the day/night cycle at the given hour, no weather write, no camera call. See lbphotoscene's own disabled comment for why this was split apart.")
-else
-    log("lbtestdaytime unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 ------------------------------------------------------------
 -- lbtestdaytime2 [hour] -- (2026-09-08) SAME operation as lbtestdaytime above, CONFIRMED CRASH-
@@ -9579,22 +9505,6 @@ end
 -- crash baseline) rather than editing it in place.
 ------------------------------------------------------------
 local pendingDayTime2Hour = nil -- nil = nothing queued
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime2", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            pendingDayTime2Hour = hour
-            print(string.format("[LivingBase] [lbtestdaytime2] queued hour=%.2f -- will apply on the next poll tick (~200ms).\n", hour))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime2 [hour]")
-    registerCmdInfo("lbtestdaytime2", "lbtestdaytime2 [hour]", "Same operation as lbtestdaytime, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way the original reference mods' RegisterKeyBind trigger does.")
-else
-    log("lbtestdaytime2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime2PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -9646,22 +9556,6 @@ end
 -- zero-speed freeze.
 ------------------------------------------------------------
 local pendingDayTime3Hour = nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime3", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            pendingDayTime3Hour = hour
-            print(string.format("[LivingBase] [lbtestdaytime3] queued hour=%.2f (WorldDayTime ONLY, DayCycleSpeedInv untouched) -- will apply on the next poll tick (~200ms).\n", hour))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime3 [hour]")
-    registerCmdInfo("lbtestdaytime3", "lbtestdaytime3 [hour]", "Sets ONLY WorldDayTime (no DayCycleSpeedInv freeze at all) via the same queue-then-poll pattern as lbtestdaytime2 -- isolates whether the hour-setting works correctly once the freeze is out of the picture.")
-else
-    log("lbtestdaytime3 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime3PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -9705,23 +9599,6 @@ end
 -- poll pattern as lbtestdaytime2/3 (already confirmed crash-free).
 ------------------------------------------------------------
 local pendingDayTime4 = nil -- {hour=, speedInv=} or nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime4", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
-            pendingDayTime4 = { hour = hour, speedInv = speedInv }
-            print(string.format("[LivingBase] [lbtestdaytime4] queued hour=%.2f speedInv=%.1f -- will apply on the next poll tick (~200ms).\n", hour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime4 [hour] [speedInv]")
-    registerCmdInfo("lbtestdaytime4", "lbtestdaytime4 [hour] [speedInv]", "Sets WorldDayTime AND a large-but-nonzero DayCycleSpeedInv (default 100000, larger = slower) instead of freezing at exactly 0 -- avoids the divide-by-zero/snap-to-noon bug lbtestdaytime2 found while still slowing the cycle way down for a photo session.")
-else
-    log("lbtestdaytime4 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime4PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -9771,19 +9648,6 @@ end
 -- calls, even BlueprintPure ones, get the same treatment as everything else touched this session).
 ------------------------------------------------------------
 local pendingDayTime5 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime5", function(FullCommand, Parameters, Ar)
-            pendingDayTime5 = true
-            print("[LivingBase] [lbtestdaytime5] queued -- will dump calibration info on the next poll tick (~200ms). Writes nothing.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime5")
-    registerCmdInfo("lbtestdaytime5", "lbtestdaytime5", "Diagnostic only -- dumps the day-cycle component's raw WorldDayTime/DayCycleSpeedInv plus GetCurrentTimeInHours()/GetNormalizedDayTime()/GetPartOfDay() and the Settings sub-object's DayDuration/NightDuration/StartDayTime, to figure out why lbtestdaytime4 always lands on night regardless of the hour requested.")
-else
-    log("lbtestdaytime5 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime5PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -9845,23 +9709,6 @@ end
 -- landed where requested, instead of trusting the math blindly.
 ------------------------------------------------------------
 local pendingDayTime6 = nil -- {hour=, speedInv=} or nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime6", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
-            pendingDayTime6 = { hour = hour, speedInv = speedInv }
-            print(string.format("[LivingBase] [lbtestdaytime6] queued hour=%.2f speedInv=%.1f -- will calibrate + apply on the next poll tick (~200ms).\n", hour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime6 [hour] [speedInv]")
-    registerCmdInfo("lbtestdaytime6", "lbtestdaytime6 [hour] [speedInv]", "The real fix: live-calibrates the raw WorldDayTime<->GetCurrentTimeInHours() ratio (no hardcoded constant -- lbtestdaytime4 assumed raw units WERE hours, which was wrong) then writes the correct raw value for the requested hour, and self-verifies by reading the hour back afterward.")
-else
-    log("lbtestdaytime6 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime6PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -9932,23 +9779,6 @@ end
 -- little state machine (pendingDayTime7.stage) driven by the existing 200ms poll loop.
 ------------------------------------------------------------
 local pendingDayTime7 = nil -- {stage=1|2|3, hour=, speedInv=, r0=, h0=, h1=, probeRaw=} or nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime7", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 100000.0
-            pendingDayTime7 = { stage = 1, hour = hour, speedInv = speedInv }
-            print(string.format("[LivingBase] [lbtestdaytime7] queued hour=%.2f speedInv=%.1f -- calibration will run across several poll ticks (~200ms apart) so the component's own Tick() has a chance to recompute between steps.\n", hour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime7 [hour] [speedInv]")
-    registerCmdInfo("lbtestdaytime7", "lbtestdaytime7 [hour] [speedInv]", "Same live-calibration idea as lbtestdaytime6, but spread across separate poll ticks (real frames apart) instead of one synchronous block -- lbtestdaytime6's own probe proved GetCurrentTimeInHours() doesn't update until the component's Tick() runs, so reading it back in the same call as the write was always going to see stale data.")
-else
-    log("lbtestdaytime7 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function findDayCycleComp()
         for _, comp in ipairs(FindAllOf("R5N_DayCycleTimeComponent") or {}) do
@@ -10056,19 +9886,6 @@ end
 --       writes, to see whether it sticks, drifts, or snaps back -- and how fast.
 ------------------------------------------------------------
 local pendingDayTime8 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime8", function(FullCommand, Parameters, Ar)
-            pendingDayTime8 = { stage = 0 }
-            print("[LivingBase] [lbtestdaytime8] queued -- dumps real Settings fields, then writes WorldDayTime ONCE and traces it (+ the derived hour) across 6 poll ticks with no further writes. Writes only once.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime8")
-    registerCmdInfo("lbtestdaytime8", "lbtestdaytime8", "Diagnostic only -- dumps the REAL DayDuration/NightDuration/StartDayTime/bDynamicDayTime settings (found directly via FindAllOf, bypassing the broken comp.Settings weak pointer), then writes WorldDayTime once and traces raw+hour across 6 poll ticks with no further writes to see whether/how fast it reverts.")
-else
-    log("lbtestdaytime8 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime8PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10160,24 +9977,6 @@ end
 -- cutoff (300 ticks, ~60s) in case the component goes missing or something's wrong.
 ------------------------------------------------------------
 local pendingDayTime9 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime9", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.01
-            local freezeSpeedInv = tonumber(Parameters and Parameters[3]) or 100000.0
-            pendingDayTime9 = { stage = "start", hour = hour, fastSpeedInv = fastSpeedInv, freezeSpeedInv = freezeSpeedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime9] queued hour=%.2f fastSpeedInv=%.4f freezeSpeedInv=%.1f -- will fast-forward the real clock to the target hour, then freeze.\n", hour, fastSpeedInv, freezeSpeedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime9 [hour] [fastSpeedInv] [freezeSpeedInv]")
-    registerCmdInfo("lbtestdaytime9", "lbtestdaytime9 [hour] [fastSpeedInv] [freezeSpeedInv]", "The real fix: WorldDayTime is a one-time BeginPlay seed that the visible clock never reads back, so instead this fast-forwards DayCycleSpeedInv (small, default 0.01) until GetCurrentTimeInHours() reaches the requested hour, then freezes it there (DayCycleSpeedInv large, default 100000).")
-else
-    log("lbtestdaytime9 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime9PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10261,20 +10060,6 @@ end
 -- rescale theory) or is totally broken regardless of magnitude (pointing to something else).
 ------------------------------------------------------------
 local pendingDayTime10 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime10", function(FullCommand, Parameters, Ar)
-            local moderateSpeedInv = tonumber(Parameters and Parameters[1]) or 20.0
-            pendingDayTime10 = { stage = 1, moderateSpeedInv = moderateSpeedInv }
-            print(string.format("[LivingBase] [lbtestdaytime10] queued moderateSpeedInv=%.2f -- reads current hour, switches to this divisor, re-reads next tick.\n", moderateSpeedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime10 [moderateSpeedInv]")
-    registerCmdInfo("lbtestdaytime10", "lbtestdaytime10 [moderateSpeedInv]", "Diagnostic only -- tests whether switching DayCycleSpeedInv to a MODERATE value (default 20, not 100000) still collapses the current displayed hour the way lbtestdaytime9's freeze did, to see if 100000 was hitting some extreme-value clamp/precision issue.")
-else
-    log("lbtestdaytime10 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime10PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10336,23 +10121,6 @@ end
 -- printed in between to show real progress was being made).
 ------------------------------------------------------------
 local pendingDayTime11 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime11", function(FullCommand, Parameters, Ar)
-            local hour = tonumber(Parameters and Parameters[1]) or 12.0
-            if hour < 0 then hour = 0 end
-            if hour > 24 then hour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
-            pendingDayTime11 = { stage = "start", hour = hour, speedInv = speedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime11] queued hour=%.2f speedInv=%.4f -- will set DayCycleSpeedInv ONCE and hold it there the whole time (approach AND hold at the same rate -- no second freeze switch, which is what broke lbtestdaytime9). Progress will print every ~2s -- let it reach ARRIVED before trying another value.\n", hour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime11 [hour] [speedInv]")
-    registerCmdInfo("lbtestdaytime11", "lbtestdaytime11 [hour] [speedInv]", "The actual fix: lbtestdaytime10 proved holding DayCycleSpeedInv steady (no change) keeps the hour rock-solid, while ANY change to it (even a modest one) causes an unpredictable jump -- not a clean rescale. So this sets DayCycleSpeedInv ONCE (default 0.05) and never touches it again, using the same moderate rate for both fast-forwarding to the target hour and holding there afterward. Prints progress every ~2s while waiting.")
-else
-    log("lbtestdaytime11 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime11PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10425,24 +10193,6 @@ local function realHourToRawHour(realHour)
     return (MIDNIGHT_RAW + realHour * RAW_PER_REAL_HOUR) % 24
 end
 local pendingDayTime12 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime12", function(FullCommand, Parameters, Ar)
-            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
-            if realHour < 0 then realHour = 0 end
-            if realHour > 24 then realHour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
-            local rawHour = realHourToRawHour(realHour)
-            pendingDayTime12 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime12] queued realHour=%.2f -> converted rawHour=%.4f (speedInv=%.4f) -- fast-forwarding, progress every ~2s, let it reach ARRIVED.\n", realHour, rawHour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime12 [realHour] [speedInv]")
-    registerCmdInfo("lbtestdaytime12", "lbtestdaytime12 [realHour] [speedInv]", "Same fast-forward-and-hold mechanism as lbtestdaytime11, but takes a REAL 24-hour-clock hour (e.g. 14 for 2pm) and converts it to the game's own raw hour scale first, using a linear fit from two eyeballed anchors (midnight~raw 0.415, noon~raw 10.94).")
-else
-    log("lbtestdaytime12 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime12PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10507,26 +10257,6 @@ end
 -- hanging forever.
 ------------------------------------------------------------
 local pendingDayTime13 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime13", function(FullCommand, Parameters, Ar)
-            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
-            if realHour < 0 then realHour = 0 end
-            if realHour > 24 then realHour = 24 end
-            local fastSpeedInv = tonumber(Parameters and Parameters[2]) or 0.025
-            local holdSpeedInv = tonumber(Parameters and Parameters[3]) or 1.5
-            local switchMargin = tonumber(Parameters and Parameters[4]) or 3.0
-            local rawHour = realHourToRawHour(realHour)
-            pendingDayTime13 = { stage = "fast", realHour = realHour, rawHour = rawHour, fastSpeedInv = fastSpeedInv, holdSpeedInv = holdSpeedInv, switchMargin = switchMargin, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime13] queued realHour=%.2f -> rawHour=%.4f. Phase 1: fastSpeedInv=%.4f until within %.2f raw-hours of target, then ONE switch to holdSpeedInv=%.4f (never switched again).\n", realHour, rawHour, fastSpeedInv, switchMargin, holdSpeedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime13 [realHour] [fastSpeedInv] [holdSpeedInv] [switchMargin]")
-    registerCmdInfo("lbtestdaytime13", "lbtestdaytime13 [realHour] [fastSpeedInv] [holdSpeedInv] [switchMargin]", "Two-phase version of lbtestdaytime12: fast-forwards at fastSpeedInv until within switchMargin raw-hours of the target, switches ONCE to a slower holdSpeedInv (so the final approach -- and the post-arrival hold -- both happen at the slow, photo-stable rate), then never touches DayCycleSpeedInv again.")
-else
-    log("lbtestdaytime13 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime13PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10607,23 +10337,6 @@ end
 -- entirely with something far simpler and instant.
 ------------------------------------------------------------
 local pendingDayTime14 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime14", function(FullCommand, Parameters, Ar)
-            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
-            if realHour < 0 then realHour = 0 end
-            if realHour > 24 then realHour = 24 end
-            local rawTarget = realHourToRawHour(realHour)
-            pendingDayTime14 = { stage = 1, realHour = realHour, rawTarget = rawTarget }
-            print(string.format("[LivingBase] [lbtestdaytime14] queued realHour=%.2f -> rawTarget=%.4f -- will compute speedNew = speedOld*(hourOld/rawTarget) and write it in ONE shot, no fast-forward.\n", realHour, rawTarget))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime14 [realHour]")
-    registerCmdInfo("lbtestdaytime14", "lbtestdaytime14 [realHour]", "Experimental: instead of fast-forwarding, directly solves for the DayCycleSpeedInv that should make the CURRENT hour equal the target hour in one write (hour_new = hour_old*(speedOld/speedNew)), based on a formula that fit lbtestdaytime13's switch data closely. No waiting if it works.")
-else
-    log("lbtestdaytime14 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime14PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10680,24 +10393,6 @@ end
 -- EXACTLY).
 ------------------------------------------------------------
 local pendingDayTime15 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime15", function(FullCommand, Parameters, Ar)
-            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
-            if realHour < 0 then realHour = 0 end
-            if realHour > 24 then realHour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.05
-            local rawHour = realHourToRawHour(realHour)
-            pendingDayTime15 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime15] queued realHour=%.2f -> rawHour=%.4f speedInv=%.4f -- converges normally (no speed switch), then flips bDynamicDayTime=false to try a TRUE freeze.\n", realHour, rawHour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime15 [realHour] [speedInv]")
-    registerCmdInfo("lbtestdaytime15", "lbtestdaytime15 [realHour] [speedInv]", "Same safe single-speed convergence as lbtestdaytime12, but once arrived, flips bDynamicDayTime=false on the settings component (a different property than DayCycleSpeedInv, hopefully without the same jump-on-write behavior) to try for a TRUE exact freeze instead of accepting slow residual drift -- for repeatable photo lighting.")
-else
-    log("lbtestdaytime15 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function findSettingsComp()
         for _, sc in ipairs(FindAllOf("R5N_DayCycleTimeSettingsComponent") or {}) do
@@ -10787,19 +10482,6 @@ end
 -- filter out Default__ here, that IS the live settings instance for this class.
 ------------------------------------------------------------
 local pendingDayTime16 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime16", function(FullCommand, Parameters, Ar)
-            pendingDayTime16 = true
-            print("[LivingBase] [lbtestdaytime16] queued -- dumping UR5NatureSettings.PredefinedNamedDayCycleTimes (ground truth for Dawn/Dusk/Noon/etc hour ranges) on the next poll tick. Writes nothing.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime16")
-    registerCmdInfo("lbtestdaytime16", "lbtestdaytime16", "Diagnostic only -- dumps UR5NatureSettings.PredefinedNamedDayCycleTimes, the REAL authored Name->hour-range mapping (Dawn/Dusk/Noon/Midnight/etc) that the sleep system itself uses to reliably land on dawn/dusk, found via the SDK header dump after RedFalcon noted sleeping always works reliably.")
-else
-    log("lbtestdaytime16 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime16PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10877,24 +10559,6 @@ end
 -- property, and verifies across 5 ticks whether the hour genuinely stops advancing this time.
 ------------------------------------------------------------
 local pendingDayTime17 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdaytime17", function(FullCommand, Parameters, Ar)
-            local realHour = tonumber(Parameters and Parameters[1]) or 12.0
-            if realHour < 0 then realHour = 0 end
-            if realHour > 24 then realHour = 24 end
-            local speedInv = tonumber(Parameters and Parameters[2]) or 0.0125
-            local rawHour = realHourToRawHour(realHour)
-            pendingDayTime17 = { stage = "start", realHour = realHour, rawHour = rawHour, speedInv = speedInv, ticks = 0 }
-            print(string.format("[LivingBase] [lbtestdaytime17] queued realHour=%.2f -> rawHour=%.4f speedInv=%.4f -- converges normally, then calls comp:SetComponentTickEnabled(false) (engine-level Tick disable) to try a TRUE freeze.\n", realHour, rawHour, speedInv))
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdaytime17 [realHour] [speedInv]")
-    registerCmdInfo("lbtestdaytime17", "lbtestdaytime17 [realHour] [speedInv]", "Same safe single-speed convergence as lbtestdaytime12/15, but once arrived, calls comp:SetComponentTickEnabled(false) -- the engine's own built-in Tick disable for any UActorComponent -- instead of a custom property flag, to try for a TRUE exact freeze for repeatable photo lighting.")
-else
-    log("lbtestdaytime17 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function dayTime17PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -10972,19 +10636,6 @@ end
 -- pattern also sidesteps the crash here the way it did for the day-cycle write.
 ------------------------------------------------------------
 local pendingWeather2 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestweather2", function(FullCommand, Parameters, Ar)
-            pendingWeather2 = true
-            print("[LivingBase] [lbtestweather2] queued -- will apply on the next poll tick (~200ms).\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestweather2")
-    registerCmdInfo("lbtestweather2", "lbtestweather2", "Same operation as lbtestweather, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way it did for lbtestdaytime2.")
-else
-    log("lbtestweather2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function weather2PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -11015,43 +10666,6 @@ if ExecuteWithDelay then
     if Config.EXPERIMENT_LOOPS == true then weather2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestweather", function(FullCommand, Parameters, Ar)
-            local function say(msg)
-                print("[LivingBase] [lbtestweather] " .. msg .. "\n")
-                pcall(function()
-                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
-                        Ar:Log(msg)
-                    end
-                end)
-            end
-            ExecuteInGameThread(function()
-                say("starting attempt -- FindAllOf('R5N_WeatherComponent') then write CheatWeatherID=0 (an int8, EditAnywhere-only property, NOT BlueprintReadWrite -- the prime suspect; ISOLATED from the day-cycle write and the CheatManager call).")
-                local count = 0
-                local ok, err = pcall(function()
-                    for _, comp in ipairs(FindAllOf("R5N_WeatherComponent") or {}) do
-                        local okName, name = pcall(function() return comp:GetFullName() end)
-                        if okName and name and not name:find("Default__") then
-                            comp.CheatWeatherID = 0
-                            count = count + 1
-                        end
-                    end
-                end)
-                if ok then
-                    say(string.format("done, no crash -- %d component(s) written.", count))
-                else
-                    say("Lua-level error (not a crash): " .. tostring(err))
-                end
-            end)
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestweather")
-    registerCmdInfo("lbtestweather", "lbtestweather", "ISOLATED crash-diagnostic (2026-09-08): forces JUST clear/Sunny weather, no day-cycle write, no camera call. See lbphotoscene's own disabled comment for why this was split apart.")
-else
-    log("lbtestweather unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 ------------------------------------------------------------
 -- lbtestenablecam2 -- (2026-09-08) SAME queue-then-poll fix, applied to the last untested piece
@@ -11069,19 +10683,6 @@ local pendingEnableCam2 = false
 -- up fresh -- so the original CheatManager reference is cached here at enable-time for
 -- lbtestdisablecam2 to reuse.
 local cachedOriginalCheatManager = nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestenablecam2", function(FullCommand, Parameters, Ar)
-            pendingEnableCam2 = true
-            print("[LivingBase] [lbtestenablecam2] queued -- will apply on the next poll tick (~200ms).\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestenablecam2")
-    registerCmdInfo("lbtestenablecam2", "lbtestenablecam2", "Same operation as lbtestenablecam, but queued and applied from a recurring poll loop instead of directly inside the console-handler callback -- testing whether that sidesteps the confirmed crash the same way it did for lbtestdaytime2/lbtestweather2.")
-else
-    log("lbtestenablecam2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function enableCam2PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -11126,19 +10727,6 @@ end
 -- Same queue-then-poll pattern for the actual native call.
 ------------------------------------------------------------
 local pendingDisableCam2 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdisablecam2", function(FullCommand, Parameters, Ar)
-            pendingDisableCam2 = true
-            print("[LivingBase] [lbtestdisablecam2] queued -- will apply on the next poll tick (~200ms).\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdisablecam2")
-    registerCmdInfo("lbtestdisablecam2", "lbtestdisablecam2", "Turns the free/debug camera back off -- reuses the CheatManager reference cached by lbtestenablecam2 (a fresh player-controller lookup after enabling returns the new debug-cam controller, which has no CheatManager of its own).")
-else
-    log("lbtestdisablecam2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function disableCam2PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -11165,45 +10753,6 @@ if ExecuteWithDelay then
     if Config.EXPERIMENT_LOOPS == true then disableCam2PollLoop() end   -- off by default (2026-10-01): old lbtest* experiment loop
 end
 
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestenablecam", function(FullCommand, Parameters, Ar)
-            local function say(msg)
-                print("[LivingBase] [lbtestenablecam] " .. msg .. "\n")
-                pcall(function()
-                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
-                        Ar:Log(msg)
-                    end
-                end)
-            end
-            ExecuteInGameThread(function()
-                say("starting attempt -- PlayerController.CheatManager:EnableDebugCamera() (the protected, non-Exec UFUNCTION call; ISOLATED from both component writes above).")
-                local pc = UEHelpers.GetPlayerController()
-                if not (pc and pc:IsValid()) then
-                    say("no player controller -- nothing attempted.")
-                    return
-                end
-                local cheatManager = nil
-                pcall(function() cheatManager = pc.CheatManager end)
-                if not (cheatManager and cheatManager:IsValid()) then
-                    say("no CheatManager on player controller -- nothing attempted.")
-                    return
-                end
-                local ok, err = pcall(function() cheatManager:EnableDebugCamera() end)
-                if ok then
-                    say("done, no crash -- EnableDebugCamera() returned normally.")
-                else
-                    say("Lua-level error (not a crash): " .. tostring(err))
-                end
-            end)
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestenablecam")
-    registerCmdInfo("lbtestenablecam", "lbtestenablecam", "ISOLATED crash-diagnostic (2026-09-08): calls JUST CheatManager:EnableDebugCamera(), no component writes. See lbfreecam's own disabled comment for why this was split apart. Only try this AFTER lbtestdaytime/lbtestweather are known-safe or known-bad.")
-else
-    log("lbtestenablecam unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 
 ----------------------------------------------------------------------------------------------------
 -- FINAL PRODUCTION COMMANDS (2026-09-08) -- lbphototime / lbphotoweather / lbfreecam
@@ -11798,19 +11347,6 @@ end
 -- the debug-cam controller, then Destroy() it.
 ------------------------------------------------------------
 local pendingDisableCam3 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdisablecam3", function(FullCommand, Parameters, Ar)
-            pendingDisableCam3 = true
-            print("[LivingBase] [lbtestdisablecam3] queued -- manual restoration attempt on the next poll tick.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdisablecam3")
-    registerCmdInfo("lbtestdisablecam3", "lbtestdisablecam3", "Diagnostic only -- manually restores control from the free/debug camera instead of calling DisableDebugCamera() (which silently no-ops when called from the cached original CheatManager, per RedFalcon's live confirmation lbfreecam off doesn't actually work).")
-else
-    log("lbtestdisablecam3 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function disableCam3PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -11955,19 +11491,6 @@ end
 -- surgery.
 ------------------------------------------------------------
 local pendingDisableCam4 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdisablecam4", function(FullCommand, Parameters, Ar)
-            pendingDisableCam4 = true
-            print("[LivingBase] [lbtestdisablecam4] queued -- safer disable attempt on the next poll tick.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdisablecam4")
-    registerCmdInfo("lbtestdisablecam4", "lbtestdisablecam4", "Safer free-cam disable attempt: calls EnableCheats() on the LIVE debug-cam controller itself to force a correctly-contextualized CheatManager, then calls the engine's own DisableDebugCamera() through it -- no manual Player/PlayerController surgery.")
-else
-    log("lbtestdisablecam4 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function disableCam4PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -12038,19 +11561,6 @@ local function countLiveDebugCams()
     end
     return n
 end
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestenabletoggle", function(FullCommand, Parameters, Ar)
-            pendingEnableToggle = true
-            print("[LivingBase] [lbtestenabletoggle] queued -- calling EnableDebugCamera() again via the cached CheatManager on the next poll tick.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestenabletoggle")
-    registerCmdInfo("lbtestenabletoggle", "lbtestenabletoggle", "Zero-new-risk test: calls EnableDebugCamera() a second time via the same cached CheatManager lbfreecam's 'on' uses, to see if the engine self-toggles it off instead of always just enabling.")
-else
-    log("lbtestenabletoggle unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function enableTogglePollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -12086,19 +11596,6 @@ end
 -- lbtestdisablecam4's finding) and uses that.
 ------------------------------------------------------------
 local pendingEnableToggle2 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestenabletoggle2", function(FullCommand, Parameters, Ar)
-            pendingEnableToggle2 = true
-            print("[LivingBase] [lbtestenabletoggle2] queued -- re-finding the original CheatManager fresh, then calling EnableDebugCamera() again.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestenabletoggle2")
-    registerCmdInfo("lbtestenabletoggle2", "lbtestenabletoggle2", "Same as lbtestenabletoggle but re-finds the original controller's CheatManager fresh (survives an lbreload, unlike the cached reference) before calling EnableDebugCamera() again.")
-else
-    log("lbtestenabletoggle2 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function enableToggle2PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -12156,19 +11653,6 @@ end
 -- forward-pointer sync, rather than replicating it by hand again.
 ------------------------------------------------------------
 local pendingDisableCam5 = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestdisablecam5", function(FullCommand, Parameters, Ar)
-            pendingDisableCam5 = true
-            print("[LivingBase] [lbtestdisablecam5] queued -- restore Player then call the engine's own DisableDebugCamera() on the next poll tick.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestdisablecam5")
-    registerCmdInfo("lbtestdisablecam5", "lbtestdisablecam5", "Restores the original controller's Player (read off the live debug-cam controller) BEFORE calling the engine's own DisableDebugCamera() through the original CheatManager -- letting the native logic do the actual restoration instead of manual property surgery.")
-else
-    log("lbtestdisablecam5 unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function disableCam5PollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)
@@ -12246,24 +11730,6 @@ end
 -- the CheatManager FRESH (no caching needed) since the controller never changes.
 ------------------------------------------------------------
 local pendingNoClip = nil
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbnoclip", function(FullCommand, Parameters, Ar)
-            local mode = (Parameters and Parameters[1] and tostring(Parameters[1]):lower()) or "on"
-            if mode ~= "on" and mode ~= "off" then
-                print(string.format("[LivingBase] [lbnoclip] unknown mode '%s' -- use 'on' or 'off'.\n", mode))
-                return true
-            end
-            pendingNoClip = mode
-            print(string.format("[LivingBase] [lbnoclip] turning %s...\n", mode))
-            return true
-        end)
-    end)
-    log("Console command registered: lbnoclip <on|off>")
-    registerCmdInfo("lbnoclip", "lbnoclip <on|off>", "True no-clip (Ghost(): flying + no collision, passes through walls/floor) or back to normal (Walk()). Uses the stock UCheatManager cheats -- operates entirely on the existing player controller/pawn, no second controller spawned, fully reversible unlike lbfreecam's broken off-path.")
-else
-    log("lbnoclip unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function noClipPollLoop()
         ExecuteWithDelay(200, function()
@@ -12317,19 +11783,6 @@ end
 -- Ghost() only -- no other manual changes.
 ------------------------------------------------------------
 local pendingNoClipCheck = false
-if RegisterConsoleCommandHandler then
-    pcall(function()
-        RegisterConsoleCommandHandler("lbtestnoclipcheck", function(FullCommand, Parameters, Ar)
-            pendingNoClipCheck = true
-            print("[LivingBase] [lbtestnoclipcheck] queued -- reading pawn movement state, calling Ghost(), reading again.\n")
-            return true
-        end)
-    end)
-    log("Console command registered: lbtestnoclipcheck")
-    registerCmdInfo("lbtestnoclipcheck", "lbtestnoclipcheck", "Diagnostic only -- reads the player pawn's MovementMode/collision state, calls Ghost(), then reads again, to see whether Ghost() actually changes anything at the data level or is a complete no-op.")
-else
-    log("lbtestnoclipcheck unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
-end
 if ExecuteWithDelay then
     local function noClipCheckPollLoop()
         ExecuteWithDelay(3000, function()   -- was 200: experiment loop, slowed 2026-10-01 (async-thread Lua load)

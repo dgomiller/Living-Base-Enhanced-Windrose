@@ -2,15 +2,41 @@
 # command to hot-reload without restarting -- UE4SS's own Ctrl+R doesn't work in this game).
 # true / false for switches, numbers for amounts. '#' starts a comment.
 # This is the only file you need to edit — config.lua holds the defaults, this overrides them.
+#
+# This file covers the same ground as the optional "Windrose Mod Settings" integration (Settings >
+# Mods panel), for players who don't have that mod installed or just prefer a text file. Whatever
+# you set here is the baseline; if Windrose Mod Settings IS installed, whatever's saved there takes
+# priority over this file.
 
 # --- Features ---
 WHISTLE_CREW           = true    # boar whistle summons 2 crew instead of a boar
 UNLOCK_HIDDEN_BUILDING = true    # surface build pieces hidden from standard play (keeps progression)
 PROTECT_STRUCTURES     = true    # make building blocks invulnerable so hostile mobs can't wreck the base
-KEYS_ENABLED_ONSTART   = false   # false = starts OFF; press the toggle key (Insert by default) to turn on (the GUI is the primary workflow).
-                                 # true = mod keys ready to use immediately on launch
+RESTORE_ON_LOAD        = true    # automatically repopulate your saved base when you load into the world
+DECOR_COLLISION        = true    # spawn decorations solid (you collide with them) instead of pass-through
+LEASH_ENABLED          = false   # keep wandering crew/townsfolk near where you placed them
 
 # --- Dev / tuning tools ---
-LIVE_EDIT            = true    # PageUp/PageDown = height, ',' '.' = rotate the prop in front
-WHISTLE_FOLLOW_DEBUG = false   # extra follow logging
+WHISTLE_FOLLOW_DEBUG = false   # extra logging for the crew-escort follow behavior
+
+# --- Keybinds ---
+# Values are UE4SS key names (e.g. NUM_SEVEN, DELETE) -- see Scripts/config.lua's own Config.KEYS
+# table for the full reference and NumLock-must-be-ON warning. These are the SAME 15 actions the
+# Windrose Mod Settings keybind panel offers; rebind here instead if you don't have that mod.
+KEY_toggleWindow     = NUM_SUBTRACT  # open/close the GUI window -- the one key that always works, even with the window closed
+KEY_releaseCursor    = NUM_ONE       # steal OS focus for the GUI window so your next click lands there
+KEY_numpadUp         = NUM_SEVEN     # Move: Up       | Rotate: X-
+KEY_numpadFwd        = NUM_EIGHT     # Move: Forward  | Rotate: Y-
+KEY_numpadDown       = NUM_NINE      # Move: Down     | Rotate: X+
+KEY_numpadLeft       = NUM_FOUR      # Move: Left     | Rotate: Z-
+KEY_changeMode       = NUM_TWO       # toggle Move <-> Rotate mode for the six keys above
+KEY_numpadRight      = NUM_SIX       # Move: Right    | Rotate: Z+
+KEY_numpadBack       = NUM_FIVE      # Move: Backward | Rotate: Y+
+KEY_despawn          = NUM_THREE     # despawn whatever's directly in front of you
+KEY_targetLock       = NUM_ADD       # target-lock toggle -- press again on the same object to release
+KEY_cancelPlacement  = NUM_DIVIDE    # cancel the current spawn/move placement, no trace left behind
+KEY_grabTarget       = NUM_MULTIPLY  # pick up the target-locked object to relocate it
+KEY_confirmPlacement = NUM_ZERO      # confirm/lock the current spawn/move placement in place
+KEY_toggleFreeBuild  = NUM_DECIMAL   # toggle floor clipping (lets placement pass through the floor)
+KEY_signTarget       = DELETE        # select a sign/label object for the Signs tab
 

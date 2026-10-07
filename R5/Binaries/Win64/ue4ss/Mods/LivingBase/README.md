@@ -1,607 +1,363 @@
-LivingBase -- Base Building, Population & Character Customization Mod for Windrose
-======================================================================
-
-A placement and character toolkit for your base. Hand-drop ambient NPCs, animals, posed statues,
-and decorations wherever you want them; build a fully custom character from scratch and dress it
-piece by piece; set up a camera and lighting rig for screenshots; and let it all persist across
-reloads. Plus a few base-life extras: a summonable crew escort and an unlock for hidden build-menu
-pieces.
-
-The ONLY way to spawn, move, or customize anything is a real clickable GUI window --
-LivingBaseSpawnMenu, a companion mod bundled with this download. There is no keyboard-only spawn
-scheme anymore; the numpad works for movement/confirmation/despawn/undo either in-game or with the
-window focused, but every spawn and every customization goes through the window itself. Press '-'
-(Numpad Minus) in-game to open it.
-
-A UE4SS Lua mod (plus one compiled C++ companion) for Windrose (Kraken Express, UE 5.6,
-single-player). Modding is unofficial -- keep save backups; a game patch may change class paths
-(all centralized in Scripts/config.lua).
-
-======================================================================
-REQUIREMENTS / INSTALL
-======================================================================
-
-- UE4SS (latest experimental / GitHub RE-UE4SS build) with [EngineVersionOverride]
-  MajorVersion=5, MinorVersion=6 in UE4SS-settings.ini. Tested on the stock experimental UE4SS posted
-  on Nexus -- no patched or self-built UE4SS is needed.
-- Included: the LivingBaseSignFonts pak (Greengoth and Script sign fonts, see FONT_CREDITS.txt) installs
-  to ...\R5\Content\Paks\~mods\. Delete LivingBaseSignFonts-Windows.* there and signs use the game's
-  built-in font instead.
-- This download contains TWO mod folders -- install both:
-    ...\R5\Binaries\Win64\ue4ss\Mods\LivingBase\ -- the mod itself (Lua).
-    ...\R5\Binaries\Win64\ue4ss\Mods\LivingBaseSpawnMenu\ -- the GUI window (compiled). Required
-    in practice -- it's the only way to spawn or customize anything now.
-- Enable both with mods.txt lines:
-    LivingBase : 1
-    LivingBaseSpawnMenu : 1
-  (an empty enabled.txt in each mod's own folder also works).
-- Load into a game world. The GUI window takes a few seconds to appear after the loading screen
-  finishes -- this is deliberate (see Known Limitations), not a bug. Press '-' (Numpad Minus) to
-  open it once it's ready.
-- Hot reload: run the "lbreload" console command to reload LivingBase's scripts without restarting
-  the game or the world (see Console commands below). UE4SS's own Ctrl+R hot-reload keybind does
-  NOT work in this game -- Windrose's native Dodge action is bound to plain Ctrl and claims it
-  before UE4SS's key-hook layer ever sees a Ctrl+X combo reach it, so lbreload exists specifically
-  as the working replacement. Note it wipes the mod's in-memory tracking -- despawn before running
-  it, or just reload the world; placement/spawn actions re-recover tracking from the ledger
-  automatically. (lbreload only reloads LivingBase's Lua -- LivingBaseSpawnMenu is a compiled DLL
-  and needs a full game restart to pick up an update.)
-  CAUTION: prefer restarting the game over lbreload. A reload can leave the mod's background
-  timers stale, which freezes the GUI window (it stops responding and Numpad Minus can't bring it
-  back) until the game is relaunched.
-
-======================================================================
-THE GUI (LivingBaseSpawnMenu)
-======================================================================
-
-Opening it
-----------------------------------------------------------------------
-Numpad '-'   Open/close the window. Starts closed each session. Works from anywhere while
-             playing.
-Numpad '1'   Steal OS focus for the window, if it's already open -- handy right after Numpad
-             '-' opens it, so your next click lands there instead of needing an extra click to
-             switch windows first.
-
-The window is a genuinely separate, always-on-top native window, not an overlay drawn on top of
-the game -- you can drag it to another monitor, resize it, and it stays put across sessions of
-use. It intentionally takes OS input focus while open (so its own keyboard shortcuts work), same
-as switching between any two normal Windows applications; clicking back into the game returns
-focus to it.
-
-Six tabs across the top, each with a function-key shortcut while the window has focus (Target
-List has no dedicated key -- click its tab directly):
-
-Spawn and Move (F5)
-----------------------------------------------------------------------
-Spawn tree (left) -- click any entry to select it (highlights). Below the tree, a four-button
-row:
-  Confirm  Same as Numpad 0 -- locks the currently-previewed placement/relocation in place.
-           Only enabled while something is actively following your camera.
-  Spawn    Places a new copy of the selected look, following your camera until you Confirm
-           (or Numpad 0) or Cancel (or Numpad /) it.
-  Move     Same as Numpad * -- picks up whatever's currently target-locked and starts
-           carrying it the same way a fresh spawn follows your camera (no snap-pop, measured
-           from its actual current distance). Needs a target lock first.
-  Replace  Swaps whatever's currently target-locked (see below) for the selected look, in
-           the exact same spot. Needs a target lock first.
-Refresh (above the tree) re-reads spawn_menu.ini from disk (see Customizing the spawn tree
-below).
-
-Move/edit panel (right):
-  Selected Target       Shows whatever's currently target-locked. Hover if the name is
-                         truncated.
-  Floor Clipping        Lets a placed/relocated object clip through the floor instead of
-                         resting on it (mirrors in-game Numpad '.').
-  Forward/Left/Right/    Slide/raise/lower the target-locked object. Real held-repeat
-  Backward/Up/Down       buttons (hold to keep moving) -- unlike the same in-game keys,
-                         which this UE4SS build drops most rapid repeat presses for.
-  Rotate X/Y/Z           (Roll/Pitch/Yaw) -- three full rows, each with its own
-                         Left/Right button, so a placed prop can rest at any angle. All
-                         three drive together in Rotate mode (Numpad 2).
-  Coords                 Opens the precise coordinate editor (below). Only enabled with
-                         something target-locked.
-  Precision              Scales how far Up/Down/slide move per press (1/8 through 4x).
-  Cancel                 Same as Numpad / -- cancels the active placement/relocation (a
-                         fresh spawn is removed entirely; a grabbed/Move object reverts to
-                         where it was). Only enabled mid-placement.
-  Despawn / Undo         Same as Numpad 3 / Ctrl+Z, acting on the target-locked object.
-  Delete All             Despawns EVERYTHING LivingBase has placed. Confirmation popup
-                         first.
-
-Everything above requires a target lock first and is greyed out until you have one -- and, like
-every numpad key, stays disabled until your base has finished restoring on world load.
-
-Customize (F6)
-----------------------------------------------------------------------
-Spawn a from-scratch custom character (pick a sex, Body Type, and Origin, then "Spawn Custom" --
-it spawns nude except underwear, auto-locked as your target), then dress and pose it -- or any
-other target-locked actor -- through five sections: Body (skin tone, eye color, physique, height,
-AI toggle, one-way "Make Ghost"), Hair, Clothes (with a fit-safety net that substitutes underwear
-instead of clipping on a known-bad combination), Belts and Straps (plus an Accessories
-detect/randomize pair), and Poses and Actions. "Read Current" fills every control to match what
-the target is actually wearing/using right now; "Save Customizations" writes the current setup to
-disk against that specific actor so it survives a world reload (most rosters don't need this --
-see Persistence below). Full breakdown in Features -- Customize tab below.
-
-Photo Mode (F7)
-----------------------------------------------------------------------
-Camera positioning (Tripod/Selfie/First Person presets, a directional move pad, target highlight,
-and a precise coordinate editor) plus a 3-slot portable lighting rig (enable, color, brightness,
-throw per slot) for setting up screenshots. Not persisted across reloads by design.
-
-Target List
-----------------------------------------------------------------------
-Scans tracked actors within a chosen radius (3/5/8/10/15m), filtered by four category checkboxes
-(People/Monsterous/Animals/Decor), and lists them nearest-first with a small "+" button to
-target-lock any one directly by index -- unlike Numpad+, this can lock something out of view
-entirely, useful for finding it when you don't know where it ended up. A "+/-" button next to
-Selected Target locks/releases the current target (same idiom as the Move panel), and a large
-live-updating distance readout shows how far away whatever's locked currently is.
-
-Mark Target checkbox -- while checked, highlights whatever's currently locked: a glowing marker
-material on decor, or a following flame-ring effect (on people, animals, and monsters) that tracks
-the target as it moves. Automatically clears when unchecked or when nothing's targeted.
-
-Text (Delete)
-----------------------------------------------------------------------
-Write on signs and other objects. Aim at a text object and press Delete or click "Select Object"
-(Numpad + lock also selects it, and so does placing one). Type up to four lines -- the characters
-per line follow the width of the text box -- then Apply to assign the text, Clear to erase just the
-text (colour and font are kept), or Reset to remove every customization.
-
-  Valid objects   Signs (wooden labels), Wooden Chests, Bale, Box, Barrel, Sack and everything
-                  in the Additional Items dropdown: Sign Post, Wall Flag 1-4, Board 1-3 (One line)
-                  and Obelisk. The boards and obelisk are solid; the wall flags are not.
-  Font            Greengoth (default), Script, or Built-in. The first two need the optional
-                  LivingBaseSignFonts pak included in the download; if you delete it the built-in font is used.
-  Text colour     A colour picker, ten presets and the last colour used. "Add Glow" makes the text
-                  ignore scene lighting.
-  Saved           Text, colour, font and glow persist per world and are re-applied on load.
-
-Console helpers for tuning or testing: lbtestsigntext (apply text with layout overrides),
-lbsignmargin, lbmeshshift (move a spawned mesh relative to its actor), lbsolid [on|off] (test
-whether a mesh blocks you), lbniagara (turn an object's particle effect off/on).
-
-Customize tab camera: Decor View, orbit and zoom
-----------------------------------------------------------------------
-Decor View (decor targets only) looks at the centre of the object from a distance based on its
-largest dimension, level, starting from the side you are looking from. Full Body and Face View are
-for non-decor targets only. The row under them is < > + - : < > orbit around the target and + -
-zoom in and out (5% of the starting distance per press, within limits); all four repeat while
-held. While a Custom view is active, the Photo Mode tab's move pad, Rotate arrows, FOV slider and
-Reset also drive it (not Coords or Selfie). Nothing is remembered: every new view starts fresh, and
-locking a different object ends the view and restores the normal camera.
-
-lbhelp find <text> (console) searches every LivingBase console command by name, usage or description.
-New placements in Floor Clipping mode start 650 uu from the camera.
-
-Other recent additions: a spawn tree filter box, Object Scale (Move tab, decor only), and a GUI
-Scale dropdown (0.5x-3x).
-
-Instructions & History
-----------------------------------------------------------------------
-Instructions renders the same reference this section covers, from inside the game (reads from
-help.txt, so it can be edited without a rebuild). History shows every message that's appeared as
-an on-screen toast this session -- handy for catching something you missed.
-
-Coords window
-----------------------------------------------------------------------
-Opens a small editor with the target's exact X, Y, Z position and X, Y, Z rotation (Roll, Pitch,
-Yaw -- 0-359 degrees each, not Unreal's native -180 to 180) as editable numbers. Typing doesn't
-move anything by itself -- only these:
-
-  Preview  Moves the object to whatever you've typed, without closing. Adjust and
-           preview as many times as you like.
-  Apply    Same as Preview, but closes the window -- the "I'm done" button.
-  Reset    Moves the object back to wherever it was when the window opened, fields
-           included. Stays open.
-  Cancel   (or the window's own close button) -- same as Reset, but closes.
-
-If you lock onto a different object -- or release the lock entirely -- while this window is open,
-it closes itself without moving anything. While it's open, the target-lock's normal "walked too
-far away, release the lock" check is suspended, so a typo in a coordinate can't strand you locked
-onto something that just flew off into the distance. The Photo Mode camera has its own equivalent
-Coords popup.
-
-Customizing the spawn tree
-----------------------------------------------------------------------
-The tree's category structure comes from spawn_menu.ini, auto-generated on first load (one
-section per look, pointing back at the real roster + index) and never overwritten after
-that -- reorganize it, rename categories, regroup entries, however you like; re-running the
-generator only ADDS anything new, it never touches or removes your edits.
-
-======================================================================
-NUMPAD CONTROLS (in-game AND with the GUI window focused)
-======================================================================
-
-The ONLY keys LivingBase uses. NumLock must be ON for the numpad to register -- with it OFF,
-Windows remaps it to navigation keys before UE4SS ever sees it. Every key below requires the GUI
-window to be OPEN except Numpad '-' itself (which opens it).
-
-Move mode (default) / Rotate mode (after Numpad 2)
-----------------------------------------------------------------------
-| Key | Move mode | Rotate mode |
-|-----|-----------|--------------|
-| 7   | Up        | Rotate X-    |
-| 8   | Forward   | Rotate Y-    |
-| 9   | Down      | Rotate X+    |
-| 4   | Left      | Rotate Z-    |
-| 5   | Backward  | Rotate Y+    |
-| 6   | Right     | Rotate Z+    |
-| 2   | Change Mode (Move <-> Rotate) |
-
-7/8/4/5/6 sit in the same plus-shape as W/A/S/D -- Change Mode sits on the corner key below that
-cross, so it's not easy to mispress while moving. Entering an active placement/grab session (a
-fresh Spawn, or Numpad *) auto-switches to Rotate mode -- movement doesn't apply to something
-that's already following your camera every tick. Confirming (Numpad 0) or cancelling (Numpad /)
-switches back to Move mode automatically.
-
-Everything else
-----------------------------------------------------------------------
-Numpad 1   Release Cursor -- steals OS focus for the GUI window.
-Numpad 3   Despawn whatever's in front of you, on your floor.
-Numpad +   Target Lock -- toggle locking onto whatever's in front of you. Every move/edit
-           key, the whole Customize tab, and Replace/Despawn/Coords all act on the locked
-           object. Press again on something different to move the lock straight to it; press
-           again on the same thing (or nothing) to release. Auto-releases (with a toast) if
-           the locked object gets despawned or you walk ~19m away from it. A newly placed or
-           spawned object becomes the lock automatically.
-Numpad /   Cancel the current placement -- destroys the previewed object, no trace.
-Numpad *   Grab -- picks up whatever's currently target-locked and carries it like a fresh
-           placement, from its actual current distance (no snap-pop on pickup).
-Numpad -   Open/close the GUI window.
-Numpad 0   Confirm Placement -- locks the currently-previewed object in place. Nothing is
-           written to the persistent save until this fires.
-Numpad .   (decimal) Floor Clipping toggle.
-
-While the GUI window has focus, it ALSO responds to: Arrows = slide, PageUp/PageDown = height
-(GUI-only, no in-game equivalent); F1/F5/F6/F7/F10 = tab switches; F2/F3/F4 = Spawn/Replace/
-Despawn; Ctrl+Z = Undo. These go through Windows' own key-repeat, so holding one works like a
-held button -- unlike the same in-game keys, which this UE4SS build drops most rapid repeats for.
-
-Remap anything by editing Config.KEYS in Scripts/config.lua.
-
-======================================================================
-FEATURES
-======================================================================
-
-GUI window (LivingBaseSpawnMenu)
-----------------------------------------------------------------------
-Six tabs -- a categorized clickable spawn tree with a held-repeat move/edit panel; a full
-character-customization workspace (spawn-from-scratch, body, hair, clothes, belts/straps, poses);
-a photo-mode camera + lighting rig; a Target List for locking any tracked actor by name/distance
-plus a "Mark Target" highlight toggle; and an in-window Instructions/History reference. See "THE
-GUI" above for the full breakdown.
-
-Placement toolkit + live-edit
-----------------------------------------------------------------------
-Drop NPCs, animals, posed statues, and decorations, then nudge each one into place. Everything you
-place is SAVED AND RESTORED on the next world load.
-
-Live placement preview, relocate, and hover-highlight
-----------------------------------------------------------------------
-Decor and statues both: a fresh spawn follows your camera in real time before it's placed (Numpad
-0 to confirm, Numpad / to cancel, Home/Pause to zoom), and Grab (Numpad *) picks up anything
-already placed to carry it the same way. Placement snaps to the real floor/surface under your
-reticle by default -- Floor Clipping toggles open placement instead, for spots the floor-lock
-doesn't suit. Whatever your reticle is over lights up automatically so it's always clear what
-you're about to target or grab.
-
-Unique per-placement names
-----------------------------------------------------------------------
-Every placed object gets its own distinguishable name (e.g. "Brethren Woman 1", "Brethren Woman
-2") instead of every copy of the same look sharing one identical label -- visible wherever a
-target's name is shown (target-lock toasts, the GUI's Selected Target readout, the Coords window).
-Stored in persist.txt, so names stay stable across reloads.
-
-Senkamati -- Wild and Original Upright
-----------------------------------------------------------------------
-Two full presentations of the same Senkamati archetypes (Warrior, Hunter, Thrall, Caster), each
-organized Mask On / Mask Off, and each with a moving and a frozen ("Idle," statue-like) version of
-every entry:
-
-- Wild -- the original re-skinned crew-based looks, on a naturally-upright human skeleton, with
-  their own curated legs/underwear look on Caster/Hunter/Thrall (Warrior unchanged) instead of
-  showing plain default underwear once the mask-off DeCorrupt pass hides the original leg armor.
-- Original Upright -- the native Senkamati mob body given an upright walking gait via a foreign
-  AI/animation pairing, purely cosmetic: it walks upright convincingly, but cannot fight with real
-  weapons (melee/magic/unarmed attack animations are baked per character family and don't transfer
-  to a foreign skeleton). Warrior and Hunter have their weapons stripped accordingly.
-
-Both presentations restore correctly (mask state, weapons, idle freeze) on a world reload, not
-just on first spawn.
-
-Animals -- Mobile and Idle
-----------------------------------------------------------------------
-Every livestock family (boars, goats, dodos, wolves, crocodiles, plus crabs) has a wandering
-"(Mobile)" version and a frozen, statue-like "(Idle)" version of every individual look --
-previously only the "Corrupted"/monstrous variants had this Idle option; now the ordinary wildlife
-does too.
-
-Drops (18 themed decoration categories)
-----------------------------------------------------------------------
-A dedicated decor branch covering everything from weapon and armor pieces to currency,
-ingredients, and treasure -- Animal Parts, Artifacts, Clothes, Currency, Ingredients, Keys, Meals,
-Mined, Misc, Potions/Bottles/Healing, Seeds, Tailoring, Tools, Treasure, Trophies, Weapons, Wood,
-Writings. Every entry has a real display name (e.g. "Bezoar," not "Loot_T02_Bezoar_01").
-
-Misc > Water and Furniture (custom water features and furniture)
-----------------------------------------------------------------------
-Decor > Misc > Water: flat water planes (Circle, Octagon, Archlike, Semicircular), the fountain's water
-flow and upward spout, three empty solid garden fountains (Small/Medium/Large), and the fountain's spray,
-splash and side-spout particle effects -- pieces for building your own pools and fountains. The particle
-effects are placed, moved and saved like any other decor (use the Target tab to select one). Decor >
-Furniture > Tables gained ten tables and display trays, and Decor > Furniture > Shelving has three
-Tortuga shelves; all of these are solid.
-
-Console commands
-----------------------------------------------------------------------
-Type these into UE4SS's console (the same input used for the game's own dev/cheat commands) for
-spawning by name instead of browsing the tree. All print their response both on-screen and to
-ue4ss.log (look for [LivingBase] lines).
-
-lblook <name>          Spawns one of LivingBase's own NAMED LOOKS -- a base class plus its full
-                        reskin/de-corrupt/pacify recipe. This is what the GUI's Spawn button
-                        uses internally, by name.
-lblook list             Lists every category (crew, townsman, standing, seated, chair,
-                        interactive, senka, animals, women, decor) with a count.
-lblook list <category>  Lists every name in one category, e.g. "lblook list crew" or
-                        "lblook list senka".
-lblook list all         Dumps every name in every category at once.
-lbspawn <ShortName>     Spawns a RAW ENGINE CLASS, with none of this mod's re-skin/
- or <full /Game/...     de-corrupt/pacify recipe applied -- just the game's own default
- path>                  look/behavior. Short names resolve through a generated index of
-                        ~2,500 known BP_ classes; anything not in that index needs the
-                        full path.
-lbspawn list /          Same idea as lblook's listing, but for LivingBase's own statue/decor
-lbspawn list <category>/rosters specifically -- reference only, not a guarantee those exact
-lbspawn list all        names resolve as short-name input.
-lbreload (no args)      Reloads LivingBase's Lua from disk WITHOUT restarting the game or
-                        reloading the world -- picks up script edits immediately. Doesn't
-                        affect content-pak changes or the GUI's own compiled DLL (both need a
-                        full relaunch); tracked spawns recover automatically afterward.
-lbunlockclothes         Toggles the Customize tab's Clothes fit-safety net on/off (see the
- (no args)              Customize tab section below). Off by default. Prints a one-time
-                        caveat when turned on: an unlocked piece/body combination hasn't been
-                        visually reviewed and may clip.
-
-When to use which: if you want the mod's actual recipe (correct faction, posture, gear, etc.) use
-lblook. If you want to spawn something completely untouched -- including things this mod doesn't
-otherwise place -- use lbspawn. You'll see an occasional "Error: A custom console command handle
-must return true or false" line after running any of these -- that's harmless UE4SS noise tied to
-how this build checks a console command's return value, not a real failure.
-
-Walking Women
-----------------------------------------------------------------------
-A real, walking female NPC, spawnable as one of four looks: Letty, Marita Suares, and the
-Buccaneers Merchant each wear their own real, distinct outfit; a fourth, plain "Woman" entry
-rounds out the roster with an outfit, hat presence, and hair that all vary naturally for general
-crowd variety. Every placement also rolls a random skin tone. Reloading correctly restores which
-look each placed NPC was standing in for.
-
-Customize tab (GUI only -- spawn-from-scratch character + full appearance/pose editor)
-----------------------------------------------------------------------
-The Customize tab (F6) works on the currently target-locked actor -- lock onto something first
-(Numpad +), or spawn a fresh custom character (which auto-locks itself).
-
-- Spawn (collapsed by default) -- builds a brand-new character from scratch: pick a sex, a Body
-  Type, and an Origin (donor figure/ethnicity), then "Spawn Custom." Spawns nude except underwear,
-  ready to dress via the sections below -- the only way to get a genuinely custom body combination
-  beyond this mod's other fixed rosters.
-- Selected Target -- shows the current lock. "Read Current" scans the target's live appearance and
-  fills every control below to match what it's actually wearing/using right now (disabled for a
-  target this mod hasn't finished detecting yet, and for animals/decor/statues, which have no
-  clothing/hair to read). "Save Customizations" writes everything below to disk against that
-  specific actor's own persistent name, so it survives a world reload exactly as left -- most
-  rosters DON'T need this (see Persistence below); use it only when you want a specific change kept.
-- Body -- Skin Tone and Eye Color swatches, a Physique dropdown, and a Height slider (3'-8'',
-  ground-compensated). Toggle AI starts/stops the target's own AI logic (reversible; greyed out for
-  statues/decor). Make Ghost permanently reskins the target as a ghost -- clearly marked NOT
-  REVERSIBLE.
-- Hair (109 entries) -- swaps hairstyle and hair color, organized by style/headwear-compatible
-  variant/cut. Sex-detected automatically.
-- Clothes (304 entries) -- swaps one clothing/armor slot at a time and its palette color, spanning
-  the ordinary armor catalog plus the tribal Senkamati sets. The fit-safety net (see
-  lbunlockclothes above) substitutes underwear instead of letting a known-bad combination clip,
-  and holds back several male-cut families from female targets by default. "Remove" (16 entries:
-  one per slot, plus "All") takes a piece off instead of swapping it.
-- Belts and Straps -- Belt/Sling/Strap/Frog attachment pieces, plus an Accessories section with
-  Detect (reads what's currently equipped) and Randomize (rolls a fresh random set), and its own
-  Belt and Straps Location Guide reference.
-- Poses and Actions (221 entries) -- plays a specific real animation on the target (idle stances,
-  sitting poses, work-bench activity, combat animations, and more), organized by category. Works
-  on walking crew/NPCs, posed statues, even raw native mob skeletons. A small number of
-  combat/ability-themed poses carry real gameplay damage baked into their own animation notifies
-  regardless of who's playing them -- test those from a safe distance, not right next to yourself.
-
-None of this needs a numpad key or a roster to cycle through -- browse and click.
-
-Photo Mode tab (GUI only -- camera + lighting for screenshots)
-----------------------------------------------------------------------
-Camera: three starting presets (Tripod, Selfie, First Person, each with its own Reset), a Target
-Highlight toggle, a directional move pad, and a Coords button for precise camera placement (same
-Preview/Apply/Reset/Cancel shape as the object Coords window). Lights: a 3-slot portable rig --
-each slot toggles Enable/Disable (spawns/despawns a light the same way any other placement works),
-a Color swatch, and Brightness/Throw sliders. Not persisted across reloads by design.
-
-Cycle (']' / '[') and target highlighting
-----------------------------------------------------------------------
-']'/'[' cycle the targeted statue or decoration forward/backward through its own roster in place
-(facing preserved for statues). Whatever your reticle is over highlights automatically whenever
-the GUI window is open, independent of target lock, so it's always clear what Numpad + or Grab
-would act on before you commit.
-
-Undo (Ctrl+Z, or the GUI's Undo button)
-----------------------------------------------------------------------
-Restores whatever was most recently despawned -- a single despawn, an entire Delete All wipe
-(restored as one batch), or a cycle swap. Since a destroyed actor can't literally come back, this
-respawns a fresh copy of the same class at the exact same position/rotation, using data
-cross-checked against persist.txt -- for actors with a recorded appearance (e.g. a custom
-character or re-skinned crew member), that appearance is restored too. Steps back through your
-last 20 despawn actions if pressed repeatedly. Names what it restored on-screen.
-
-On-screen feedback (toasts)
-----------------------------------------------------------------------
-Despawn, undo, cycle, spawn, and restore progress all confirm on-screen -- not just in
-ue4ss.log -- by splicing a message into the game's own native side-notification widget, so it
-looks and behaves like a normal game notification. Every toast is also logged to the GUI's
-History tab.
-
-Persistence & clean-house
-----------------------------------------------------------------------
-Windrose doesn't save mod-spawned actors, so LivingBase records every placement to persist.txt
-(class, full position/rotation, look, and its unique display name) and re-spawns it on world load.
-
-- If you play multiple Windrose worlds, each one gets its own save automatically --
-  persist_<world id>.txt / spawn_ledger_<world id>.txt.
-- Config.RESTORE_ON_LOAD = true (default) repopulates on load (not on lbreload). false = place
-  fresh each session.
-- Delete All despawns everything and clears the save file for the current world.
-- Most rosters' appearance is NOT persisted by default -- a mask-off Original Upright Senkamati,
-  for instance, regenerates a fresh look on every world load exactly as if it were a brand-new
-  spawn, the same way the game's own native NPCs work, rather than locking in whatever it happened
-  to roll the first time. Use "Save Customizations" (Customize tab) on a specific actor if you want
-  its exact current appearance to survive a reload instead.
-- Every mod key AND the GUI's buttons are locked from the moment a world load is detected until the
-  restore genuinely finishes (or determines there's nothing to restore) -- everything unlocks
-  automatically; Numpad '-' and '1' still work throughout in case you need to override it.
-
-Whistle crew escort (WHISTLE_CREW)
-----------------------------------------------------------------------
-Use the boar whistle and instead of a boar you get a small crew escort that follows you and fights
-at your side. Transient (never persisted).
-
-Unlock hidden build pieces (UNLOCK_HIDDEN_BUILDING)
-----------------------------------------------------------------------
-Surfaces build-menu pieces that are hidden from standard play (cut/dev content) while leaving
-normal progression intact -- it never unlocks pieces you're meant to earn. Runtime-only; open the
-build menu once after loading so the catalog is present.
-
-Structure shield (PROTECT_STRUCTURES)
-----------------------------------------------------------------------
-Makes every building block invulnerable to damage, protecting your base from hostile mobs. On by
-default. Applied instantly to newly-placed blocks and swept over the whole base shortly after each
-load. Runtime-only (re-applied on the next mod load, same as the other toggles here).
-
-======================================================================
-CONFIGURATION
-======================================================================
-
-There are two files:
-
-config.txt          Plain-text overrides you can edit without touching Lua. Lines are
-                     NAME = value (true/false or numbers). This is the one file you
-                     normally edit; it overrides the defaults. Current toggles include
-                     WHISTLE_CREW, UNLOCK_HIDDEN_BUILDING, PROTECT_STRUCTURES, LIVE_EDIT.
-Scripts/config.lua  The shipped defaults and all class paths. Highlights:
-  - Config.KEYS -- the numpad keymap (see NUMPAD CONTROLS above).
-  - Config.VERBOSE -- false (quiet); true for per-spawn debug logging.
-  - Config.LIVE_EDIT_MOVE_STEP / LIVE_EDIT_HEIGHT_STEP / LIVE_EDIT_ROTATE_STEP -- per-press
-    step sizes for the move panel's slide/height/rotate buttons.
-  - Config.TARGET_MIN_VIEW_DOT (0.90) -- how directly your camera needs to be looking at an
-    object for it to be picked as the reticle target (despawn, cycle, target lock). Lower =
-    more forgiving/wider; higher = you have to look more squarely at it.
-  - Config.TARGET_LOCK_MAX_DIST (1500.0, ~15m -- this mod's own convention is 100uu = 1m) --
-    how far you can walk from a target-locked object before the lock auto-releases.
-    Suspended entirely while a Coords window is open.
-  - Config.DECOR_CATEGORIES (in Scripts/fkeys.lua) -- the six base decoration lists plus 18
-    themed Drops categories.
-  - Config.DECOR_COLLISION (true) -- placed decorations are solid (physics frozen so they
-    can't drift). false = pass-through.
-  - Statue rosters: STANDING_STATUES (includes the women and quest-folk actors),
-    SEATED_STATUES, CHAIR_STATUES, INTERACTIVE_STATUES.
-  - Config.HANDYMAN_FOR_TOWNSFOLK (true) -- townsmen wander AND use furniture.
-  - Config.HIDE_NAMEPLATES (true) -- hide floating name/role tags on placed NPCs.
-  - Config.LOOT_MESH_SOLID -- which Additional Items meshes are solid (boards and obelisk by
-    default; add a mesh path to make another one solid).
-  - Config.DECOR_VIEW_DISTANCE_MULT (1.3) and Config.CAMERA_ZOOM_STEP_FRACTION (0.05) -- Decor View
-    distance and the + / - zoom step.
-  - Config.BRIDGE_IDLE_WHEN_CLOSED (true) / Config.QUIET_DURING_APPLY (true) /
-    Config.QUIET_GAME_THREAD_JOBS (true) -- the stability measures (GUI polling idles while the
-    window is closed; background timers pause during heavy game work).
-
-======================================================================
-KNOWN LIMITATIONS
-======================================================================
-
-- The GUI window takes a few seconds to appear after the game finishes loading -- deliberate: its
-  own render thread waits before creating its device/swapchain, so Steam's overlay hook attaches to
-  the game's real swapchain first instead of this window's (otherwise Steam's F12 screenshot and
-  FPS-counter target the GUI instead of the game). Not a bug; give it a moment on launch.
-- Occasional native crash during a long, active placement/relocate session (an object still
-  following your camera, especially with a lot of movement) -- an engine-level UE4SS fragility, not
-  something Lua-side error handling can catch. Confirming or cancelling a placement sooner rather
-  than carrying an object around for a long stretch lowers the odds of hitting it.
-- The numpad direction/operator keys drop most rapid repeat presses before UE4SS ever sees them
-  when used IN-GAME -- an engine-level limitation. The GUI's own buttons and numpad handling don't
-  have this problem.
-- The Brethren of the Coast "woman" crew re-skin currently has a male body under the female
-  clothing -- known, not yet fixed.
-- Original Upright Senkamati (the upright-gait cosmetic variants) walk convincingly upright but
-  cannot fight with real weapons -- melee/magic/unarmed attack animations are baked per character
-  family and don't transfer to the foreign skeleton pairing used to get the upright gait. Cosmetic
-  only, by design; Warrior and Hunter have their weapons stripped accordingly.
-- Outfit/hair PALETTE COLOR can be changed via the Customize tab's Clothes/Hair sections for
-  anything this mod places -- this replaces an earlier limitation where color was believed to be a
-  hard engine restriction; it turned out to be reachable via the same Custom Primitive Data
-  mechanism the game's own character customization uses, just not through any UI the base game
-  exposes.
-
-- Signs: the Text tab only writes on objects with a sign entry (see the Valid objects list); the
-  text shrinks automatically to fit the board, and the boards take a single line.
-- Do not use lbreload to apply changes (see Hot reload above) -- restart the game.
-
-Note on townsfolk: the townsman entry spawns a mixed-sex crowd of dressed, wandering NPCs (men and
-women) that also use nearby furniture. The statue entries are intentionally static posed actors --
-that's the feature, not a limitation.
-
-======================================================================
-LICENSE / OWNERSHIP
-======================================================================
-
-All rights reserved by default, except for the specific permissions below -- nothing here
-is implied beyond what's listed. See LICENSE (in this mod's own folder) for the full text.
-
-Permitted, without needing to ask:
-  1. Modify this mod for your own personal use.
-  2. Reuse this mod's code or assets in your own separate mod, WITH CREDIT.
-  3. Convert or port this mod to other games, WITH CREDIT.
-
-Not permitted:
-  1. Reuploading or rehosting this mod -- modified or unmodified -- anywhere other than
-     the original author's own page(s)/repo(s). If you build something on top of it, link
-     back to the original instead of rehosting it.
-  2. Selling this mod, or using it in anything sold or monetized, in whole or in part.
-     (Nexus Mods' own Donation Points system is fine -- that's Nexus's own charity-linked
-     mechanism, not third-party monetization.)
-
-This covers this fork's own code and content. The original Living Base toolkit this
-project builds on remains public domain under its own author's terms (see Credits below);
-Windrose and its game assets, class names, and intellectual property belong to Kraken
-Express -- this is an unofficial, unaffiliated mod.
-
-======================================================================
-CREDITS
-======================================================================
-
-This project started as a fork of Living Base
-(https://www.nexusmods.com/windrose/mods/519) by me123420
-(https://www.nexusmods.com/profile/me123420) -- thank you to them for the original
-concept and toolkit, and for open-sourcing it into the public domain in the first place.
-The amount that's changed since then means this README no longer walks through it
-point-by-point, but the debt is real and gladly acknowledged.
-
-Thanks also to IceBoxStudio (https://www.nexusmods.com/windrose/users/77413713) for
-Windrose Mod Settings (https://www.nexusmods.com/windrose/mods/442), which this mod
-optionally integrates with for in-game keybind/toggle configuration.
-
-Thanks also to irecode (https://www.nexusmods.com/profile/irecode) for a resource this mod
-relies on.
-
-Built iteratively with Claude.
-
-======================================================================
-
-See CLAUDE.md and WINDROSE_MODDING_NOTES.md (bundled separately in the optional
-LivingBaseEnhancedDevInfo.zip download) for the full technical history and engine
-findings, and ASSET_CATALOG.md for the spawnable-asset database.
+# Living Base Enhanced
+
+Living Base Enhanced is a base-building and population tool to extend Windrose's native build mode. It allows hand placement of NPCs, decor, plants, animals, monsters and much more. It also allows fine tuned adjustment to those placements both by moving them around and rotating. Additional features allow for customization of clothing and colors and a full photo mode. Keyboard hotkeys and a full GUI window make changes easy to do. All creations and changes are stored persistently outside of the world save, ensuring that no data can be corrupted and uninstalling simply involves removing the mod.
+
+This document mirrors the in-game Instructions tab (press F1 in the GUI window) one-for-one.
+
+## Table of Contents
+
+1. [Installation and Uninstallation](#installation-and-uninstallation)
+2. [Custom Configuration](#custom-configuration)
+3. [Loading In the Game](#loading-in-the-game)
+4. [Basic Controls](#basic-controls)
+5. [Menu Tab Overview](#menu-tab-overview)
+6. [Spawn / Move Tab](#spawn--move-tab)
+7. [Target List](#target-list)
+8. [Customize](#customize)
+9. [Signs / Labels](#signs--labels)
+10. [Photo Mode](#photo-mode)
+11. [Instructions and History](#instructions-and-history)
+12. [Credits and Attribution](#credits-and-attribution)
+13. [License](#license)
+
+## Installation and Uninstallation
+
+### Prerequisites For Use
+
+- UE4SS (Latest Experimental) for Windrose: https://www.nexusmods.com/windrose/mods/43
+
+### Install Instructions
+
+- Automatic: This mod is designed to be able to be installed using Vortex Mod Manager.
+- Manual:
+  - Extract all contents to the root of the Windrose game folder, they will distribute accordingly.
+  - If a previous version is installed, overwrite any files prompted.
+
+Any previous persistence files will be converted to the proper new format on load of the related world.
+
+### Uninstall Instructions
+
+- Automatic: If installed with Vortex, uninstall may be completed using it. Any persistence and temporary files in the ue4ss/mods/LivingBase folder will not be removed. This is done on purpose to prevent loss of data when attempting a reinstall. These may be removed manually.
+- Manual:
+  - `..\Windrose\R5\Content\Paks\~mods`: remove all `LivingBaseSignFonts-Windows`, `LivingBaseBarbieRoster-Windows`, and `SplitFacial-Windows` files.
+  - `..\Windrose\R5\Binaries\Win64\ue4ss\Mods`: Remove both `LivingBase` and `LivingBaseSpawnMenu` folders.
+
+## Custom Configuration
+
+Settings and keybinds may be changed one of two ways.
+
+- **Windrose Mod Settings**: This mod is designed to be compatible with the Windrose Mod Settings mod, allowing for changes in game using a GUI. All settings need a restart of Windrose to take effect. https://www.nexusmods.com/windrose/mods/442
+- **Manual**: Edit `..\Windrose\R5\Binaries\Win64\ue4ss\Mods\LivingBase\config.txt`. Again, if this is edited while the game is running, a restart is necessary.
+
+## Loading In the Game
+
+Since this mod is an overlay of the game and nothing is modified in the save, everything placed must be loaded in when the world starts. The mod waits until the player's pawn has moved a certain amount and then begins loading. It is strongly encouraged not to move during this period as the load is memory intensive and could cause a crash.
+
+This is the order of operations during load:
+
+1. **Restoring decor / statues** - These items do not have AI and are quick to place.
+2. **Restoring movers** - These are any people / animals / monsters with AI, even if they are idle.
+3. **Post-processing movers** - This step is what strips animals and monsters' aggressiveness to the player as well as adjusting preset views on others.
+4. **Restoring customizations** - This step applies any custom changes made to the people such as clothes, colors, and poses.
+5. **Populating Signs** - At this point, text is applied to all applicable objects.
+6. **Restored and Ready** - At this point everything is loaded and the player is welcome to play as normal.
+
+## Basic Controls
+
+Many functions in Living Base Enhanced can be controlled by the keyboard, mainly the number pad. When in the separate Living Base Enhanced menu window vs in game, there are more options since it will not be overridden by native Windrose controls nor other Mods. In the descriptions below, keys available in game will be marked with an asterisk (*).
+
+> **NOTE:** Due to how ue4ss (the tool that integrates this mod with Windrose) handles key inputs, in game controls can be sluggish and slow to respond. This issue does not exist in the menu window.
+
+#### Living Base Enhanced Menu Keybinds
+
+![Living Base Enhanced Menu Keybinds](images/basic_controls_01.png)
+
+#### In Game LBE Keybinds
+
+![In Game LBE Keybinds](images/basic_controls_02.png)
+
+#### Legend Of Keybind Usage
+
+![Legend Of Keybind Usage](images/basic_controls_03.png)
+
+### Menu Access
+
+Until the Living Base Menu window is open, all the keybinds and functions are disabled. This allows for some overlap with other mods that may also have a toggle.
+
+- \* **Num -** : This opens the menu window, providing access to all the tools.
+- \* **Num 1**: This releases the game's capture of the mouse to look around, allowing easy access to the menu.
+
+### Spawning Controls
+
+The main purpose of this mod is to provide people and objects not normally available to the player when building. To do this you need to be able to spawn, move, and destroy items.
+
+- **F2**: Spawn selected item from the spawn menu.
+- **F3**: Swap target with the selected item from the spawn menu.
+- \* **Num 3 / F4**: Despawn current target.
+- \* **Num \*** : Relocate current target.
+- \* **Num /** : Cancel current placement of spawn or target.
+- \* **Num 0**: Confirm placement of current spawn or target.
+
+### Targeting
+
+Many functions in the mod require some sort of active target to know what to act on.
+
+- \* **Num +** : Target any spawned item. Pressing again will release the target.
+- \* **Delete**: Target any native or spawned item that can have text attached.
+
+### Movement
+
+After an item is spawned and placed, it's usually not in an optimal location. The movement keys can be used to nudge it in all directions, as well as rotate the object. This movement is relative to the "front" of the person or object.
+
+- \* **Num 2**: Change number pad controls between move and rotate.
+- **Page Up**: Move object up.
+- **Page Down**: Move object down.
+- **Arrow Keys**: Move object forward/backward/left/right.
+
+#### In Movement Mode
+
+- \* **Num 7**: Up.
+- \* **Num 9**: Down.
+- \* **Num 4/5/6/8**: Forward/backward/left/right.
+
+#### In Rotate Mode
+
+- \* **Num 4/6**: Rotate in a circle.
+- \* **Num 7/9**: Tilt left and right.
+- \* **Num 5/8**: Tilt forwards and backwards.
+
+### Tab Selection
+
+When in the spawn menu, there are various tabs to allow access to several different tools.
+
+- **F1**: Instructions / Help
+- **F5**: Spawn / Move
+- **F6**: Target List
+- **F7**: Customize
+- **F8**: Signs / Labels
+- **F10**: Photo Mode
+- **F11**: History
+
+## Menu Tab Overview
+
+The Living Base Enhanced (LBE) window contains several tabs to better organize access to various functions. The tab area also contains features for better viewing and visibility.
+
+![Menu Tab Overview](images/menu_tab_overview_01.png)
+
+1. **Hide GUI** - This button toggles window shade mode. It hides and displays everything underneath it, giving a better view of the screen without closing the window, allowing the keyboard tools to continue to work.
+2. **GUI Scale** - This dropdown resizes the entirety of the window contents to change size, from .5x up to 3x to allow better visibility on smaller and larger resolution displays.
+3. **Various Tabs** - These are the various tabs that provide all the functionality available in LBE.
+   - **Spawn / Move** - This tab allows the spawning, despawning, movement, and rotation of all the people and objects in the mod.
+   - **Target List** - This allows easier selection of already spawned people and objects.
+   - **Customize** - Contains a few tools including custom zoom, special spawns, and customization of colors, outfits, and poses of the spawned people.
+   - **Signs / Labels** - Allows the placement of text on specific in-game containers and specially spawned objects.
+   - **Photo Mode** - Allows viewing via various camera and up to three lights to light the scene to create a photo view to take pictures.
+   - **Instructions** - Contains the documentation to use this mod.
+   - **History** - Maintains a list of everything LBE has done during the current gaming session.
+
+## Spawn / Move Tab
+
+The Spawn / Move tab is the primary tab where Living Base Enhanced's functionality lives. From this tab people, animals, monsters, and decor may be spawned, placed, moved, and deleted.
+
+![Spawn / Move Tab](images/spawn_move_tab_01.png)
+
+1. **Spawn Menu** - The spawn menu contains a tree of all 1,000+ people, items, decor, etc. available to place in your base. Highlight the selection and choose one of the options below.
+2. **Filter Box** - Use this box to whittle down visible selections. It will search for anything that contains the letter combination entered. This means that "wood" would return "Wooden Box" and "Driftwood".
+3. **Spawn / Target Buttons** - These buttons are used to process placing spawned items or remove them.
+   - **Spawn** - This button will drop a copy of the selection in the spawn menu. It will behave like the native build tool where it can be moved while looking around until placed. Pressing F2 when in the window will spawn as well.
+   - **Move** - This will pick the current target up and maintain its rotation and distance initially. Then it can be placed the same as the spawn option. Pressing Numpad \* either in game or the window will also do so.
+   - **Confirm** - When spawning or moving an item, once it is in a preferred spot, clicking this button will finalize placement. Pressing Numpad 0 either in game or in the window will confirm too.
+   - **Cancel** - Pressing this while spawning an item will stop the placement process and remove the spawned item. Pressing it while moving an item will put it back where it was picked up from. Pressing Numpad / in game or the window will also cancel.
+   - **Replace** - If a targeted item is the wrong type, replace will swap that item with the item selected in the spawn menu using the same location and rotation. Pressing F3 while in the window will also initiate replacement.
+   - **Despawn** - This will remove the targeted item. Pressing Numpad 3 either in game or in the window will work. Doesn't necessarily need a target. If pressing 3 while no target is selected, the closest item in front of the player will be removed.
+   - **Undo** - this will restore despawns, moves, and replacements to their prior state. Up to 20 changes are tracked.
+4. **Target Box** - This displays the currently targeted item that can be manipulated. Placing an item automatically targets it. Pressing the "+/-" button or using Numpad + in either the window or game toggles selection. When no target is selected, pointing at an item will highlight it indicating + will select it.
+5. **Floor Clipping** - Floor clipping mode will disable the floor snap placement usually uses, allowing items to passthrough the floor. New spawns will appear a set distance away and may be adjusted after the fact. Pressing Numpad . toggles this both in game and in menu. Note this only takes effect on the next spawn or move.
+6. **Movement Controls** - The buttons allow the movement of objects in three-dimensional space. The directions are relative to the direction the item is facing. See [Basic Controls](#basic-controls) for keyboard movement information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.
+7. **Rotation Controls** - The buttons will rotate the item in three dimensions, also relative to the object. See [Basic Controls](#basic-controls) for keyboard rotation information. Pressing Numpad 2 either in game or the window swaps between movement and rotation.
+8. **Scale Object** - Increases the scale of the targeted item. Minimum size is .1. The textbox allows typing a size and +/- increments the scale.
+9. **Precision** - This slider adjusts the step size for all the movement, rotation, and scale tools. It is a multiplier that goes from 1/8x to 4x to help with minute and big movements.
+
+## Target List
+
+The target list is used to more easily locate and select items when bunched together or on the move.
+
+![Target List](images/target_list_01.png)
+
+1. **Target List** - The list of all targets found in the currently selected radius. Pressing the "+" button next to the item will target it.
+2. **Selected Target** - Works the same as the target in the Spawn / Move tab.
+3. **Categories** - These checkboxes allow filtering based upon the various top level item types.
+4. **Scan and Scan Radius** - Allows the ability to set a scan radius to better help target a specific item. The "Scan" button then populates the target list based on the radius and filter.
+5. **Mark Target** - When it is uncertain which item is the targeted item, checking this box will place a circle of flame around the bottom of the item.
+6. **Distance Tracker** - Helps locate an item by displaying the straight-line distance between the user and it.
+
+## Customize
+
+The Customize tab contains many features to help place and modify people to better suit the base you are building. Note some spawns randomize looks on every load. This is the game doing so, not the mod. Clothing and look changes on these ones may not stick, but colors should. Also the mod may only swap existing clothing slots, so if the person does not have something in that slot, it will be greyed out in the list.
+
+> **NOTE:** Changes in this tab are not saved real time as this caused consistent crashes of the game. Making changes still occasionally does so. It is highly recommended to save often to avoid losing changes.
+
+![Customize](images/customize_01.png)
+
+1. **Save Customizations** - The most important button in this screen. Customizations are not saved until this button is pressed.
+2. **Selected Target** - Works the same as selected target on the other screens.
+3. **Read Current** - Required to begin customizing. Read current scans the selected person and populates their default look in the various customization sections. Note: If any current changes are not saved, this will reset to the last changes saved or the default look if none was saved.
+4. **View Buttons** - These buttons allow for various views that can help with customization, but are also useful in placing and moving objects from the Spawn / Move tab.
+   - **Decor View** - A view that specifically scales itself to better display the entirety of a decor item in place.
+
+     ![Decor View](images/customize_02.png)
+   - **Full Body** - A view that specifically scales itself to better display the entire body of a non-decor item.
+
+     ![Full Body](images/customize_03.jpg)
+   - **Face View** - Similar to the others, this zooms in to better focus on just the face.
+
+     ![Face View](images/customize_04.png)
+   - **Rotation Buttons** - Pressing the "<" and ">" buttons will orbit around the target.
+   - **Zoom Buttons** - Pressing the "+" and "-" buttons will move the camera closer and further from the object.
+5. **Customization Sections** - The various sections allow for the customization and modification of existing human spawns.
+   - **Spawn** - This section allows the player to spawn a custom "barbie" person using an existing body/face shape and in game origins. Body type determines the sex of the spawn. Clicking spawn then generates a person that has every clothing slot populated to ensure any item can be set.
+
+     ![Spawn](images/customize_05.png)
+     ![Spawn](images/customize_06.png)
+   - **Body** - This section allows the change of various body colors and textures.
+
+     ![Body](images/customize_07.png)
+     - Skin tone changes the color of the skin, but not the features.
+     - Eye color changes the eyes.
+     - Physique changes the overlay of the body between boney, muscley, and soft.
+     - Height allows changing of the person's height between the range of three feet and eight feet. Entering text in the textbox allows exceeding that limit with a minimum of .5.
+     - Enable AI will allow a movable but idle person to walk around. Note this does not work on every person, only specific types.
+     - Make Ghost assigns ghosty features to the person and clothes. This is irreversible so be careful before saving.
+   - **Hair** - This allows the changing of various hair features and colors. Every selection has a swatch for selecting color and an X button to clear it.
+
+     ![Hair](images/customize_08.png)
+     - Hair sets the hair on top of the head; this will set the proper hair format to work with the various types of hats and bandanas.
+     - Eyebrows selects from a handful of shapes.
+     - Facial hair has mustaches, beards, and whiskers. Sets will select a matching combination all at once.
+   - **Clothes** - This allows the setting and changing of various available clothes slots. Most clothes have three color sections, and the game uses set palettes. Choosing an outfit will set every available clothing item for the selection but does not clear any other slot.
+
+     ![Clothes](images/customize_09.png)
+   - **Belts and Straps** - These are the various items criss crossing the person's body.
+
+     ![Belts and Straps](images/customize_10.png)
+     - Set - Like the others, this will apply every matching item available.
+     - Belt - The item that goes along the waist.
+     - Sling - The item that goes from the right shoulder to the left hip.
+     - Strap - Does the opposite, going from the left shoulder to the right hip.
+     - Frog - The holder for the swords sitting on the belt's left side.
+     - Detect Accessories - Due to the amount of accessories these items have, to reduce loading and crashing on detect these are detected separately.
+     - Randomize Accessories - Populates the belts, etc. from a curated and weighted list of accessories.
+     - Lantern - This places a lantern on the belt of the person, similar to what the player can use.
+   - **Accessories** - Allows populating every belt and weapon's slot with a custom item. Due to the number of slots, a guide may be viewed in the GUI to help locate where each item may be placed.
+
+     ![Accessories](images/customize_11.png)
+   - **Poses and Actions** - As the name implies, this allows the assignment of various actions and poses to the person.
+
+     ![Poses and Actions](images/customize_12.png)
+     - Pose List - On the left hand side is a list of various poses and actions. Clicking + next to one will assign it to the targeted person.
+     - Current Pose - Displays what pose is currently running.
+     - Player Controls - These allow the pausing and playing of the pose or action, as well as frame skipping and scrubbing with a slider. A paused animation is saved and persists between loads.
+     - Hand Dropdowns - Allows placement of items and weapons in people's hands. The four dropdown categories are for organization; only one item may be assigned to each hand.
+
+## Signs / Labels
+
+To help with organization or even to just provide ambience with road or building signs, Living Base Enhanced allows adding text to several in-game build objects as well as other spawnable decor objects.
+
+![Signs / Labels](images/signs_labels_01.png)
+
+1. **Selected Object** - What text object is selected.
+2. **"Select / Deselect" Toggle Button** - Selects the build menu or spawned items that may be modified. Pressing Delete (Del) in game or in the window also selects.
+
+   ![Select / Deselect](images/signs_labels_02.jpg)
+3. **Text Box** - Most objects will allow up to four lines of text. This text will resize based on the available canvas size so shorter sentences are usually better.
+4. **Font Settings** - Allows changes to how the text looks.
+   - Select from three different fonts.
+   - Apply will apply the text.
+   - Clear will remove only the text.
+   - Reset will clear everything and set the object back to its vanilla state.
+   - Below are various color swatches. The first large box is a color selector and the second one stores the most recently selected color.
+   - Add Glow will make the text glow in the dark for easy viewing or a ghostly feel.
+5. **Additional Items** - Contains a list of spawnable signs that can be used in addition to the build mode items. They are placed the same way other spawns are.
+
+   ![Additional Items](images/signs_labels_03.png)
+
+## Photo Mode
+
+Inspired by Cyberpunk 2077's Appearance Menu Mod and being shocked at the lack of a photo mode in a game in 2026, Photo Mode allows for taking fun pictures in the world and provides tools to hopefully allow for a large range of options.
+
+![Photo Mode](images/photo_mode_01.png)
+
+1. **Camera Mode** - Photo Mode includes three custom cameras to get the picture you want. Any placement and changes to the camera location are remembered until their specific "Reset" button is pressed.
+   - **Tripod** - As the name implies, this is a stationary camera that allows the player to stand in front of it. To set the initial position, stand and face approximately where you want the camera to look and then press the "Tripod" button. This will set the camera in that exact spot with that exact rotation. Zooming out and reentering tripod view will not reset placement. If "Reset" is hit, the camera will move to the player's location as if it were the initial trigger.
+
+     ![Tripod](images/photo_mode_02.png)
+   - **Selfie** - Points the camera in the direction of the player's face.
+     > **NOTE:** This view can be a bit flaky and can crash at times.
+
+     ![Selfie](images/photo_mode_03.png)
+   - **First Person** - Set the camera inside the player's head, allowing visibility as if viewing via the player pawn's eyes.
+
+     ![First Person](images/photo_mode_04.png)
+2. **Target Highlight** - Disables the highlight function used while targeting to ensure clean pictures.
+3. **Movement Buttons** - Allows the camera to be shifted around to improve the view. Can also be used for the Custom tab camera views as well.
+4. **Rotation Buttons** - Allows rotation of the camera. Same availability as the movement buttons.
+5. **FOV** - Changes the Field of View. Allows "zooming in" without moving. Can distort the image at extremes.
+6. **Precision** - Same as Spawn / Move tab's precision but applies to the camera.
+7. **Lights** - Photo mode provides three lights to provide custom lighting for taking pictures. These lights are not persistent. They are spawned like regular items and are able to be placed, picked up, and moved using the tools in the Spawn / Move tab.
+   - Enable - Make the light visible. Does not remember light position when disabled.
+   - Color - Sets the color of the light using a color selector.
+   - Select Button - Make the light the active target, allowing it to be moved using the keyboard or Spawn / Move controls.
+   - Show Spill Shield - Hides and displays the circle that prevents the light from bleeding behind it.
+   - Brightness - Sets how bright the light is.
+   - Throw Distance - How far does the light reach before falling off.
+   - Spill Shield Distance - How far is the light from the spill shield. This can affect the amount of light shining to the side.
+   - Spill Shield Size - Blocks more or less light from lighting up behind it.
+
+     ![Lights](images/photo_mode_05.png)
+     ![Lights](images/photo_mode_06.png)
+8. **Weather and Time Set** - The drop downs will allow setting the perfect conditions for pictures.
+   - Weather - This drop down allows selection of every available Windrose weather type. It can't prevent it changing over time so it may need to be set again.
+   - Time - Simulates the action of lying in bed except it stops at the requested hour and freezes time, not allowing it to change.
+   - Unfreeze Time - Unchecking this will return to the march of time. The game still tracks what time it is in the background so likely the time will be significantly different once unfrozen.
+
+## Instructions and History
+
+The last two tabs are Instructions and History. Instructions contains this documentation, and History lists everything Living Base Enhanced has done during the current gaming session.
+
+![Instructions](images/instructions_and_history_01.png)
+![History](images/instructions_and_history_02.png)
+
+## Credits and Attribution
+
+Living Base Enhanced is an unofficial, unaffiliated fan project for Windrose. Windrose itself, its game assets, class names, and all related IP belong to Kraken Express.
+
+- **Living Base (original mod)** - This project started as a fork of Living Base by me123420 - thank you to them for the original concept and toolkit, and for open-sourcing it into the public domain in the first place.
+  https://www.nexusmods.com/windrose/mods/519
+- **UE4SS / RE-UE4SS** - This mod would not exist without UE4SS, the Lua scripting and C++ modding framework for Unreal Engine games that both Living Base Enhanced and its companion menu are built on.
+  https://github.com/UE4SS-RE/RE-UE4SS
+- **Windrose Mod Settings**, by IceBoxStudio - Living Base Enhanced optionally integrates with it for in-game keybind/toggle configuration. Not required.
+  https://www.nexusmods.com/windrose/mods/442
+
+### Sign Fonts
+
+- Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).
+- Oleo Script, Copyright (c) 2012 Soytutype (SIL Open Font License 1.1).
+
+## License
+
+Copyright (c) 2026 RedFalcon. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.
+
+### Permitted, without needing to ask first
+
+- Modify this mod for your own personal use.
+- Reuse this mod's code or assets in your own separate mod, as long as you credit the original author(s).
+- Convert or port this mod to other games, as long as you credit the original author(s).
+
+### Not permitted
+
+- Reuploading or rehosting this mod, modified or unmodified, anywhere other than the copyright holder's own page. If you build something on top of this mod, link back to the original instead of rehosting it.
+- Selling this mod, or using it in anything sold or monetized, in whole or in part. (Nexus Mods' own Donation Points system is fine - that's Nexus's own charity-linked mechanism, not third-party monetization.)
+
+All other rights are reserved by the copyright holder.
+
+This license covers this mod's own code and content only. The original Living Base toolkit this project builds on remains public domain under its own author's terms (see [Credits and Attribution](#credits-and-attribution) above). Windrose and its game assets, class names, and intellectual property belong to Kraken Express - this is an unofficial, unaffiliated mod and is not covered by this license.

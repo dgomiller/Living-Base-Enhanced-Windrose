@@ -1069,6 +1069,67 @@ function Signs.LiveSigns()
     return out
 end
 
+-- Signs.ListPopulated() -- for the Target List tab's "Build Signs"/"Placed Signs" categories (2026-10-06,
+-- RedFalcon: detect+target populated signs/labels, split by whether the game's own build menu placed them
+-- (R5BuildingBlock, isBuilt=true -- a build piece this mod doesn't own/move/despawn, Del-only on that tab) or
+-- this mod spawned them (Spawner.spawned entries, isBuilt=false -- + and Del both work there). "Populated" =
+-- at least one non-empty saved text row right now, the same hasText check Signs.RestoreSpawned already uses.
+-- Same two-pass split as LiveSigns (building blocks, then spawned props, deduped by full name) but filtered
+-- down to signs that actually have text and tagged with isBuilt instead of being a flat list.
+function Signs.ListPopulated()
+    local out = {}
+    local list
+    pcall(function() list = FindAllOf("R5BuildingBlock") end)
+    local seen = {}
+    eachActor(list, function(a)
+        local t = Signs.FindType(a)
+        if t then
+            local key, class, x, y, z = actorEntryKey(a)
+            local e = key and (Signs._saved[key] or savedFor(class, x, y, z))
+            local hasText = false
+            if e then for _, ln in ipairs(e.lines) do if ln ~= "" then hasText = true end end end
+            if hasText then
+                out[#out + 1] = { actor = a, label = t.name, isBuilt = true }
+                pcall(function() seen[a:GetFullName()] = true end)
+            end
+        end
+    end)
+    for _, en in ipairs((Signs._spawner and Signs._spawner.spawned) or {}) do
+        local ac = en.actor
+        local okV, valid = pcall(function() return ac and ac:IsValid() end)
+        if okV and valid then
+            local t = Signs.FindType(ac)
+            if t then
+                local fn
+                pcall(function() fn = ac:GetFullName() end)
+                if not (fn and seen[fn]) then
+                    local key, class, x, y, z = actorEntryKey(ac)
+                    local e = key and (Signs._saved[key] or savedFor(class, x, y, z))
+                    local hasText = false
+                    if e then for _, ln in ipairs(e.lines) do if ln ~= "" then hasText = true end end end
+                    if hasText then
+                        out[#out + 1] = { actor = ac, label = en.label or t.name, isBuilt = false }
+                        if fn then seen[fn] = true end
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Signs.SelectFromTargetList(actor) -- deterministic version of the Delete key's ToggleTarget, for the
+-- Target List tab's "Del" button (2026-10-06): always SETS this exact actor as the sign target and jumps to
+-- the Signs tab, never toggles/releases it -- a GUI button click should always do the same thing, unlike the
+-- real Delete key which doubles as a release when pressed again on the same target.
+function Signs.SelectFromTargetList(actor)
+    if not (actor and actor:IsValid()) then return false end
+    Signs.SetTarget(actor)
+    Signs._tabSeq = (Signs._tabSeq or 0) + 1
+    Signs._statusDirty = true
+    return true
+end
+
 local function playerPos()
     local x, y, z
     pcall(function()
@@ -1592,6 +1653,26 @@ function Signs.Install(Spawner, Config)
                 end
             end
         end)
+        return true
+    end)
+
+    -- lbtestsignlist -- debug for the Target List tab's "Build Signs"/"Placed Signs" categories (2026-10-06):
+    -- calls Signs.ListPopulated() directly and prints exactly what it found, bypassing the GUI request/response
+    -- round-trip entirely, so a "nothing shows up" report can be isolated to either this function or the bridge.
+    RegisterConsoleCommandHandler("lbtestsignlist", function(FullCommand, Parameters, Ar)
+        local function out(m) say(m, Ar) end
+        local ok, err = pcall(function()
+            if not Signs._loadedId then Signs.Load() end
+            local n = 0
+            for _ in pairs(Signs._saved) do n = n + 1 end
+            out(string.format("Signs._saved has %d entrie(s) loaded (world %s)", n, tostring(Signs._loadedId)))
+            local populated = Signs.ListPopulated()
+            out(string.format("ListPopulated() found %d populated sign(s)", #populated))
+            for i, row in ipairs(populated) do
+                out(string.format("  %d. %s (isBuilt=%s)", i, tostring(row.label), tostring(row.isBuilt)))
+            end
+        end)
+        if not ok then out("lbtestsignlist FAILED: " .. tostring(err)) end
         return true
     end)
 

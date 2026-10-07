@@ -16,8 +16,8 @@ local FKeys = {}
 
 FKeys.KEYS = {}
 
--- Cycle order for the active decor category (Testbed.CycleDecorCategory steps forward through
--- this list, wrapping around). Any subset/reordering of Config.DECOR_CATEGORIES' keys is valid.
+-- Display/flattening order for the decor tree (the GUI spawn tree reads this, see
+-- spawnmenu_manifest.lua). Any subset/reordering of Config.DECOR_CATEGORIES' keys is valid.
 FKeys.DECOR_ORDER = {
   "nature", "boats", "wrecks", "tents", "storage", "furniture",
   "invdrop_animalparts", "invdrop_artifacts", "invdrop_clothes", "invdrop_currency",

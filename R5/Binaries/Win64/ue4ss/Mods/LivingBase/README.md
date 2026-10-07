@@ -343,6 +343,10 @@ Living Base Enhanced is an unofficial, unaffiliated fan project for Windrose. Wi
 - Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).
 - Oleo Script, Copyright (c) 2012 Soytutype (SIL Open Font License 1.1).
 
+### Development Tooling
+
+Built iteratively with Claude Code (Anthropic), an AI coding assistant, under RedFalcon's direction - design decisions, testing, and final judgment calls throughout are RedFalcon's own.
+
 ## License
 
 Copyright (c) 2026 RedFalcon. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.

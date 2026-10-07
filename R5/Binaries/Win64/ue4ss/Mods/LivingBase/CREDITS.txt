@@ -35,4 +35,8 @@ own permissions/restrictions.
    Font License 1.1). Both fonts ship in the optional LivingBaseSignFonts pak and are not
    required -- signs fall back to the game's built-in font without it.
 
+5. DEVELOPMENT TOOLING
+   Built iteratively with Claude Code (Anthropic), an AI coding assistant, under RedFalcon's
+   direction -- design decisions, testing, and final judgment calls throughout are RedFalcon's own.
+
 Thank you to everyone listed above.

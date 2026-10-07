@@ -491,35 +491,98 @@ end
 -- actually attached (false if the container isn't found yet, e.g. too early during world load before
 -- the HUD widget tree exists). See Spawner.Toast's own comment for the full "why a TextBlock spliced
 -- into AddChild instead of PrintString/ClientMessage/SpawnNotification" history.
-local function trySpliceToast(text, seconds)
+-- 2026-10-07: our OWN toast container, constructed and mounted once and reused -- see
+-- trySpliceToast's own header comment for the three earlier attempts that adopted the GAME's
+-- existing container instead and why each one failed live.
+local function ensureOwnToastContainer(GameInstance)
+    local c = Spawner._ownToastContainer
+    if c and c:IsValid() then
+        local b
+        pcall(function() b = c.vbox_Notifications end)
+        if b and b:IsValid() then
+            -- 2026-10-07 FIX (RedFalcon: first world showed toasts in the new box, second world
+            -- didn't) -- the cached container's UObject survives IsValid() across a level
+            -- transition, but a level load apparently wipes the actual viewport contents
+            -- regardless of who added them, silently un-mounting ours along with the game's own.
+            -- Re-asserting AddToViewport every reuse (not just on first construction) is cheap
+            -- insurance against that -- a no-op if it's still mounted, a re-mount if not.
+            pcall(function() c:AddToViewport(0) end)
+            -- 2026-10-07 FIX (RedFalcon: "toast window is not in the right place... in the place it
+            -- was before i asked for changes") -- same bug class as the AddToViewport re-assert
+            -- directly above: position/size were only ever applied at FIRST construction, so a
+            -- cached container surviving from earlier in the session (e.g. before this position
+            -- was set, or just from a previous world) kept whatever position/size it had THEN. Now
+            -- reasserted on every reuse too, not just construction.
+            pcall(function() c:SetPositionInViewport({ X = 20.0, Y = 75.0 }, true) end)
+            pcall(function() c:SetDesiredSizeInViewport({ X = 480.0, Y = 400.0 }) end)
+            return c, b
+        end
+    end
+    -- Need the CLASS, not an instance -- grab it off whatever the game already has lying around
+    -- (even a stale/orphaned one is still a perfectly valid UObject of the right class), then
+    -- construct and own a fresh copy ourselves instead of adopting that instance directly.
+    local templateClass
+    pcall(function()
+        local list = FindAllOf("WBP_SideNotificationsContainer_C")
+        if list then
+            local w = list[1]
+            if not w then pcall(function() w = list:Get(1) end) end
+            if w and w:IsValid() then templateClass = w:GetClass() end
+        end
+    end)
+    if not (templateClass and templateClass:IsValid()) then
+        always("[toast-diag] ensureOwnToastContainer: no template class found via FindAllOf")
+        return nil, nil
+    end
+    local okNew, newContainer = pcall(function() return StaticConstructObject(templateClass, GameInstance) end)
+    if not (okNew and newContainer and newContainer:IsValid()) then
+        always("[toast-diag] ensureOwnToastContainer: StaticConstructObject FAILED, ok=" .. tostring(okNew)
+            .. " err=" .. tostring(newContainer))
+        return nil, nil
+    end
+    -- The real point of owning our own instance: mount IT into the viewport ourselves, rather
+    -- than depending on whatever lifecycle the game's own auto-created container goes through
+    -- across a level transition.
+    -- AddToViewport(int32 ZOrder = 0) has a default in C++, but UE4SS's UFunction binding requires
+    -- every parameter passed explicitly regardless of the C++ default -- confirmed live: calling it
+    -- with no args threw "UFunction expected 1 parameters, received 0".
+    local okAdd, addErr = pcall(function() newContainer:AddToViewport(0) end)
+    if not okAdd then
+        always("[toast-diag] ensureOwnToastContainer: AddToViewport FAILED: " .. tostring(addErr))
+        return nil, nil
+    end
+    -- 2026-10-07 (RedFalcon: half as wide, top-left aligned just below the health bar's bottom-left)
+    -- -- AddToViewport wraps the widget in a full-screen Canvas slot regardless of the Blueprint's
+    -- own internal layout, and these two UUserWidget functions are the standard way to override
+    -- that slot's position/size directly, independent of whatever the original WBP's own anchors
+    -- were designed for.
+    pcall(function() newContainer:SetPositionInViewport({ X = 20.0, Y = 75.0 }, true) end)
+    -- 2026-10-07: widened another 50% (320 -> 480, RedFalcon: "the width ended up too small").
+    pcall(function() newContainer:SetDesiredSizeInViewport({ X = 480.0, Y = 400.0 }) end)
+    local b
+    pcall(function() b = newContainer.vbox_Notifications end)
+    if not (b and b:IsValid()) then
+        always("[toast-diag] ensureOwnToastContainer: vbox_Notifications invalid after construct")
+        return nil, nil
+    end
+    Spawner._ownToastContainer = newContainer
+    always("[toast-diag] constructed + AddToViewport'd our own container: " .. tostring(newContainer:GetFullName()))
+    return newContainer, b
+end
+
+local function trySpliceToast(text, seconds, tag)
     local shown = false
     pcall(function()
-        local container, box
-        local list
-        pcall(function() list = FindAllOf("WBP_SideNotificationsContainer_C") end)
-        if list then
-            local n = 0
-            pcall(function() n = list:GetArrayNum() end)
-            if n == 0 then pcall(function() n = #list end) end
-            for i = 1, n do
-                local w = list[i]
-                if not w then pcall(function() w = list:Get(i) end) end
-                if w and w:IsValid() then
-                    local b
-                    pcall(function() b = w.vbox_Notifications end)
-                    if b and b:IsValid() then
-                        container, box = w, b
-                        break
-                    end
-                end
-            end
+        local okOuter, GameInstance = pcall(function() return UEHelpers.GetGameInstance() end)
+        if not (okOuter and GameInstance and GameInstance:IsValid()) then
+            always("[toast-diag] GetGameInstance FAILED ok=" .. tostring(okOuter))
+            return
         end
+        local container, box = ensureOwnToastContainer(GameInstance)
         if not (container and box) then return end
 
         local okClass, TextBlockClass = pcall(function() return StaticFindObject("/Script/UMG.TextBlock") end)
-        local okOuter, GameInstance = pcall(function() return UEHelpers.GetGameInstance() end)
-        if not (okClass and TextBlockClass and TextBlockClass:IsValid()
-            and okOuter and GameInstance and GameInstance:IsValid()) then return end
+        if not (okClass and TextBlockClass and TextBlockClass:IsValid()) then return end
         local okNew, newWidget = pcall(function() return StaticConstructObject(TextBlockClass, GameInstance) end)
         if not (okNew and newWidget and newWidget:IsValid()) then return end
         pcall(function()
@@ -531,7 +594,8 @@ local function trySpliceToast(text, seconds)
         -- off past the edge of the screen at the default (large) font size. Wrap at a fixed pixel width
         -- and shrink the default font down to something toast-sized.
         pcall(function() newWidget:SetAutoWrapText(true) end)
-        pcall(function() newWidget:SetWrapTextWidth(360) end)
+        -- Matches the container's own 480px width (2026-10-07), minus room for internal padding.
+        pcall(function() newWidget:SetWrapTextWidth(440) end)
         pcall(function()
             local font = newWidget.Font
             if font then
@@ -541,17 +605,72 @@ local function trySpliceToast(text, seconds)
         end)
 
         local okAdd = pcall(function() box:AddChild(newWidget) end)
-        if not okAdd then return end
+        if not okAdd then
+            always("[toast-diag] box:AddChild FAILED")
+            return
+        end
         pcall(function() container.bHidden = false end)
         pcall(function() container:CheckVisibility() end)
         pcall(function() container:SetVisibility(ESlateVisibility and ESlateVisibility.Visible or 0) end)
+        pcall(function()
+            local hidden, vis = "?", "?"
+            pcall(function() hidden = tostring(container.bHidden) end)
+            pcall(function() vis = tostring(container:GetVisibility()) end)
+            always(string.format("[toast-diag] AddChild OK, tag=%s text=%s, container.bHidden=%s visibility=%s",
+                tostring(tag), text, hidden, vis))
+        end)
+        -- 2026-10-07 FIX (RedFalcon: "player pawn ready was still on the screen after the load
+        -- completed") -- a real race: Spawner.Toast's own splice retries up to 20x/20s until the
+        -- HUD widget tree exists (this exact toast is the reason that retry budget exists at all --
+        -- see Spawner.Toast's header comment). If the player moves quickly, DismissToast can fire
+        -- BEFORE any of those retries has actually succeeded -- at that point there is no matching
+        -- _activeToasts entry yet to remove, so the dismiss is a silent no-op, and a LATER retry
+        -- then adds the toast anyway with nothing left to ever pull it back down. Checking the
+        -- dismissed-tags set here, right as a splice succeeds, closes that window: a toast that
+        -- lands after its own dismissal immediately tears itself back down instead of lingering.
+        if tag and Spawner._dismissedToastTags and Spawner._dismissedToastTags[tag] then
+            always("[toast-diag] late splice for already-dismissed tag=" .. tostring(tag) .. " -- tearing back down")
+            pcall(function() box:RemoveChild(newWidget) end)
+            shown = true
+            return
+        end
+        if tag then
+            always("[toast-diag] splice OK for tag=" .. tostring(tag))
+        end
         shown = true
 
         ensureToastTicker()
         Spawner._activeToasts[#Spawner._activeToasts + 1] =
-            { box = box, widget = newWidget, container = container, expiresAt = os.time() + math.ceil(seconds or 4.0) }
+            { box = box, widget = newWidget, container = container,
+              expiresAt = os.time() + math.ceil(seconds or 4.0), tag = tag }
     end)
     return shown
+end
+
+Spawner._dismissedToastTags = Spawner._dismissedToastTags or {}
+
+-- 2026-10-07 (RedFalcon: the "waiting for you to move" status needs to stay up the whole time,
+-- not just a few seconds, since it can easily be missed during a loading screen) -- lets a caller
+-- give a toast a long/generous `seconds` budget as a safety net, then explicitly pull it down the
+-- moment the real condition it's waiting on (e.g. player movement) actually happens, rather than
+-- guessing at a fixed duration that's either too short to be seen or lingers awkwardly too long.
+function Spawner.DismissToast(tag)
+    if not tag then return end
+    Spawner._dismissedToastTags[tag] = true
+    local removed = 0
+    for i = #Spawner._activeToasts, 1, -1 do
+        local t = Spawner._activeToasts[i]
+        if t.tag == tag then
+            local okRm = pcall(function() t.box:RemoveChild(t.widget) end)
+            always(string.format("[toast-diag] DismissToast(%s): removed entry %d, RemoveChild ok=%s",
+                tostring(tag), i, tostring(okRm)))
+            removed = removed + 1
+            table.remove(Spawner._activeToasts, i)
+        end
+    end
+    if removed == 0 then
+        always("[toast-diag] DismissToast(" .. tostring(tag) .. "): no matching active entry (marked dismissed for any late arrival instead)")
+    end
 end
 
 -- Spawner.Toast(msg, seconds) — on-screen message, reusing the game's own native side-notification
@@ -577,10 +696,13 @@ end
 -- after RESTORE_SETTLE_MS + staggered spawn delays, several more seconds on. Bumped way up (20
 -- tries/1s = ~20s) since this only ever actually loops in that one early-load window -- the common
 -- case (HUD already mounted) still succeeds on the very first attempt, zero added cost.
-function Spawner.Toast(msg, seconds)
+function Spawner.Toast(msg, seconds, tag)
     local text = tostring(msg)
+    -- A fresh request for this tag means "show it again" -- clear any stale dismissal from a
+    -- PREVIOUS call (e.g. last world's load cycle), or this one would be silently suppressed too.
+    if tag and Spawner._dismissedToastTags then Spawner._dismissedToastTags[tag] = nil end
     local function attempt(triesLeft)
-        if trySpliceToast(text, seconds) then return end
+        if trySpliceToast(text, seconds, tag) then return end
         if triesLeft > 0 and ExecuteWithDelay then
             ExecuteWithDelay(1000, function() attempt(triesLeft - 1) end)
         else
@@ -1132,6 +1254,29 @@ function Spawner.Spawn(classPath, label, atLocation, preFinish, aiControllerClas
         return nil
     end
     if fp then Spawner.MakeFriendly(actor, fp) end
+
+    -- 2026-10-07 FIX (RedFalcon: "animals and crew fight each other until the mover settings are
+    -- applied") -- GetFriendlyFactionParams() can legitimately return nil this early in a world
+    -- restore (no live crew exists yet to copy FactionsParams from, and the fallback DataAsset
+    -- hasn't resolved yet either), silently no-opping both MakeFriendly calls above. Nothing in the
+    -- restore path ever retried for most creature classes -- RESTORE_RULES's later post-process
+    -- pass only re-pacifies goat/boar (testbed.lua), not wolf/crab/drowned/etc, and that pass is
+    -- also deferred ~8s after every mover has already spawned. Retry here instead, for EVERY
+    -- friendly-flagged spawn regardless of class, right at spawn time rather than waiting on a
+    -- species-specific restore rule -- same 750ms x4 cadence pacifyCreature already uses elsewhere.
+    if makeFriendly and ExecuteWithDelay then
+        local n = 0
+        local function retryFriendly()
+            n = n + 1
+            ExecuteInGameThread(function()
+                pcall(function()
+                    if actor and actor:IsValid() then Spawner.MakeFriendly(actor) end
+                end)
+            end)
+            if n < 4 and ExecuteWithDelay then ExecuteWithDelay(750, retryFriendly) end
+        end
+        ExecuteWithDelay(750, retryFriendly)
+    end
 
     -- Set-dressing makes a spawn INVULNERABLE. A raider must be killable, or the whole
     -- feature is a group of immortal zombies standing in your camp.
@@ -14351,6 +14496,28 @@ function Spawner.MakeFriendly(actor, fp)
     pcall(function()
         local fc = actor.FactionComponent
         if fc and fc:IsValid() then fc.FactionsParams = fp; ok = true end
+    end)
+    -- FactionsParams alone only fixes DAMAGE, not native R5AS_* TARGETING -- its
+    -- relationship categorizer (R5AS_Categorizer_Relationship) defers to bShouldUseOwnerFaction
+    -- + OwnerId rather than reading a target's own FactionsParams (discovered via the Caster
+    -- totem case, see whistle.lua's onTotemSpawned comment block). Without this, crew/other
+    -- player-owned actors keep treating a "friendly" animal/monster as AS.Category.Enemy and
+    -- attack it on sight even though it can't hurt them. Syncing OwnerId to the player here
+    -- generalizes that fix to every caller of MakeFriendly (animals, monsters, totems).
+    pcall(function()
+        local oc = actor.OwnershipComponent
+        if not (oc and oc:IsValid()) then return end
+        local ownerId = nil
+        pcall(function()
+            local UEHelpers = require("UEHelpers")
+            local pc = UEHelpers.GetPlayerController()
+            local ps = pc and pc:IsValid() and pc.PlayerState
+            if ps and ps:IsValid() then ownerId = ps.AccountData.AccountId end
+        end)
+        if not ownerId then return end
+        pcall(function() oc.OwnerId = ownerId end)
+        pcall(function() oc.bShouldUseOwnerFaction = true end)
+        pcall(function() oc:OnRep_OwnerId() end)
     end)
     return ok
 end

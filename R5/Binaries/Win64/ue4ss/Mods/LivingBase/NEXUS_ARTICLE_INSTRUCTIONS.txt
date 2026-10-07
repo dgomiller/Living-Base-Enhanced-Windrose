@@ -389,6 +389,11 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [*][color=#D4D4D8]Greengoth, by Dimitri Antonov / Blue Curve Designstudio (Creative Commons Attribution 4.0 International).[/color][/*]
 [*][color=#D4D4D8]Oleo Script, Copyright © 2012 Soytutype (SIL Open Font License 1.1).[/color][/*]
 [/list]
+[color=#D4D4D8]
+[b]Development Tooling[/b][/color]
+[list]
+[*][color=#D4D4D8]Built iteratively with Claude Code (Anthropic), an AI coding assistant, under RedFalcon's direction - design decisions, testing, and final judgment calls throughout are RedFalcon's own.[/color][/*]
+[/list]
 
 [size=4][b][u]License[/u][/b][/size]
 [color=#D4D4D8]Copyright © 2026 RedFalcon/Dan Gomiller. All rights reserved, except for the specific permissions below. Nothing beyond what's explicitly listed here is implied or granted.

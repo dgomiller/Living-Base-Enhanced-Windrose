@@ -822,6 +822,16 @@ function Signs.Load()
     local paths, id = persistPaths()
     if not paths then return false end
     Signs._saved, Signs._miss, Signs._seen, Signs._sweeps = {}, {}, {}, 0
+    -- 2026-10-06 FIX (RedFalcon: "signs have no text" after switching worlds, but fine on the first
+    -- world loaded) -- these per-ACTOR caches were never cleared on a world switch, only the
+    -- per-SAVE-ENTRY ones above. Both worlds share the same underlying level (GenlandiaMulty), so a
+    -- leftover _applied entry from the previous world's actor can wrongly satisfy Apply's
+    -- reuseComps/IsValid check against a component that no longer actually renders -- Apply then
+    -- "succeeds" (logs clean) while updating a dead reference instead of building a fresh one. A
+    -- manual re-Apply later works because by then the stale check finally fails and it rebuilds.
+    -- None of these can possibly still be valid once a genuinely different world's data just loaded.
+    Signs._applied, Signs._keyOf, Signs._keyActor = {}, {}, {}
+    Signs._lastApply, Signs._lastAnyApply = {}, nil
     Signs._loadedId = id
     for _, p in ipairs(paths) do
         local f = io.open(p, "r")
@@ -981,7 +991,17 @@ function Signs.RestoreSpawned(onDone)
     local okTop, errTop = pcall(function()
         local Sp = Signs._spawner
         if not Sp then return finish() end
-        if not Signs._loadedId then Signs.Load() end
+        -- 2026-10-07 FIX (RedFalcon: second world's signs never get text, even standing right next
+        -- to a freshly-restored mod-spawned one) -- this only ever reloaded Signs._saved on the
+        -- FIRST call all session (`not Signs._loadedId`), so every world after the first compared
+        -- its own live signs against the PREVIOUS world's saved data, found zero matches, and
+        -- silently did nothing (no "Populating Signs" line, no toast -- confirmed via
+        -- spawn_menu_history.txt showing that line present for world 1, absent for world 2).
+        -- Signs.Sweep already does this check correctly a few lines below; RestoreSpawned just never
+        -- got the same fix, which is also why Sweep's own later fallback pass eventually recovered
+        -- native-item signs (it reloads correctly) while this toast-bearing pass never did.
+        local id = Sp.GetIslandId and Sp.GetIslandId()
+        if Signs._loadedId ~= id then Signs.Load() end
         local work = {}
         -- Spawned props (matched within RESTORE_MATCH_UU of their restored spot) AND the game's own build-mode signs/chests (matched by exact
         -- class + position, they are rebuilt in place) -- one pass, one count (2026-10-01, RedFalcon: run the sign fill in line at the end of the

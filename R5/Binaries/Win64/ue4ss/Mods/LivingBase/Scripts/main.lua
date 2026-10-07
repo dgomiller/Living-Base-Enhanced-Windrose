@@ -165,7 +165,14 @@ do
 end
 do
     local originalToast = Spawner.Toast
-    Spawner.Toast = function(msg, seconds)
+    -- 2026-10-07 FIX (RedFalcon: the tagged "move once to confirm..." toast never cleared) --
+    -- this wrapper only ever forwarded (msg, seconds), silently dropping a THIRD `tag` argument on
+    -- every single call through this function regardless of what the real caller passed -- every
+    -- [toast-diag] log downstream showed tag=nil even with the real call site passing
+    -- "restore_wait_motion" correctly, confirmed live. Spawner.DismissToast(tag) can only ever find
+    -- and remove a toast that was actually stored WITH that tag, so it was silently never matching
+    -- anything -- "no matching active entry" every time, exactly as logged.
+    Spawner.Toast = function(msg, seconds, tag)
         pcall(function()
             local hf = io.open(SPAWN_MENU_HISTORY_PATH, "a")
             if hf then
@@ -173,7 +180,7 @@ do
                 hf:close()
             end
         end)
-        return originalToast(msg, seconds)
+        return originalToast(msg, seconds, tag)
     end
 end
 
@@ -4134,6 +4141,10 @@ local function scheduleRestore()
         end
     end
     local function fire(why)
+        -- Pull down the "waiting for you to move" toast the moment the condition it was
+        -- describing actually resolves (motion detected or timed out), rather than letting it
+        -- expire on its own fixed clock -- see its own Spawner.Toast call below for why.
+        pcall(function() Spawner.DismissToast("restore_wait_motion") end)
         if rawget(_G, "__LB_DELAY_SHIM") then rawset(_G, "__LB_GT_DELAY_ON", true) end   -- from here on every ExecuteWithDelay reschedule runs on the game thread
         local delay = Config.RESTORE_SETTLE_MS or 4000
         always(string.format("Restore: %s; settling %dms.", why, delay))
@@ -4182,7 +4193,17 @@ local function scheduleRestore()
             -- This ONE move is required (it's how restore tells "still loading" from "world is
             -- live" — see the comment just below), but once it fires, stop: Spawner.RestoreFromPersist
             -- shows its own "please stand still" toast for the actual restore window that follows.
-            pcall(function() Spawner.Toast("LivingBase: move once to confirm the world has loaded, then stand still — restoring your base is about to begin.", 3.0) end)
+            -- 2026-10-07 (RedFalcon: "i never see it... if it only displays for a few seconds it
+            -- wont be seen") -- this used to expire on a fixed 3s clock, easy to miss during a
+            -- loading screen. Now given a generous worst-case budget (matches the same
+            -- RESTORE_MOVE_TIMEOUT_S the move-detection loop itself gives up at) as a safety net,
+            -- but actually dismissed the instant motion is detected or the loop times out -- see
+            -- fire()'s own Spawner.DismissToast call above, tagged to match.
+            pcall(function()
+                Spawner.Toast(
+                    "LivingBase: move once to confirm the world has loaded, then stand still — restoring your base is about to begin.",
+                    (Config.RESTORE_MOVE_TIMEOUT_S or 120) + 5, "restore_wait_motion")
+            end)
         end
         -- The pawn EXISTS during the loading screen, so its presence is not proof the world
         -- is live. Spawning 20 AI movers mid-stream hung the game (2026-07-09: "Restore:

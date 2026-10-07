@@ -40,6 +40,29 @@ FIXED
   original position and rotation from pickup.
 - The Precision slider's in-game tooltip claimed it "doesn't affect rotate" -- it does (fixed back
   on 2026-08-19); the tooltip just never got updated to say so until now.
+- Spawned/restored animals and monsters (goats, boars, wolves, drowned, etc.) could end up in a
+  prolonged fight with your crew right after spawning or on a world load, if the one-time
+  friendly-faction application happened to run before a crew existed yet to copy from -- it now
+  retries for a few seconds instead of only ever trying once. Wolves and Alpha Wolves specifically
+  also had their own native perception/memory components stripped (the same treatment goats
+  already had), since crew could otherwise still notice and react to them regardless of faction.
+- Switching to a second (or later) world in the same play session could leave sign text
+  unrestored, even standing right next to a sign that was definitely saved -- the sign-reload
+  check only ever ran once per session instead of once per world.
+- On-screen toast notifications (restore progress, "base restored and ready", etc.) could stop
+  appearing entirely after switching to a second world, while still showing up correctly in the
+  GUI's History tab -- rebuilt to use a notification window this mod owns and mounts itself,
+  instead of borrowing the game's own, which could end up silently orphaned across a level
+  transition.
+- The "move once to confirm the world has loaded" status now stays visible for as long as it's
+  actually relevant (until you move), instead of disappearing after a few fixed seconds during a
+  loading screen, where it was easy to miss entirely.
+- "Fishing Barrel and Kettle" was filed under the Barrels category in the spawn menu; moved to
+  Tables, where it actually belongs.
+
+CHANGED
+- Credits: added a "Development Tooling" entry crediting Claude Code (Anthropic), which this mod's
+  code and documentation were built iteratively with.
 
 ======================================================================
 v3.0.5 (2026-10-01) -- previous version: v3.0.0

@@ -682,11 +682,15 @@ Config.BOARS = {
   { name = "BoarMega (Mobile)",    candidates = { "/Game/Gameplay/Character/AI/Mob/BoarMega/BP_Mob_Boar_Mega.BP_Mob_Boar_Mega_C" } },
 }
 
--- WOLVES (2026-08-07). Paths confirmed from the manifest, never live-tested -- same "friendly-faction
--- copy only, no AI override yet" starting point as the new boar variants above.
+-- WOLVES (2026-08-07). Paths confirmed from the manifest.
+-- 2026-10-06 FIX (RedFalcon: "my crew tried to attack it"): live-tested FactionsParams/OwnerId were
+-- both confirmed correctly synced to the crew's own faction (lbtestcrewcomponents dump), so the
+-- attack wasn't a relationship/ownership problem at all -- Wolf's own R5AgentComponent/MemoryComponent
+-- (DA_Mob_Wolf_AgentParams/DA_Mob_Wolf_Memory) give it native predator threat-perception that targets
+-- nearby actors independent of faction, same root cause GOAT_DISABLE already strips off goats.
 Config.WOLVES = {
-  { name = "Wolf (Mobile)",      candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_Wolf.BP_Mob_Wolf_C" } },
-  { name = "AlphaWolf (Mobile)", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_AlphaWolf.BP_Mob_AlphaWolf_C" } },
+  { name = "Wolf (Mobile)",      candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_Wolf.BP_Mob_Wolf_C" }, disable = Config.GOAT_DISABLE },
+  { name = "AlphaWolf (Mobile)", candidates = { "/Game/Gameplay/Character/AI/Mob/Wolf/BP_Mob_AlphaWolf.BP_Mob_AlphaWolf_C" }, disable = Config.GOAT_DISABLE },
 }
 
 -- CROCODILE (2026-08-07). Paths confirmed from the manifest, never live-tested. CrocodileCorrupted

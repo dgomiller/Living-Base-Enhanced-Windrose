@@ -57,10 +57,10 @@ This is the order of operations during load:
 [i]NOTE: Due to how ue4ss (the tool that integrates this mod with Windrose) handles key inputs, in game controls can be sluggish and slow to respond. This issue does not exist in the menu window.[/i]
 
 [b]Living Base Enhanced Menu Keybinds[/b]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_01.png&w=600[/img]
 
 [b]In Game LBE Keybinds[/b]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_02.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_02.png&w=600[/img]
 
 [b]Legend Of Keybind Usage[/b]
 [img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/basic_controls_03.png[/img]
@@ -128,7 +128,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Menu Tab Overview[/b][/size]
 [color=#D4D4D8]The Living Base Enhanced (LBE) window contains several tabs to better organize access to various functions. The tab area also contains features for better viewing and visibility.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/menu_tab_overview_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/menu_tab_overview_01.png&w=600[/img]
 
 [list=1]
 [*][b]Hide GUI[/b] - This button toggles window shade mode. It hides and displays everything underneath it, giving a better view of the screen without closing the window, allowing the keyboard tools to continue to work.
@@ -148,7 +148,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Spawn / Move Tab[/b][/size]
 [color=#D4D4D8]The Spawn / Move tab is the primary tab where Living Base Enhanced's functionality lives. From this tab people, animals, monsters, and decor may be spawned, placed, moved, and deleted.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/spawn_move_tab_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/spawn_move_tab_01.png&w=600[/img]
 
 [list=1]
 [*][b]Spawn Menu[/b] - The spawn menu contains a tree of all 1,000+ people, items, decor, etc. available to place in your base. Highlight the selection and choose one of the options below.
@@ -174,7 +174,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Target List[/b][/size]
 [color=#D4D4D8]The target list is used to more easily locate and select items when bunched together or on the move.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/target_list_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/target_list_01.png&w=600[/img]
 
 [list=1]
 [*][b]Target List[/b] - The list of all targets found in the currently selected radius. Pressing the "+" button next to the item will target it.
@@ -190,7 +190,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 
 [i]NOTE: Changes in this tab are not saved real time as this caused consistent crashes of the game. Making changes still occasionally does so. It is highly recommended to save often to avoid losing changes.[/i]
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_01.png&w=600[/img]
 
 [list=1]
 [*][b]Save Customizations[/b] - The most important button in this screen. Customizations are not saved until this button is pressed.
@@ -199,11 +199,11 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [*][b]View Buttons[/b] - These buttons allow for various views that can help with customization, but are also useful in placing and moving objects from the Spawn / Move tab.
 [list]
 [*]Decor View - A view that specifically scales itself to better display the entirety of a decor item in place.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_02.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_02.png&w=600[/img]
 [*]Full Body - A view that specifically scales itself to better display the entire body of a non-decor item.
 [img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_03.jpg&h=300[/img]
 [*]Face View - Similar to the others, this zooms in to better focus on just the face.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_04.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_04.png&w=600[/img]
 [*]Rotation Buttons - Pressing the "<" and ">" buttons will orbit around the target.
 [*]Zoom Buttons - Pressing the "+" and "-" buttons will move the camera closer and further from the object.
 [/list]
@@ -213,7 +213,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_05.png[/img]
 [img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_06.png&h=300[/img]
 [*]Body - This section allows the change of various body colors and textures.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_07.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_07.png&w=600[/img]
 [list]
 [*]Skin tone changes the color of the skin, but not the features.
 [*]Eye color changes the eyes.
@@ -232,7 +232,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [*]Clothes - This allows the setting and changing of various available clothes slots. Most clothes have three color sections, and the game uses set palettes. Choosing an outfit will set every available clothing item for the selection but does not clear any other slot.
 [img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_09.png[/img]
 [*]Belts and Straps - These are the various items criss crossing the person's body.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_10.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_10.png&w=600[/img]
 [list]
 [*]Set - Like the others, this will apply every matching item available.
 [*]Belt - The item that goes along the waist.
@@ -244,9 +244,9 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [*]Lantern - This places a lantern on the belt of the person, similar to what the player can use.
 [/list]
 [*]Accessories - Allows populating every belt and weapon's slot with a custom item. Due to the number of slots, a guide may be viewed in the GUI to help locate where each item may be placed.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_11.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_11.png&w=600[/img]
 [*]Poses and Actions - As the name implies, this allows the assignment of various actions and poses to the person.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_12.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/customize_12.png&w=600[/img]
 [list]
 [*]Pose List - On the left hand side is a list of various poses and actions. Clicking + next to one will assign it to the targeted person.
 [*]Current Pose - Displays what pose is currently running.
@@ -259,12 +259,12 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Signs / Labels[/b][/size]
 [color=#D4D4D8]To help with organization or even to just provide ambience with road or building signs, Living Base Enhanced allows adding text to several in-game build objects as well as other spawnable decor objects.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_01.png&w=600[/img]
 
 [list=1]
 [*][b]Selected Object[/b] - What text object is selected.
 [*][b]"Select / Deselect" Toggle Button[/b] - Selects the build menu or spawned items that may be modified. Pressing Delete (Del) in game or in the window also selects.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_02.jpg&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/signs_labels_02.jpg&w=600[/img]
 [*][b]Text Box[/b] - Most objects will allow up to four lines of text. This text will resize based on the available canvas size so shorter sentences are usually better.
 [*][b]Font Settings[/b] - Allows changes to how the text looks.
 [list]
@@ -282,18 +282,18 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Photo Mode[/b][/size]
 [color=#D4D4D8]Inspired by Cyberpunk 2077's Appearance Menu Mod and being shocked at the lack of a photo mode in a game in 2026, Photo Mode allows for taking fun pictures in the world and provides tools to hopefully allow for a large range of options.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_01.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_01.png&w=600[/img]
 
 [list=1]
 [*][b]Camera Mode[/b] - Photo Mode includes three custom cameras to get the picture you want. Any placement and changes to the camera location are remembered until their specific "Reset" button is pressed.
 [list]
 [*]Tripod - As the name implies, this is a stationary camera that allows the player to stand in front of it. To set the initial position, stand and face approximately where you want the camera to look and then press the "Tripod" button. This will set the camera in that exact spot with that exact rotation. Zooming out and reentering tripod view will not reset placement. If "Reset" is hit, the camera will move to the player's location as if it were the initial trigger.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_02.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_02.png&w=600[/img]
 [*]Selfie - Points the camera in the direction of the player's face.
 [i]NOTE: This view can be a bit flaky and can crash at times.[/i]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_03.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_03.png&w=600[/img]
 [*]First Person - Set the camera inside the player's head, allowing visibility as if viewing via the player pawn's eyes.
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_04.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_04.png&w=600[/img]
 [/list]
 [*][b]Target Highlight[/b] - Disables the highlight function used while targeting to ensure clean pictures.
 [*][b]Movement Buttons[/b] - Allows the camera to be shifted around to improve the view. Can also be used for the Custom tab camera views as well.
@@ -311,7 +311,7 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [*]Spill Shield Distance - How far is the light from the spill shield. This can affect the amount of light shining to the side.
 [*]Spill Shield Size - Blocks more or less light from lighting up behind it.
 [/list]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_05.png&w=550[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_05.png&w=600[/img]
 [img]https://raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/photo_mode_06.png[/img]
 [*][b]Weather and Time Set[/b] - The drop downs will allow setting the perfect conditions for pictures.
 [list]
@@ -324,8 +324,8 @@ When in the spawn menu, there are various tabs to allow access to several differ
 [size=4][b]Instructions and History[/b][/size]
 [color=#D4D4D8]The last two tabs are Instructions and History. Instructions contains this documentation, and History lists everything Living Base Enhanced has done during the current gaming session.
 
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_01.png&w=550[/img]
-[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_02.png&w=550[/img][/color]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_01.png&w=600[/img]
+[img]https://wsrv.nl/?url=raw.githubusercontent.com/dgomiller/Living-Base-Enhanced-Windrose/master/R5/Binaries/Win64/ue4ss/Mods/LivingBase/images/instructions_and_history_02.png&w=600[/img][/color]
 
 [size=4][b]Credits and Attribution[/b][/size]
 [color=#D4D4D8]Living Base Enhanced is an unofficial, unaffiliated fan project for Windrose. Windrose itself, its game assets, class names, and all related IP belong to Kraken Express.

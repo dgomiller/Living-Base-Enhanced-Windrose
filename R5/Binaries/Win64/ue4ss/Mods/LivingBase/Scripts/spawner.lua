@@ -13267,6 +13267,22 @@ function Spawner.BuildCustomStateLines(actor, say)
     if okHands and handItems then
         if handItems.Left then lines[#lines + 1] = "HANDITEM:Left:" .. handItems.Left end
         if handItems.Right then lines[#lines + 1] = "HANDITEM:Right:" .. handItems.Right end
+        -- HANDOFFSET:<hand>:<fwd>:<right>:<up>:<pitch>:<yaw>:<roll>:<scale> (2026-10-09, RedFalcon:
+        -- "the hand item spawned in as if it were reset to default position and not what i set" --
+        -- a tuned Move/Rotate/Scale offset lived ONLY in Spawner._handItemOffset, this Lua
+        -- session's own memory, so it never survived a world restore/relaunch at all. Written right
+        -- after its own HANDITEM line on purpose -- CS.applyLine processes a block's lines in
+        -- order, and HANDOFFSET's restore handler needs the item already re-equipped (so
+        -- attachMeshAtSocket's own tracking hook has already captured a base transform) before it
+        -- can apply anything on top of it. Only emitted when non-default, same "skip anything at
+        -- its baked default" convention every other diffed field in this function already uses.
+        for _, hand in ipairs({ "Left", "Right" }) do
+            local off = Spawner._handItemOffset[actor] and Spawner._handItemOffset[actor][hand]
+            if off and not Spawner._handOffsetIsDefault(off) then
+                lines[#lines + 1] = string.format("HANDOFFSET:%s:%.3f:%.3f:%.3f:%.3f:%.3f:%.3f:%.3f",
+                    hand, off.fwd, off.right, off.up, off.pitch, off.yaw, off.roll, off.scale)
+            end
+        end
     end
 
     return lines
@@ -13465,6 +13481,23 @@ CS.applyLine = function(actor, line, say)
         local hand, name = line:match("^HANDITEM:(%a+):(.+)$")
         local socket = (hand == "Left") and "ik_weapon_lSocket" or (hand == "Right") and "ik_weapon_rSocket" or nil
         if socket then pcall(function() Spawner.ApplySocketItemManual(socket, name, say, actor) end) end
+    elseif key == "HANDOFFSET" then
+        -- Restore-side counterpart to BuildCustomStateLines' own "HANDOFFSET:" comment -- relies
+        -- on its own HANDITEM line having already run THIS SAME restore pass (lines are applied in
+        -- saved order, and the item has to already be re-equipped before attachMeshAtSocket's
+        -- tracking hook has a base transform to apply this on top of).
+        local hand, fwd, right, up, pitch, yaw, roll, scl = line:match(
+            "^HANDOFFSET:(%a+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
+        if hand and actor and actor:IsValid() then
+            pcall(function()
+                Spawner._handItemOffset[actor] = Spawner._handItemOffset[actor] or {}
+                Spawner._handItemOffset[actor][hand] = {
+                    fwd = tonumber(fwd), right = tonumber(right), up = tonumber(up),
+                    pitch = tonumber(pitch), yaw = tonumber(yaw), roll = tonumber(roll), scale = tonumber(scl),
+                }
+                Spawner._applyHandItemOffset(hand, actor)
+            end)
+        end
     elseif key == "WEAPONSLOT" then
         local locKey, name = line:match("^WEAPONSLOT:([%a]+):(.+)$")
         if locKey then pcall(function() Spawner.ApplyWeaponSlotManual(locKey, name, say, actor) end) end
@@ -15416,10 +15449,121 @@ end
 -- uses CS.LiveScrubFrame's wall-clock tracking (rather than trusting the last manually-set `frame`)
 -- so the reported frame/slider position actually tracks real-time playback. Returns
 -- active, paused, frame, numFrames.
+-- Saved-frame lookup (2026-10-09, RedFalcon: "cant we pull the position from the saved custom?").
+-- SaveCustomState/BuildCustomStateLines already write a "POSEFROZEN:<poseName>:<frame>" line into
+-- custom_state_<islandId>.txt, keyed by the actor's OWN tracked label -- the exact same block
+-- RestoreCustomState's CS.applyLine reads on world load -- but only if Spawner.poseScrub happened
+-- to be actively tracking this actor PAUSED at save time (see BuildCustomStateLines' own
+-- POSEFROZEN comment). When present, it's real ground truth for exactly where this target's pose
+-- was left, not a guess -- read it directly via the same label/block lookup SaveCustomState uses.
+function Spawner._findSavedPoseFrozen(actor)
+    local label = nil
+    for _, e in ipairs(Spawner.spawned) do
+        if e.actor == actor then label = e.label; break end
+    end
+    if not label then return nil, nil end
+    local ok, blocks = pcall(function() return CS.readBlocks() end)
+    if not ok then return nil, nil end
+    for _, b in ipairs(blocks or {}) do
+        if b.label == label then
+            for _, line in ipairs(b.lines or {}) do
+                local poseName, frameStr = line:match("^POSEFROZEN:(.+):(%d+)$")
+                if poseName then return poseName, tonumber(frameStr) end
+            end
+            break
+        end
+    end
+    return nil, nil
+end
+
+-- Lazy re-sync (2026-10-09, RedFalcon's bug report, same session as the Hand Item Transform fix:
+-- "I also noticed i cant play or frame through the pose" -- confirmed the EXACT same root-cause
+-- shape). Spawner.poseScrub is a single global, only ever populated by PoseScrubStart/
+-- PoseScrubStartAndPlay -- i.e. only for a pose APPLIED via the tree this session. Detecting an
+-- already-posed target (world-restored, posed in an earlier session, or simply never touched by
+-- the tree before) left poseScrub nil/stale, so Play/Pause/Frame had nothing matching to act on.
+-- Rebuilds poseScrub from whatever's ACTUALLY currently playing on the target -- same
+-- mesh:GetAnimInstance()["CurrentAsset"] read Spawner.TestReadCurrentPoseName already proves safe,
+-- just keeping the real asset OBJECT instead of reducing it to a name string. If a saved
+-- POSEFROZEN entry exists for this exact pose (Spawner._findSavedPoseFrozen, above), that's the
+-- real frame/paused state to start from; otherwise (never saved, or the save is for a DIFFERENT
+-- pose than what's actually playing right now) falls back to frame 0 / assumed-playing, the same
+-- best-effort bookkeeping point PoseScrubStart itself would use for an unknown loop phase.
+-- Deliberately does NOT call SetPosition/SetPlayRate in the fallback case -- that would visibly
+-- snap or freeze an animation that might already be mid-playback, as a side effect of merely
+-- detecting it.
+function Spawner._resyncPoseScrub(actor, say)
+    say = say or function(m) print("[LivingBase] [pose-scrub] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then return false end
+    local mesh = nil
+    pcall(function() mesh = actor.Mesh end)
+    if not (mesh and mesh:IsValid()) then return false end
+    local inst = nil
+    pcall(function() inst = mesh:GetAnimInstance() end)
+    if not (inst and inst:IsValid()) then return false end
+    local seq = nil
+    pcall(function() seq = inst["CurrentAsset"] end)
+    local seqValid = false
+    pcall(function() seqValid = seq ~= nil and type(seq) ~= "number" and seq:IsValid() end)
+    if not seqValid then return false end
+    local fps, length, numFrames, frameTime = CS.ResolveSequenceFrameInfo(seq, say)
+    if not (numFrames and numFrames > 0) then return false end
+
+    -- Re-assert via PlayAnimation (2026-10-09 fix, RedFalcon: "hitting play on the pose t-posed").
+    -- Merely READING inst["CurrentAsset"] confirms SOMETHING is playing, but does not itself put
+    -- the AnimInstance into the single-node-playback state PoseScrubPlay/Pause/Step's own
+    -- SetPlayRate/SetPosition calls actually require -- PoseScrubStart's proven recipe always
+    -- calls PlayAnimation(seq, true) FIRST, and skipping that step here left those calls acting on
+    -- a mesh that wasn't really in the right mode, snapping to the reference T-pose the instant
+    -- Play tried to drive it. Re-playing the SAME clip that's already showing is a no-op visually
+    -- (same asset, same intent) but establishes the correct internal state.
+    local okReplay = pcall(function() mesh:PlayAnimation(seq, true) end)
+    if not okReplay then return false end
+
+    -- Does a saved POSEFROZEN entry match what's actually playing right now? Match by leaf
+    -- filename, same comparison Spawner.TestReadCurrentPoseName already uses to resolve a playing
+    -- clip back to its Config.CUSTOM_POSES row.
+    local frame, paused = 0, false
+    local playStartFrame = 0
+    local savedPoseName, savedFrame = Spawner._findSavedPoseFrozen(actor)
+    if savedPoseName and savedFrame then
+        local curLeaf = nil
+        pcall(function() curLeaf = seq:GetFName():ToString() end)
+        for _, row in ipairs(Config.CUSTOM_POSES or {}) do
+            if row.name == savedPoseName and curLeaf and row.path:match("([^/]+)$") == curLeaf then
+                frame = math.max(0, math.min(numFrames - 1, savedFrame))
+                paused = true
+                playStartFrame = frame
+                say(string.format("resynced from saved state: frame %d/%d (paused).", frame, numFrames - 1))
+                break
+            end
+        end
+    end
+
+    Spawner.poseScrub = {
+        actor = actor, mesh = mesh, seq = seq, path = nil,
+        fps = fps, length = length, numFrames = numFrames, frameTime = frameTime,
+        frame = frame, paused = paused, playStartClock = os.clock(), playStartFrame = playStartFrame,
+    }
+    pcall(function() mesh:SetLooping(true) end)
+    if paused then
+        -- Only freeze at an exact frame when we have REAL ground truth for where it should be
+        -- (a matched POSEFROZEN save) -- the no-save-match fallback just leaves PlayAnimation's
+        -- own default playing-from-0 state alone, same as a fresh PoseScrubStart would.
+        pcall(function() mesh:SetPlayRate(0.0) end)
+        pcall(function() mesh:SetPosition(frame * frameTime, false) end)
+    end
+    return true
+end
+
 function Spawner.PoseScrubGetStatus(lockedActor)
     local st = Spawner.poseScrub
     if not (st and st.actor and st.actor:IsValid() and lockedActor and st.actor == lockedActor) then
-        return false, false, 0, 0
+        if lockedActor and lockedActor:IsValid() and Spawner._resyncPoseScrub(lockedActor) then
+            st = Spawner.poseScrub
+        else
+            return false, false, 0, 0
+        end
     end
     if not st.paused then
         st.frame = CS.LiveScrubFrame(st)
@@ -15724,6 +15868,30 @@ local function attachMeshAtSocket(actor, name, meshPath, mesh, isStatic, compCls
         end)
     end
     pcall(function() comp:SetVisibility(true, false) end)
+
+    -- Hand item transform tracking (2026-10-09, Custom tab's Move/Rotate/Precision/Scale panel):
+    -- record the component + its BASE relative transform (identity, or the real known-alignment
+    -- offset just applied above) for either hand socket, so Spawner._applyHandItemOffset can add a
+    -- live-tunable offset ON TOP of the correct baseline rather than overwriting known-good
+    -- alignment data. Spawner.HAND_SOCKET_KEY/the apply function are defined further down this
+    -- file (table fields, resolved at CALL time -- this function only ever runs later, triggered
+    -- by a player action, by which point the whole file has already loaded).
+    if attached then
+        local handKey = Spawner.HAND_SOCKET_KEY and Spawner.HAND_SOCKET_KEY[socket]
+        if handKey then
+            local baseLoc, baseRot, baseScale = { X = 0, Y = 0, Z = 0 }, { Pitch = 0, Yaw = 0, Roll = 0 }, { X = 1, Y = 1, Z = 1 }
+            pcall(function() baseLoc = { X = comp.RelativeLocation.X, Y = comp.RelativeLocation.Y, Z = comp.RelativeLocation.Z } end)
+            pcall(function() baseRot = { Pitch = comp.RelativeRotation.Pitch, Yaw = comp.RelativeRotation.Yaw, Roll = comp.RelativeRotation.Roll } end)
+            pcall(function() baseScale = { X = comp.RelativeScale3D.X, Y = comp.RelativeScale3D.Y, Z = comp.RelativeScale3D.Z } end)
+            Spawner._handItemComponent = Spawner._handItemComponent or {}
+            Spawner._handItemBase = Spawner._handItemBase or {}
+            Spawner._handItemOwnerActor = Spawner._handItemOwnerActor or {}
+            Spawner._handItemComponent[handKey] = comp
+            Spawner._handItemBase[handKey] = { loc = baseLoc, rot = baseRot, scale = baseScale }
+            Spawner._handItemOwnerActor[handKey] = actor
+            pcall(function() Spawner._applyHandItemOffset(handKey, actor) end)
+        end
+    end
 
     say(string.format(
         "target=%s | mesh=%s | socket=%s | attach call=%s | real transform=%s",
@@ -18203,6 +18371,157 @@ function Spawner.SetTargetScaleAbsolute(value)
     local lt = Spawner.lockedTarget
     if not (lt and lt.actor and lt.actor:IsValid()) then return end
     Spawner._applyTargetScale(lt, math.max(0.1, value))
+end
+
+-- Hand item transform offset (2026-10-09, Custom tab's new Move/Rotate/Precision/Scale panel,
+-- RedFalcon: "add move and rotate controls for the handheld pose items... since each hand can
+-- only hold one item... right hand and left hand transforms... mixed with [the tracking]").
+-- Keyed by (actor reference, hand) -- 2026-10-09 fix, RedFalcon: "the hand item spawned in as if
+-- it were reset to default position and not what i set" -- the FIRST version keyed this by hand
+-- ALONE (one shared Left/Right offset for whichever actor happened to be locked), which is wrong
+-- two ways: (1) a DIFFERENT actor's hand picks up whatever the LAST actor's offset happened to be
+-- instead of its own, and (2) nothing survived a world restore at all, since the offset table
+-- itself lives only in this Lua session's memory -- a fresh game launch starts it back at
+-- defaults regardless of what was tuned before. Actor-reference-as-table-key is the same safe
+-- identity Spawner.spawned's own `e.actor == actor` lookups already rely on throughout this file
+-- (unlike COMPONENT identity, which is NOT reliable via `==`/table-key in this UE4SS build -- see
+-- feedback_ue4ss_component_identity). PERSISTED now too -- see BuildCustomStateLines' own
+-- "HANDOFFSET:" comment and CS.applyLine's matching restore branch.
+Spawner.HAND_SOCKET_KEY = Spawner.HAND_SOCKET_KEY or { ik_weapon_lSocket = "Left", ik_weapon_rSocket = "Right" }
+Spawner._handItemOffset = Spawner._handItemOffset or {}
+
+function Spawner._defaultHandOffset()
+    return { fwd = 0.0, right = 0.0, up = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0, scale = 1.0 }
+end
+
+-- Resolves/creates the offset table for (actor, handKey). `actor` defaults to whatever's
+-- CURRENTLY locked -- every external caller (CustomMenu.cpp's panel, via main.lua's HANDSHIFT/
+-- HANDSCALESET/HANDRESET parsing) only ever acts on "whichever hand of the currently detected
+-- target," same as equipping a hand item itself already works.
+function Spawner._handOffsetFor(handKey, actorOverride)
+    local actor = actorOverride or (Spawner.lockedTarget and Spawner.lockedTarget.actor)
+    if not (actor and actor:IsValid()) then return nil, nil end
+    Spawner._handItemOffset[actor] = Spawner._handItemOffset[actor] or {}
+    Spawner._handItemOffset[actor][handKey] = Spawner._handItemOffset[actor][handKey] or Spawner._defaultHandOffset()
+    return Spawner._handItemOffset[actor][handKey], actor
+end
+
+function Spawner._handOffsetIsDefault(off)
+    if not off then return true end
+    return off.fwd == 0.0 and off.right == 0.0 and off.up == 0.0
+        and off.pitch == 0.0 and off.yaw == 0.0 and off.roll == 0.0 and off.scale == 1.0
+end
+
+-- Lazy re-sync (2026-10-09, RedFalcon's bug report: "if i exit and go back in and detect on the
+-- person, i am unable to move the items in their hands"). The equip-time tracking hook
+-- (attachMeshAtSocket) only ever fires for an item equipped via the Custom tab THIS session -- an
+-- already-equipped item (world-restored, or equipped in an earlier session, or simply never
+-- touched by the dropdown-turned-tree before) has no tracked component at all, so the panel had
+-- nothing to apply an offset to. Falls back to a live reflection sweep of whatever's CURRENTLY
+-- attached at the hand socket on the locked target (CS.sweepAttachedMeshes' new 3rd return,
+-- added for exactly this) and adopts its CURRENT relative transform as the base.
+--
+-- 2026-10-09 FIX (RedFalcon: "the hand item spawned in... moved wildly into a different
+-- position"): the component's CURRENT transform is NOT always a clean, offset-free base -- after
+-- a world restore, a HANDOFFSET line already applied the tracked offset on top of attachMeshAtSocket's
+-- own base, so sweeping it here and adopting it as-is would be adopting base+offset AS the new
+-- base. The very next move/scale click then re-added the SAME offset on top of that, doubling it
+-- in one jump. Fix: if this actor/hand already has a tracked offset in memory (restored from
+-- HANDOFFSET, or left over from switching targets and back), subtract it back out first so the
+-- recovered base is the true pre-offset placement, same as attachMeshAtSocket's own fresh capture.
+function Spawner._resyncHandItemTracking(handKey)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return end
+    local socket = (handKey == "Left") and "ik_weapon_lSocket" or "ik_weapon_rSocket"
+    local ok, _, _, attachedComp = pcall(function() return CS.sweepAttachedMeshes(lt.actor) end)
+    local comp = ok and attachedComp and attachedComp[socket]
+    if not (comp and comp:IsValid()) then return end
+    local baseLoc, baseRot, baseScale = { X = 0, Y = 0, Z = 0 }, { Pitch = 0, Yaw = 0, Roll = 0 }, { X = 1, Y = 1, Z = 1 }
+    pcall(function() baseLoc = { X = comp.RelativeLocation.X, Y = comp.RelativeLocation.Y, Z = comp.RelativeLocation.Z } end)
+    pcall(function() baseRot = { Pitch = comp.RelativeRotation.Pitch, Yaw = comp.RelativeRotation.Yaw, Roll = comp.RelativeRotation.Roll } end)
+    pcall(function() baseScale = { X = comp.RelativeScale3D.X, Y = comp.RelativeScale3D.Y, Z = comp.RelativeScale3D.Z } end)
+    local existingOff = Spawner._handItemOffset[lt.actor] and Spawner._handItemOffset[lt.actor][handKey]
+    if existingOff then
+        baseLoc = { X = baseLoc.X - existingOff.fwd, Y = baseLoc.Y - existingOff.right, Z = baseLoc.Z - existingOff.up }
+        baseRot = { Pitch = baseRot.Pitch - existingOff.pitch, Yaw = baseRot.Yaw - existingOff.yaw, Roll = baseRot.Roll - existingOff.roll }
+        if existingOff.scale ~= 0 then
+            baseScale = { X = baseScale.X / existingOff.scale, Y = baseScale.Y / existingOff.scale, Z = baseScale.Z / existingOff.scale }
+        end
+    end
+    Spawner._handItemComponent = Spawner._handItemComponent or {}
+    Spawner._handItemBase = Spawner._handItemBase or {}
+    Spawner._handItemOwnerActor = Spawner._handItemOwnerActor or {}
+    Spawner._handItemComponent[handKey] = comp
+    Spawner._handItemBase[handKey] = { loc = baseLoc, rot = baseRot, scale = baseScale }
+    Spawner._handItemOwnerActor[handKey] = lt.actor
+end
+
+function Spawner._applyHandItemOffset(handKey, actorOverride)
+    local comp = Spawner._handItemComponent and Spawner._handItemComponent[handKey]
+    -- Stale-owner check (2026-10-09): a tracked component from a PREVIOUSLY detected target is
+    -- still a perfectly valid UObject (nothing destroyed it) even after switching targets, so the
+    -- plain IsValid() check above can't catch "right component, wrong person" on its own -- force a
+    -- resync whenever the currently locked target doesn't match whoever this component was last
+    -- tracked for.
+    local lt = Spawner.lockedTarget
+    local wantActor = actorOverride or (lt and lt.actor)
+    local ownerMismatch = comp and wantActor and Spawner._handItemOwnerActor
+        and Spawner._handItemOwnerActor[handKey] ~= wantActor
+    if not (comp and comp:IsValid()) or ownerMismatch then
+        Spawner._resyncHandItemTracking(handKey)
+        comp = Spawner._handItemComponent and Spawner._handItemComponent[handKey]
+    end
+    local base = Spawner._handItemBase and Spawner._handItemBase[handKey]
+    if not (comp and comp:IsValid() and base) then return end
+    local off = select(1, Spawner._handOffsetFor(handKey, actorOverride))
+    if not off then return end
+    pcall(function()
+        comp:K2_SetRelativeLocation({
+            X = base.loc.X + off.fwd, Y = base.loc.Y + off.right, Z = base.loc.Z + off.up,
+        }, false, {}, false)
+    end)
+    pcall(function()
+        comp:K2_SetRelativeRotation({
+            Pitch = base.rot.Pitch + off.pitch, Yaw = base.rot.Yaw + off.yaw, Roll = base.rot.Roll + off.roll,
+        }, false, {}, false)
+    end)
+    pcall(function()
+        comp:SetRelativeScale3D({
+            X = base.scale.X * off.scale, Y = base.scale.Y * off.scale, Z = base.scale.Z * off.scale,
+        })
+    end)
+end
+
+-- Nudge one axis of the CURRENTLY SELECTED hand's offset -- CustomMenu.cpp's move/rotate pad.
+-- `axis` is one of fwd/right/up/pitch/yaw/roll, matching the offset table's own field names.
+function Spawner.NudgeHandItemTransform(handKey, axis, delta)
+    local off = Spawner._handOffsetFor(handKey)
+    if not off then return end
+    off[axis] = (off[axis] or 0.0) + delta
+    Spawner._applyHandItemOffset(handKey)
+end
+
+function Spawner.SetHandItemScale(handKey, value)
+    local off = Spawner._handOffsetFor(handKey)
+    if not off then return end
+    off.scale = value
+    Spawner._applyHandItemOffset(handKey)
+end
+
+function Spawner.GetHandItemScale(handKey)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return 1.0 end
+    local actorOffsets = Spawner._handItemOffset[lt.actor]
+    local off = actorOffsets and actorOffsets[handKey]
+    return off and off.scale or 1.0
+end
+
+function Spawner.ResetHandItemTransform(handKey)
+    local lt = Spawner.lockedTarget
+    if not (lt and lt.actor and lt.actor:IsValid()) then return end
+    Spawner._handItemOffset[lt.actor] = Spawner._handItemOffset[lt.actor] or {}
+    Spawner._handItemOffset[lt.actor][handKey] = Spawner._defaultHandOffset()
+    Spawner._applyHandItemOffset(handKey)
 end
 
 -- Spawner.TestNudgeTargetScale(deltaArg, say) -- "lbtestobjectscale <delta>" (2026-09-29, RedFalcon:
@@ -25241,6 +25560,16 @@ end
 function Spawner.ApplySocketItemManual(socketName, friendlyName, say, actorOverride)
     say = say or function(m) print("[LivingBase] [socket-manual] " .. tostring(m) .. "\n") end
     if friendlyName == "None" then
+        -- Clear hand-item transform tracking too (2026-10-09) -- otherwise a stale component
+        -- reference from the PREVIOUS item would linger in Spawner._handItemComponent, and the
+        -- offset panel would silently keep nudging nothing (or worse, whatever the slot gets
+        -- reused for next).
+        local handKey = Spawner.HAND_SOCKET_KEY and Spawner.HAND_SOCKET_KEY[socketName]
+        if handKey then
+            if Spawner._handItemComponent then Spawner._handItemComponent[handKey] = nil end
+            if Spawner._handItemBase then Spawner._handItemBase[handKey] = nil end
+            if Spawner._handItemOwnerActor then Spawner._handItemOwnerActor[handKey] = nil end
+        end
         return Spawner.RemoveSocketAttachment(socketName, say, actorOverride)
     end
     local row = nil
@@ -25631,9 +25960,17 @@ end
 -- additionally records EVERY mesh seen at each socket (a real list), needed wherever soc_Lantern's
 -- own coexistence has to be resolved correctly instead of arbitrarily picking whichever component
 -- this sweep happened to visit last.
+-- 3rd return `attachedComp` (2026-10-09, Hand Item Transform panel): the actual LAST-seen
+-- component reference per socket, same "last one wins" shape as `attachedMesh` -- existing callers
+-- that only take the first 1-2 returns are unaffected. Needed because the equip-time tracking
+-- hook (attachMeshAtSocket) only ever fires for an item equipped THIS session; re-detecting an
+-- already-equipped item (after exiting/reopening the window, or detecting a different target that
+-- already has something in hand) had no component to apply an offset to at all until this sweep
+-- re-populates it -- see Spawner.TestReadHandItems' own use of this just below.
 CS.sweepAttachedMeshes = function(actor)
     local attachedMesh = {}
     local attachedMeshList = {}
+    local attachedComp = {}
     local function sweep(classPath)
         local cls = StaticFindObject(classPath)
         if not (cls and cls:IsValid()) then return end
@@ -25669,6 +26006,7 @@ CS.sweepAttachedMeshes = function(actor)
                         attachedMesh[sock] = meshName
                         attachedMeshList[sock] = attachedMeshList[sock] or {}
                         table.insert(attachedMeshList[sock], meshName)
+                        attachedComp[sock] = c
                     end
                 end
             end
@@ -25676,7 +26014,7 @@ CS.sweepAttachedMeshes = function(actor)
     end
     sweep("/Script/Engine.SkeletalMeshComponent")
     sweep("/Script/Engine.StaticMeshComponent")
-    return attachedMesh, attachedMeshList
+    return attachedMesh, attachedMeshList, attachedComp
 end
 
 function Spawner.TestReadSocketAccessories(say)
@@ -30981,9 +31319,25 @@ function Spawner.SetDecorSolid(actor)
     pcall(function() actor:SetActorEnableCollision(true) end)
     pcall(function()
         local root = actor:K2_GetRootComponent()
-        if root and root:IsValid() then pcall(function() root:SetSimulatePhysics(false) end) end
+        if root and root:IsValid() then
+            pcall(function() root:SetSimulatePhysics(false) end)
+            -- Force Block response (2026-10-08 fix, RedFalcon: a Custom-*.ini `kind = mesh` item
+            -- with `solid = true` spawned walk-through despite this function running -- R5LootActor
+            -- (what every raw-mesh decor item, including `kind = mesh` ones, is built on) defaults
+            -- to an OVERLAP pickup trigger, not a physical blocker (see
+            -- [[feedback_r5lootactor_not_a_blocker]]). SetActorEnableCollision above only ensures
+            -- collision is QUERIED at all; it never changes the response from Overlap to Block, so
+            -- this silently stayed walk-through for any R5LootActor-based item specifically. Same
+            -- idiom `lbsolid on` already uses and proved live (signs.lua).
+            pcall(function() root:SetCollisionEnabled(3) end)
+            pcall(function() root:SetCollisionResponseToAllChannels(2) end)
+        end
     end)
-    forEachStaticMesh(actor, function(c) c:SetSimulatePhysics(false) end)
+    forEachStaticMesh(actor, function(c)
+        c:SetSimulatePhysics(false)
+        pcall(function() c:SetCollisionEnabled(3) end)
+        pcall(function() c:SetCollisionResponseToAllChannels(2) end)
+    end)
 end
 
 -- setPlacementPhysics(actor, on) / PLACEMENT_MIN_PHYSICS_DIST -- shared by beginFollowLoop's tick
@@ -32954,6 +33308,15 @@ end
 -- the DECOR_ label.) Builds a lookup once from Config.DECOR_CATEGORIES.
 local decorPathSet
 function Spawner.IsDecorClass(path)
+    -- Every loot-mesh decor item (the 9 "Additional Items", every invdrop_* drop category, and
+    -- any Custom-*.ini `kind = mesh` row) actually spawns as a generic R5LootActor wrapper, not
+    -- its own class path -- so it never appeared in decorPathSet below at all. Confirmed 2026-10-09
+    -- as the real cause of the Custom tab's Object Scale readout always showing the hardcoded 1.0
+    -- fallback for this whole category of decor, since `isDecor` (main.lua's
+    -- currentLockedTargetInfo) gates entirely on this function. R5LootActor is decor by this mod's
+    -- own definition the moment MakeLootDecor runs on it (that's its whole purpose), so recognize
+    -- it outright rather than needing it in the path set.
+    if path == "/Script/R5.R5LootActor" then return true end
     if not decorPathSet then
         decorPathSet = {}
         for _, list in pairs(Config.DECOR_CATEGORIES or {}) do

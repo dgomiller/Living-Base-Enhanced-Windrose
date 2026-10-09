@@ -451,6 +451,12 @@ local function spawnFrozenIdleNewPerson(path, label, idlePose)
     return a
 end
 
+-- Exported (2026-10-08, Custom-*.ini drop-in content) so spawnmenu_manifest.lua-discovered custom
+-- people/animals/monstrous rows can reuse these two generic path+label spawners without a
+-- pre-registered Config row -- see main.lua's CUSTOMFILE_* handler registration.
+Testbed.SpawnGenericActorByPath = spawnMonsterousMob
+Testbed.SpawnFrozenIdleGenericByPath = spawnFrozenIdleNewPerson
+
 -- spawnCreatureFrozen(candidates, label, aiPath, disable, idlePose) -- LIVESTOCK's own equivalent
 -- of spawnFrozenIdleNewPerson above, for entries that resolve via a `candidates` list (first match
 -- wins) and carry per-family `ai`/`disable` overrides rather than a single fixed `path`. Reuses
@@ -700,10 +706,26 @@ local function placeDecorEntry(d)
     -- Collision: DECOR_COLLISION on (default) makes the prop SOLID (SetDecorSolid enables collision +
     -- freezes physics, so it can't eject now that zoffset=0 keeps the root out of the terrain). Off =
     -- pass-through (the old behavior, when burying the root made physics shove the prop upward).
-    if Config.DECOR_COLLISION == false then
-        pcall(function() a:SetActorEnableCollision(false) end)
-    else
+    -- `d.solid` (2026-10-08, Custom-*.ini `solid = true|false`): an explicit per-entry override --
+    -- when set, wins over the global Config.DECOR_COLLISION default either direction. Left unset,
+    -- behavior is unchanged from before this existed.
+    -- `d.solid` (2026-10-08, Custom-*.ini `solid = true|false`): an explicit per-entry override --
+    -- when set, wins over the global Config.DECOR_COLLISION default either direction. Left unset,
+    -- behavior is unchanged from before this existed.
+    -- NOT reasserted on a delay (reverted 2026-10-08 -- a retry loop here fought the placement
+    -- ghost-preview, which deliberately keeps collision OFF while the item follows the camera; a
+    -- delayed reassert flipping it back to Block mid-drag, right next to the camera/player, caused
+    -- a violent depenetration launch ("flies toward the camera" -- the exact same bug this project
+    -- already hit and solved once before for the Boards/Obelisk loot-mesh items). The REAL fix for
+    -- a `kind = mesh` item is Config.LOOT_MESH_SOLID + Spawner.ApplyLootSolid, which is already
+    -- correctly called only at ConfirmPlacement/restore, never at spawn -- see main.lua's
+    -- CUSTOMFILE_* registration block, which registers the mesh path there instead of here.
+    local wantSolid = d.solid
+    if wantSolid == nil then wantSolid = (Config.DECOR_COLLISION ~= false) end
+    if wantSolid then
         Spawner.SetDecorSolid(a)
+    else
+        pcall(function() a:SetActorEnableCollision(false) end)
     end
     -- CRITICAL: world props spawn as Static meshes, whose render transform is baked at registration —
     -- so the pin() below (and the live-edit keys) would update the actor's logical Z but NEVER move the
@@ -726,6 +748,13 @@ local function placeDecorEntry(d)
     if last and last.actor == a then last.z0 = z0 end
     return a
 end
+
+-- Exported (2026-10-08, Custom-*.ini drop-in content) so a custom decor/sign row parsed straight
+-- from an ini file can be placed with the exact same floor-pin/collision/persist recipe as every
+-- built-in decor entry, without needing a matching Config.DECOR_CATEGORIES row to look up by name
+-- first (same "plain `d` table, not specifically a fkeys.lua entry" reuse Testbed.TestSpawnDropMesh
+-- above already relies on).
+Testbed.PlaceGenericDecorEntry = placeDecorEntry
 
 function Testbed.SpawnDecorCategory(cat)
     local cats = Config.DECOR_CATEGORIES or {}

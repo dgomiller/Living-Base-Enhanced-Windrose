@@ -934,6 +934,178 @@ do
     end
 end
 
+------------------------------------------------------------
+-- Custom-*.ini drop-in content (2026-10-08, RedFalcon: let a sophisticated end user add their own
+-- poses/people/animals/monstrous/decor/signs via their own ini file, no code change needed). One
+-- generic handler per roster spawnmenu_manifest.lua discovered -- dispatch is by each ROW's own
+-- `type` field, not by roster, since a single Custom-*.ini file can mix types freely. POSE rosters
+-- (kept in their own roster per file -- see spawnmenu_manifest.lua's own comment on why) are added
+-- to NON_SPAWNING_ROSTERS here so the REPLACE-safety guard above treats them the same as the
+-- built-in CUSTOM_POSES roster, and SPAWN rosters are added to CUSTOM_FILE_SPAWN_ROSTERS so the
+-- build-ghost-preview check a few lines below (which otherwise only recognizes a fixed allowlist
+-- of roster NAMES) also fires for a freshly-spawned custom item.
+------------------------------------------------------------
+-- Stored on Spawner, not a new file-level local (main.lua sits at Lua's 200-local ceiling --
+-- see [[feedback_lua_200_local_ceiling]]).
+Spawner.CustomFileSpawnRosters = {}
+-- Spawner.RefreshCustomSpawnMenuContent(forceRescan) (2026-10-09, RedFalcon: the Spawn Tree's new
+-- Update button, "with the ability to change inis, i think we need to be able to refresh the
+-- lists again... make it so it pulls in the customs every time"). What used to be a one-shot
+-- `do...end` block at file-load time, now a re-callable function so the C++ side's
+-- ACTION:REFRESH_CUSTOM_INI request (drainMoveMenuQueue, below) can re-run the whole discovery +
+-- registration pass live instead of only ever happening once at Lua startup.
+-- `forceRescan`: true re-reads every Custom-*.ini from disk (SpawnMenuManifest.ForceRescan()) and
+-- rewrites spawn_menu.ini's custom block (GenerateOnce) before rebuilding handlers -- false (the
+-- original startup call) skips both, since config.lua's own startup GenerateOnce call already did
+-- it once, immediately before this function first ran.
+-- Config.SOCKETITEMS_TOOLS is a plain list that normal `table.insert` would just keep growing on
+-- every refresh -- Spawner._customSocketItemsToolsAdded tracks exactly which entries THIS
+-- function added last time, so a refresh can remove them before re-adding the current set instead
+-- of accumulating duplicates (harmless for lookup-by-name, but would otherwise bloat the Hand
+-- tree's custom-ini entries by one stale extra copy per click).
+function Spawner.RefreshCustomSpawnMenuContent(forceRescan)
+    local ok, SpawnMenuManifest = pcall(require, "spawnmenu_manifest")
+    local okSigns, SignsMod = pcall(require, "signs")
+    if forceRescan and ok and SpawnMenuManifest then
+        pcall(function() SpawnMenuManifest.ForceRescan() end)
+        pcall(function() SpawnMenuManifest.GenerateOnce(Config) end)
+    end
+    if Spawner._customSocketItemsToolsAdded and Config.SOCKETITEMS_TOOLS then
+        for _, entry in ipairs(Spawner._customSocketItemsToolsAdded) do
+            for i = #Config.SOCKETITEMS_TOOLS, 1, -1 do
+                if Config.SOCKETITEMS_TOOLS[i] == entry then
+                    table.remove(Config.SOCKETITEMS_TOOLS, i)
+                    break
+                end
+            end
+        end
+    end
+    Spawner._customSocketItemsToolsAdded = {}
+    local descriptors = ok and SpawnMenuManifest.CustomFileDescriptors() or {}
+    -- `type = sign` rows ALSO get a Signs.TYPES entry registered once here (not per spawn-click) --
+    -- RedFalcon: "shouldn't signs have options for the different sizes and directions needed for
+    -- the text?" Without this, Signs.FindType(actor) would never recognize a freshly-spawned custom
+    -- sign at all, so the Signs tab couldn't put text on it. `match`/`mesh` mirror the exact same
+    -- identity Signs.FindType already checks for every built-in entry (short class name for an
+    -- actor-kind sign, "R5LootActor" + short mesh name for a mesh-kind one).
+    for _, d in ipairs(descriptors) do
+        if d.kind == "SPAWN" then
+            for _, row in ipairs(d.rows) do
+                -- `kind = mesh` decor/sign rows with `solid = true` (2026-10-08 fix, RedFalcon: the
+                -- Ruins Center Sign spawned walk-through, then "flew toward the camera" once a
+                -- spawn-time retry was tried) register into Config.LOOT_MESH_SOLID instead of ever
+                -- touching collision at spawn time. This is the SAME mechanism Boards/Obelisk
+                -- already use -- Spawner.ApplyLootSolid, called ONLY at ConfirmPlacement/restore,
+                -- never at spawn, specifically because the placement ghost-preview deliberately
+                -- keeps collision off while an item follows the camera; flipping it to Block during
+                -- that window (even moments after spawn) is what caused the camera-launch. See
+                -- testbed.lua's placeDecorEntry and spawner.lua's ApplyLootSolid for the full story.
+                if (row.type == "decor" or row.type == "sign") and row.kind == "mesh" and row.solid then
+                    Config.LOOT_MESH_SOLID = Config.LOOT_MESH_SOLID or {}
+                    -- Strip a mistaken trailing "_C" (2026-10-08 fix) -- every real
+                    -- Config.LOOT_MESH_SOLID key is a bare asset path (see config.lua's own
+                    -- fountains/boards/obelisk entries); "_C" is the Blueprint-CLASS suffix
+                    -- convention and never belongs on a StaticMesh reference. A `kind = mesh` row
+                    -- with it tacked on (an easy mistake -- it's exactly how every `kind = actor`
+                    -- row's path ends) would otherwise never match what Spawner.ApplyLootSolid
+                    -- actually reads off the resolved mesh, silently staying walk-through forever.
+                    Config.LOOT_MESH_SOLID[(row.path:gsub("_C$", ""))] = true
+                -- `type = handitem` (2026-10-08, RedFalcon's Hand-item tree rework): appended
+                -- straight into Config.SOCKETITEMS_TOOLS, the EXACT table Spawner.
+                -- ApplySocketItemManual already resolves friendlyName against for the built-in
+                -- items -- no change needed to that resolution pipeline at all. `category` becomes
+                -- this table's own `type` field (the grouping heading in the Hand tree).
+                elseif row.type == "handitem" then
+                    Config.SOCKETITEMS_TOOLS = Config.SOCKETITEMS_TOOLS or {}
+                    local entry = {
+                        friendlyName = row.label or row.name,
+                        type = row.category or "Custom",
+                        asset = row.path,
+                    }
+                    table.insert(Config.SOCKETITEMS_TOOLS, entry)
+                    table.insert(Spawner._customSocketItemsToolsAdded, entry)
+                end
+            end
+        end
+    end
+    if okSigns and SignsMod and SignsMod.RegisterType then
+        for _, d in ipairs(descriptors) do
+            if d.kind == "SPAWN" then
+                for _, row in ipairs(d.rows) do
+                    if row.type == "sign" then
+                        local shortName = tostring(row.path):match("([%w_]+)%.[%w_]+$") or tostring(row.path)
+                        local t = {
+                            name = row.label or row.name, hide = {},
+                            anchor = { x = row.anchorX or 0.0, y = row.anchorY or 0.0, z = row.anchorZ or 0.0 },
+                            depth = row.depth or -2.0, yaw = row.yaw or 0.0, pitch = row.pitch, roll = row.roll,
+                            boardW = row.boardW or 100.0, boardH = row.boardH or 50.0,
+                            marginX = row.marginX or 4.0, marginY = row.marginY or 3.0,
+                            maxSize = row.maxSize or 30.0, rows = row.rows,
+                            color = { R = 242, G = 217, B = 38, A = 255 },
+                        }
+                        if row.kind == "mesh" then
+                            t.match = "R5LootActor"
+                            t.mesh = shortName
+                        else
+                            t.match = shortName
+                        end
+                        pcall(function() SignsMod.RegisterType(t) end)
+                    end
+                end
+            end
+        end
+    end
+    for _, d in ipairs(descriptors) do
+        if d.kind == "POSE" then
+            NON_SPAWNING_ROSTERS[d.name] = true
+            SPAWN_MENU_HANDLERS[d.name] = function(index)
+                local row = d.rows[index]
+                if not row then return false, "index " .. tostring(index) .. " out of range" end
+                local ok2, err = pcall(function() Spawner.PoseScrubStartAndPlay(row.path) end)
+                if not ok2 then return false, tostring(err) end
+                return false
+            end
+        else
+            Spawner.CustomFileSpawnRosters[d.name] = true
+            SPAWN_MENU_HANDLERS[d.name] = function(index)
+                local row = d.rows[index]
+                if not row then return false, "index " .. tostring(index) .. " out of range" end
+                local label = row.label or row.name
+                if row.type == "decor" or row.type == "sign" then
+                    -- `kind = mesh` (explicit, not auto-detected -- see spawnmenu_manifest.lua's own
+                    -- comment): wrap a bare static-mesh path in the generic R5LootActor-as-decor
+                    -- recipe instead of spawning `row.path` as an actor class directly. NO `solid`
+                    -- passed here (2026-10-08 fix) -- a mesh-kind item's solidity is handled by the
+                    -- Config.LOOT_MESH_SOLID registration above instead, applied only once placement
+                    -- is actually confirmed; doing it at spawn fought the ghost-preview (see
+                    -- testbed.lua's placeDecorEntry for the full story).
+                    if row.kind == "mesh" then
+                        return Testbed.PlaceGenericDecorEntry({ name = row.name, label = label,
+                            path = "/Script/R5.R5LootActor", mesh = (row.path:gsub("_C$", "")), zoffset = 0.0 })
+                    -- `kind = effect` (2026-10-09, RedFalcon: "add [Decor > Misc > Effects'
+                    -- invisible-actor-plus-niagara items] as an option to the custom spawning") --
+                    -- row.path already defaulted to the native NiagaraActor class
+                    -- (spawnmenu_manifest.lua's own commit()), so this is the exact same call
+                    -- shape as Decor > Misc > Water's built-in `d.fx` entries -- placeDecorEntry
+                    -- already does everything (deferred Asset set, persist.txt field 16, restore)
+                    -- with zero new code needed here.
+                    elseif row.kind == "effect" then
+                        return Testbed.PlaceGenericDecorEntry({ name = row.name, label = label,
+                            path = row.path, fx = row.fx, zoffset = 0.0 })
+                    end
+                    return Testbed.PlaceGenericDecorEntry({ name = row.name, label = label, path = row.path,
+                        zoffset = 0.0, solid = row.solid })
+                elseif row.idle then
+                    return Testbed.SpawnFrozenIdleGenericByPath(row.path, label, true)
+                else
+                    return Testbed.SpawnGenericActorByPath(row.path, label)
+                end
+            end
+        end
+    end
+end
+Spawner.RefreshCustomSpawnMenuContent(false)
+
 local function pollSpawnMenuRequest()
     local path = findSpawnRequestPath()
     if not path then return end
@@ -1001,7 +1173,10 @@ local function pollSpawnMenuRequest()
                     -- (LIVESTOCK) -- RedFalcon: "make sure they also let me move and place them too."
                     or roster == "MONSTEROUS_MOBS" or roster == "CRABS" or roster == "NEW_PEOPLE"
                     or roster == "SENKAMATI_ORIGINAL_UPRIGHT"
-                    or SPAWN_MENU_STATUE_ROSTERS[roster]) then
+                    or SPAWN_MENU_STATUE_ROSTERS[roster]
+                    -- Custom-*.ini drop-in content (2026-10-08): same "drag it into place" need as
+                    -- any other freshly-spawned roster above.
+                    or Spawner.CustomFileSpawnRosters[roster]) then
             -- BUILD-GHOST-PREVIEW (2026-08-20, extended 2026-08-21 to statues, 2026-08-24 to
             -- townsfolk/crew/livestock/female-walkers/Senkamati). Briefly pulled the four humanoid
             -- rosters back out same day chasing a leg-bend/lift IK glitch, suspecting this
@@ -3607,14 +3782,46 @@ local function drainMoveMenuQueue()
                 handleMoveMenuCoordsOpen()
             elseif line == "ACTION:COORDS_CLOSE" then
                 handleMoveMenuCoordsClose()
+            -- ACTION:REFRESH_CUSTOM_INI (2026-10-09, the Spawn Tree's new Update button, RedFalcon:
+            -- "make it so it pulls in the customs every time") -- re-scans every Custom-*.ini,
+            -- rewrites spawn_menu.ini's custom block, and re-registers every custom handler/Signs
+            -- type/hand-item entry. SpawnMenu.cpp waits a short fixed delay after sending this
+            -- before calling its own Reload() so it re-parses the freshly rewritten ini -- see
+            -- that file's own comment on the Update button for why a delay instead of a signal file.
+            elseif line == "ACTION:REFRESH_CUSTOM_INI" then
+                pcall(function() Spawner.RefreshCustomSpawnMenuContent(true) end)
             else
-                -- COORDS_MOVE:x:y:z:pitch:yaw:roll (2026-08-18, was x:y:z:yaw before full 3-axis
-                -- rotation) -- see handleMoveMenuCoordsMove's own comment.
-                local cx, cy, cz, cp, cyaw, cr = line:match(
-                    "^COORDS_MOVE:(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
-                if cx then
-                    handleMoveMenuCoordsMove(tonumber(cx), tonumber(cy), tonumber(cz),
-                        tonumber(cp), tonumber(cyaw), tonumber(cr))
+                -- HANDSHIFT:<Left|Right>:<fwd|right|up|pitch|yaw|roll>:<delta> (2026-10-09, the
+                -- Custom tab's Hand item Move/Rotate panel, RedFalcon: "add move and rotate
+                -- controls for the handheld pose items"). Reuses move_request.txt/the SAME
+                -- append+drain mechanism as every other repeat-held button here (CustomMenu.cpp's
+                -- own WriteTargetLockToggleAction already does this for ACTION:TARGET_LOCK) rather
+                -- than a new file+poll loop. Precision is baked into `delta` entirely on the C++
+                -- side (same pattern CustomMenu.cpp's own camera panel already uses for
+                -- g_camPrecisionIdx) -- Lua applies it immediately, no accumulator needed since
+                -- Spawner.NudgeHandItemTransform is cheap per call.
+                local hand, axis, delta = line:match("^HANDSHIFT:(%a+):(%a+):(-?[%d%.]+)$")
+                if hand then
+                    pcall(function() Spawner.NudgeHandItemTransform(hand, axis, tonumber(delta)) end)
+                else
+                    local sHand, sVal = line:match("^HANDSCALESET:(%a+):([%d%.]+)$")
+                    if sHand then
+                        pcall(function() Spawner.SetHandItemScale(sHand, math.max(0.1, tonumber(sVal))) end)
+                    else
+                        local rHand = line:match("^HANDRESET:(%a+)$")
+                        if rHand then
+                            pcall(function() Spawner.ResetHandItemTransform(rHand) end)
+                        else
+                            -- COORDS_MOVE:x:y:z:pitch:yaw:roll (2026-08-18, was x:y:z:yaw before
+                            -- full 3-axis rotation) -- see handleMoveMenuCoordsMove's own comment.
+                            local cx, cy, cz, cp, cyaw, cr = line:match(
+                                "^COORDS_MOVE:(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+):(-?[%d%.]+)$")
+                            if cx then
+                                handleMoveMenuCoordsMove(tonumber(cx), tonumber(cy), tonumber(cz),
+                                    tonumber(cp), tonumber(cyaw), tonumber(cr))
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -3842,10 +4049,20 @@ local function currentLockedTargetInfo()
     -- just forwards lt.actor into it and passes the 4 results straight through.
     local scrubActive, scrubPaused, scrubFrame, scrubNumFrames = false, false, 0, 0
     pcall(function() scrubActive, scrubPaused, scrubFrame, scrubNumFrames = Spawner.PoseScrubGetStatus(lt.actor) end)
-    -- scale (2026-09-29, Object Scale row) -- only bother reading it for a decor target, since
-    -- that's the only case the C++ side will ever display it for; 1.0 default for everything else,
-    -- same "meaningless until checked" convention as sex/isCharacter above.
-    local scale = isDecor and Spawner.GetLockedTargetScale() or 1.0
+    -- scale (2026-09-29, Object Scale row) -- originally read ONLY for a decor target (1.0
+    -- hardcoded otherwise), on the assumption the C++ row was decor-only. 2026-10-09 FIX
+    -- (RedFalcon: "i'm resizing a monstrous creature" and the readout "stays at 1.00") --
+    -- MoveMenu.cpp's enable gate is plain hasTarget, not hasTarget&&isDecor, so the +/- buttons
+    -- were never actually blocked for a non-decor pawn, and Spawner.NudgeTargetScale's own
+    -- fallback (Spawner._getPawnMeshScale) already applies a REAL scale change to it -- only the
+    -- readout here still pretended nothing happened. Mirror that same decor/pawn branch so the
+    -- box reflects whichever path actually ran.
+    local scale = 1.0
+    if isDecor then
+        scale = Spawner.GetLockedTargetScale()
+    elseif Spawner._getPawnMeshScale then
+        scale = Spawner._getPawnMeshScale(lt.actor)
+    end
     return tostring(lt.label), tostring(id), x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
         scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM, isDecor, scale
 end
@@ -3883,6 +4100,11 @@ local function publishSpawnMenuStatusIfChanged()
     local target, id, x, y, z, yaw, pitch, roll, sex, isStatic, isCharacter,
         scrubActive, scrubPaused, scrubFrame, scrubNumFrames, distM, isDecor, scale = currentLockedTargetInfo()
     local timeBusy = (Spawner.IsPhotoTimeBusy and Spawner.IsPhotoTimeBusy()) and true or false
+    -- Hand item scale readout (2026-10-09, the Hand item panel's own Scale box) -- plain reads,
+    -- not gated on hasTarget/isDecor like the object-scale field above, since a hand item's own
+    -- scale is tracked independently of whatever's locked (Spawner._handItemOffset).
+    local handScaleLeft = Spawner.GetHandItemScale and Spawner.GetHandItemScale("Left") or 1.0
+    local handScaleRight = Spawner.GetHandItemScale and Spawner.GetHandItemScale("Right") or 1.0
     if freebuild == lastPublishedFreeBuild and restoring == lastPublishedRestoring and target == lastPublishedTarget
         and id == lastPublishedId
         and x == lastPublishedX and y == lastPublishedY and z == lastPublishedZ and yaw == lastPublishedYaw
@@ -3901,9 +4123,13 @@ local function publishSpawnMenuStatusIfChanged()
         and distM == Spawner._lastPublishedDistM
         and isDecor == Spawner._lastPublishedIsDecor
         and scale == Spawner._lastPublishedScale
-        and timeBusy == Spawner._lastPublishedTimeBusy then
+        and timeBusy == Spawner._lastPublishedTimeBusy
+        and handScaleLeft == Spawner._lastPublishedHandScaleLeft
+        and handScaleRight == Spawner._lastPublishedHandScaleRight then
         return
     end
+    Spawner._lastPublishedHandScaleLeft = handScaleLeft
+    Spawner._lastPublishedHandScaleRight = handScaleRight
     Spawner._lastPublishedTimeBusy = timeBusy
     lastPublishedFreeBuild, lastPublishedRestoring, lastPublishedTarget, lastPublishedId = freebuild, restoring, target, id
     lastPublishedX, lastPublishedY, lastPublishedZ, lastPublishedYaw = x, y, z, yaw
@@ -3944,6 +4170,8 @@ local function publishSpawnMenuStatusIfChanged()
     f:write("TARGET_ISDECOR=", isDecor and "1" or "0", "\n")
     f:write("TIME_BUSY=", timeBusy and "1" or "0", "\n")
     f:write("TARGET_SCALE=", string.format("%.2f", scale), "\n")
+    f:write("HAND_SCALE_LEFT=", string.format("%.2f", handScaleLeft), "\n")
+    f:write("HAND_SCALE_RIGHT=", string.format("%.2f", handScaleRight), "\n")
     f:write("WINDOW_TOGGLE=", tostring(windowToggleSeq), "\n")
     f:write("FOCUS_STEAL=", tostring(focusStealSeq), "\n")
     f:write("PLACEMENT_MODE=", placementMode, "\n")

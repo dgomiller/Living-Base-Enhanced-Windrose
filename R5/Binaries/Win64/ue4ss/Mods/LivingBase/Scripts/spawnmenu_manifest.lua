@@ -79,6 +79,263 @@ local function ini_escape_section(path_parts)
     return table.concat(path_parts, ".")
 end
 
+------------------------------------------------------------------------------------------------
+-- Custom-*.ini drop-in content (2026-10-08, RedFalcon: let a sophisticated end user -- or a
+-- tree-only content update -- add new poses/people/animals/monstrous/decor/signs without touching
+-- the shipped spawn_menu.ini or needing a code/DLL change). Any file matching "Custom-*.ini" next
+-- to spawn_menu.ini is scanned at startup, parsed into rows, and fed through the SAME
+-- roster_descriptors/GenerateOnce machinery below as every built-in roster -- so tree-building,
+-- the append-only "never clobber a hand-renamed section" discipline, and spawn_menu.ini's own
+-- format are all reused as-is, nothing new to learn there.
+--
+-- `type = pose` rows always land under Custom > Poses > Custom > <category> (alongside the
+-- built-in Standing/Battle/... branches in that same Poses tree); every other `type` lands on the
+-- MAIN spawn tree under Custom > <People|Decor|Signs|Monstrous|Animals> > <category> (RedFalcon,
+-- 2026-10-08: "Add Custom on the main spawn screen... automatically add a 2nd tier based on type
+-- and then the ini can decide on sub tree entries").
+--
+-- Each discovered file becomes TWO synthetic rosters (one SPAWN, one POSE), not one -- a single
+-- file is allowed to mix pose rows with spawn rows, but main.lua's NON_SPAWNING_ROSTERS REPLACE-
+-- safety guard is keyed by roster NAME, not by row, so a mixed roster would let a pose row's
+-- REPLACE button incorrectly destroy-then-recreate whatever's targeted. Splitting by kind keeps
+-- that guard correct without main.lua needing to inspect row contents itself.
+------------------------------------------------------------------------------------------------
+
+local function ini_dir(ini_path)
+    return ini_path:match("^(.*[/\\])[^/\\]+$") or ""
+end
+
+-- No real directory listing (2026-10-08, 2nd fix): BOTH io.popen (produced nothing, no error) and
+-- os.execute + temp file (the command verified correct when run manually from the game's own
+-- working directory, but still read back 0 files live -- os.execute very likely doesn't block
+-- until the spawned process finishes in this sandbox, so the temp file was read before `dir` had
+-- written it) failed to actually list files in this UE4SS Lua sandbox. Dropping shelling out
+-- entirely: a small index file (CustomFilesIndex.txt, one filename per line, a ';'-prefixed line
+-- is a comment) lists which Custom-*.ini files to load, read with the exact same plain io.open
+-- pattern already used everywhere else in this codebase (spawn_menu.ini itself included) -- the
+-- one thing proven reliable so far. One extra step for the end user (add the filename to the
+-- index after creating their ini), but it actually works.
+local function list_custom_ini_files(ini_path)
+    local dir = ini_dir(ini_path)
+    local indexPath = dir .. "CustomFilesIndex.txt"
+    local content = read_file(indexPath)
+    local files = {}
+    if not content then
+        return files
+    end
+    for line in content:gmatch("[^\r\n]+") do
+        local name = line:match("^%s*(.-)%s*$")
+        if name and name ~= "" and name:sub(1, 1) ~= ";" then
+            local fullPath = dir .. name
+            local probe = io.open(fullPath, "r")
+            if probe then
+                probe:close()
+                files[#files + 1] = fullPath
+            else
+                print("[LivingBase] spawnmenu_manifest: CustomFilesIndex.txt lists '" .. name .. "' but that file was not found at " .. fullPath .. "\n")
+            end
+        end
+    end
+    table.sort(files)
+    return files
+end
+
+-- Uppercase-only, no digits (2026-10-08 fix): main.lua's spawn_request.txt parser matches roster
+-- names against `(%u[%u_]*)` -- uppercase letters and underscores ONLY, same convention every
+-- built-in roster name (CUSTOM_POSES, DECOR, LIVESTOCK, ...) already follows. A filename's mixed
+-- case (and any digit) broke that match outright ("malformed spawn_request.txt"), so both are
+-- normalized away here rather than relaxing that regex, keeping every roster name in the same
+-- shape everywhere.
+local function sanitize_roster_name(path)
+    local base = tostring(path):match("([^/\\]+)%.ini$") or tostring(path)
+    base = base:upper()
+    return (base:gsub("[^%u]", "_"))
+end
+
+-- One Custom-*.ini file -> (spawnRows, poseRows). Same per-line pattern-match parsing style as
+-- existing_roster_indices/ReadLabels above -- this file never needed a real INI parser, and a
+-- user-authored file is no different.
+local function parse_custom_ini_file(path)
+    local content = read_file(path)
+    local spawnRows, poseRows = {}, {}
+    if not content then return spawnRows, poseRows end
+    local row
+    local function commit()
+        -- `kind = effect` (2026-10-09, RedFalcon: "can it be either actor or mesh, like the
+        -- others" re: Decor > Misc > Effects' invisible-actor-plus-niagara items) -- `path` is
+        -- normally required (see the check below), but an effect row's real content is `fx`, not
+        -- `path`; default `path` to the native NiagaraActor class (the SAME bare actor Decor >
+        -- Misc > Water's built-in fx entries already use, see fkeys.lua's own `fx =` rows) so an
+        -- ini author can omit it entirely.
+        if row and row.kind == "effect" and not row.path then row.path = "/Script/Niagara.NiagaraActor" end
+        if row and row.path and row.type then
+            if row.type == "pose" then
+                poseRows[#poseRows + 1] = row
+            else
+                spawnRows[#spawnRows + 1] = row
+            end
+        end
+    end
+    for line in content:gmatch("[^\r\n]+") do
+        local sectionName = line:match("^%s*%[(.-)%]%s*$")
+        if sectionName then
+            commit()
+            row = { name = sectionName }
+        elseif row then
+            local k, v = line:match("^%s*([%a_]+)%s*=%s*(.-)%s*$")
+            if k and v and v ~= "" then
+                if k == "type" then row.type = v:lower()
+                elseif k == "path" then row.path = v
+                elseif k == "category" then row.category = v
+                elseif k == "label" then row.label = v
+                elseif k == "idle" then row.idle = (v:lower() == "true" or v == "1")
+                -- `kind` (2026-10-08, decor/sign only): "actor" (default, path is a Blueprint class
+                -- -- Spawner.Spawn(path) directly) vs "mesh" (path is a bare /Game/... static mesh
+                -- -- spawned as a generic R5LootActor wrapper, same recipe Testbed.TestSpawnDropMesh
+                -- already uses for console-tested mesh paths) vs "effect" (2026-10-09, RedFalcon:
+                -- "in decor > Misc > Effects we have some items that apply an effects item to an
+                -- invisible actor... I'd like to add that as an option to the custom spawning" --
+                -- spawns the native NiagaraActor and attaches the `fx` field's Niagara System asset,
+                -- same recipe Decor > Misc > Water's built-in fx entries already use via fkeys.lua's
+                -- `fx =` rows + testbed.lua's placeDecorEntry). Explicit field, not auto-detected
+                -- from the path string (RedFalcon: "i think the explicit is better").
+                elseif k == "kind" then row.kind = v:lower()
+                -- `fx` (2026-10-09, `kind = effect` only): the Niagara System asset path attached
+                -- to the spawned NiagaraActor's NiagaraComponent -- see the `kind` comment above.
+                elseif k == "fx" then row.fx = v
+                -- `solid` (2026-10-08): per-entry collision override, either direction, winning over
+                -- the global Config.DECOR_COLLISION default -- see placeDecorEntry's own comment.
+                elseif k == "solid" then row.solid = (v:lower() == "true" or v == "1")
+                -- Sign text-layout fields (2026-10-08, `type = sign` only, all optional) -- same
+                -- x/y/z/depth/yaw/pitch/roll/bw/bh/size/rows names `lbtestsigntext` already reports
+                -- back when tuning an existing sign live, so transcribing tuned numbers into a
+                -- Custom-*.ini row is the exact same step as every built-in entry in signs.lua's own
+                -- Signs.TYPES already went through (RedFalcon: "shouldn't signs have options for the
+                -- different sizes and directions needed for the text?"). Untuned fields fall back to
+                -- generic defaults in main.lua's Signs.RegisterType call -- the sign still gets text,
+                -- just not necessarily well-placed, until tuned.
+                elseif k == "x" then row.anchorX = tonumber(v)
+                elseif k == "y" then row.anchorY = tonumber(v)
+                elseif k == "z" then row.anchorZ = tonumber(v)
+                elseif k == "depth" then row.depth = tonumber(v)
+                elseif k == "yaw" then row.yaw = tonumber(v)
+                elseif k == "pitch" then row.pitch = tonumber(v)
+                elseif k == "roll" then row.roll = tonumber(v)
+                elseif k == "bw" then row.boardW = tonumber(v)
+                elseif k == "bh" then row.boardH = tonumber(v)
+                elseif k == "marginX" then row.marginX = tonumber(v)
+                elseif k == "marginY" then row.marginY = tonumber(v)
+                elseif k == "size" then row.maxSize = tonumber(v)
+                elseif k == "rows" then row.rows = tonumber(v)
+                end
+            end
+        end
+    end
+    commit()
+    return spawnRows, poseRows
+end
+
+-- Auto-derived 2nd tier under Custom (RedFalcon's "automatically add a 2nd tier based on type") --
+-- the ini only ever supplies `category` (everything from here down); it never names this heading.
+local CUSTOM_FILE_TYPE_HEADINGS = {
+    decor = "Decor", sign = "Signs", people = "People",
+    monstrous = "Monstrous", animals = "Animals",
+}
+
+local function split_category(category)
+    local parts = {}
+    if category and category ~= "" then
+        for seg in category:gmatch("[^>]+") do
+            local trimmed = seg:match("^%s*(.-)%s*$")
+            if trimmed ~= "" then parts[#parts + 1] = trimmed end
+        end
+    end
+    return parts
+end
+
+-- Top-level root is "Custom Content", NOT "Custom" (2026-10-08 fix): SpawnMenu.cpp has a
+-- hardcoded `if (child->label == "Custom") continue;` in its main tree draw loop (added
+-- 2026-09-16 to hide the old Poses/SkinTones/Hair/Clothes branch, which moved to its own tab) --
+-- a literal "Custom" top-level section is permanently invisible there regardless of what's under
+-- it, confirmed by reading that file directly. Any other name avoids the collision with no C++
+-- change needed. Pose entries are unaffected -- they live under "Custom.Poses.Custom.*", a
+-- different top-level root ("Custom" there is 3 levels down, not the top-level label checked).
+-- `type = handitem` (2026-10-08) is a DIFFERENT top-level destination from every other spawn
+-- type: it lives in the Custom tab's own "Custom > Hand > <category>" tree (SpawnMenu::
+-- GetHandItemsTree(), same shape as GetPosesTree()), not the main tree's "Custom Content" root --
+-- a hand item is never "spawned" through the normal roster:index dispatch at all, it's applied by
+-- the C++ Hand tree's own "+" button writing a HANDITEM: request with the leaf's label (the
+-- friendlyName) directly. `category` becomes the item's TYPE grouping (Weapons/Tools/Bottles/
+-- Other, or whatever a custom row names) -- note this is ONE path segment, not split_category'd,
+-- matching how Config.SOCKETITEMS_TOOLS' own `type` field is used.
+local function custom_spawn_path_and_label(row)
+    if row.type == "handitem" then
+        return { "Custom", "Hand", row.category or "Custom" }, row.label or row.name
+    end
+    local path = { "Custom Content", CUSTOM_FILE_TYPE_HEADINGS[row.type] or "Misc" }
+    for _, seg in ipairs(split_category(row.category)) do path[#path + 1] = seg end
+    return path, row.label or row.name
+end
+
+local function custom_pose_path_and_label(row)
+    local path = { "Custom", "Poses", "Custom" }
+    for _, seg in ipairs(split_category(row.category)) do path[#path + 1] = seg end
+    return path, row.label or row.name
+end
+
+-- Built-in hand items (2026-10-08): Config.SOCKETITEMS_TOOLS (config.lua, the Other\
+-- SocketItems.xlsx "Tools" tab) already has exactly the shape this tree needs --
+-- {friendlyName, type, asset} -- generated here for the FIRST time into spawn_menu.ini under
+-- "Custom > Hand > <type>", same append-only mechanics as every other built-in roster. This is
+-- what let SpawnMenu.cpp's old hardcoded Weapons/Tools/Bottles/Other C++ arrays (copy-pasted from
+-- this exact table, needing manual re-sync) be deleted entirely.
+local function hand_item_path_and_label(row)
+    return { "Custom", "Hand", row.type }, row.friendlyName
+end
+
+-- Computed once per Lua session (same one-time-read assumption spawn_menu.ini itself already
+-- relies on elsewhere in this file -- a hand-edited Custom-*.ini needs a restart to take effect).
+-- Shared by GenerateOnce below (tree-building) and main.lua's M.CustomFileDescriptors() (handler
+-- registration) so the file list is only scanned/parsed once.
+local cachedCustomFileDescriptors = nil
+local function custom_file_descriptors()
+    if cachedCustomFileDescriptors then return cachedCustomFileDescriptors end
+    local found = list_custom_ini_files(resolve_ini_path())
+    print("[LivingBase] spawnmenu_manifest: scanning for Custom-*.ini -- found " .. #found .. " file(s)\n")
+    local out = {}
+    for _, path in ipairs(found) do
+        local base = sanitize_roster_name(path)
+        local spawnRows, poseRows = parse_custom_ini_file(path)
+        print("[LivingBase] spawnmenu_manifest:   " .. path .. " -> " .. #spawnRows .. " spawn row(s), " .. #poseRows .. " pose row(s)\n")
+        if #spawnRows > 0 then
+            out[#out + 1] = { name = "CUSTOMFILE_" .. base .. "_SPAWN", rows = spawnRows,
+                path_and_label = custom_spawn_path_and_label, kind = "SPAWN" }
+        end
+        if #poseRows > 0 then
+            out[#out + 1] = { name = "CUSTOMFILE_" .. base .. "_POSE", rows = poseRows,
+                path_and_label = custom_pose_path_and_label, kind = "POSE" }
+        end
+    end
+    cachedCustomFileDescriptors = out
+    return out
+end
+
+-- Exposed so main.lua can register one spawn-menu handler per discovered file/kind without
+-- re-parsing every Custom-*.ini itself.
+function M.CustomFileDescriptors()
+    return custom_file_descriptors()
+end
+
+-- M.ForceRescan() (2026-10-09, RedFalcon: the Spawn Tree's new Update button -- "make it so it
+-- pulls in the customs every time"). Drops the memoized descriptor cache so the NEXT
+-- custom_file_descriptors() call (via CustomFileDescriptors() or GenerateOnce's own internal use)
+-- actually re-reads every listed Custom-*.ini file from disk instead of returning what was there
+-- at Lua startup. Caller still has to call M.GenerateOnce(Config) afterward to actually rewrite
+-- spawn_menu.ini's custom block from the fresh scan -- this alone only clears the cache.
+function M.ForceRescan()
+    cachedCustomFileDescriptors = nil
+end
+
 -- M.ReadLabels() -- the read-back counterpart to GenerateOnce (2026-08-19, RedFalcon's request):
 -- returns { [roster] = { [index] = curatedLabel } } for every section in spawn_menu.ini, so a
 -- hand-renamed tree entry ("Tort Combatant 1") can become the ACTUAL runtime spawn label (toast/
@@ -463,7 +720,7 @@ end
 -- more entries here to extend generation to another roster -- the append/never-clobber mechanics
 -- below are already generic, only this list needs to grow.
 local function roster_descriptors(Config)
-    return {
+    local list = {
         {name = "CUSTOM_POSES", rows = Config.CUSTOM_POSES, path_and_label = custom_poses_path_and_label},
         {name = "SKIN_TONES", rows = Config.CUSTOM_SKIN_TONES, path_and_label = custom_skin_tones_path_and_label},
         {name = "HAIR", rows = Config.CUSTOM_HAIR, path_and_label = custom_hair_path_and_label},
@@ -487,7 +744,73 @@ local function roster_descriptors(Config)
         {name = "CRABS", rows = Config.CRABS, path_and_label = crabs_path_and_label},
         {name = "NEW_PEOPLE", rows = Config.NEW_PEOPLE, path_and_label = new_people_path_and_label},
         {name = "SENKAMATI_ORIGINAL_UPRIGHT", rows = Config.SENKAMATI_ORIGINAL_UPRIGHT, path_and_label = original_upright_path_and_label},
+        {name = "HAND_ITEMS", rows = Config.SOCKETITEMS_TOOLS, path_and_label = hand_item_path_and_label},
     }
+    return list
+end
+
+-- Custom-*.ini content gets its OWN rewrite path (rewrite_custom_block below), fully rebuilt every
+-- launch instead of append-only like every roster above -- RedFalcon (2026-10-08): "is it possible
+-- to keep the ini dynamic vs hardcoding the custom ini into it? It's not very user friendly
+-- otherwise." Safe to do because nobody hand-edits this block (its category/label already come
+-- straight from the user's own Custom-*.ini, which IS the thing they hand-edit -- there's nothing
+-- here for the append-only "preserve a hand-rename" rule to protect) and because Spawner.Spawn
+-- persists by resolved class path, not by roster:index, so freely reordering/renaming entries in a
+-- Custom-*.ini file never corrupts anything already placed in the world.
+local CUSTOM_BLOCK_BEGIN = "; ===== BEGIN CUSTOM-INI CONTENT (auto-generated from Custom-*.ini files, fully rebuilt every launch -- edit the Custom-*.ini files, not this block) ====="
+local CUSTOM_BLOCK_END = "; ===== END CUSTOM-INI CONTENT ====="
+
+local function build_custom_block()
+    local lines = { CUSTOM_BLOCK_BEGIN, "" }
+    for _, d in ipairs(custom_file_descriptors()) do
+        for i, row in ipairs(d.rows) do
+            local path_parts, leaf_label = d.path_and_label(row)
+            table.insert(path_parts, leaf_label)
+            lines[#lines + 1] = string.format("[%s]\nlabel = %s\nroster = %s\nindex = %d\n",
+                ini_escape_section(path_parts), leaf_label, d.name, i)
+        end
+    end
+    lines[#lines + 1] = CUSTOM_BLOCK_END
+    return table.concat(lines, "\n") .. "\n"
+end
+
+-- Strips any previous custom-ini block (by exact marker text, plain-text find -- these markers
+-- contain no Lua pattern metacharacters that matter here, but plain=true is used anyway since
+-- parentheses in the text would otherwise need escaping) and writes a fresh one reflecting
+-- whatever custom_file_descriptors() returns RIGHT NOW. A no-op (no file write at all) when
+-- there's neither an old block to remove nor any custom files currently discovered.
+local function rewrite_custom_block(ini_path)
+    local content = read_file(ini_path)
+    local hasBlock = content and content:find(CUSTOM_BLOCK_BEGIN, 1, true)
+    local descriptors = custom_file_descriptors()
+    if not hasBlock and #descriptors == 0 then
+        return
+    end
+    content = content or ""
+    if hasBlock then
+        local beginIdx = content:find(CUSTOM_BLOCK_BEGIN, 1, true)
+        local endIdx = content:find(CUSTOM_BLOCK_END, beginIdx, true)
+        if endIdx then
+            content = content:sub(1, beginIdx - 1) .. content:sub(endIdx + #CUSTOM_BLOCK_END)
+        end
+    end
+    content = content:gsub("%s+$", "")
+    local f = io.open(ini_path, "w")
+    if not f then
+        print("[LivingBase] spawnmenu_manifest: failed to open " .. ini_path .. " to rewrite custom-ini block\n")
+        return
+    end
+    if #descriptors > 0 then
+        f:write(content .. "\n\n" .. build_custom_block())
+        local rowCount = 0
+        for _, d in ipairs(descriptors) do rowCount = rowCount + #d.rows end
+        print("[LivingBase] spawnmenu_manifest: wrote " .. rowCount .. " custom-ini entr" ..
+            (rowCount == 1 and "y" or "ies") .. " across " .. #descriptors .. " roster(s) into " .. ini_path .. "\n")
+    else
+        f:write(content .. "\n")
+        print("[LivingBase] spawnmenu_manifest: no Custom-*.ini content found -- removed old custom-ini block from " .. ini_path .. "\n")
+    end
+    f:close()
 end
 
 function M.GenerateOnce(Config)
@@ -510,27 +833,28 @@ function M.GenerateOnce(Config)
         end
     end
 
-    if #appended == 0 then
-        return 0
+    if #appended > 0 then
+        local f = io.open(ini_path, "a")
+        if not f then
+            print("[LivingBase] spawnmenu_manifest: failed to open " .. ini_path .. " for append\n")
+        else
+            if not existing_content then
+                f:write("; Auto-generated + hand-curated by you. Re-running LivingBase only ADDS missing\n")
+                f:write("; roster/index entries -- it never touches or removes anything already here, so\n")
+                f:write("; reorganize/rename freely.\n\n")
+            end
+            for _, section in ipairs(appended) do
+                f:write(section)
+            end
+            f:close()
+            print("[LivingBase] spawnmenu_manifest: added " .. #appended .. " new entr" ..
+                (#appended == 1 and "y" or "ies") .. " to " .. ini_path .. "\n")
+        end
     end
 
-    local f = io.open(ini_path, "a")
-    if not f then
-        print("[LivingBase] spawnmenu_manifest: failed to open " .. ini_path .. " for append\n")
-        return 0
-    end
-    if not existing_content then
-        f:write("; Auto-generated + hand-curated by you. Re-running LivingBase only ADDS missing\n")
-        f:write("; roster/index entries -- it never touches or removes anything already here, so\n")
-        f:write("; reorganize/rename freely.\n\n")
-    end
-    for _, section in ipairs(appended) do
-        f:write(section)
-    end
-    f:close()
+    -- Custom-*.ini content: fully rebuilt every launch, see rewrite_custom_block's own comment.
+    rewrite_custom_block(ini_path)
 
-    print("[LivingBase] spawnmenu_manifest: added " .. #appended .. " new entr" ..
-        (#appended == 1 and "y" or "ies") .. " to " .. ini_path .. "\n")
     return #appended
 end
 

@@ -129,6 +129,24 @@ Signs.TYPES = {
       boardW = 180.0, boardH = 100.0, marginX = 8.0, marginY = 8.0, color = { R = 242, G = 217, B = 38, A = 255 }, maxSize = 100.0 },
 }
 
+-- Exported (2026-10-08, Custom-*.ini drop-in content, `type = sign`): lets main.lua register a
+-- text-layout entry for a user-added sign item the exact same shape as every entry above, without
+-- this file needing to know anything about the custom-ini loader. Tune a fresh entry live with
+-- `lbtestsigntext ... depth= y= z= yaw= pitch= roll= bw= bh= size=` the same way every entry above
+-- was tuned, then put the final numbers in the Custom-*.ini row -- see that file's own comment on
+-- the x/y/z/depth/yaw/pitch/roll/bw/bh/size/rows field names it accepts.
+function Signs.RegisterType(t)
+    -- Replace-by-name, not append (2026-10-09, RedFalcon's Spawn Tree Update button -- custom
+    -- content can now be re-registered live, not just once at startup) -- without this, clicking
+    -- Update repeatedly on an unchanged Custom-*.ini sign row would pile up duplicate TYPES
+    -- entries forever (harmless for matching, since FindType just uses the first hit, but pure
+    -- waste). A genuinely new sign (different name) still just appends as before.
+    for i = #Signs.TYPES, 1, -1 do
+        if Signs.TYPES[i].name == t.name then table.remove(Signs.TYPES, i) end
+    end
+    table.insert(Signs.TYPES, t)
+end
+
 Signs.FONT     = "/Engine/EngineFonts/RobotoDistanceField"
 -- "Glow" (2026-09-29, RedFalcon: text should ignore darkness when a checkbox is ticked). The default text
 -- material darkens with scene lighting; a glowing sign swaps in an UNLIT / emissive material instead.

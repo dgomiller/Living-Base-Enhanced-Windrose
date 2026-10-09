@@ -1,6 +1,36 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v3.0.7 (2026-10-09) -- previous version: v3.0.6
+======================================================================
+
+ADDED -- Custom-*.ini drop-in content
+- Add your own spawn-menu content (decor, signs, people, monstrous, animals, poses, and hand
+  items) by dropping a Custom-*.ini file into the LivingBase folder, no code editing or DLL
+  rebuild required. See Custom-Template.ini for a filled-in example of every type, including the
+  new "effect" kind below.
+- New "effect" kind for decor entries: spawns an invisible actor with a Niagara particle effect
+  attached (the same recipe behind Decor > Misc's existing fire/water-effect items), so a custom
+  entry can be a pure visual effect instead of needing its own mesh or Blueprint.
+- An "Update" button next to the Spawn Tree's filter box re-scans your Custom-*.ini files and
+  refreshes every tree (Spawn Tree, Poses, Hand items) on the spot -- no more restarting the game
+  after every ini edit.
+
+ADDED -- Hand Item Transform panel
+- Custom tab > Poses and Actions > "Hand Item Transform": move, rotate, and scale whatever's
+  currently in the selected hand (Left/Right), independently of the item's own baked attachment
+  position. Includes a Precision slider (shared with Move/Rotate) and a Reset Transform button.
+  Adjustments are saved per character and survive a world reload.
+
+FIXED
+- Object Scale's number readout stayed at 1.00 for non-decor targets (monstrous creatures,
+  animals) even though the +/- buttons were already resizing them -- it now shows the real
+  current scale for those targets too.
+- A hand item's saved position could jump to the wrong spot right after re-detecting a target
+  (e.g. after leaving and re-entering the world), and pressing Play on an already-posed, freshly
+  detected target could snap it into a T-pose instead of resuming the pose.
+
+======================================================================
 v3.0.6 (2026-10-06) -- previous version: v3.0.5
 ======================================================================
 

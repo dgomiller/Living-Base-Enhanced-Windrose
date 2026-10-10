@@ -132,7 +132,7 @@ Signs.TYPES = {
     -- same as every other shared built-in mesh in this table. Values as tuned by RedFalcon.
     { name = "Grave Headstone (Fountain)", match = "R5LootActor", mesh = "SM_GardenFountain_01", hide = {},
       anchor = { x = -62.0, y = 0.0, z = 150.0 }, depth = 0.0, yaw = 180.0,
-      boardW = 75.0, boardH = 100.0, marginX = 4.0, marginY = 3.0, color = { R = 242, G = 217, B = 38, A = 255 } },
+      boardW = 75.0, boardH = 100.0, marginX = 4.0, marginY = 3.0, color = { R = 242, G = 217, B = 38, A = 255 }, maxSize = 100.0 },
 }
 
 -- Exported (2026-10-08, Custom-*.ini drop-in content, `type = sign`): lets main.lua register a
@@ -462,7 +462,13 @@ function Signs.Apply(actor, lines, opts)
     -- Pass 1 starts from the height limit (capped by size= or the entry's maxSize); the real rendered
     -- width is then MEASURED (GetTextLocalSize) and the size shrunk to fit the margin -- width scales
     -- linearly with world size, so one correction is enough. `size=` is a CAP, never an override.
-    local cap = opts.size or t.maxSize
+    -- `or 30.0` (2026-10-09 hardening, RedFalcon: a Signs.TYPES entry missing `maxSize` entirely
+    -- -- an easy field to forget hand-writing a new built-in entry -- left `cap` nil here, and
+    -- `math.min(byHeight, cap, ...)` a few lines down threw a hard Lua error on EVERY apply
+    -- attempt, with no text ever rendering and no obvious error surfaced to the player. Custom-ini
+    -- sign rows were already safe (main.lua defaults `row.maxSize or 30.0` at registration); this
+    -- gives every OTHER caller of Signs.Apply the same safety net.
+    local cap = opts.size or t.maxSize or 30.0
     if not opts.size and ft and ft.maxSize and ft.maxSize < cap then cap = ft.maxSize end
     local size = math.max(math.min(byHeight, cap, opts._fitSize or 1e9), 1.0)
     local color = opts.color or t.color

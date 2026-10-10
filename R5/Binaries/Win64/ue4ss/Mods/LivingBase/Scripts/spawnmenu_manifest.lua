@@ -152,6 +152,17 @@ local function sanitize_roster_name(path)
     return (base:gsub("[^%u]", "_"))
 end
 
+-- display_name_for_file(path) (2026-10-09, RedFalcon: "use whatever is after the Custom- as the
+-- name of the custom thing... that keeps each download its own thing so its easier to know
+-- whats what") -- the human-readable branch name a file's own content groups under in the tree,
+-- as opposed to sanitize_roster_name's all-caps/no-punctuation ROSTER name above (an internal
+-- spawn_request.txt identifier, never shown to the player). Keeps case and punctuation from the
+-- filename itself -- "Custom-DansStuff.ini" -> "DansStuff" -- since this IS the display text.
+local function display_name_for_file(path)
+    local base = tostring(path):match("([^/\\]+)%.ini$") or tostring(path)
+    return base:match("^Custom%-(.+)$") or base
+end
+
 -- One Custom-*.ini file -> (spawnRows, poseRows). Same per-line pattern-match parsing style as
 -- existing_roster_indices/ReadLabels above -- this file never needed a real INI parser, and a
 -- user-authored file is no different.
@@ -258,27 +269,35 @@ end
 -- 2026-09-16 to hide the old Poses/SkinTones/Hair/Clothes branch, which moved to its own tab) --
 -- a literal "Custom" top-level section is permanently invisible there regardless of what's under
 -- it, confirmed by reading that file directly. Any other name avoids the collision with no C++
--- change needed. Pose entries are unaffected -- they live under "Custom.Poses.Custom.*", a
--- different top-level root ("Custom" there is 3 levels down, not the top-level label checked).
--- `type = handitem` (2026-10-08) is a DIFFERENT top-level destination from every other spawn
--- type: it lives in the Custom tab's own "Custom > Hand > <category>" tree (SpawnMenu::
+-- change needed. Pose entries are unaffected -- they live under "Custom.Poses.*", a different
+-- top-level root ("Custom" there is 2 levels down, not the top-level label checked).
+-- Grouped by SOURCE FILE first, then type (2026-10-09, RedFalcon: "use whatever is after the
+-- Custom- as the name of the custom thing... Custom-DansStuff would become Custom Content >
+-- DanStuff, then split by type... keeps each download its own thing so its easier to know whats
+-- what") -- `fileDisplayName` (display_name_for_file's own output, passed down from
+-- build_custom_block's loop, which has the source path d.rows doesn't carry on each row) is its
+-- own path segment ABOVE the type heading, so every entry from one Custom-*.ini file stays
+-- together under one named branch instead of getting scattered across the shared Decor/Signs/
+-- People/etc branches alongside every other installed pack's content.
+-- `type = handitem` is a DIFFERENT top-level destination from every other spawn type: it lives
+-- in the Custom tab's own "Custom > Hand > <file> > <category>" tree (SpawnMenu::
 -- GetHandItemsTree(), same shape as GetPosesTree()), not the main tree's "Custom Content" root --
 -- a hand item is never "spawned" through the normal roster:index dispatch at all, it's applied by
 -- the C++ Hand tree's own "+" button writing a HANDITEM: request with the leaf's label (the
 -- friendlyName) directly. `category` becomes the item's TYPE grouping (Weapons/Tools/Bottles/
 -- Other, or whatever a custom row names) -- note this is ONE path segment, not split_category'd,
 -- matching how Config.SOCKETITEMS_TOOLS' own `type` field is used.
-local function custom_spawn_path_and_label(row)
+local function custom_spawn_path_and_label(row, fileDisplayName)
     if row.type == "handitem" then
-        return { "Custom", "Hand", row.category or "Custom" }, row.label or row.name
+        return { "Custom", "Hand", fileDisplayName or "Custom", row.category or "Custom" }, row.label or row.name
     end
-    local path = { "Custom Content", CUSTOM_FILE_TYPE_HEADINGS[row.type] or "Misc" }
+    local path = { "Custom Content", fileDisplayName or "Custom", CUSTOM_FILE_TYPE_HEADINGS[row.type] or "Misc" }
     for _, seg in ipairs(split_category(row.category)) do path[#path + 1] = seg end
     return path, row.label or row.name
 end
 
-local function custom_pose_path_and_label(row)
-    local path = { "Custom", "Poses", "Custom" }
+local function custom_pose_path_and_label(row, fileDisplayName)
+    local path = { "Custom", "Poses", fileDisplayName or "Custom" }
     for _, seg in ipairs(split_category(row.category)) do path[#path + 1] = seg end
     return path, row.label or row.name
 end
@@ -305,15 +324,16 @@ local function custom_file_descriptors()
     local out = {}
     for _, path in ipairs(found) do
         local base = sanitize_roster_name(path)
+        local displayName = display_name_for_file(path)
         local spawnRows, poseRows = parse_custom_ini_file(path)
         print("[LivingBase] spawnmenu_manifest:   " .. path .. " -> " .. #spawnRows .. " spawn row(s), " .. #poseRows .. " pose row(s)\n")
         if #spawnRows > 0 then
             out[#out + 1] = { name = "CUSTOMFILE_" .. base .. "_SPAWN", rows = spawnRows,
-                path_and_label = custom_spawn_path_and_label, kind = "SPAWN" }
+                path_and_label = custom_spawn_path_and_label, kind = "SPAWN", displayName = displayName }
         end
         if #poseRows > 0 then
             out[#out + 1] = { name = "CUSTOMFILE_" .. base .. "_POSE", rows = poseRows,
-                path_and_label = custom_pose_path_and_label, kind = "POSE" }
+                path_and_label = custom_pose_path_and_label, kind = "POSE", displayName = displayName }
         end
     end
     cachedCustomFileDescriptors = out
@@ -764,7 +784,7 @@ local function build_custom_block()
     local lines = { CUSTOM_BLOCK_BEGIN, "" }
     for _, d in ipairs(custom_file_descriptors()) do
         for i, row in ipairs(d.rows) do
-            local path_parts, leaf_label = d.path_and_label(row)
+            local path_parts, leaf_label = d.path_and_label(row, d.displayName)
             table.insert(path_parts, leaf_label)
             lines[#lines + 1] = string.format("[%s]\nlabel = %s\nroster = %s\nindex = %d\n",
                 ini_escape_section(path_parts), leaf_label, d.name, i)

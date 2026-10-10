@@ -483,6 +483,14 @@ function Signs.Apply(actor, lines, opts)
     local ax = t.anchor.x + msh.X + depth * dirx
     local ay = t.anchor.y + msh.Y + (opts.dy or 0.0) + depth * diry
     local az = t.anchor.z + msh.Z + (opts.dz or 0.0) + (ft and ft.dz or 0.0) + vshift * size
+    -- Temporary diagnostic (2026-10-09, RedFalcon: a custom sign kept landing "at the default
+    -- spot" despite a correctly-registered type -- narrowing down whether t.anchor/t.depth as
+    -- actually live in Signs.TYPES match what the ini says, vs the Apply math itself).
+    if opts.verbose then
+        say(string.format("DIAG t.name=%s t.anchor=(%.2f,%.2f,%.2f) t.depth=%.2f t.yaw=%.2f msh=(%.2f,%.2f,%.2f) depth_used=%.2f -> ax,ay,az=(%.2f,%.2f,%.2f)",
+            tostring(t.name), t.anchor.x, t.anchor.y, t.anchor.z, t.depth or 0.0, t.yaw or 0.0,
+            msh.X, msh.Y, msh.Z, depth, ax, ay, az))
+    end
 
     -- Tilt of the text plane: roll turns it about the direction it faces (so the lines follow a crooked board), pitch about the
     -- board's horizontal axis. The stacked rows are offset along the TILTED vertical, so the block tilts as one piece.

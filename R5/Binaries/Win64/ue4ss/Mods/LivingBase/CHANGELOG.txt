@@ -16,6 +16,11 @@ ADDED -- Custom-*.ini drop-in content
   refreshes every tree (Spawn Tree, Poses, Hand items) on the spot -- no more restarting the game
   after every ini edit.
 
+ADDED -- Decor
+- New "Defense" category (Decor > Defense): Large Cannon, Small Cannon.
+- New Special Items dropdown entry on the Signs tab: Grave Headstone (Fountain), a text-capable
+  gravestone built on the fountain mesh.
+
 ADDED -- Hand Item Transform panel
 - Custom tab > Poses and Actions > "Hand Item Transform": move, rotate, and scale whatever's
   currently in the selected hand (Left/Right), independently of the item's own baked attachment

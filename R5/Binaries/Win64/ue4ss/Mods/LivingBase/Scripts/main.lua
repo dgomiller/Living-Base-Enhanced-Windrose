@@ -812,7 +812,8 @@ local SPAWN_MENU_DECOR_ROWS = flattenSpawnMenuDecor()
 -- SPECIAL_ITEMS (2026-09-29): the Signs tab's "Special Items" dropdown. Index = the position in the dropdown
 -- (keep in step with SignMenu.cpp's kSpecialItems). Only "Sign Post" for now.
 local SPAWN_MENU_SPECIAL_ITEMS = { "BP_SignCacheTMP_01", "SM_FlagWall_01", "SM_FlagWall_02", "SM_FlagWall_03", "SM_FlagWall_04",
-    "SM_WoodElements_01_Board02", "SM_WoodElements_01_Board04", "SM_WoodElements_01_Board05", "SM_Obelisk" }
+    "SM_WoodElements_01_Board02", "SM_WoodElements_01_Board04", "SM_WoodElements_01_Board05", "SM_Obelisk",
+    "SM_GardenFountain_01_Headstone" }
 SPAWN_MENU_HANDLERS.SPECIAL_ITEMS = function(index)
     local name = SPAWN_MENU_SPECIAL_ITEMS[index]
     if not name then return false, "index " .. tostring(index) .. " out of range" end

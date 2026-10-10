@@ -526,6 +526,8 @@ Config.LOOT_MESH_SOLID = {
   ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_01.SM_ShelfTortuga_01"] = true,   -- Shelves - Empty - Thin
   ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_02.SM_ShelfTortuga_02"] = true,   -- Shelves - Empty - Wide
   ["/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_03.SM_ShelfTortuga_03"] = true,   -- Shelves with Scrolls
+  ["/Game/Ships/Guns/SM_Cannon_01.SM_Cannon_01"] = true,   -- Large Cannon
+  ["/Game/Ships/Guns/SM_Cannon_04.SM_Cannon_04"] = true,   -- Small Cannon
 }
 
 Config.LOOT_MESH_BASE_OFFSET = {

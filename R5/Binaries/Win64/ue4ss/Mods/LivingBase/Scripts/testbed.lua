@@ -676,6 +676,22 @@ local function placeDecorEntry(d)
         log("Decoration " .. d.name .. " failed — path may be wrong; probe a wild one for its class.")
         return
     end
+    -- `d.rotYaw` (2026-10-09, RedFalcon: the fountain-as-headstone needing 180 on Z, without
+    -- touching the shared "Empty Small Fountain" entry that uses the SAME mesh) -- a per-ROW
+    -- baseline yaw correction, applied to the ACTOR itself, once, right after spawn and BEFORE
+    -- the ghost-preview follow loop starts tracking it. Deliberately NOT Config.LOOT_MESH_BASE_ROT
+    -- (mesh-component rotation, keyed by mesh PATH -- shared by every row using that mesh, which
+    -- is exactly the collision this avoids) -- this instead rotates the ACTOR, and since the
+    -- follow loop only ever updates POSITION during a plain move (ROTATE mode is a separate,
+    -- player-initiated delta on top of whatever rotation is already there), this baseline holds
+    -- through placement and gets persisted/restored generically along with every other decor
+    -- item's final confirmed rotation -- no restore-time special-casing needed.
+    if d.rotYaw then
+        pcall(function()
+            local r = a:K2_GetActorRotation()
+            a:K2_SetActorRotation({ Pitch = r.Pitch, Yaw = r.Yaw + d.rotYaw, Roll = r.Roll }, false)
+        end)
+    end
     -- Item-drop decor entries (fkeys.lua's inventoryDrops category) carry a `mesh` field: a real
     -- static-mesh asset path, not a class path. Their shared class (R5LootActor) normally gets its
     -- mesh from a real drop event (LootView), which a generic spawn never gets — confirmed dead

@@ -104,7 +104,9 @@ FKeys.DECOR_ORDER = {
   -- Furniture > Tables, more (2026-10-01): trailing category mapped to the existing Furniture > Tables folder, so no existing index shifts.
   "new_furniture_tables_more",
   -- Furniture > Shelving (2026-10-01): trailing category, a new folder, so no existing index shifts.
-  "new_furniture_shelving"
+  "new_furniture_shelving",
+  -- Defense (2026-10-09, RedFalcon): new top-level category, trailing so no existing index shifts.
+  "new_defense"
 }
 
 -- DECORATIONS: static world props placed as scenery — dodo nests, mushroom clusters, shipwrecks,
@@ -1643,6 +1645,11 @@ FKeys.DECOR_CATEGORIES = {
     { name = "SM_ShelfTortuga_02", label = "Shelves - Empty - Wide", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_02.SM_ShelfTortuga_02" },
     { name = "SM_ShelfTortuga_03", label = "Shelves with Scrolls", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/TMP/Temp_TortugaStalls/Meshes/SM_ShelfTortuga_03.SM_ShelfTortuga_03" },
   },
+  -- Defense (2026-10-09, RedFalcon): raw ship-cannon meshes as loot-mesh decor, solid via Config.LOOT_MESH_SOLID.
+  new_defense = {
+    { name = "SM_Cannon_01", label = "Large Cannon", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Ships/Guns/SM_Cannon_01.SM_Cannon_01" },
+    { name = "SM_Cannon_04", label = "Small Cannon", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Ships/Guns/SM_Cannon_04.SM_Cannon_04" },
+  },
   -- SPECIAL ITEMS (2026-09-29, RedFalcon: a "Special Items" dropdown + Spawn button on the Signs tab, just "Sign Post" for now).
   -- DELIBERATELY not in FKeys.DECOR_ORDER: the Spawn tab's Decor tree flattens by DECOR_ORDER, so this stays out of the tree
   -- and shifts no existing spawn_menu.ini index. It is still in DECOR_CATEGORIES, which is what Spawner.IsDecorClass reads, so
@@ -1662,6 +1669,14 @@ FKeys.DECOR_CATEGORIES = {
     { name = "SM_WoodElements_01_Board04", label = "Board 2 (One line)", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Pier/SM_WoodElements_01_Board04.SM_WoodElements_01_Board04" },
     { name = "SM_WoodElements_01_Board05", label = "Board 3 (One line)", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Pier/SM_WoodElements_01_Board05.SM_WoodElements_01_Board05" },
     { name = "SM_Obelisk", label = "Obelisk", zoffset = 0.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Props/Obelisk/SM_Obelisk.SM_Obelisk" },
+    -- Grave Headstone (2026-10-09, RedFalcon): reuses the Empty Small Fountain mesh (already in
+    -- Config.LOOT_MESH_SOLID from that entry) as a sign-capable headstone. A DISTINCT `name` from
+    -- that entry on purpose -- same mesh, different row, so the two can be told apart by anything
+    -- that looks up special_items by name. zoffset = -80.0 (16 clicks of the Move panel's Down
+    -- button at 1x precision: Config.LIVE_EDIT_HEIGHT_STEP 20.0 * 0.25 = 5.0uu/click). rotYaw =
+    -- 180.0 -- see placeDecorEntry's own comment on why this is a per-row actor rotation, not the
+    -- shared Config.LOOT_MESH_BASE_ROT table (would also rotate the plain fountain).
+    { name = "SM_GardenFountain_01_Headstone", label = "Grave Headstone (Fountain)", zoffset = -80.0, rotYaw = 180.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01" },
   },
 }
 

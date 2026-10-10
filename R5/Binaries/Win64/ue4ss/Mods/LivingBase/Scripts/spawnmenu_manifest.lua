@@ -581,6 +581,7 @@ local DECOR_CATEGORY_LABELS = {
     new_workbenches_jeweler = {"Workbenches", "Jeweler"},
     new_workbenches_utility = {"Workbenches", "Utility"},
     new_workbenches_workbench = {"Workbenches", "Workbench"},
+    new_defense = "Defense",
 }
 
 -- Decor lives in per-category sub-tables (Config.DECOR_CATEGORIES[key]), not one flat array like

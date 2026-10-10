@@ -127,6 +127,12 @@ Signs.TYPES = {
     { name = "Obelisk", match = "R5LootActor", mesh = "SM_Obelisk", hide = {},
       anchor = { x = 116.4, y = 0.0, z = -28.9 }, depth = -15.0, yaw = 0.0, pitch = 11.0,
       boardW = 180.0, boardH = 100.0, marginX = 8.0, marginY = 8.0, color = { R = 242, G = 217, B = 38, A = 255 }, maxSize = 100.0 },
+    -- Grave Headstone (2026-10-09, RedFalcon): same mesh as the plain "Empty Small Fountain" decor
+    -- item (Decor > Misc > Water) -- shares this ONE Signs.TYPES entry with it by mesh identity,
+    -- same as every other shared built-in mesh in this table. Values as tuned by RedFalcon.
+    { name = "Grave Headstone (Fountain)", match = "R5LootActor", mesh = "SM_GardenFountain_01", hide = {},
+      anchor = { x = -62.0, y = 0.0, z = 150.0 }, depth = 0.0, yaw = 180.0,
+      boardW = 75.0, boardH = 100.0, marginX = 4.0, marginY = 3.0, color = { R = 242, G = 217, B = 38, A = 255 } },
 }
 
 -- Exported (2026-10-08, Custom-*.ini drop-in content, `type = sign`): lets main.lua register a

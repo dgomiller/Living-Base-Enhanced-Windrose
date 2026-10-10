@@ -74,54 +74,79 @@
 
 
 [size=4][b][u]Example File[/u][/b][/size]
-[color=#D4D4D8]This is a trimmed example — a full template with every field documented is included with the mod ([b]Custom-Template.ini[/b]).[/color]
+[color=#D4D4D8]A real, working example covering every type and kind — a full template with every field documented is also included with the mod ([b]Custom-Template.ini[/b]).[/color]
 [code]
-[My Decor Item]
+[Basket]
 type = decor
 kind = actor
-path = /Game/REPLACE/WITH/REAL/BP_SomeDecorItem.BP_SomeDecorItem_C
-category = My Decor
+path = /Game/Gameplay/Foliage/FoliageActors/Shared/DestructibleStructures/CampProps/BP_Shared_DestructibleStructures_Basket_03.BP_Shared_DestructibleStructures_Basket_03_C
+category = Furniture
 
-[My Mesh-Only Decor Item]
+[Ruins Center Sign]
 type = decor
 kind = mesh
-path = /Game/REPLACE/WITH/REAL/SM_SomeStaticMesh.SM_SomeStaticMesh
-category = My Decor
+path = /Game/TMP/RuinsTEMP/SM_RuinsSignCenter_01.SM_RuinsSignCenter_01_C
+category = Walkways
 solid = true
 
-[My Effect Item]
+[Fountain Headstone]
+type = sign
+path = /Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01
+; Starting guesses -- tune live (spawn it, apply text, adjust these, click Update, re-apply):
+x = -62.0
+z = 150.0
+depth = 0.0
+yaw = 180.0
+bw = 75.0
+bh = 100.0
+solid = true
+kind = mesh
+
+[John Doe]
+type = people
+path = /Game/Gameplay/Character/AI/NPC/Ksant/BP_NPC_Ksant.BP_NPC_Ksant_C
+category = My Crew
+idle = true
+
+[Another Armored Drowned]
+type = monstrous
+path = /Game/Gameplay/Character/AI/Mob/Drowned/BP_Mob_Drowned_Armored.BP_Mob_Drowned_Armored_C
+category = Repeats
+
+[Another Boar]
+type = animals
+path = /Game/Gameplay/Character/AI/Mob/Boar/BP_Mob_Boar.BP_Mob_Boar_C
+category = Repeats
+idle = true
+
+[Male Stand Up]
+type = pose
+path = /Game/Character/Animations/Human/Regular/Shared/Combat_Saber/A_Regular_Male_Combat_Saber_GetUpF
+category = Male
+
+[Pistol Fail]
+type = pose
+path = /Game/Character/Animations/Human/Regular/Shared/Combat_Saber/Sergeant/AM_Regular_Male_Combat_Pistol_FailShot
+category = Shooting
+
+[Smuggler Chest Looker]
+type = people
+path = /Game/Gameplay/Character/AI/NPC/FactionActors/Buccaneers/AnimatedActor/BP_AnimatedActor_Buccaneers_Trapper_LookerChest.BP_AnimatedActor_Buccaneers_Trapper_LookerChest_C
+category = Busy Work
+
+[Explosives]
 type = decor
 kind = effect
-fx = /Game/REPLACE/WITH/REAL/FX_SomeNiagaraSystem.FX_SomeNiagaraSystem
-category = My Decor
+; path omitted on purpose -- defaults to the native NiagaraActor class, same invisible actor
+; Decor > Misc > Water's built-in fountain-spray/splash entries already use.
+fx = /Game/FX/Particles/Bosses/CoastJungle/Boatswain/FX_Boatswain_BombProjectile.FX_Boatswain_BombProjectile
+category = Effects
 
-[My Sign Item]
-type = sign
-path = /Game/REPLACE/WITH/REAL/BP_SomeSignOrFlag.BP_SomeSignOrFlag_C
-x = 0.0
-y = 0.0
-z = 0.0
-depth = -2.0
-yaw = 0.0
-bw = 100.0
-bh = 50.0
-size = 30.0
-
-[My Person]
-type = people
-path = /Game/REPLACE/WITH/REAL/BP_SomeCharacter.BP_SomeCharacter_C
-category = My Crew
-
-[My Pose]
-type = pose
-path = /Game/REPLACE/WITH/REAL/AM_SomeAnimation
-category = My Poses
-
-[My Hand Item]
+[Stone Axe 2]
 type = handitem
-path = /Game/REPLACE/WITH/REAL/SM_SomeWeaponOrTool
-category = My Items
-label = My Cool Sword
+path = /Game/Character/Skeletal_Meshes/Weapons/Weapon_Stone/SK_Weapon_Stone_Axe
+category = Other Tools
+label = Axe Me A Question
 [/code]
 
 

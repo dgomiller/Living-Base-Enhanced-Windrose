@@ -36,6 +36,7 @@
 [/list]
 
 [color=#D4D4D8][b]type = sign[/b] — same actor/mesh placement as decor, but can also carry text via the Signs tab.[/color]
+[color=#D4D4D8][i]Risk: text layout is matched by the item's mesh/class alone, not by which specific placed copy or which file it came from. If two sign entries ANYWHERE (even across two different downloaded packs) reference the identical path, only the first one loaded is ever used — the other is silently unreachable. Give each sign entry its own distinct mesh/class to avoid this.[/i][/color]
 [list]
 [*][color=#D4D4D8][b]path[/b] (required), [b]kind[/b] (actor or mesh — no "effect" option for signs), [b]category[/b], [b]label[/b], [b]solid[/b] — all the same as decor, above.[/color][/*]
 [*][color=#D4D4D8]Text-layout fields (all optional — an untuned sign still accepts text, just maybe not perfectly placed on the mesh). The default shown is exactly what's used when a field is left out:[/color][/*]
@@ -48,7 +49,7 @@
 [*][color=#D4D4D8][b]size[/b]: largest text size allowed (uu). Default: [b]30.0[/b].[/color][/*]
 [*][color=#D4D4D8][b]rows[/b]: max text lines. Default: [b]4[/b].[/color][/*]
 [/list]
-[*][color=#D4D4D8][b]Important:[/b] [i]lbtestsigntext[/i]'s own arguments do NOT match these field names one-to-one. Its [b]x=[/b] is actually an alias for [b]depth=[/b], not the anchor x above; its [b]y=[/b]/[b]z=[/b] (same as [b]dy=[/b]/[b]dz=[/b]) are temporary OFFSETS added on top of whatever anchor y/z already is, not the absolute anchor itself. To tune live: spawn the item, aim at it, run [b]lbprobe[/b], then run something like [b]lbtestsigntext test depth=-2 dy=0 dz=0 yaw=0 bw=100 bh=50[/b] and adjust [b]depth=/dy=/dz=/yaw=/bw=/bh=/size=[/b] until it looks right. Copy [b]depth=, yaw=, bw=, bh=, size=[/b] straight into your ini under the same names — for [b]dy=/dz=[/b], ADD the value you landed on to your existing [b]y=/z=[/b] anchor (0.0 if unset) to get the final numbers to write, they don't go in as-is.[/color][/*]
+[*][color=#D4D4D8][b]To tune these:[/b] spawn the item, apply some placeholder text to it from the Signs/Text tab, and see where it lands. Adjust the numbers in your ini file, click the [b]Update[/b] button next to the Spawn Tree's filter box to pull in the change (no restart needed), then re-apply the text on that same item from the Signs/Text tab again to see the new position — Update only refreshes the saved layout for the NEXT time text is applied, it doesn't move text already on an item by itself. Repeat: tweak a number, Update, re-apply, check, until it looks right.[/color][/*]
 [/list]
 
 [color=#D4D4D8][b]type = people[/b] / [b]monstrous[/b] / [b]animals[/b] — a Blueprint character, monster, or animal class.[/color]

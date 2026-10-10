@@ -1676,7 +1676,7 @@ FKeys.DECOR_CATEGORIES = {
     -- button at 1x precision: Config.LIVE_EDIT_HEIGHT_STEP 20.0 * 0.25 = 5.0uu/click). rotYaw =
     -- 180.0 -- see placeDecorEntry's own comment on why this is a per-row actor rotation, not the
     -- shared Config.LOOT_MESH_BASE_ROT table (would also rotate the plain fountain).
-    { name = "SM_GardenFountain_01_Headstone", label = "Grave Headstone (Fountain)", zoffset = -80.0, rotYaw = 180.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01" },
+    { name = "SM_GardenFountain_01_Headstone", label = "Grave Headstone (Fountain)", zoffset = -80.0, confirmZOffset = -80.0, rotYaw = 180.0, path = "/Script/R5.R5LootActor", mesh = "/Game/Environment/Gameplay/Building/BuildingDecoration/SM_GardenFountain_01.SM_GardenFountain_01" },
   },
 }
 

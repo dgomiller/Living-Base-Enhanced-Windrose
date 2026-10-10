@@ -31918,6 +31918,18 @@ local function beginFollowLoop(distance)
                     Z = target.Z - Spawner._placementCenterOffset.Z,
                 }
             end
+            -- Per-actor spawn correction (2026-10-09, RedFalcon: "it needs to be during place too
+            -- or else its not visually accurate") -- a one-time correction applied only at Confirm
+            -- is invisible the whole time the item is being dragged, since THIS loop re-sets
+            -- position/rotation every tick regardless. Read fresh every tick (not consumed) from
+            -- Spawner._pendingPlacementCorrection[actor] (testbed.lua's placeDecorEntry sets it,
+            -- Confirm/CancelPlacement below clear it) so the correction is visible the whole
+            -- session, not just after confirming -- by the time Confirm reads the actor's own
+            -- transform for persistence, it already has this baked in, no separate apply needed.
+            local pc = Spawner._pendingPlacementCorrection and Spawner._pendingPlacementCorrection[actor]
+            if pc and pc.zOffset then
+                moveTarget = { X = moveTarget.X, Y = moveTarget.Y, Z = moveTarget.Z + pc.zOffset }
+            end
             actor:K2_SetActorLocation(moveTarget, false, {}, true)
 
             -- Face-the-player while being placed (2026-09-21, RedFalcon: "for anything spawned...
@@ -31938,6 +31950,7 @@ local function beginFollowLoop(distance)
             -- very next 33ms tick.
             if Spawner._placementMode == "NEW" and not Spawner._placementManualRotate then
                 local faceYaw = (rot.Yaw + 180.0) % 360.0
+                if pc and pc.rotYaw then faceYaw = (faceYaw + pc.rotYaw) % 360.0 end
                 pcall(function() actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = faceYaw, Roll = 0.0 }, false) end)
             end
         end)
@@ -32238,6 +32251,10 @@ function Spawner.ConfirmPlacement()
     end
     local actor = Spawner._placementActor
     local mode = Spawner._placementMode
+    -- Clear the per-actor spawn correction tracked during follow (see beginFollowLoop's own
+    -- comment) -- its job is done once the actor's live transform already has it baked in, right
+    -- before the persistence read a few lines below picks that transform up.
+    if Spawner._pendingPlacementCorrection then Spawner._pendingPlacementCorrection[actor] = nil end
     -- Move undo (2026-10-06, RedFalcon: "capture the original location on confirm or on pickup if
     -- we remove the entry if cancel is pressed during the move") -- only RELOCATE (grabbing an
     -- EXISTING placed object) pushes an undo entry; a brand-new NEW placement has nothing to "undo
@@ -32390,6 +32407,9 @@ function Spawner.CancelPlacement()
     local actor = Spawner._placementActor
     local mode = Spawner._placementMode
     local origLoc, origRot = Spawner._placementOriginalLoc, Spawner._placementOriginalRot
+    -- Same cleanup as ConfirmPlacement's own copy of this comment -- a cancelled NEW placement
+    -- despawns the actor outright below anyway, but RELOCATE doesn't, so this still matters there.
+    if Spawner._pendingPlacementCorrection then Spawner._pendingPlacementCorrection[actor] = nil end
     -- Cancelling a Barbie's own placement never fires the auto-detect (the actor may be destroyed
     -- outright) -- just clear the flag so it can't leak into a LATER, unrelated placement.
     Spawner._placementIsBarbie = nil

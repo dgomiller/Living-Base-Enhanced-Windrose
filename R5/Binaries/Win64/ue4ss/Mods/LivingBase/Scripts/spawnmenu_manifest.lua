@@ -125,7 +125,15 @@ local function list_custom_ini_files(ini_path)
     end
     for line in content:gmatch("[^\r\n]+") do
         local name = line:match("^%s*(.-)%s*$")
-        if name and name ~= "" and name:sub(1, 1) ~= ";" then
+        -- Custom-Template.ini is always ignored, even if listed (2026-10-09, RedFalcon: "make it
+        -- ignore Custom-Template.ini, then we can include it without worry") -- it ships WITH the
+        -- mod as a reference/example file, not real content, and every example section in it
+        -- still has placeholder "/Game/REPLACE/WITH/REAL/..." paths that would just fail to
+        -- resolve anyway. Case-insensitive so "custom-template.ini"/"CUSTOM-TEMPLATE.INI" etc.
+        -- are caught too.
+        if name and name:lower() == "custom-template.ini" then
+            print("[LivingBase] spawnmenu_manifest: skipping Custom-Template.ini -- it's a reference/example file, never loaded as real content even if listed in CustomFilesIndex.txt.\n")
+        elseif name and name ~= "" and name:sub(1, 1) ~= ";" then
             local fullPath = dir .. name
             local probe = io.open(fullPath, "r")
             if probe then

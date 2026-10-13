@@ -17,8 +17,9 @@ This document mirrors the in-game Instructions tab (press F1 in the GUI window) 
 9. [Signs / Labels](#signs--labels)
 10. [Photo Mode](#photo-mode)
 11. [Instructions and History](#instructions-and-history)
-12. [Credits and Attribution](#credits-and-attribution)
-13. [License](#license)
+12. [Known Issues](#known-issues)
+13. [Credits and Attribution](#credits-and-attribution)
+14. [License](#license)
 
 ## Installation and Uninstallation
 
@@ -326,6 +327,10 @@ The last two tabs are Instructions and History. Instructions contains this docum
 
 ![Instructions](images/instructions_and_history_01.png)
 ![History](images/instructions_and_history_02.png)
+
+## Known Issues
+
+- **NVIDIA DLSS Multi Frame Generation (3x/4x) can crash the game when opening the LivingBaseSpawnMenu window**, confirmed on an RTX 50-series card. The companion window runs its own separate rendering device specifically to avoid interfering with the game's own graphics, but Multi Frame Generation's frame-interpolation pipeline appears unable to tolerate a second window presenting alongside it regardless. If you experience a crash the moment the menu opens (Numpad `-`), try lowering DLSS Frame Generation to 2x or turning it off entirely in Windrose's graphics settings. Standard (non-multi) Frame Generation has not shown this issue.
 
 ## Credits and Attribution
 

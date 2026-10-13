@@ -522,8 +522,25 @@ register("toggleFreeBuild", windowGatedAction(Spawner.ToggleFreeBuild, "toggle f
 -- check hides it at once) and this hook (bumps the counter). The C++ side then finds the counter changed while the window is already hidden and
 -- SHOWS it again -- the menu "keeps reopening". So when the window is open, wait a moment and re-check: if it already closed itself, skip the bump;
 -- if it is still open (the game had focus, the C++ window never saw the key), bump as before. Opening (window closed) bumps immediately.
+-- ENTRY-LEVEL DEBOUNCE (2026-10-12, superseding the branch-only debounce tried first): a held or
+-- fast-repeated key can fire this handler many times before the first toggle even reaches C++ --
+-- the bump only becomes a real open/close via spawn_menu_status.txt, written on a 300ms-throttled
+-- publish loop and picked up by C++'s own 300ms poll, so "Lua decided" to "C++ acted" can lag up to
+-- ~600ms. Guarding only the immediate-bump branch (first attempt) still let the 450ms-delayed branch
+-- queue up independently from repeat presses, each one checking stale state when it finally fired --
+-- RedFalcon confirmed fast/held presses still caused loops. Debouncing at the very top, before either
+-- branch runs, closes both paths at once: a key event arriving before the cooldown elapses is dropped
+-- outright, not scheduled, not bumped, nothing. One cooldown covers presses, repeats, and the
+-- close-then-game-regains-focus-then-redelivered-keydown case from the original bug report alike.
 register("toggleWindow", alwaysAction(function()
-    print(string.format("[LivingBase] [window] '-' key seen, window flag=%s (t=%.2f)\n", tostring(isSpawnMenuWindowOpen()), os.clock()))
+    local now = os.clock()
+    local last = Spawner._lastWindowToggleKeyAt or 0
+    if (now - last) < 0.4 then
+        print(string.format("[LivingBase] [window] '-' key seen but ignored -- inside debounce window (t=%.2f).\n", now))
+        return
+    end
+    Spawner._lastWindowToggleKeyAt = now
+    print(string.format("[LivingBase] [window] '-' key seen, window flag=%s (t=%.2f)\n", tostring(isSpawnMenuWindowOpen()), now))
     local function bump()
         windowToggleSeq = windowToggleSeq + 1
         print("[LivingBase] Spawn menu window: toggle requested (seq " .. windowToggleSeq .. ").\n")

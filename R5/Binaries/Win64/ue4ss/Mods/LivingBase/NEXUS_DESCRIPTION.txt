@@ -86,6 +86,12 @@
 [/spoiler]
 
 [line]
+[size=4][b][u]Known Issues[/u][/b][/size]
+[list]
+[*][color=#D4D4D8][b]NVIDIA DLSS Multi Frame Generation (3x/4x) can crash the game when opening the LivingBaseSpawnMenu window[/b], confirmed on an RTX 50-series card. The companion window runs its own separate rendering device specifically to avoid interfering with the game's own graphics, but Multi Frame Generation's frame-interpolation pipeline appears unable to tolerate a second window presenting alongside it regardless. If you experience a crash the moment the menu opens (Numpad -), try lowering DLSS Frame Generation to 2x or turning it off entirely in Windrose's graphics settings. Standard (non-multi) Frame Generation has not shown this issue.[/color][/*]
+[/list]
+
+[line]
 [size=4][b][u]Credits and Attribution[/u][/b][/size]
 [color=#D4D4D8][i]Living Base Enhanced[/i] is an unofficial, unaffiliated fan project for [i]Windrose[/i]. [i]Windrose [/i]itself, its game assets, class names, and all related IP belong to Kraken Express.[/color]
 [list]

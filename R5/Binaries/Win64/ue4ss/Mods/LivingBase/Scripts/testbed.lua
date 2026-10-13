@@ -1891,6 +1891,18 @@ local RESTORE_RULES = {
     { name  = "boar",
       when  = function(cls) return cls:find("/Mob/Boar") ~= nil end,
       apply = function(actor) pacifyCreature(actor, "BOAR", nil) end },
+    -- Wolf/AlphaWolf (2026-10-13, RedFalcon re-investigating [[project_crew_attacks_wolves_known_issue]]):
+    -- confirmed live the fight actually starts at world-load and stops the instant post-processing
+    -- finishes for GOAT/GoatMega (the rule above, matching /Mob/Goat -- GoatMega's own path is
+    -- .../Mob/Goat/GoatMega/..., so the substring match already covers it) but NEVER stops for
+    -- Wolf, because no equivalent RESTORE_RULES entry existed for /Mob/Wolf. Fresh spawns already
+    -- get the same Config.GOAT_DISABLE component-strip at spawn time (see config.lua's Wolf
+    -- (Mobile)/AlphaWolf (Mobile) candidates), but nothing re-applied it (or re-synced the friendly
+    -- faction pacifyCreature also does) on a world RESTORE -- this was the actual gap the whole
+    -- session's investigation was chasing, not a categorizer/class-path mismatch.
+    { name  = "wolf",
+      when  = function(cls) return cls:find("/Mob/Wolf") ~= nil end,
+      apply = function(actor) pacifyCreature(actor, "WOLF", Config.GOAT_DISABLE) end },
     -- Female walker re-skins (Numpad Decimal / Testbed.TestFemaleWalkerReskin) -- LAST in
     -- this list on purpose: the Senkamati Caster-F/Healer rule above also spawns this same
     -- class, and it already `return`s on its own match, so ordering alone keeps the two

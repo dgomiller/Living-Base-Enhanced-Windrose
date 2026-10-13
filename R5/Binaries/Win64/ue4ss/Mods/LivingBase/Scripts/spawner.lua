@@ -9660,6 +9660,26 @@ local function probeDumpPropertiesBody()
     -- 2026-09-23: R5SegmentTree's own chop-progress state (Spec/ActiveSegmentInterval) -- a no-op
     -- for any non-tree actor (Spawner.DumpTreeChopState checks for a Spec field first).
     pcall(function() Spawner.DumpTreeChopState(target) end)
+    -- 2026-10-13 (RedFalcon: re-investigating why crew attacks a spawned Wolf but not a spawned
+    -- GoatMega, despite BOTH being listed in DA_Mob_Crew_Regular_AgentParams's ByClass Enemy
+    -- categorizer per the FModel export -- see project_crew_attacks_wolves_known_issue memory)
+    -- -- whatever drives that distinction lives on the actor's AIController, not the Pawn itself,
+    -- and nothing in this probe has ever looked there. Same safe reflection pattern as the rest of
+    -- this function (dumpObjectProperties on the leaf object + DumpAllComponents to walk every
+    -- attached ActorComponent), just pointed at GetController() instead of target. Run lbprobe +
+    -- lbprobedump on a spawned Wolf, then again on a spawned GoatMega, and diff the two
+    -- CONTROLLER/COMPONENT sections for anything AgentParams/Categor*/Relationship-related that
+    -- differs between them.
+    pcall(function()
+        local ctrl = nil
+        pcall(function() ctrl = target:GetController() end)
+        if ctrl and ctrl:IsValid() then
+            dumpObjectProperties(ctrl, "CONTROLLER")
+            Spawner.DumpAllComponents(ctrl)
+        else
+            print("[LivingBase] [probe-props] no valid controller found on this target.\n")
+        end
+    end)
     print("[LivingBase] [probe-props] ---- END " .. probeName .. " ----\n")
 end
 
@@ -13885,6 +13905,28 @@ local function restoreOne(line)
             pcall(function() Spawner.SetLootMesh(a, look.lootMesh) end)
             pcall(function() Spawner.MakeLootDecor(a) end)
             pcall(function() Spawner.ApplyLootSolid(a) end)   -- Config.LOOT_MESH_SOLID
+        end
+        -- Wolf/Goat-family immediate protection (2026-10-13, RedFalcon: restored wolves/goats can
+        -- actually get fought -- and possibly killed -- by crew during the gap before testbed.lua's
+        -- RESTORE_RULES pacify pass runs, since that pass is deliberately deferred/staggered
+        -- (Config.RESTORE_POSTPROCESS_MS, 8s default) because its component-strip work (goat-strip/
+        -- MakePassive's CombatComponent removal) is crash-prone "component surgery" if run too early
+        -- during load -- see scheduleRestorePostProcess's own comment. That strip is what actually
+        -- STOPS crew from targeting these actors (the DA_Mob_Crew_Regular_AgentParams ByClass Enemy
+        -- categorizer runs independent of faction -- see project_crew_attacks_wolves_known_issue
+        -- memory), so it has to stay deferred. But the friendly-faction sync and the invincibility
+        -- GameplayEffect pacifyCreature ALSO applies are plain property writes / a GAS effect call,
+        -- not component destruction -- same "doesn't need the gate" reasoning as SetAILogic's own
+        -- immediate freeze a few lines below. Applying those two here closes the actual DEATH risk
+        -- (can't be killed once invincible, even if still visibly "fought" for a few seconds) without
+        -- touching the deferred pass's crash-safety timing at all.
+        if tostring(cls):find("/Mob/Wolf") or tostring(cls):find("/Mob/Goat") then
+            local fp = Spawner.GetFriendlyFactionParams()
+            if fp then pcall(function() Spawner.MakeFriendly(a, fp) end) end
+            if Config.CREATURE_INVINCIBLE then
+                local ge = Spawner.ResolveGEClass(Config.IMMUNE_GE_CANDIDATES, Config.IMMUNE_GE_NAME)
+                if ge then pcall(function() Spawner.ApplyGE(a, ge) end) end
+            end
         end
         -- Idle Senkamati (2026-08-23 fix, RedFalcon: "they do eventually freeze, but they need
         -- to freeze immediately... they are supposed to be frozen like statues"). testbed.lua's

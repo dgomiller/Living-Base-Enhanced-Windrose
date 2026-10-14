@@ -1,6 +1,32 @@
 LivingBase Enhanced -- Changelog
 
 ======================================================================
+v3.0.8 (2026-10-14) -- previous version: v3.0.7
+======================================================================
+
+ADDED -- Spawn Menu tree sorting
+- Everything below the top-level categories (People/Decor/Signs/Custom/...) in the Spawn Menu
+  window now sorts alphabetically automatically, at every level, including inside Custom > Poses
+  and Custom > Hand. The top-level category order stays exactly as curated. New content always
+  lands in the right alphabetical spot without ever needing a manual tree reorder.
+
+FIXED
+- A rapid or held press of the window-toggle key (Numpad -) could open and close the Spawn Menu
+  window repeatedly instead of toggling once, caused by a focus-handoff race between the game and
+  the companion window. Now debounced.
+- Crew could attack (and potentially kill) a restored Wolf immediately after a world/save load,
+  before it had been marked friendly -- the same protection other restored creatures already had
+  was missing specifically for Wolf. Wolves are now protected the instant they're restored, not
+  only after a short delay.
+
+DOCUMENTED
+- A known issue where the Spawn Menu companion window can crash on some RTX 50-series
+  ("Blackwell") GPUs when NVIDIA DLSS Multi Frame Generation (3x/4x) is enabled -- a driver/
+  hardware interaction, not a bug in this mod's own window, which already uses a fully isolated
+  rendering device. Workaround: disable Multi Frame Generation, or drop it to the standard 2x
+  Frame Generation mode. See README.md's Known Issues section for detail.
+
+======================================================================
 v3.0.7 (2026-10-09) -- previous version: v3.0.6
 ======================================================================
 

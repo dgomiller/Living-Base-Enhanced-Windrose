@@ -10165,11 +10165,15 @@ end
 -- /Script/Engine.CameraActor spawned by Spawner.SetPhotoTripod -- it has none of Windrose's own
 -- CameraParams settings-driven reassertion system, so a direct FieldOfView write on its
 -- CameraComponent just holds -- no detach-first dance needed the way the player camera required.
+-- 2026-10-14: now resolves EITHER camera depending on which one is actually active (Selfie's
+-- native BP_SelfieCameraPoC also exposes a plain CameraComponent, same FieldOfView write idiom) --
+-- the name stayed "SetTripodFOV" since every existing caller (the GUI's FOV poll, lbcamerafov)
+-- already calls it unconditionally and shouldn't need to know which camera is live.
 function Spawner.SetTripodFOV(value, say)
     say = say or function(m) print("[LivingBase] [camerafov] " .. tostring(m) .. "\n") end
-    local cam = Spawner._resolveTripodActor()
+    local cam = (Spawner._photoModeCamState == "SELFIE") and Spawner._selfieCameraActor or Spawner._resolveTripodActor()
     if not (cam and cam:IsValid()) then
-        say("no active tripod camera -- run lbphototripod on first (or Zoom In from the Custom tab).")
+        say("no active tripod/selfie camera -- run lbphototripod on first (or Zoom In from the Custom tab).")
         return false
     end
     local target = tonumber(value)
@@ -10340,12 +10344,193 @@ function Spawner._computeSelfieBasePose()
     return { pos = pos, rot = camRot }
 end
 
+-- Spawner.ProbePlayerAnimLookAt(say) (2026-10-14) -- throwaway dev diagnostic for the native
+-- Selfie-camera feature's off-axis positioning question: if the camera moves OFF the player's own
+-- look vector (e.g. a lateral offset to show what's behind them, per RedFalcon's ask), the body/head
+-- stays facing wherever the player's control rotation points -- which no longer lines up with the
+-- new camera position, looking un-selfie-like. Before assuming new AnimBP work is needed to fix
+-- that, dump the player's own AnimInstance (properties + a function search for look/head/aim/target)
+-- to see whether a usable look-at mechanism with an exposed target already exists, the same way
+-- every other "is there already a lever for this" probe in this file works. Pure read, no writes.
+function Spawner.ProbePlayerAnimLookAt(say)
+    say = say or function(m) print("[LivingBase] [probe-player-anim] " .. tostring(m) .. "\n") end
+    local pc, pawn
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if not (pawn and pawn:IsValid()) then
+        say("no valid player pawn.")
+        return false
+    end
+    local mesh
+    pcall(function() mesh = pawn.Mesh end)
+    if not (mesh and mesh:IsValid()) then
+        say("pawn.Mesh missing or invalid.")
+        return false
+    end
+    local anim
+    pcall(function() anim = mesh:GetAnimInstance() end)
+    if not (anim and anim:IsValid()) then
+        say("mesh:GetAnimInstance() missing or invalid.")
+        return false
+    end
+    say("=== Player AnimInstance properties ===")
+    dumpObjectProperties(anim, "PLAYERANIM")
+
+    local function dumpFunctions(obj, tag, filterSubstring)
+        local cls
+        pcall(function() cls = obj:GetClass() end)
+        local names = {}
+        while cls and cls:IsValid() do
+            local className = "?"
+            pcall(function() className = cls:GetFName():ToString() end)
+            pcall(function()
+                cls:ForEachFunction(function(fn)
+                    local n = "?"
+                    pcall(function() n = fn:GetFName():ToString() end)
+                    if (not filterSubstring) or filterSubstring == "" or n:lower():find(filterSubstring:lower(), 1, true) then
+                        names[#names + 1] = string.format("%s (from %s)", n, className)
+                    end
+                end)
+            end)
+            local nextCls
+            pcall(function() nextCls = cls:GetSuperStruct() end)
+            cls = nextCls
+        end
+        table.sort(names)
+        say(string.format("=== %s functions (%d match%s) ===", tag, #names, filterSubstring and filterSubstring ~= "" and (" for '" .. filterSubstring .. "'") or ""))
+        for _, n in ipairs(names) do say("  " .. n) end
+    end
+    for _, kw in ipairs({ "look", "head", "aim", "target" }) do
+        dumpFunctions(anim, "PlayerAnim", kw)
+    end
+    return true
+end
+
+-- Spawner.SpawnSelfieCamera/DespawnSelfieCamera/SetSelfieSide (2026-10-14) -- Selfie's real
+-- implementation, replacing the old shared-tripod-actor + 100ms PhotoCamTick re-tracking with the
+-- native BP_SelfieCameraPoC (a real Blueprint, Tick-driven, no Lua polling needed at all once
+-- spawned -- see the companion LivingBaseExtended project and WINDROSE_MODDING_NOTES.md's writeup
+-- of the PoC that proved compiled Blueprint Tick logic survives the cook/retoc/repak round trip).
+-- Spawner._computeSelfieBasePose/_photoCamApplyPose's SELFIE branch above are now UNUSED by this
+-- path (kept, not deleted, in case this ever needs rolling back -- PhotoCamTick/PhotoCamSetMode/
+-- PhotoCamAdjustOffset below no longer call them for SELFIE).
+--
+-- "Non-persistent, Distance resets when activated" (RedFalcon's own spec) falls out for free from
+-- spawning a FRESH instance every activation -- Distance/SideOffset are real Blueprint variables
+-- that always start at their class defaults (115.0 / 0.0) on a brand-new actor, no explicit reset
+-- code needed; the old shared-tripod system's PERSISTED _photoCamOffsets table (deliberately kept
+-- across activations, per 2026-09-23's "retained even when exiting" rule) never applied here.
+local SELFIE_CAMERA_CLASS_PATH = "/Game/Mods/LivingBaseExtended/BP_SelfieCameraPoC.BP_SelfieCameraPoC_C"
+function Spawner.SpawnSelfieCamera(say)
+    say = say or function(m) print("[LivingBase] [selfiecam] " .. tostring(m) .. "\n") end
+    if Spawner._selfieCameraActor and Spawner._selfieCameraActor:IsValid() then
+        pcall(function() Spawner._selfieCameraActor:K2_DestroyActor() end)
+    end
+    Spawner._selfieCameraActor = nil
+    local pc, pawn
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if not (pc and pc:IsValid() and pawn and pawn:IsValid()) then
+        say("no valid player pawn.")
+        return nil
+    end
+    -- 2026-10-14 fix: spawning at the player's own raw location/identity rotation and letting
+    -- Event Tick correct it a frame later caused a visible one-frame flash (the companion window's
+    -- "doesn't start in front" report) -- BeginPlay runs before the actor's first Tick, so an
+    -- instant view-target cut (blend time 0.0) could briefly show the wrong pose. Reusing
+    -- _computeSelfieBasePose's own math (unused for live tracking since the native camera took
+    -- over, but the formula is still exactly right for a one-time INITIAL pose) means the very
+    -- first rendered frame already looks correct, before Tick ever needs to run at all.
+    local initialPose = Spawner._computeSelfieBasePose()
+    if not initialPose then
+        say("could not compute an initial pose for the player.")
+        return nil
+    end
+    local cls = resolveClass(SELFIE_CAMERA_CLASS_PATH)
+    if not (cls and cls:IsValid()) then
+        say("could not resolve " .. SELFIE_CAMERA_CLASS_PATH .. ".")
+        return nil
+    end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then
+        say("no GameplayStatics/World available.")
+        return nil
+    end
+    -- Rotation here is a throwaway identity quaternion -- BeginDeferredActorSpawnFromClass only
+    -- takes Rotation as part of the FTransform struct in quaternion form, which this project has
+    -- never needed to convert a Pitch/Yaw/Roll into cleanly; K2_SetActorRotation (Euler) right after
+    -- spawn, same as Spawner.SetPhotoTripod's own camYaw write below, is the simpler path.
+    local transform = {
+        Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = initialPose.pos.X, Y = initialPose.pos.Y, Z = initialPose.pos.Z },
+        Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+    local camActor = Spawner._DoEngineSpawn(gs, world, cls, transform, "SelfieCam", nil, nil)
+    if not (camActor and camActor:IsValid()) then
+        say("selfie camera spawn failed.")
+        return nil
+    end
+    pcall(function() camActor:K2_SetActorRotation(initialPose.rot, false) end)
+    local okView = pcall(function() pc:SetViewTargetWithBlend(camActor, 0.0, 0, 0.0, false) end)
+    if not okView then
+        say("SetViewTargetWithBlend failed -- destroying the spawned camera.")
+        pcall(function() camActor:K2_DestroyActor() end)
+        return nil
+    end
+    Spawner._selfieCameraActor = camActor
+    say("selfie camera ON.")
+    return camActor
+end
+
+function Spawner.DespawnSelfieCamera(say)
+    say = say or function(m) print("[LivingBase] [selfiecam] " .. tostring(m) .. "\n") end
+    local pc, pawn
+    pcall(function()
+        pc = UEHelpers.GetPlayerController()
+        pawn = pc and pc:IsValid() and pc.Pawn
+    end)
+    if pc and pc:IsValid() and pawn and pawn:IsValid() then
+        pcall(function() pc:SetViewTargetWithBlend(pawn, 0.0, 0, 0.0, false) end)
+    end
+    if Spawner._selfieCameraActor and Spawner._selfieCameraActor:IsValid() then
+        pcall(function() Spawner._selfieCameraActor:K2_DestroyActor() end)
+    end
+    Spawner._selfieCameraActor = nil
+    say("selfie camera OFF.")
+    return true
+end
+
+-- Spawner.SetSelfieSide(value, say) -- the Photo Mode tab's "<"/"|"/">" row (2026-10-14), a direct
+-- reflection write on the live camera's SideOffset variable (plain UPROPERTY, same "just write it"
+-- idiom as Spawner.SetTripodFOV's CameraComponent.FieldOfView). No-ops cleanly if Selfie isn't active.
+function Spawner.SetSelfieSide(value, say)
+    say = say or function(m) print("[LivingBase] [selfiecam-side] " .. tostring(m) .. "\n") end
+    local num = tonumber(value)
+    if not num then
+        say("usage: SetSelfieSide(<number>)")
+        return false
+    end
+    if not (Spawner._selfieCameraActor and Spawner._selfieCameraActor:IsValid()) then
+        say("no active selfie camera.")
+        return false
+    end
+    local ok, err = pcall(function() Spawner._selfieCameraActor.SideOffset = num end)
+    say(string.format("SideOffset set to %.1f: %s%s", num, tostring(ok), (not ok) and (" err=" .. tostring(err)) or ""))
+    return ok
+end
+
 -- Spawner._photoModeCamState -- (2026-09-22) which of the Photo Mode tab's Camera modes is
 -- currently active: "OFF"/"TRIPOD"/"SELFIE"/"FIRSTPERSON" (also briefly "FULLBODY"/"FACE" when
 -- BarbieMenu's own zoom feature has claimed the shared tripod -- see Spawner.ZoomTripodOnTarget/
 -- FaceViewOnTarget). Deliberately a SEPARATE tracked state from Spawner._photoTripodActor itself
 -- (which those two ALSO spawn/reposition, sharing the same "one active tripod at a time" actor by
--- design -- see Spawner.SetTripodFOV's own header).
+-- design -- see Spawner.SetTripodFOV's own header). SELFIE itself no longer uses
+-- Spawner._photoTripodActor as of 2026-10-14 -- see Spawner._selfieCameraActor instead.
 Spawner._photoModeCamState = Spawner._photoModeCamState or "OFF"
 
 -- Spawner._photoCamTripodBase / Spawner._photoCamOffsets -- (2026-09-22, offsets made
@@ -10432,8 +10617,12 @@ function Spawner.PhotoCamAdjustOffset(kind, key, amount, say)
     say = say or function(m) print("[LivingBase] [photocam-move] " .. tostring(m) .. "\n") end
     local mode = Spawner._photoModeCamState or "OFF"
     local isCustomView = (mode == "FULLBODY" or mode == "FACE" or mode == "DECOR")
-    if mode ~= "TRIPOD" and mode ~= "SELFIE" and not isCustomView then
-        say("movement pad only applies to Tripod/Selfie and the Custom camera views -- current mode is " .. tostring(mode) .. ".")
+    -- 2026-10-14: SELFIE removed from this gate -- the native camera (Spawner._selfieCameraActor)
+    -- has no Move/Rotate offset model at all (RedFalcon's own call), and the GUI no longer sends
+    -- these requests while Selfie is active. Explicitly refused here too, not just left to silently
+    -- touch the old (now display-disconnected) shared-tripod offset table.
+    if mode ~= "TRIPOD" and not isCustomView then
+        say("movement pad only applies to Tripod and the Custom camera views -- current mode is " .. tostring(mode) .. ".")
         return false
     end
     local o = isCustomView and Spawner._photoCamOffsets.CUSTOM or Spawner._photoCamOffsets[mode]
@@ -10458,19 +10647,16 @@ function Spawner.PhotoCamAdjustOffset(kind, key, amount, say)
         return false
     end
     if isCustomView then return Spawner.CameraViewNudge(0.0, 0, say) end
-    local base = (mode == "SELFIE") and Spawner._computeSelfieBasePose() or Spawner._photoCamTripodBase
-    return Spawner._photoCamApplyPose(base, say)
+    return Spawner._photoCamApplyPose(Spawner._photoCamTripodBase, say)
 end
 
--- Spawner.PhotoCamTick(say) -- called every ~100ms from main.lua's fast photo-cam poll loop
--- (regardless of whether a move/rotate request came in that tick) -- the ONLY thing that keeps
--- Selfie's live face-tracking actually live between button presses. No-ops entirely for
--- TRIPOD/FIRSTPERSON/OFF -- Tripod's base is a static snapshot that never needs re-deriving on its
--- own, and FIRSTPERSON has no base+offset model at all (see Spawner.MoveFirstPersonRelative).
+-- Spawner.PhotoCamTick(say) -- called every ~100ms from main.lua's fast photo-cam poll loop.
+-- RETIRED for SELFIE as of 2026-10-14 -- the native BP_SelfieCameraPoC re-tracks itself every
+-- render frame via its own Event Tick, not this 100ms Lua poll, so this is now a permanent no-op
+-- (kept, not deleted, since main.lua still calls it unconditionally every poll and removing the
+-- call site isn't worth the extra diff for a function that already costs nothing when it no-ops).
 function Spawner.PhotoCamTick(say)
-    if Spawner._photoModeCamState ~= "SELFIE" then return end
-    local base = Spawner._computeSelfieBasePose()
-    if base then Spawner._photoCamApplyPose(base, say) end
+    return
 end
 
 -- Spawner.PhotoCamSetAbsolute(x, y, z, pitch, yaw, roll, say) -- the Coords popup's Preview/Apply
@@ -10514,11 +10700,13 @@ function Spawner.PhotoCamSetMode(mode, say)
             Spawner._photoCamOffsets.TRIPOD = { fwd = 0.0, right = 0.0, up = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0 }
             return Spawner._photoCamApplyPose(base, say)
         elseif cur == "SELFIE" then
-            -- Selfie's base already re-tracks live every tick -- Reset just zeroes the offset so
-            -- the view snaps back to exactly following the face.
-            Spawner._photoCamOffsets.SELFIE = { fwd = 0.0, right = 0.0, up = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0 }
-            local base = Spawner._computeSelfieBasePose()
-            return base and Spawner._photoCamApplyPose(base, say)
+            -- 2026-10-14: the Photo Mode tab no longer sends "RESET" while Selfie is active -- the
+            -- Reset button under Selfie was replaced by the "</|/>" shoulder-preset row (Spawner.
+            -- SetSelfieSide), since the native camera has no accumulated offset to reset back to in
+            -- the first place. Unreachable from the GUI now; kept only as a harmless no-op in case
+            -- some other caller still sends it.
+            say("Selfie has no Reset -- use the </|/> shoulder buttons instead.")
+            return false
         elseif cur == "FIRSTPERSON" then
             Spawner._firstPersonOffset = { X = 0.0, Y = 0.0, Z = 0.0 }
             local pawn
@@ -10553,7 +10741,11 @@ function Spawner.PhotoCamSetMode(mode, say)
     -- Mode-native cases.
     if cur == "FIRSTPERSON" then
         pcall(function() Spawner.SetFirstPerson("off", say) end)
-    elseif cur == "TRIPOD" or cur == "SELFIE" or cur == "FULLBODY" or cur == "FACE" or cur == "DECOR" then
+    elseif cur == "SELFIE" then
+        -- 2026-10-14: Selfie's own native camera (Spawner._selfieCameraActor), not the shared
+        -- tripod actor -- separate teardown path.
+        Spawner.DespawnSelfieCamera(say)
+    elseif cur == "TRIPOD" or cur == "FULLBODY" or cur == "FACE" or cur == "DECOR" then
         Spawner.SetPhotoTripod("off", nil, nil, say)
     end
 
@@ -10582,9 +10774,11 @@ function Spawner.PhotoCamSetMode(mode, say)
         end
         Spawner._photoCamApplyPose(base, say)
     elseif mode == "SELFIE" then
-        local base = Spawner._computeSelfieBasePose()
-        if not base then say("could not read player pose."); return false end
-        Spawner._photoCamApplyPose(base, say)
+        -- 2026-10-14: spawns the native BP_SelfieCameraPoC fresh every activation (non-persistent,
+        -- Distance/SideOffset both start at class defaults) -- no base pose/offset model needed,
+        -- its own Event Tick handles all positioning from here on.
+        local cam = Spawner.SpawnSelfieCamera(say)
+        if not cam then return false end
     elseif mode == "FIRSTPERSON" then
         pcall(function() Spawner.SetFirstPerson("on", say) end)
     end
@@ -10599,7 +10793,9 @@ function Spawner.GetPhotoCamStatus()
     local mode = Spawner._photoModeCamState or "OFF"
     local status = { mode = mode }
     if mode == "TRIPOD" or mode == "SELFIE" then
-        local cam = Spawner._resolveTripodActor()
+        -- 2026-10-14: SELFIE reads Spawner._selfieCameraActor (the native camera), TRIPOD still
+        -- reads the shared tripod actor -- two different actors now, not one.
+        local cam = (mode == "SELFIE") and Spawner._selfieCameraActor or Spawner._resolveTripodActor()
         if cam and cam:IsValid() then
             local loc, rot, fov
             pcall(function() loc = cam:K2_GetActorLocation() end)
@@ -10612,7 +10808,7 @@ function Spawner.GetPhotoCamStatus()
             if rot then status.rot = { Pitch = rot.Pitch, Yaw = rot.Yaw, Roll = rot.Roll } end
             if type(fov) == "number" then status.fov = fov end
         else
-            -- Tripod actor vanished out from under us (e.g. lbreload) -- self-heal, matching the
+            -- Camera actor vanished out from under us (e.g. lbreload) -- self-heal, matching the
             -- Lights section's own ":IsValid()"-vs-tracking-list lesson: don't trust this state to
             -- stay accurate forever without a live check.
             Spawner._photoModeCamState = "OFF"

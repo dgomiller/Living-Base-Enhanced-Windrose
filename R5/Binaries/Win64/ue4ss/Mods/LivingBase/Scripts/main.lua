@@ -3073,6 +3073,39 @@ BeltStrapPolls.photoCamFov = function()
     end)
 end
 
+-- Selfie's left/center/right shoulder presets (2026-10-14) -- same one-shot trunc-write poll shape
+-- as photoCamFov above, just signed (SideOffset can be negative). Spawner.SetSelfieSide itself
+-- no-ops cleanly if Selfie isn't the active mode.
+BeltStrapPolls.PHOTOCAM_SELFIE_SIDE_REQUEST_CANDIDATES = {
+    "ue4ss/Mods/LivingBase/custom_photocam_selfie_side_request.txt",
+    "Mods/LivingBase/custom_photocam_selfie_side_request.txt",
+    "custom_photocam_selfie_side_request.txt",
+}
+BeltStrapPolls.photoCamSelfieSide = function()
+    local path = nil
+    for _, p in ipairs(BeltStrapPolls.PHOTOCAM_SELFIE_SIDE_REQUEST_CANDIDATES) do
+        local f = io.open(p, "r")
+        if f then f:close(); path = p; break end
+    end
+    if not path then return end
+    local f = io.open(path, "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    os.remove(path)
+    local value = tonumber(content:match("^%s*(%-?[%d%.]+)%s*$"))
+    if not value then
+        print("[LivingBase] [photocam-selfie-side] malformed request, ignored: '" .. tostring(content) .. "'\n")
+        return
+    end
+    if not restoreGate("Photo Mode: selfie side offset") then return end
+    ExecuteInGameThread(function()
+        local function say(m) print("[LivingBase] [photocam-selfie-side] " .. tostring(m) .. "\n") end
+        local ok, err = pcall(function() Spawner.SetSelfieSide(value, say) end)
+        if not ok then say("FAILED: " .. tostring(err)) end
+    end)
+end
+
 -- Coords popup's Preview/Apply (2026-09-22, RedFalcon: "coords should also act the same as the
 -- coords in spawn mode... a button you click on that brings up the ability to set them manually")
 -- -- payload "X,Y,Z:Pitch,Yaw,Roll", same field order as the existing move_request.txt's
@@ -3240,6 +3273,7 @@ if ExecuteWithDelay then
             BeltStrapPolls.publishLightsStatus()
             BeltStrapPolls.photoCamMode()
             BeltStrapPolls.photoCamFov()
+            BeltStrapPolls.photoCamSelfieSide()
             BeltStrapPolls.photoCamCoords()
             BeltStrapPolls.publishPhotoCamStatus()
             BeltStrapPolls.highlightToggle()
@@ -4682,6 +4716,122 @@ if RegisterConsoleCommandHandler then
     registerCmdInfo("lbspawnnoai", "lbspawnnoai <ClassPath>", "Same as lbspawn but freezes AI (StopLogic) immediately in the same call, before returning -- use this instead of lbspawn for anything hostile, so there's no gap for it to notice/aggro before you can lbfreeze it separately.")
 else
     log("lbspawnnoai unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbviewtarget" (2026-10-14) -- throwaway dev tool for the native Selfie-camera
+-- PoC: sets the player's view target to the LAST entry in Spawner.spawned, so a just-`lbspawn`'d
+-- CameraActor-derived Blueprint can be looked through directly without needing to build any
+-- Lua-side tracking for it first. Not meant to ship -- remove once the real Selfie-camera feature
+-- replaces its old 100ms Lua-timer implementation and no longer needs this kind of ad-hoc check.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbviewtarget", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbviewtarget] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            if not (Spawner.spawned and #Spawner.spawned > 0) then
+                say("Spawner.spawned is empty -- spawn something first.")
+                return true
+            end
+            local entry = Spawner.spawned[#Spawner.spawned]
+            if not (entry and entry.actor and entry.actor:IsValid()) then
+                say("last spawned entry has no valid actor.")
+                return true
+            end
+            local pc = UEHelpers.GetPlayerController()
+            if not (pc and pc:IsValid()) then
+                say("no valid PlayerController.")
+                return true
+            end
+            local ok, err = pcall(function() pc:SetViewTargetWithBlend(entry.actor, 0.0, 0, 0.0, false) end)
+            if ok then
+                say("view target set to last spawned actor (" .. tostring(entry.label or "unnamed") .. ").")
+            else
+                say("FAILED: " .. tostring(err))
+            end
+            return true
+        end)
+    end)
+    log("Console command registered: lbviewtarget")
+    registerCmdInfo("lbviewtarget", "lbviewtarget", "DEV ONLY: sets your view target to the last-spawned actor (Spawner.spawned's last entry). Built for the native Selfie-camera PoC; not a shipping feature.")
+else
+    log("lbviewtarget unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobeplayeranim" (2026-10-14) -- throwaway dev diagnostic, see
+-- Spawner.ProbePlayerAnimLookAt's own header comment for why: checking whether the player's own
+-- AnimInstance already exposes a look-at/head-aim target before assuming new AnimBP work is needed
+-- for the native Selfie camera's off-axis positioning idea.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobeplayeranim", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobeplayeranim] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.ProbePlayerAnimLookAt(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobeplayeranim")
+    registerCmdInfo("lbprobeplayeranim", "lbprobeplayeranim", "DEV ONLY: dumps the player's own AnimInstance properties + a look/head/aim/target function search. Built for the native Selfie-camera off-axis investigation; not a shipping feature.")
+else
+    log("lbprobeplayeranim unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbsetsideoffset <number>" (2026-10-14) -- throwaway dev tool: writes SideOffset
+-- directly onto the last-spawned actor (reusing the same Spawner.spawned[#Spawner.spawned] lookup
+-- lbviewtarget already uses), so the native Selfie camera's over-the-shoulder framing can be tuned
+-- live without a full edit/cook/package/install round trip for every value tried. Not meant to ship.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbsetsideoffset", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbsetsideoffset] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local arg1 = Parameters and Parameters[1]
+            local num = arg1 and tonumber(arg1)
+            if not num then
+                say("Usage: lbsetsideoffset <number>  e.g. lbsetsideoffset 40  or  lbsetsideoffset -40  or  lbsetsideoffset 0")
+                return true
+            end
+            if not (Spawner.spawned and #Spawner.spawned > 0) then
+                say("Spawner.spawned is empty -- spawn the camera first.")
+                return true
+            end
+            local entry = Spawner.spawned[#Spawner.spawned]
+            if not (entry and entry.actor and entry.actor:IsValid()) then
+                say("last spawned entry has no valid actor.")
+                return true
+            end
+            local ok, err = pcall(function() entry.actor.SideOffset = num end)
+            if ok then
+                say("SideOffset set to " .. tostring(num) .. " on last spawned actor.")
+            else
+                say("FAILED: " .. tostring(err))
+            end
+            return true
+        end)
+    end)
+    log("Console command registered: lbsetsideoffset")
+    registerCmdInfo("lbsetsideoffset", "lbsetsideoffset <number>", "DEV ONLY: writes SideOffset onto the last-spawned actor for live over-the-shoulder tuning. Built for the native Selfie-camera PoC; not a shipping feature.")
+else
+    log("lbsetsideoffset unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
 -- Console command "lbtestai <ClassPath> <AIControllerClassPath>" (2026-09-02) -- spawns a class

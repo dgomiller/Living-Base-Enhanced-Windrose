@@ -258,7 +258,18 @@ The Customize tab contains many features to help place and modify people to bett
      - Pose List - On the left hand side is a list of various poses and actions. Clicking + next to one will assign it to the targeted person.
      - Current Pose - Displays what pose is currently running.
      - Player Controls - These allow the pausing and playing of the pose or action, as well as frame skipping and scrubbing with a slider. A paused animation is saved and persists between loads.
-     - Hand Dropdowns - Allows placement of items and weapons in people's hands. The four dropdown categories are for organization; only one item may be assigned to each hand.
+     - Hand Item List - This list contains various items that can be put into an actor's hands. Just find the item and click + next to it.
+     - Hand Item Transform - Sometimes an item does not spawn in the hand properly due to misalignment of the attachment socket. To combat this, the Hand Item Transform section allows the rotation, movement, and scaling of items based on the hand, so the transform stays in place when animated. Controls are the same as all the other locations where items or actors can be transformed.
+
+       ![Hand Item Transform](images/customize_13.png)
+
+       Before:
+
+       ![Hand Item Transform Before](images/customize_14.png)
+
+       After:
+
+       ![Hand Item Transform After](images/customize_15.png)
 
 ## Signs / Labels
 

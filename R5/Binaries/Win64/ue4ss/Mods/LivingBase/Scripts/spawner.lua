@@ -4642,6 +4642,61 @@ local function dumpObjectProperties(obj, tag)
     end
 end
 
+-- Spawner.ProbeArmorColor(say) (2026-10-17) -- throwaway dev diagnostic: dumps the player's
+-- currently-equipped armor pieces' ItemParams + VisualParams properties, looking for whether armor
+-- gear data exposes a writable COLOR/tint field at all (as opposed to just which mesh/look it uses) --
+-- the open question behind "can armor color changes persist, like the third-party Outfitter mod's
+-- look-swap feature, including in multiplayer." Reuses dumpObjectProperties (this file, just above)
+-- rather than inventing a new dump routine. Not a shipping feature -- answers a feasibility question.
+function Spawner.ProbeArmorColor(say)
+    say = say or function(s) print("[LivingBase] [probearmorcolor] " .. s .. "\n") end
+    local ok1, player = pcall(function() return UEHelpers.GetPlayer() end)
+    if not (ok1 and player and player:IsValid()) then say("no player pawn"); return end
+    local eqCls = StaticFindObject("/Script/R5.R5PlayerEquipment")
+    if not (eqCls and eqCls:IsValid()) then say("could not resolve /Script/R5.R5PlayerEquipment"); return end
+    local eq
+    pcall(function()
+        local comps = player:K2_GetComponentsByClass(eqCls)
+        local n = 0
+        pcall(function() n = comps:GetArrayNum() end)
+        if n == 0 then pcall(function() n = #comps end) end
+        for i = 1, n do
+            local c = comps[i]; if not c then pcall(function() c = comps:Get(i) end) end
+            pcall(function() if c ~= nil and type(c) == "userdata" and c.get then c = c:get() end end)
+            if c and c:IsValid() then eq = c; break end
+        end
+    end)
+    if not (eq and eq:IsValid()) then say("no R5PlayerEquipment component found on the player"); return end
+    local count = 0
+    pcall(function()
+        eq.EquipmentItems.ReplicatedEquippedItems:ForEach(function(_, slotEntry)
+            local s = slotEntry:get()
+            local item = s and s.EquipmentItem
+            if item and item:IsValid() then
+                count = count + 1
+                local clsName = "?"
+                pcall(function() clsName = item:GetClass():GetFName():ToString() end)
+                say("equipped piece #" .. count .. ": class=" .. clsName)
+                dumpObjectProperties(item, "ITEM_PARAMS holder #" .. count)
+                local okVP, params = pcall(function() return item.ItemParams end)
+                if okVP and params and params:IsValid() then
+                    dumpObjectProperties(params, "ItemParams #" .. count)
+                    local okVP2, vp = pcall(function() return params.VisualParams end)
+                    if okVP2 and vp and vp:IsValid() then
+                        dumpObjectProperties(vp, "VisualParams #" .. count)
+                    else
+                        say("  ItemParams #" .. count .. " has no readable VisualParams")
+                    end
+                else
+                    say("  equipped piece #" .. count .. " has no readable ItemParams")
+                end
+            end
+        end)
+    end)
+    if count == 0 then say("player has nothing equipped (or the equipment array could not be read)") end
+    say("done -- look through the dumped property names above for anything color/tint/palette-shaped")
+end
+
 -- Spawner.DumpAllComponents(actor) (2026-09-23, RedFalcon: shipwreck/tree/boulder decor are still
 -- choppable/mineable with an axe/pick even though Spawner.StripInteraction already destroys their
 -- InteractTargetComponent at spawn time, confirmed live via the ue4ss log's own "[strip] ... destroy

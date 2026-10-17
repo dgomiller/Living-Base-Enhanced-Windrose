@@ -4789,6 +4789,73 @@ else
     log("lbprobeplayeranim unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbtestplayercpd <bodyPart> <c1> <c2> <c3>" (2026-10-17) -- throwaway dev test:
+-- the existing, confirmed-live, zero-crash-risk CPD03/04/05 recolor mechanism
+-- (Spawner.TestSetCPDPaletteColor) has only ever been exercised on actors THIS MOD spawned
+-- (crew/decor), never on the real player's own live-equipped armor. Passes the player's own pawn
+-- as actorOverride instead of falling back to findNearestSpawnInFront, to check whether the same
+-- write visibly recolors the player's actual quest-unlocked armor (the Outfitter-inspired
+-- persistent-armor-color feasibility question). Not meant to ship.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbtestplayercpd", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbtestplayercpd] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local bodyPartArg = Parameters and Parameters[1]
+            local c1Arg = Parameters and Parameters[2]
+            local c2Arg = Parameters and Parameters[3]
+            local c3Arg = Parameters and Parameters[4]
+            if not (bodyPartArg and c1Arg) then
+                say("usage: lbtestplayercpd <bodyPart enum int, e.g. 7 for Torso> <color1> <color2> <color3>")
+                return true
+            end
+            local ok, err = pcall(function()
+                local player = UEHelpers.GetPlayer()
+                if not (player and player:IsValid()) then say("no player pawn"); return end
+                Spawner.TestSetCPDPaletteColor(bodyPartArg, c1Arg, c2Arg, c3Arg, say, player)
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbtestplayercpd <bodyPart> <color1> <color2> <color3>")
+    registerCmdInfo("lbtestplayercpd", "lbtestplayercpd <bodyPart> <color1> <color2> <color3>", "DEV ONLY: tests the existing CPD03/04/05 recolor write against the PLAYER's own pawn instead of a spawned actor.")
+else
+    log("lbtestplayercpd unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbprobearmorcolor" (2026-10-17) -- throwaway dev diagnostic: dumps the player's
+-- equipped armor pieces' ItemParams + VisualParams properties, checking whether armor gear data
+-- exposes a writable color/tint field (feasibility check for an Outfitter-style persistent armor
+-- color feature, including multiplayer sync via the same RPC-piggyback pattern). Not meant to ship.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbprobearmorcolor", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbprobearmorcolor] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local ok, err = pcall(function() Spawner.ProbeArmorColor(say) end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbprobearmorcolor")
+    registerCmdInfo("lbprobearmorcolor", "lbprobearmorcolor", "DEV ONLY: dumps equipped armor's ItemParams/VisualParams properties, checking for a writable color field. Not a shipping feature.")
+else
+    log("lbprobearmorcolor unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
 -- Console command "lbsetsideoffset <number>" (2026-10-14) -- throwaway dev tool: writes SideOffset
 -- directly onto the last-spawned actor (reusing the same Spawner.spawned[#Spawner.spawned] lookup
 -- lbviewtarget already uses), so the native Selfie camera's over-the-shoulder framing can be tuned

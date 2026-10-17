@@ -10,6 +10,14 @@ ADDED -- Spawn Menu tree sorting
   and Custom > Hand. The top-level category order stays exactly as curated. New content always
   lands in the right alphabetical spot without ever needing a manual tree reorder.
 
+REBUILT -- Photo Mode: Selfie camera
+- Selfie is now a real native camera instead of the old shared tripod rig. Scroll the mouse wheel
+  to zoom in and out. Three new buttons -- "<", "|", ">" -- switch between an over-the-left-shoulder,
+  straight-on, or over-the-right-shoulder view. Selfie no longer has a Reset button; pressing Selfie
+  again clears the view like before, and every activation starts fresh (no saved position/zoom).
+  FOV still applies to Selfie; the Move/Rotate/Coords panel does not.
+- Fixed a brief wrong-direction flash when first enabling Selfie.
+
 FIXED
 - A rapid or held press of the window-toggle key (Numpad -) could open and close the Spawn Menu
   window repeatedly instead of toggling once, caused by a focus-handoff race between the game and

@@ -4789,6 +4789,127 @@ else
     log("lbprobeplayeranim unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end
 
+-- Console command "lbgenthumbone <x> <y> <z> <yaw> <name>" (2026-10-23) -- thumbnail-capture
+-- tooling: moves the resolved target (locked, or nearest in front) to the given spot/yaw and
+-- captures it via Spawner.CaptureThumbnailAt. For recapturing a single item the batch command got
+-- wrong, or for dialing in camera/backdrop/framing before trusting the batch at all. Not a shipping
+-- feature. GENUINELY UNTESTED: see Spawner.CaptureThumbnail's own header on the HighResShot syntax.
+if RegisterConsoleCommandHandler then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbgenthumbone", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbgenthumbone] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local x, y, z, yaw, nameArg = Parameters and Parameters[1], Parameters and Parameters[2],
+                Parameters and Parameters[3], Parameters and Parameters[4], Parameters and Parameters[5]
+            if not (x and y and z and yaw and nameArg) then
+                say("usage: lbgenthumbone <x> <y> <z> <yaw> <name> (captures the locked/nearest target)")
+                return true
+            end
+            local ok, err = pcall(function()
+                Spawner.CaptureThumbnailAt(nil, tonumber(x), tonumber(y), tonumber(z), tonumber(yaw), nameArg, say)
+            end)
+            if not ok then say("FAILED: " .. tostring(err)) end
+            return true
+        end)
+    end)
+    log("Console command registered: lbgenthumbone <x> <y> <z> <yaw> <name>")
+    registerCmdInfo("lbgenthumbone", "lbgenthumbone <x> <y> <z> <yaw> <name>", "DEV ONLY: moves the locked/nearest target to the given spot/yaw and captures one thumbnail. Not a shipping feature.")
+else
+    log("lbgenthumbone unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
+end
+
+-- Console command "lbgenthumbs <x> <y> <z> <yaw>" (2026-10-23) -- thumbnail-capture tooling: walks
+-- every roster/index pair already in spawn_menu.ini (the same flat catalog the real tree is built
+-- from -- nothing new to maintain), spawning each via the SAME SPAWN_MENU_HANDLERS dispatch the
+-- real spawn-menu click path uses, moving it to the given fixed spot/yaw (RedFalcon's own backdrop
+-- sits there separately), waiting for its composite build, capturing via Spawner.CaptureThumbnail,
+-- then destroying it and moving to the next entry. One item at a time (ExecuteWithDelay chain), not
+-- parallel -- a long-running batch job is expected and accepted. Output files are named
+-- "<roster>_<index>.png" (collision-free; mapping back to a label is a later/offline step). Not a
+-- shipping feature. GENUINELY UNTESTED end to end.
+if RegisterConsoleCommandHandler and ExecuteWithDelay then
+    pcall(function()
+        RegisterConsoleCommandHandler("lbgenthumbs", function(FullCommand, Parameters, Ar)
+            local function say(msg)
+                print("[LivingBase] [lbgenthumbs] " .. msg .. "\n")
+                pcall(function()
+                    if type(Ar) == "userdata" and Ar.type and Ar:type() == "FOutputDevice" then
+                        Ar:Log(msg)
+                    end
+                end)
+            end
+            local xArg, yArg, zArg, yawArg = Parameters and Parameters[1], Parameters and Parameters[2],
+                Parameters and Parameters[3], Parameters and Parameters[4]
+            if not (xArg and yArg and zArg and yawArg) then
+                say("usage: lbgenthumbs <x> <y> <z> <yaw>")
+                return true
+            end
+            local x, y, z, yaw = tonumber(xArg), tonumber(yArg), tonumber(zArg), tonumber(yawArg)
+
+            local function parseSpawnMenuIni(path)
+                local f = io.open(path, "r")
+                if not f then return {} end
+                local list, cur = {}, nil
+                local function flush() if cur and cur.roster and cur.index then list[#list + 1] = cur end; cur = nil end
+                for line in f:lines() do
+                    if line:match("^%[") then
+                        flush(); cur = {}
+                    elseif cur then
+                        local k, v = line:match("^(%a+)%s*=%s*(.-)%s*$")
+                        if k == "label" then cur.label = v
+                        elseif k == "roster" then cur.roster = v
+                        elseif k == "index" then cur.index = tonumber(v) end
+                    end
+                end
+                flush()
+                f:close()
+                return list
+            end
+
+            local queue = parseSpawnMenuIni("ue4ss/Mods/LivingBase/spawn_menu.ini")
+            if #queue == 0 then say("no roster/index entries found in spawn_menu.ini"); return true end
+            say(string.format("starting batch: %d item(s)", #queue))
+
+            local function step(idx)
+                local entry = queue[idx]
+                if not entry then say(string.format("batch done: %d item(s) attempted.", idx - 1)); return end
+                local handler = SPAWN_MENU_HANDLERS[entry.roster]
+                if not handler then
+                    say(string.format("skip #%d (%s): no handler for roster '%s'", idx, tostring(entry.label), entry.roster))
+                    ExecuteWithDelay(10, function() step(idx + 1) end)
+                    return
+                end
+                local okSpawn, actor = pcall(handler, entry.index)
+                if not okSpawn or not actor or not (actor.IsValid and actor:IsValid()) then
+                    say(string.format("skip #%d (%s): spawn failed", idx, tostring(entry.label)))
+                    ExecuteWithDelay(10, function() step(idx + 1) end)
+                    return
+                end
+                pcall(function() actor:K2_SetActorLocation({ X = x, Y = y, Z = z }, false, {}, true) end)
+                pcall(function() actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false) end)
+                Spawner.WaitForBuildThen(actor, function()
+                    local fname = entry.roster .. "_" .. tostring(entry.index)
+                    pcall(function() Spawner.CaptureThumbnail(actor, fname, say) end)
+                    pcall(function() actor:K2_DestroyActor() end)
+                    ExecuteWithDelay(50, function() step(idx + 1) end)
+                end)
+            end
+            step(1)
+            return true
+        end)
+    end)
+    log("Console command registered: lbgenthumbs <x> <y> <z> <yaw>")
+    registerCmdInfo("lbgenthumbs", "lbgenthumbs <x> <y> <z> <yaw>", "DEV ONLY: batch-captures a thumbnail for every spawn_menu.ini roster/index entry at the given fixed spot/yaw. Not a shipping feature.")
+else
+    log("lbgenthumbs unavailable -- RegisterConsoleCommandHandler or ExecuteWithDelay missing in this UE4SS build.")
+end
+
 -- Console command "lbtestplayercpd <bodyPart> <c1> <c2> <c3>" (2026-10-17) -- throwaway dev test:
 -- the existing, confirmed-live, zero-crash-risk CPD03/04/05 recolor mechanism
 -- (Spawner.TestSetCPDPaletteColor) has only ever been exercised on actors THIS MOD spawned
@@ -9461,11 +9582,26 @@ if RegisterConsoleCommandHandler then
             local ok, err
             if p1Lower == "player" or p1Lower == "self" then
                 ok, err = pcall(function() Spawner.CacheOwnPawnForProbe() end)
-                if ok then say("cached the player's own pawn -- run lbprobedump now.") end
+                if ok then
+                    say("cached the player's own pawn -- run lbprobedump now.")
+                    pcall(function() Spawner.Toast("Probed: own pawn", 2.5) end)
+                end
             elseif p1Lower == "child" then
                 local propName = Parameters and Parameters[2]
                 ok, err = pcall(function() Spawner.CacheChildPropertyForProbe(propName) end)
-                if ok then say("cached '" .. tostring(propName) .. "' -- run lbprobedump/lbprobelight now.") end
+                if ok then
+                    say("cached '" .. tostring(propName) .. "' -- run lbprobedump/lbprobelight now.")
+                    -- On-screen confirmation, same as plain lbprobe's own toast (RedFalcon, 2026-10-23:
+                    -- "nice to have some onscreen feedback when the child is selected too") -- without
+                    -- it, a typo'd propName or a child resolving to something unexpected is silent
+                    -- until you go check the log.
+                    pcall(function()
+                        local childCls, shortName = nil, propName
+                        pcall(function() childCls = Spawner._lastProbedActor:GetClass():GetFName():ToString() end)
+                        if childCls then shortName = childCls:match("([%w_]+)$") or childCls end
+                        Spawner.Toast("Probed child '" .. tostring(propName) .. "': " .. tostring(shortName), 2.5)
+                    end)
+                end
             else
                 ok, err = pcall(function() Spawner.ProbeNearestActor() end)
                 if ok then say("ProbeNearestActor done -- see ue4ss.log / discovery_dump.txt.") end
@@ -9486,6 +9622,8 @@ if RegisterConsoleCommandHandler then
     -- Spawner.ProbeStaticStats' own header comment.
     registerDumpCommand("lbprobestatic", function() Spawner.ProbeStaticStats() end, "ProbeStaticStats")
     registerCmdInfo("lbprobestatic", "lbprobestatic", "Reports actor scale + StaticMeshComponent/SkeletalMeshComponent/NiagaraComponent scale+asset for the current target (lbprobe cache, Numpad+ lock, or a Target List tab selection) -- the static/decor-object counterpart to HOME/lbprobetargetparams, which only works on CompositeMeshComponent 'people' targets.")
+    registerDumpCommand("lbprobetargetfuncs", function() Spawner.ProbeTargetFunctions() end, "ProbeTargetFunctions")
+    registerCmdInfo("lbprobetargetfuncs", "lbprobetargetfuncs", "Lists every UFUNCTION name (read-only, calls nothing) declared across the lbprobe cache's whole class hierarchy -- for a class like R5BLActor_DropView that exposes ZERO properties to lbprobedump, this is how to find its real getter functions instead.")
 else
     log("lbprobe/lbprobedump unavailable -- RegisterConsoleCommandHandler missing in this UE4SS build.")
 end

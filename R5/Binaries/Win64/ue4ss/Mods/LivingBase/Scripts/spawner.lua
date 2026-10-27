@@ -4741,7 +4741,17 @@ function Spawner.DumpAllComponents(actor)
         if c and c:IsValid() then
             local cname = "?"
             pcall(function() cname = c:GetFName():ToString() end)
-            pcall(function() dumpObjectProperties(c, "COMPONENT:" .. cname) end)
+            local compClassName = "?"
+            pcall(function() compClassName = c:GetClass():GetFName():ToString() end)
+            -- Known uncatchable native crash (2026-08-07, reconfirmed 2026-10-23 via two identical
+            -- minidumps on a R5LootActor's "Loot Interact Target Component"): walking either
+            -- interaction-target component class's OWN property list dies right after
+            -- Params/bHasDefaultTitle, inside the game exe -- pcall never sees it. Skip, don't drill.
+            if compClassName == "R5PrimitiveInteractionTargetComponent" or compClassName == "R5CommonInteractionTargetComponent" then
+                print(string.format("[LivingBase] [probe-props] -- COMPONENT:%s: from %s -- SKIPPED (known crash walking this component's properties, see 2026-08-07/2026-10-23 notes)\n", cname, compClassName))
+            else
+                pcall(function() dumpObjectProperties(c, "COMPONENT:" .. cname) end)
+            end
             -- 2026-09-24 (RedFalcon: standing near a spawned craft-station prop "blocks the camera
             -- and I lose view of my character") -- dumpObjectProperties only ever shows
             -- "BodyInstance = ScriptStruct /Script/Engine.BodyInstance" for a primitive component's
@@ -9319,6 +9329,48 @@ local function dumpCompositeFunctions(actor)
         cls = nextCls
     end
     print(string.format("[LivingBase] [probe-funcs] %d functions total across the class hierarchy.\n", total))
+end
+
+-- Spawner.ProbeTargetFunctions(say) -- "lbprobetargetfuncs" (2026-10-23, chasing the real item
+-- identity behind a dropped-loot R5LootActor's "LootView" -- lbprobedump on the drilled-into
+-- R5BLActor_DropView showed ZERO properties across its whole class hierarchy (R5BLActor_DropView ->
+-- R5BLViewBase -> Object), confirming this "BL" view layer exposes nothing to ForEachProperty at
+-- all -- it's presumably getter-function-driven instead. dumpCompositeFunctions (just above) proved
+-- the ForEachFunction name-sweep technique is safe, but it's hardcoded to CompositeMeshComponent --
+-- this is the GENERIC version, operating on Spawner._lastProbedActor (the same chainable cache
+-- lbprobe/lbprobe child/lbprobedump all already share), so it works on the DropView or anything
+-- else the chainable probe ever lands on. Pure read -- enumerating function NAMES via ForEachFunction
+-- never invokes anything, so this carries zero extra crash risk versus the property dump it follows.
+function Spawner.ProbeTargetFunctions(say)
+    say = say or function(m) print("[LivingBase] [probe-funcs] " .. tostring(m) .. "\n") end
+    local target = Spawner._lastProbedActor
+    if not (target and target:IsValid()) then
+        say("no valid probed target -- run lbprobe (or lbprobe child <propName>) on something first.")
+        return
+    end
+    local cls
+    pcall(function() cls = target:GetClass() end)
+    local total = 0
+    while cls and cls:IsValid() do
+        local className = "?"
+        pcall(function() className = cls:GetFName():ToString() end)
+        local names = {}
+        pcall(function()
+            cls:ForEachFunction(function(fn)
+                local fname = "?"
+                pcall(function() fname = fn:GetFName():ToString() end)
+                names[#names + 1] = fname
+            end)
+        end)
+        table.sort(names)
+        total = total + #names
+        say(string.format("-- %s (%d functions) --", className, #names))
+        say("  " .. table.concat(names, ", "))
+        local nextCls
+        pcall(function() nextCls = cls:GetSuperStruct() end)
+        cls = nextCls
+    end
+    say(string.format("%d functions total across the class hierarchy.", total))
 end
 
 -- dumpArchetypeInfo(actor) -- TEMP DEV/PROBE TOOL (2026-08-10): pursuing the NPC-side tattoo
@@ -34179,6 +34231,145 @@ function Spawner.ReplaceNearestInFront(spawnFn, newLabelHint)
     local shownLabel = newLabelHint or newEntry.label
     print(string.format("[LivingBase] Replace: %s -> %s.\n", tostring(oldClass), tostring(newEntry.class)))
     pcall(function() Spawner.Toast("Replaced with: " .. tostring(shownLabel), 2.5) end)
+    return true
+end
+
+---------------------------------------------------------------- thumbnail capture (dev-only, 2026-10-23)
+-- Batch/one-off screenshot generator feeding a planned ImGui hover-preview feature (CustomMenu/
+-- SpawnMenu). RedFalcon places/scales the backdrop and picks the subject's own fixed spot + yaw
+-- himself (e.g. 45 degrees, relative to the fixed camera direction below) -- this tool only ever
+-- decides the camera's DISTANCE back along that one fixed direction, computed from the subject's
+-- own GetActorBounds, so every shot's angle stays consistent regardless of item size. Not a
+-- shipping feature.
+-- Config packed onto Spawner.THUMB (one table, not six new top-level locals -- this file is at the
+-- Lua 200-local ceiling; see feedback_lua_200_local_ceiling in project memory).
+Spawner.THUMB = {
+    HFOV_DEG = 50.0,      -- camera horizontal FOV (CameraComponent.FieldOfView is the HORIZONTAL
+                          -- fov -- confirmed via Spawner.SetTripodFOV's own usage)
+    ASPECT = 16.0 / 9.0,  -- screen aspect (width / height) the framing math targets
+    MARGIN = 1.15,        -- extra distance so the subject doesn't touch the frame edges
+    MIN_DIST = 80.0,      -- never sit closer than this (tiny decor items)
+    APPROACH = { X = 0.0, Y = -1.0, Z = 0.0 },   -- fixed camera direction: sits on the subject's
+                          -- -Y side, looking back toward +Y. GetActorBounds returns a world-AXIS-
+                          -- ALIGNED box, so this needs no knowledge of the subject's own rotation
+                          -- -- its true footprint along world X/Y/Z is already correct post-rotation.
+    OUT_DIR = "ue4ss/Mods/LivingBase/thumbnails/",
+}
+
+function Spawner.ThumbCamera(say)
+    if Spawner._thumbCamActor and Spawner._thumbCamActor:IsValid() then return Spawner._thumbCamActor end
+    local cls
+    pcall(function() cls = StaticFindObject("/Script/Engine.CameraActor") end)
+    if not (cls and cls:IsValid()) then say("could not resolve CameraActor class."); return nil end
+    local gs = getGameplayStatics()
+    local world = UEHelpers.GetWorld()
+    if not (gs and world and world:IsValid()) then say("no GameplayStatics/World available."); return nil end
+    local transform = { Rotation = { W = 1.0, X = 0.0, Y = 0.0, Z = 0.0 },
+        Translation = { X = 0.0, Y = 0.0, Z = 0.0 }, Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 } }
+    local cam = Spawner._DoEngineSpawn(gs, world, cls, transform, "ThumbCam", nil, nil)
+    if not (cam and cam:IsValid()) then say("thumbnail camera spawn failed."); return nil end
+    local camComp
+    pcall(function() camComp = cam.CameraComponent end)
+    if camComp and camComp:IsValid() then pcall(function() camComp.FieldOfView = Spawner.THUMB.HFOV_DEG end) end
+    Spawner._thumbCamActor = cam
+    return cam
+end
+
+-- tanHalf(vertical fov) = tanHalf(horizontal fov) / aspect -- standard perspective-camera relation,
+-- since FieldOfView here is the horizontal one.
+function Spawner.FrameThumbCamera(actor, say)
+    local origin, extent = {}, {}
+    local ok = pcall(function() actor:GetActorBounds(false, origin, extent, false) end)
+    if not ok or type(origin.X) ~= "number" then
+        say("GetActorBounds failed on the subject -- cannot frame the shot.")
+        return nil
+    end
+    local t = Spawner.THUMB
+    local tanH = math.tan(math.rad(t.HFOV_DEG / 2.0))
+    local tanV = tanH / t.ASPECT
+    local halfWidth, halfHeight = extent.X or 0, extent.Z or 0
+    local distW = (tanH > 0) and (halfWidth / tanH) or 0
+    local distH = (tanV > 0) and (halfHeight / tanV) or 0
+    local dist = math.max(distW, distH, t.MIN_DIST / t.MARGIN) * t.MARGIN
+    local center = { X = origin.X, Y = origin.Y, Z = origin.Z }
+    local camPos = { X = center.X + t.APPROACH.X * dist, Y = center.Y + t.APPROACH.Y * dist,
+                      Z = center.Z + t.APPROACH.Z * dist }
+    -- Aim yaw computed from the actual camPos->center delta (atan2), not assumed from APPROACH
+    -- directly, so changing that one constant alone still aims correctly with no second edit needed.
+    local dx, dy = center.X - camPos.X, center.Y - camPos.Y
+    local yaw = math.deg(math.atan(dy, dx))
+    return camPos, { Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, dist
+end
+
+-- Skips the wait entirely for an actor with no CompositeMeshComponent at all (plain decor/static
+-- mesh actors -- most of the catalog) rather than polling pointlessly for ~3.6s per item, the same
+-- class of actor this file's own pollForBuildThenOnSpawned always waits out regardless.
+function Spawner.WaitForBuildThen(actor, callback, attemptsLeft)
+    attemptsLeft = attemptsLeft or 12
+    if not (actor and actor:IsValid()) then return end
+    local comp
+    pcall(function() comp = actor.CompositeMeshComponent end)
+    if not (comp and comp:IsValid()) then pcall(callback, actor); return end
+    local built = 0
+    pcall(function()
+        local list = comp.BuildedCompositeMeshes
+        if list then
+            pcall(function() built = list:GetArrayNum() end)
+            if built == 0 then pcall(function() built = #list end) end
+        end
+    end)
+    if built > 0 then pcall(callback, actor); return end
+    if attemptsLeft <= 1 or not ExecuteWithDelay then pcall(callback, actor); return end
+    ExecuteWithDelay(300, function() Spawner.WaitForBuildThen(actor, callback, attemptsLeft - 1) end)
+end
+
+-- Captures one thumbnail of `actor` (already positioned/rotated by the caller) to `filename` (no
+-- extension; .png appended) under Spawner.THUMB.OUT_DIR. Does not move, wait-for-build, or despawn
+-- `actor` -- callers (CaptureThumbnailAt / the lbgenthumbs batch loop) own that. GENUINELY
+-- UNTESTED: the exact HighResShot filename= syntax/output location needs confirming live before
+-- trusting this.
+function Spawner.CaptureThumbnail(actor, filename, say)
+    say = say or function(m) print("[LivingBase] [genthumb] " .. tostring(m) .. "\n") end
+    if not (actor and actor:IsValid()) then say("no actor to capture."); return false end
+    local cam = Spawner.ThumbCamera(say)
+    if not cam then return false end
+    local camPos, camRot, dist = Spawner.FrameThumbCamera(actor, say)
+    if not camPos then return false end
+    pcall(function() cam:K2_SetActorLocation(camPos, false, {}, false) end)
+    pcall(function() cam:K2_SetActorRotation(camRot, false) end)
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then say("no PlayerController."); return false end
+    local okView = pcall(function() pc:SetViewTargetWithBlend(cam, 0.0, 0, 0.0, false) end)
+    if not okView then say("SetViewTargetWithBlend failed."); return false end
+    local ksl
+    pcall(function() ksl = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary") end)
+    local world = UEHelpers.GetWorld()
+    if not (ksl and ksl:IsValid() and world and world:IsValid()) then
+        say("no KismetSystemLibrary/World for the screenshot command.")
+        return false
+    end
+    local path = Spawner.THUMB.OUT_DIR .. filename
+    local okShot, errShot = pcall(function() ksl:ExecuteConsoleCommand(world, "HighResShot filename=\"" .. path .. "\"", pc) end)
+    say(string.format("captured %s at dist=%.1f: %s%s", path, dist, tostring(okShot),
+        (not okShot) and (" err=" .. tostring(errShot)) or ""))
+    return okShot
+end
+
+-- One-off / recapture variant (lbgenthumbone): moves the resolved target (locked actor, or nearest
+-- in front) to (x,y,z,yaw) first, same resolveTargetOrActor pattern every other single-target lbtest
+-- command in this file already uses, then waits-for-build and captures.
+function Spawner.CaptureThumbnailAt(actorOverride, x, y, z, yaw, filename, say)
+    say = say or function(m) print("[LivingBase] [genthumbone] " .. tostring(m) .. "\n") end
+    local maxDist = Config.DESPAWN_FRONT_UU or 250.0
+    local bestI, e = resolveTargetOrActor(actorOverride, maxDist)
+    if not bestI then
+        say(string.format("nothing within %.0fuu ahead/locked -- walk closer & face it, or Num+ to lock it first.", maxDist))
+        return false
+    end
+    local actor = e.actor
+    pcall(function() actor:K2_SetActorLocation({ X = x, Y = y, Z = z }, false, {}, true) end)
+    pcall(function() actor:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false) end)
+    Spawner.WaitForBuildThen(actor, function() Spawner.CaptureThumbnail(actor, filename, say) end)
     return true
 end
 
